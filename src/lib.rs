@@ -49,6 +49,8 @@ mod extras;
 mod pet;
 mod pet_expressions;
 mod bar_layout;
+pub mod performance;
+mod performance_ui;
 mod resident_settings;
 mod avoidance;
 mod focus_bar;
