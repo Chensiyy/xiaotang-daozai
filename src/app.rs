@@ -3106,6 +3106,8 @@ impl App {
     }
 
     fn render_page(&mut self, page: usize, c: &Card, env: &Env, cmds: &mut Vec<Cmd>) {
+        #[cfg(any(feature="sdk-js",feature="sdk-wasm"))]
+        if page==4 && crate::sdk_spike::live_card(c){return;}
         match page {
             0 => self.page_music(c, env, cmds),
             1 => self.page_focus(c, env),

@@ -1021,6 +1021,8 @@ mod open_path_tests {
 }
 
 fn main() -> std::process::ExitCode {
+    #[cfg(any(feature="sdk-js",feature="sdk-wasm"))]
+    if let Some(code)=daozai::sdk_spike::command(){return code;}
     diagnostics::install();
     // 收集诊断：在单实例检查、创建窗口和初始化显卡之前处理，岛仔启动即崩溃、卡死时也能用。
     #[cfg(windows)]

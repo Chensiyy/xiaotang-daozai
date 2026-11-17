@@ -23,6 +23,8 @@ required-features = ["record"]
 
 [features]
 record = []
+sdk-js = []
+sdk-wasm = ["dep:wasmi"]
 
 [patch.crates-io]
 imap = { path = "vendor/imap" }
@@ -52,6 +54,7 @@ chrono = "0.4"
 chrono-tz = "0.10"
 rrule = "0.14.0"
 rquickjs = "0.8"
+wasmi = { version = "=0.46.0", optional = true, default-features = false, features = ["std"] }
 
 # Linux 下 winit 至少要一个后端才能编译（只用于开发/录制，正式目标是 Windows）。
 [target.'cfg(target_os = "linux")'.dependencies]

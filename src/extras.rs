@@ -1526,6 +1526,8 @@ impl App {
                 egui::ScrollArea::vertical().id_salt(("settings-scroll",tab)).auto_shrink([false,false]).show(ui,|ui|{
                     // 右侧给滚动条留出空隙，卡片和开关不会被它压住。
                     ui.set_width((ui.available_width()-12.0).max(240.0));
+                    #[cfg(any(feature="sdk-js",feature="sdk-wasm"))]
+                    if tab==4 {crate::sdk_spike::live_settings(ui);}
                     match tab {
                     12=>{
                         let on=self.settings_feature_header(ui,crate::app::WEATHER_PAGE,"当地天气与七日预报",|_,_|{});
