@@ -34,6 +34,7 @@ pub const MAIL_PAGE: usize = 5;
 pub const QUOTA_PAGE: usize = 6;
 pub const CALENDAR_PAGE: usize = 7;
 pub const WEATHER_PAGE: usize = 8;
+pub const BLUETOOTH_PAGE: usize = 9;
 pub(crate) const WEATHER_H: f32 = 232.0;
 pub(crate) const CALENDAR_H: f32 = 216.0;
 pub const BAR_W: f32 = 163.0; // 收起药丸宽
@@ -78,8 +79,8 @@ fn pill_shadow(painter:&egui::Painter,rect:Rect,radius:f32,strength:f32){
         painter.rect_filled(r,radius+grow*0.8,Color32::from_black_alpha((255.0*a*strength) as u8));
     }
 }
-pub(crate) const PAGE_NAMES: [&str; 9] = ["音乐", "专注", "健康", "置物架", "待办", "邮箱", "AI 额度", "日程", "天气"];
-pub(crate) const PAGE_SETTINGS_TABS: [usize; 9] = [1,2,3,5,4,7,11,8,12];
+pub(crate) const PAGE_NAMES: [&str; 10] = ["音乐", "专注", "健康", "置物架", "待办", "邮箱", "AI 额度", "日程", "天气", "无线设备"];
+pub(crate) const PAGE_SETTINGS_TABS: [usize; 10] = [1,2,3,5,4,7,11,8,12,0];
 
 // ---------- 动效参数 ----------
 /// 悬停意图缓冲：光标停留这么久才真正展开（期间药丸轻微胀大作为反馈），防误触。
@@ -136,7 +137,7 @@ pub struct Env {
     pub media: NowPlaying,
     /// 系统主音量（0..100, 是否静音）；v0.5.4 音量条与系统双向同步。
     pub volume: Option<(u32, bool)>,
-    /// 已连接的蓝牙音频设备（名称 + 可选电量）。
+    /// 蓝牙设备快照：连接状态、电量来源及本次会话的断开记录。
     pub bt: Vec<crate::bt::Device>,
     /// 蓝牙服务是否已经完成首次扫描。
     pub bt_ready: bool,
@@ -741,7 +742,7 @@ pub struct App {
     page_dir: f32,
     page_t0: f64,
     slide: Spring,
-    dots: [Spring; 9],
+    dots: [Spring; 10],
     wheel_delta: f32,
     wheel_at: f64,
     wheel_page_at: f64,
@@ -875,6 +876,8 @@ pub struct App {
     pub(crate) music_restart_at: Option<f64>,
     /// 上一次看到的蓝牙设备，用来只在连接/断开时提示一次。
     pub(crate) bt_shown: Vec<crate::bt::Device>,
+    pub(crate) wireless_devices: Vec<crate::bt::Device>,
+    pub(crate) wireless_offset: usize,
     bt_initialized: bool,
     /// v0.5.5：邮件账号、最近邮件与设置表单。
     pub(crate) mail: MailState,
@@ -1011,7 +1014,7 @@ impl App {
             music_seek_ui: None,
             music_seek_quiet_until: 0.0,
             music_restart_at: None,
-            bt_shown: Vec::new(),
+            bt_shown: Vec::new(), wireless_devices:Vec::new(),wireless_offset:0,
             bt_initialized: false,
             mail: MailState { accounts: mail::load_accounts(), ..Default::default() },
             mail_lines_cache: Vec::new(),
@@ -1486,6 +1489,7 @@ impl App {
 
     /// v0.5.4：把系统音量与蓝牙设备状态同步进界面；只在连接/断开时提示一次。
     fn sync_device(&mut self, env: &Env) {
+        self.wireless_devices=env.bt.clone();
         if self.t >= self.volume_quiet_until {
             if let Some(v) = env.volume {
                 self.volume_ui = Some(v);
@@ -1502,14 +1506,14 @@ impl App {
         // 只把首次完整扫描作为基线，之后的连接变化都应提示。
         if !self.bt_initialized {
             self.bt_initialized = true;
-            self.bt_shown = env.bt.clone();
+            self.bt_shown = env.bt.iter().filter(|d|d.connected).cloned().collect();
             return;
         }
-        let connected: Vec<_> = env.bt.iter().filter(|d| !self.bt_shown.iter().any(|old| old.id == d.id)).cloned().collect();
-        let disconnected: Vec<_> = self.bt_shown.iter().filter(|d| !env.bt.iter().any(|new| new.id == d.id)).cloned().collect();
+        let connected: Vec<_> = env.bt.iter().filter(|d| d.connected && !self.bt_shown.iter().any(|old| old.id == d.id)).cloned().collect();
+        let disconnected: Vec<_> = self.bt_shown.iter().filter(|d| !env.bt.iter().any(|new| new.connected && new.id == d.id)).cloned().collect();
         for device in &connected { self.bluetooth_alert(device, true); }
         for device in &disconnected { self.bluetooth_alert(device, false); }
-        self.bt_shown = env.bt.clone();
+        self.bt_shown = env.bt.iter().filter(|d|d.connected).cloned().collect();
     }
 
     /// 距离上次交互的秒数（小精灵出现的依据）。
@@ -1806,7 +1810,7 @@ impl App {
     }
 
     pub(crate) fn expanded_height(&self)->f32 {
-        if self.page==CALENDAR_PAGE {CALENDAR_H}else if self.page==WEATHER_PAGE {WEATHER_H}else if self.page==6{176.0}else if self.page==5&&self.mail.open_uid.is_some(){236.0}else{PH}
+        if self.page==BLUETOOTH_PAGE {232.0}else if self.page==CALENDAR_PAGE {CALENDAR_H}else if self.page==WEATHER_PAGE {WEATHER_H}else if self.page==6{176.0}else if self.page==5&&self.mail.open_uid.is_some(){236.0}else{PH}
     }
 
     // ---------------------------------------------------------------
@@ -1873,6 +1877,9 @@ impl App {
         if self.settings.clock_seconds { layout.widen_clock(24.0); }
         if let Some(extra)=self.weather_pill_extra(&ctx){ layout.widen(bar::WEATHER,extra); }
         if !self.settings.show_clock {layout.hide_clock();}
+        let wireless=self.wireless_resident();
+        let wireless_count=wireless.len().min(((WIN_W-32.0-layout.width-12.0)/51.0).max(0.0) as usize);
+        if wireless_count>0{layout.append_bluetooth(wireless_count as f32*51.0);}
         if self.pet_enabled() {
             if let Some(a)=self.notice.as_ref().filter(|_|!self.compact_notices()&&!self.open){layout.x[bar::PET]=Some(22.0-(self.notice_size(a).0+self.pet_space())/2.0);}
             else if self.island_lyrics_active() {layout.x[bar::PET]=Some(60.0-self.lyric_bar_width()/2.0);}
@@ -2988,6 +2995,7 @@ impl App {
         if compact_alpha>0.004 {
             let c=base.faded(compact_alpha);let c=if compact_alpha<0.8{c.ghost()}else{c};
             self.draw_quota_bar(&c,local_cx,&layout);
+            self.draw_wireless_bar(&c,local_cx,&layout);
             if let Some(x)=layout.x[bar::WEATHER] { self.draw_pill_weather(&c,local_cx+x,&layout); }
         }
         if self.pomo.running && compact_alpha>0.004 {
@@ -3093,6 +3101,7 @@ impl App {
             6 => ("AI", "额度", theme::SOFT_GREEN),
             8 if self.weather.solar_open => ("日出", "日落", theme::YELLOW),
             8 => ("当地", "天气", theme::CYAN),
+            BLUETOOTH_PAGE => ("无线", "设备", theme::CYAN),
             _ => ("岛仔", "设置", theme::WHITE),
         };
         let wa = c.text(15.0, base, a, size::TITLE, W::Bold, theme::WHITE, H::Left);
@@ -3151,6 +3160,7 @@ impl App {
             5 => self.page_mail(c, env, cmds),
             6 => self.page_quota(c),
             8 => self.page_weather(c,env,cmds),
+            BLUETOOTH_PAGE => self.page_wireless(c,env),
             CALENDAR_PAGE => self.page_calendar(c,env),
             _ => self.page_settings(c),
         }

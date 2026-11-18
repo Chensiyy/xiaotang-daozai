@@ -1,0 +1,70 @@
+use super::*;
+
+fn endpoint(id:&str,address:&str,container:Option<&str>)->Endpoint {
+    Endpoint {id:id.into(),address:normalize_address(address),container:container.map(str::to_owned),name:"同名耳机".into(),kind:DeviceKind::Earbuds,ble:false}
+}
+fn sample(key:&str,session:u64,source:BatterySource,percent:u8,at:Instant)->Sample {
+    Sample {key:key.into(),session,reading:BatteryReading{percent,source,at}}
+}
+
+#[test]
+fn same_address_and_container_merge_but_names_never_do(){
+    let now=Instant::now();let mut state=State::default();
+    state.discover(vec![endpoint("classic","AA:BB:CC:DD:EE:01",Some("group")),endpoint("ble","AABBCCDDEE01",None),endpoint("hid","AABBCCDDEE02",Some("group")),endpoint("other","AABBCCDDEE03",None)],now);
+    assert_eq!(state.devices(now).len(),2);
+    assert_eq!(state.targets().len(),4);
+    let key=state.targets()[0].key.clone();
+    state.discover(vec![endpoint("ble","AABBCCDDEE01",None),endpoint("other","AABBCCDDEE03",None)],now);
+    assert!(state.devices(now).iter().any(|d|d.id==key&&d.connected));
+}
+
+#[test]
+fn no_identity_and_partial_mac_must_not_collapse_devices(){
+    let now=Instant::now();let mut state=State::default();
+    state.discover(vec![endpoint("first","",None),endpoint("second","",None)],now);
+    assert_eq!(state.devices(now).len(),2);
+    assert_eq!(normalize_address("AA:BB:CC:DD:EE:FF"),Some("AABBCCDDEEFF".into()));
+    assert_eq!(normalize_address(""),None);
+    assert_eq!(normalize_address("000000000000"),None);
+    assert_eq!(pnp_address("BTHENUM\\DEV_AABBCCDDEEFF\\7&123"),Some("AABBCCDDEEFF".into()));
+    assert_eq!(pnp_address("BTHENUM\\DEV_AABBCCDDEEFF0\\7&123"),None);
+    assert_eq!(pnp_address("USB\\VID_AABBCCDDEEFF"),None);
+}
+
+#[test]
+fn fresh_gatt_wins_cached_pnp_and_zero_is_valid(){
+    let now=Instant::now();let mut state=State::default();state.discover(vec![endpoint("ble","AABBCCDDEE01",None)],now);
+    let t=state.targets().remove(0);
+    state.ingest(sample(&t.key,t.session,BatterySource::Gatt,0,now));
+    state.ingest(sample(&t.key,t.session,BatterySource::Windows,90,now+Duration::from_secs(1)));
+    state.ingest(sample(&t.key,t.session,BatterySource::Gatt,255,now+Duration::from_secs(2)));
+    assert_eq!(state.devices(now+Duration::from_secs(2))[0].battery,Some(0));
+    state.ingest(sample(&t.key,t.session,BatterySource::Windows,60,now+Duration::from_secs(181)));
+    let d=state.devices(now+Duration::from_secs(182)).remove(0);
+    assert_eq!(d.battery,Some(60));assert_eq!(d.reading.unwrap().source,BatterySource::Windows);
+}
+
+#[test]
+fn late_samples_cannot_overwrite_newer_samples_or_reconnected_devices(){
+    let now=Instant::now();let mut state=State::default();let endpoints=vec![endpoint("ble","AABBCCDDEE01",None)];
+    state.discover(endpoints.clone(),now);let old=state.targets().remove(0);
+    state.ingest(sample(&old.key,old.session,BatterySource::Gatt,70,now+Duration::from_secs(2)));
+    state.ingest(sample(&old.key,old.session,BatterySource::Gatt,80,now));
+    assert_eq!(state.devices(now+Duration::from_secs(3))[0].battery,Some(70));
+    state.discover(vec![],now+Duration::from_secs(4));
+    assert!(!state.devices(now+Duration::from_secs(4))[0].connected);
+    state.discover(endpoints,now+Duration::from_secs(5));
+    state.ingest(sample(&old.key,old.session,BatterySource::Gatt,99,now+Duration::from_secs(6)));
+    assert_eq!(state.devices(now+Duration::from_secs(6))[0].battery,None);
+}
+
+#[test]
+fn errors_age_readings_and_disconnected_history_expires(){
+    let now=Instant::now();let mut state=State::default();state.discover(vec![endpoint("ble","AABBCCDDEE01",None)],now);
+    let t=state.targets().remove(0);state.ingest(sample(&t.key,t.session,BatterySource::Windows,44,now));
+    let d=state.devices(now+Duration::from_secs(181)).remove(0);
+    assert_eq!(d.battery,Some(44));assert!(d.stale_at(now+Duration::from_secs(181)));
+    state.discover(vec![],now+Duration::from_secs(182));
+    state.discover(vec![],now+Duration::from_secs(900));
+    assert!(state.devices(now+Duration::from_secs(900)).is_empty());
+}

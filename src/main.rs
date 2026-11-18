@@ -462,7 +462,7 @@ impl eframe::App for Shell {
             } else {
                 self.backdrop=None;
             }
-            if self.app.settings.bluetooth_notifications {
+            if self.app.settings.bluetooth_notifications || self.app.module_on(daozai::app::BLUETOOTH_PAGE) {
                 if self.bt_rx.is_none() {self.bt_rx=Some(daozai::bt::spawn());}
             } else {
                 self.bt_rx=None;
