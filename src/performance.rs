@@ -1,4 +1,4 @@
-//! 系统性能采样只在相应指标可见时进行，绘制线程只交换请求和读数。
+//! 模块开启时独立保留最近一分钟的采样，界面可见时才请求重绘。
 use eframe::egui;
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
@@ -91,12 +91,6 @@ impl Reading {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Demand {
-    Bar(BarStyle),
-    Page,
-}
-
 #[derive(Default)]
 pub(crate) struct Monitor {
     pub latest: Reading,
@@ -108,66 +102,122 @@ pub(crate) struct Monitor {
 
 #[cfg(windows)]
 struct Worker {
-    request: std::sync::mpsc::Sender<Demand>,
-    result: std::sync::mpsc::Receiver<(Instant, Reading)>,
-    pending: bool,
-    next: Instant,
+    stop: std::sync::mpsc::Sender<()>,
+    visible: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    samples: std::sync::Arc<std::sync::Mutex<VecDeque<(Instant, Reading)>>>,
 }
 #[cfg(windows)]
 impl Worker {
-    fn start(ctx: egui::Context) -> Self {
-        use std::sync::mpsc::channel;
-        let (request, requests) = channel();
-        let (results, result) = channel();
+    fn start(ctx: egui::Context, visible: bool) -> Self {
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            mpsc, Arc, Mutex,
+        };
+        let (stop, stopped) = mpsc::channel();
+        let samples = Arc::new(Mutex::new(VecDeque::with_capacity(60)));
+        let output = Arc::clone(&samples);
+        let visible = Arc::new(AtomicBool::new(visible));
+        let repaint = Arc::clone(&visible);
         std::thread::spawn(move || {
             let mut sampler = windows::Sampler::default();
-            while let Ok(mode) = requests.recv() {
+            loop {
                 let at = Instant::now();
-                if results.send((at, sampler.read(mode, at))).is_err() {
+                let reading = sampler.read(at);
+                {
+                    let mut queue = output.lock().unwrap();
+                    if queue.len() == 60 {
+                        queue.pop_front();
+                    }
+                    queue.push_back((at, reading));
+                }
+                if repaint.load(Ordering::Relaxed) {
+                    ctx.request_repaint();
+                }
+                let wait = Duration::from_secs(1).saturating_sub(at.elapsed());
+                if !matches!(stopped.recv_timeout(wait), Err(mpsc::RecvTimeoutError::Timeout)) {
                     break;
                 }
-                ctx.request_repaint();
             }
         });
-        Self {
-            request,
-            result,
-            pending: false,
-            next: Instant::now(),
-        }
+        Self { stop, visible, samples }
+    }
+}
+#[cfg(windows)]
+impl Drop for Worker {
+    fn drop(&mut self) {
+        let _ = self.stop.send(());
     }
 }
 
 impl Monitor {
-    pub fn tick(&mut self, demand: Option<Demand>, ctx: &egui::Context) {
+    pub fn tick(&mut self, enabled: bool, visible: bool, ctx: &egui::Context) {
         #[cfg(windows)]
         {
-            let Some(mode) = demand else {
+            if !enabled {
                 if self.worker.take().is_some() {
                     self.latest = Reading::default();
+                    self.history.clear();
                 }
                 return;
-            };
-            let worker = self.worker.get_or_insert_with(|| Worker::start(ctx.clone()));
+            }
+            let worker = self.worker.get_or_insert_with(|| Worker::start(ctx.clone(), visible));
+            worker.visible.store(visible, std::sync::atomic::Ordering::Relaxed);
+            let mut queue = worker.samples.lock().unwrap();
+            if let Some((_, last)) = queue.back() {
+                self.latest = last.clone();
+            } else {
+                return;
+            }
             let now = Instant::now();
-            if let Ok((at, sample)) = worker.result.try_recv() {
-                worker.pending = false;
-                self.latest = sample.clone();
-                self.history.retain(|(t, _)| now.duration_since(*t) < Duration::from_secs(60));
-                self.history.push_back((at, sample));
-                if self.history.len() > 60 {
-                    self.history.pop_front();
-                }
-            }
-            if now >= worker.next && !worker.pending {
-                worker.pending = worker.request.send(mode).is_ok();
-                worker.next = now + Duration::from_secs(1);
-            }
-            if !worker.pending {
-                ctx.request_repaint_after(worker.next.saturating_duration_since(now));
+            self.history.extend(queue.drain(..));
+            while self
+                .history
+                .front()
+                .is_some_and(|(at, _)| self.history.len() > 60 || now.duration_since(*at) >= Duration::from_secs(60))
+            {
+                self.history.pop_front();
             }
         }
         #[cfg(not(windows))]
-        let _ = (demand, ctx);
+        let _ = (enabled, visible, ctx);
+    }
+}
+
+#[cfg(all(windows, test))]
+mod tests {
+    use super::*;
+    use ::windows::Win32::{
+        Foundation::FILETIME,
+        System::Threading::{GetCurrentProcess, GetProcessTimes},
+    };
+
+    fn cpu_seconds() -> f64 {
+        let (mut created, mut ended, mut kernel, mut user) = Default::default();
+        unsafe { GetProcessTimes(GetCurrentProcess(), &mut created, &mut ended, &mut kernel, &mut user) }.unwrap();
+        let ticks = |t: FILETIME| u64::from(t.dwHighDateTime) << 32 | u64::from(t.dwLowDateTime);
+        (ticks(kernel) + ticks(user)) as f64 / 1e7
+    }
+
+    #[test]
+    #[ignore = "单独运行以测量实际系统采样的 CPU 时间"]
+    fn continuous_sampling_cost() {
+        let ctx = egui::Context::default();
+        let mut monitor = Monitor::default();
+        monitor.tick(true, false, &ctx);
+        std::thread::sleep(Duration::from_secs(3));
+        monitor.tick(true, false, &ctx);
+        let wall = Instant::now();
+        let cpu = cpu_seconds();
+        std::thread::sleep(Duration::from_secs(45));
+        monitor.tick(true, true, &ctx);
+        let elapsed = wall.elapsed().as_secs_f64();
+        let used = cpu_seconds() - cpu;
+        let count = monitor.history.iter().filter(|(t, _)| *t >= wall).count();
+        println!(
+            "elapsed={elapsed:.3} cpu_seconds={used:.4} one_core_pct={:.3} samples={count}",
+            100. * used / elapsed
+        );
+        assert!((43..=46).contains(&count));
+        assert!(monitor.latest.cpu.is_some() && monitor.latest.memory.is_some());
     }
 }

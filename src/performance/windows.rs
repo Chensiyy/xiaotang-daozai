@@ -1,4 +1,4 @@
-use super::{BarStyle, Demand, Reading};
+use super::Reading;
 use ::windows::core::{w, PCWSTR};
 use ::windows::Wdk::Graphics::Direct3D::*;
 use ::windows::Win32::{
@@ -29,55 +29,37 @@ pub(super) struct Sampler {
 }
 
 impl Sampler {
-    pub fn read(&mut self, mode: Demand, now: Instant) -> Reading {
-        let full = matches!(mode, Demand::Page | Demand::Bar(BarStyle::Dashboard));
+    pub fn read(&mut self, now: Instant) -> Reading {
         let mut r = Reading::default();
-        if mode != Demand::Bar(BarStyle::Network) {
-            let times = cpu_times();
-            r.cpu = self.cpu.zip(times).and_then(|(prev, cur)| cpu_load(prev, cur));
-            self.cpu = times;
-        } else {
-            self.cpu = None;
+        let times = cpu_times();
+        r.cpu = self.cpu.zip(times).and_then(|(prev, cur)| cpu_load(prev, cur));
+        self.cpu = times;
+        let mut mem = MEMORYSTATUSEX {
+            dwLength: size_of::<MEMORYSTATUSEX>() as u32,
+            ..Default::default()
+        };
+        if unsafe { GlobalMemoryStatusEx(&mut mem) }.is_ok() {
+            r.memory = Some((mem.ullTotalPhys.saturating_sub(mem.ullAvailPhys), mem.ullTotalPhys));
         }
-        if full || mode == Demand::Bar(BarStyle::Gauges) {
-            let mut mem = MEMORYSTATUSEX {
-                dwLength: size_of::<MEMORYSTATUSEX>() as u32,
-                ..Default::default()
-            };
-            if unsafe { GlobalMemoryStatusEx(&mut mem) }.is_ok() {
-                r.memory = Some((mem.ullTotalPhys.saturating_sub(mem.ullAvailPhys), mem.ullTotalPhys));
-            }
-            if self.gpu.is_none() && self.gpu_retry.is_none_or(|t| now >= t) {
-                self.gpu = Gpu::open();
-                self.gpu_retry = Some(now + Duration::from_secs(30));
-            }
-            if let Some(gpu) = &mut self.gpu {
-                if !gpu.read(now, mode == Demand::Page, &mut r) {
-                    self.gpu = None;
-                }
-            }
-        } else {
-            self.gpu = None;
-            self.gpu_retry = None;
+        if self.gpu.is_none() && self.gpu_retry.is_none_or(|t| now >= t) {
+            self.gpu = Gpu::open();
+            self.gpu_retry = Some(now + Duration::from_secs(30));
         }
-        if full || mode == Demand::Bar(BarStyle::Network) {
-            let next = interfaces();
-            if let (Some((prev_at, prev)), Some(cur)) = (&self.net, &next) {
-                r.network = net_rates(prev, cur, now.duration_since(*prev_at).as_secs_f64());
+        if let Some(gpu) = &mut self.gpu {
+            if !gpu.read(now, &mut r) {
+                self.gpu = None;
             }
-            self.net = next.map(|v| (now, v));
-        } else {
-            self.net = None;
         }
-        if full {
-            if self.disk.is_none() {
-                self.disk = Disk::open();
-            }
-            if let Some(disk) = &self.disk {
-                r.disk = disk.read();
-            }
-        } else {
-            self.disk = None;
+        let next = interfaces();
+        if let (Some((prev_at, prev)), Some(cur)) = (&self.net, &next) {
+            r.network = net_rates(prev, cur, now.duration_since(*prev_at).as_secs_f64());
+        }
+        self.net = next.map(|v| (now, v));
+        if self.disk.is_none() {
+            self.disk = Disk::open();
+        }
+        if let Some(disk) = &self.disk {
+            r.disk = disk.read();
         }
         r
     }
@@ -231,7 +213,7 @@ impl Gpu {
         // 内核根据 Type 写入对应的联合体成员。
         unsafe { D3DKMTQueryStatistics(&raw mut q) }.is_ok().then_some(q.QueryResult)
     }
-    fn read(&mut self, now: Instant, full: bool, r: &mut Reading) -> bool {
+    fn read(&mut self, now: Instant, r: &mut Reading) -> bool {
         let times: Option<Vec<_>> = (0..self.nodes)
             .map(|i| {
                 Some(unsafe {
@@ -258,9 +240,6 @@ impl Gpu {
         }
         self.previous = Some((now, times));
         r.gpu_name = self.name.clone();
-        if !full {
-            return true;
-        }
         if self.capacity > 0 {
             let used = (0..self.segments)
                 .map(|i| Some(unsafe { self.stat(D3DKMT_QUERYSTATISTICS_SEGMENT, i)?.SegmentInformation }))
@@ -307,10 +286,10 @@ mod tests {
     #[test]
     fn windows_samples_live_cpu_and_memory() {
         let mut sampler = Sampler::default();
-        let first = sampler.read(Demand::Page, Instant::now());
+        let first = sampler.read(Instant::now());
         assert!(first.cpu.is_none());
         std::thread::sleep(Duration::from_millis(1050));
-        let next = sampler.read(Demand::Page, Instant::now());
+        let next = sampler.read(Instant::now());
         assert!(next.cpu.is_some_and(|v| (0.0..=100.0).contains(&v)));
         assert!(next.memory.is_some_and(|(used, total)| used <= total && total > 0));
         println!("{next:?}");

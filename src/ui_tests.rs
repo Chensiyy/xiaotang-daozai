@@ -9118,9 +9118,32 @@ fn performance_badge_opens_and_views_persist() {
 
 #[cfg(windows)]
 #[test]
+fn performance_keeps_sampling_across_hidden_and_open_views() {
+    let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=H::new();
+    h.app.set_page_visible(crate::app::PERFORMANCE_PAGE,true);
+    h.app.settings.performance_bar=crate::performance::BarStyle::Network;
+    h.fullscreen=true;
+    h.frame(vec![]);
+    std::thread::sleep(std::time::Duration::from_millis(3400));
+    h.fullscreen=false;
+    h.frame(vec![]);
+    assert!(h.app.performance.history.len()>=3,"隐藏时也要按秒采样");
+    assert!(h.app.performance.latest.cpu.is_some());
+    let at=h.app.performance.history.back().unwrap().0;
+    h.app.show_page(crate::app::PERFORMANCE_PAGE);
+    h.frame(vec![]);
+    assert!(h.app.performance.latest.cpu.is_some() && h.app.performance.history.back().unwrap().0>=at);
+    h.app.set_page_visible(crate::app::PERFORMANCE_PAGE,false);
+    h.frame(vec![]);
+    assert!(h.app.performance.history.is_empty());
+}
+
+#[cfg(windows)]
+#[test]
 #[ignore="读取一分钟实际性能数据，导出常驻与展开预览"]
 fn performance_gallery() {
-    use crate::performance::{Demand,View,BarStyle};
+    use crate::performance::{View,BarStyle};
     let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     let dir=std::path::PathBuf::from(std::env::var_os("DAOZAI_PERFORMANCE_PREVIEW_DIR").unwrap());
     std::fs::create_dir_all(&dir).unwrap();
@@ -9128,7 +9151,7 @@ fn performance_gallery() {
     h.app.set_page_visible(crate::app::PERFORMANCE_PAGE,true);
     let start=std::time::Instant::now();
     while start.elapsed().as_secs()<61 {
-        h.app.performance.tick(Some(Demand::Page),&h.ctx);
+        h.app.performance.tick(true,true,&h.ctx);
         std::thread::sleep(std::time::Duration::from_millis(40));
     }
     let today=chrono::Local::now().date_naive().to_string();

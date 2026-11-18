@@ -1870,13 +1870,9 @@ impl App {
         self.resident_power=(env.battery,env.charging);
         let mut layout=Layout::new(self.settings.show_battery&&env.battery.is_some(),self.quota_bar_indices().len(),self.media.is_music()&&!bell,self.pomo.running,bell,self.pet_enabled(),self.weather_pill().is_some());
         let performance_bar=self.performance_on_bar();
-        let demand=if env.fullscreen_hidden || env.screen_locked {None}
-            else if self.open && self.page==PERFORMANCE_PAGE && self.module_on(PERFORMANCE_PAGE) {Some(crate::performance::Demand::Page)}
-            else if !self.open && performance_bar && self.notice.is_none() && !self.island_lyrics_active() {
-                let style=if self.side() && self.settings.performance_bar==crate::performance::BarStyle::Dashboard {crate::performance::BarStyle::Gauges}else{self.settings.performance_bar};
-                Some(crate::performance::Demand::Bar(style))
-            }else{None};
-        self.performance.tick(demand, &ctx);
+        let performance_visible=!env.fullscreen_hidden && !env.screen_locked &&
+            (if self.open {self.page==PERFORMANCE_PAGE} else {performance_bar && self.notice.is_none() && !self.island_lyrics_active()});
+        self.performance.tick(self.module_on(PERFORMANCE_PAGE),performance_visible,&ctx);
         if performance_bar {layout.add_performance(self.settings.performance_bar.width());}
         layout.reorder(&self.settings.resident_order);
         for (position,extra) in self.quota_balance_layout(&ctx){layout.balance_tail(position,extra);}
