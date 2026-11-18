@@ -878,6 +878,7 @@ pub struct App {
     pub(crate) bt_shown: Vec<crate::bt::Device>,
     pub(crate) wireless_devices: Vec<crate::bt::Device>,
     pub(crate) wireless_offset: usize,
+    pub(crate) wireless_focus: Option<String>,
     bt_initialized: bool,
     /// v0.5.5：邮件账号、最近邮件与设置表单。
     pub(crate) mail: MailState,
@@ -1014,7 +1015,7 @@ impl App {
             music_seek_ui: None,
             music_seek_quiet_until: 0.0,
             music_restart_at: None,
-            bt_shown: Vec::new(), wireless_devices:Vec::new(),wireless_offset:0,
+            bt_shown: Vec::new(), wireless_devices:Vec::new(),wireless_offset:0,wireless_focus:None,
             bt_initialized: false,
             mail: MailState { accounts: mail::load_accounts(), ..Default::default() },
             mail_lines_cache: Vec::new(),
