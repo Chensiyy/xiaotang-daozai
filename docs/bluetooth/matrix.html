@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>岛仔 · 无线设备点阵预览</title>
+<style>
+*{box-sizing:border-box}body{margin:0;min-height:100svh;display:grid;place-items:center;background:radial-gradient(ellipse at 40% 25%,#d4dadc,#aeb8bc);color:#e9edef;font:13px "Segoe UI","Microsoft YaHei UI",sans-serif}button,select{font:inherit}button{cursor:pointer;color:inherit}button:focus-visible,select:focus-visible{outline:2px solid #82d3ff;outline-offset:3px}main{width:min(460px,94vw)}.bar{display:flex;align-items:center;justify-content:center;gap:12px;margin:0 auto 13px;border:1px solid #42474a;border-radius:24px;background:#171a1e;padding:7px 17px;box-shadow:0 3px 10px #25323830}.bar canvas{width:38px;height:14px}.bar strong,.num,.meter{font-family:Consolas,monospace;font-variant-numeric:tabular-nums}.bar b{font-size:11px;font-weight:500;color:#adb8be}.panel{background:#131619;border:1px solid #535b60;border-radius:19px;box-shadow:0 16px 45px #34404638;padding:15px 16px 12px}.head,.detail,.controls{display:flex;align-items:center}.head{gap:9px;margin-bottom:14px}.head h1{font-size:14px;margin:0}.count{font-size:11px;color:#a7b1b6}.close{margin-left:auto;border:0;background:none;color:#a7b1b6;font-size:17px;padding:1px 7px}.rack{padding:5px;display:flex;gap:3px;border-radius:8px;border:1px solid #373d43;background:#0c0e10}.cell{flex:1;min-width:0;background:transparent;border:0;padding:0 3px 6px;position:relative;text-align:left;border-radius:3px}.cell+.cell:before{content:"";position:absolute;top:4px;bottom:4px;left:-2px;width:1px;background:#2d3338}.cell canvas{width:100%;height:48px;display:block}.num{color:var(--tone);font-size:17px;font-weight:600;white-space:nowrap}.name{display:block;color:#bac3c8;font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.num,.name{padding-left:3px}.cell[aria-pressed=true]{background:#23282c}.detail{gap:7px;margin:10px 3px 0;color:#bec7cb;font-size:11px;min-height:17px}.detail i{height:6px;width:6px;border-radius:50%}.detail strong{font-weight:500;color:#eff2f3}.controls{justify-content:center;gap:10px;margin-top:18px;color:#37464d;font-size:11px}.controls select{border:1px solid #89979e;border-radius:6px;background:#dbe1e3;color:inherit;font-size:11px;padding:3px}.panel[hidden]{display:none}
+</style><main><button class="bar" aria-controls="panel" aria-expanded="true"><canvas aria-hidden="true"></canvas><b></b><strong></strong></button>
+<section class="panel" id="panel"><header class="head"><h1>无线设备</h1><span class="count"></span><button class="close" aria-label="收起无线设备">⌃</button></header><div class="rack" aria-label="选择设备"></div><div class="detail"><i></i><strong></strong><span></span></div></section>
+<div class="controls"><label for="mode">示例场景</label><select id="mode"><option>桌面设备</option><option>鼠标开始充电</option><option>鼠标仅剩 4%</option><option>耳机已断开</option></select></div></main>
+<script>
+const $=s=>document.querySelector(s);
+const devices=[{name:'耳机',level:82},{name:'MX Master 3S',level:18},{name:'MX Keys Mini',level:64,charging:true},{name:'桌面音箱',level:null}];
+let selected=1,hover=null,frame=0;
+const reduced=matchMedia('(prefers-reduced-motion: reduce)');
+function sample(i){
+ const d={...devices[i]}, mode=$('#mode').selectedIndex;
+ if(i===1&&mode===1)d.charging=true;
+ if(i===1&&mode===2)d.level=4;
+ if(i===0&&mode===3)d.offline=true;
+ return d;
+}
+function tone(d){return d.offline||d.level===null?'#94a1aa':d.charging?'#69dfaa':d.level<=5?'#ff7277':d.level<20?'#f8b366':'#83c9ff'}
+function status(d){if(d.offline)return '已断开 · 上次 '+d.level+'%';if(d.level===null)return '未上报电量';if(d.charging)return '正在充电';return d.level<=5?'即将耗尽':d.level<20?'电量偏低':'已连接'}
+function display(d){return d.level===null?'—':(d.offline?'上次 ':'')+d.level+'%'}
+function draw(canvas,d,t,compact=false){
+ const w=canvas.clientWidth,h=canvas.clientHeight;if(!w||!h)return;
+ const scale=devicePixelRatio||1;
+ if(canvas.width!==Math.round(w*scale)||canvas.height!==Math.round(h*scale)){canvas.width=Math.round(w*scale);canvas.height=Math.round(h*scale)}
+ const ctx=canvas.getContext('2d');ctx.setTransform(scale,0,0,scale,0,0);ctx.clearRect(0,0,w,h);
+ const rows=compact?3:10,cols=compact?9:19,step=Math.min(w/cols,h/rows),size=step*.61;
+ const lit=Math.round((d.level??0)*rows*cols/100),phase=(t/1600)%1;
+ for(let y=0;y<rows;y++)for(let x=0;x<cols;x++){
+  const rank=(rows-1-y)*cols+x,active=rank<lit;
+  ctx.fillStyle=active?tone(d):'#30383e';
+  ctx.globalAlpha=active?(d.offline?.42:.70+.30*((x*7+y*13)%11)/10):.8;
+  if(!reduced.matches&&d.charging&&active&&Math.abs(y-(rows-1-phase*rows))<.65){ctx.fillStyle='#bcffdb';ctx.globalAlpha=1}
+  ctx.fillRect((w-(cols-1)*step-size)/2+x*step,(h-(rows-1)*step-size)/2+y*step,size,size)
+ }
+ ctx.globalAlpha=1;
+}
+const cells=devices.map((d,i)=>{
+ const b=document.createElement('button');b.className='cell';b.innerHTML='<canvas aria-hidden="true"></canvas><span class="num"></span><span class="name"></span>';$('.rack').append(b);
+ b.onclick=()=>{selected=i;hover=null;render()};b.onpointerenter=()=>{hover=i;details()};b.onpointerleave=()=>{hover=null;details()};b.onfocus=()=>{hover=i;details()};b.onblur=()=>{hover=null;details()};return b
+});
+function details(){
+ const i=hover??selected,d=sample(i);$('.detail strong').textContent=d.name;$('.detail span').textContent=status(d);$('.detail i').style.background=tone(d);
+ cells.forEach((b,j)=>{b.style.opacity=hover===null||hover===j?'1':'.65'})
+}
+function paint(t){
+ cells.forEach((b,i)=>draw(b.firstChild,sample(i),t));draw($('.bar canvas'),sample(selected),t,true);
+ if(!reduced.matches&&!$('#panel').hidden&&!document.hidden)frame=requestAnimationFrame(paint)
+}
+function render(){
+ cancelAnimationFrame(frame);
+ cells.forEach((b,i)=>{const d=sample(i);b.style.setProperty('--tone',tone(d));b.querySelector('.num').textContent=(d.charging?'ϟ ':'')+display(d);b.querySelector('.name').textContent=d.name;b.setAttribute('aria-pressed',i===selected);b.setAttribute('aria-label',[d.name,display(d),status(d)].join('，'))});
+ const d=sample(selected);$('.bar b').textContent=d.name;$('.bar strong').textContent=(d.charging?'ϟ ':'')+display(d);$('.bar strong').style.color=tone(d);$('.count').textContent=devices.filter((_,i)=>!sample(i).offline).length+' 台已连接';details();paint(performance.now())
+}
+function toggle(){const p=$('#panel');p.hidden=!p.hidden;$('.bar').setAttribute('aria-expanded',!p.hidden);hover=null;render()}
+$('.bar').onclick=toggle;$('.close').onclick=()=>{toggle();$('.bar').focus()};$('#mode').onchange=render;reduced.onchange=render;document.onvisibilitychange=render;window.onresize=render;render();
+</script></html>
