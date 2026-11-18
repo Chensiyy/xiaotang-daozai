@@ -879,6 +879,10 @@ pub struct App {
     pub(crate) wireless_devices: Vec<crate::bt::Device>,
     pub(crate) wireless_offset: usize,
     pub(crate) wireless_focus: Option<String>,
+    /// 展开电量页的时刻，用于入场动效；离开页面或收起后清空。
+    pub(crate) wireless_enter_at: Option<f64>,
+    pub(crate) wireless_fx: std::collections::HashMap<String,crate::bluetooth_ui::WirelessFx>,
+    pub(crate) wireless_alerted: std::collections::HashMap<(String,&'static str),f64>,
     bt_initialized: bool,
     /// v0.5.5：邮件账号、最近邮件与设置表单。
     pub(crate) mail: MailState,
@@ -1015,7 +1019,7 @@ impl App {
             music_seek_ui: None,
             music_seek_quiet_until: 0.0,
             music_restart_at: None,
-            bt_shown: Vec::new(), wireless_devices:Vec::new(),wireless_offset:0,wireless_focus:None,
+            bt_shown: Vec::new(), wireless_devices:Vec::new(),wireless_offset:0,wireless_focus:None,wireless_enter_at:None,wireless_fx:Default::default(),wireless_alerted:Default::default(),
             bt_initialized: false,
             mail: MailState { accounts: mail::load_accounts(), ..Default::default() },
             mail_lines_cache: Vec::new(),
@@ -1490,6 +1494,8 @@ impl App {
 
     /// v0.5.4：把系统音量与蓝牙设备状态同步进界面；只在连接/断开时提示一次。
     fn sync_device(&mut self, env: &Env) {
+        if !(self.open&&self.page==BLUETOOTH_PAGE) {self.wireless_enter_at=None;}
+        self.track_wireless_changes(&env.bt);
         self.wireless_devices=env.bt.clone();
         if self.t >= self.volume_quiet_until {
             if let Some(v) = env.volume {
@@ -1879,8 +1885,9 @@ impl App {
         if let Some(extra)=self.weather_pill_extra(&ctx){ layout.widen(bar::WEATHER,extra); }
         if !self.settings.show_clock {layout.hide_clock();}
         let wireless=self.wireless_resident();
-        let wireless_count=wireless.len().min(((WIN_W-32.0-layout.width-12.0)/51.0).max(0.0) as usize);
-        if wireless_count>0{layout.append_bluetooth(wireless_count as f32*51.0);}
+        // 放不下整组时不挤压其他常驻项，整组隐藏。
+        let wireless_w=self.wireless_bar_width();
+        if !wireless.is_empty()&&wireless_w<=WIN_W-32.0-layout.width-12.0 {layout.append_bluetooth(wireless_w);}
         if self.pet_enabled() {
             if let Some(a)=self.notice.as_ref().filter(|_|!self.compact_notices()&&!self.open){layout.x[bar::PET]=Some(22.0-(self.notice_size(a).0+self.pet_space())/2.0);}
             else if self.island_lyrics_active() {layout.x[bar::PET]=Some(60.0-self.lyric_bar_width()/2.0);}
@@ -2247,7 +2254,8 @@ impl App {
         let pet_visible=self.pet_a>0.01 && !self.open && !minimal_pill;
         let ambient=self.settings.skin==model::Skin::Fluid && self.fluid.animating() || self.pomo.running && (self.open && self.page==1 || !self.open && !minimal_pill && self.notice.is_none() && bar::animations_enabled())
             || self.media.playing && (self.open && self.page==0 || !self.open && !minimal_pill && self.notice.is_none() && self.media.is_music())
-            || self.notice.as_ref().is_some_and(|notice|notice.meeting.is_some());
+            || self.notice.as_ref().is_some_and(|notice|notice.meeting.is_some())
+            || self.wireless_animating();
         let animating=transitioning || ambient || pet_visible && self.pet.state!=PetState::Sleeping;
         // 交互形变保持 60 帧，媒体 30 帧；小表情 20 帧，睡眠 10 帧，静态界面每秒核对提醒。
         let repaint_after=std::time::Duration::from_secs_f64(if transitioning{1.0/60.0}else if ambient{1.0/30.0}else if pet_visible{if self.pet.state==PetState::Sleeping{0.1}else{0.05}}else{1.0});
@@ -3102,6 +3110,8 @@ impl App {
             6 => ("AI", "额度", theme::SOFT_GREEN),
             8 if self.weather.solar_open => ("日出", "日落", theme::YELLOW),
             8 => ("当地", "天气", theme::CYAN),
+            // 详情页的标题带返回箭头，由页面自己画。
+            BLUETOOTH_PAGE if self.wireless_focus.is_some() && self.wireless_devices.len()>1 => return,
             BLUETOOTH_PAGE => ("无线", "设备", theme::CYAN),
             _ => ("岛仔", "设置", theme::WHITE),
         };

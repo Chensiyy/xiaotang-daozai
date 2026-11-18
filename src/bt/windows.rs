@@ -107,8 +107,22 @@ fn read_gatt(target:&Target,stop:&AtomicBool)->Option<Sample> {
             if level<=100 {levels.push(level);}
         }
     }
+    // 充电状态只取设备明确上报的 Battery Level Status，读不到就保持未知。
+    let mut charging=None;
+    for service in &services {
+        let Some(chars)=wait(service.0.GetCharacteristicsForUuidAsync(GUID::from_u128(0x00002bed_0000_1000_8000_00805f9b34fb)),stop) else {continue};
+        if chars.Status().ok()!=Some(GattCommunicationStatus::Success){continue;}
+        for characteristic in chars.Characteristics().ok()? {
+            let Some(result)=wait(characteristic.ReadValueWithCacheModeAsync(BluetoothCacheMode::Uncached),stop) else {continue};
+            if result.Status().ok()!=Some(GattCommunicationStatus::Success){continue;}
+            let buffer=result.Value().ok()?;let len=buffer.Length().ok()? as usize;
+            if !(3..=64).contains(&len){continue;}
+            let mut bytes=vec![0u8;len];DataReader::FromBuffer(&buffer).ok()?.ReadBytes(&mut bytes).ok()?;
+            if let Some(state)=super::parse_level_status(&bytes){charging=Some(charging.unwrap_or(false)||state);}
+        }
+    }
     // 多个标准电池实例取最低值；没有描述证据时不臆测左右耳或充电盒。
-    Some(Sample{key:target.key.clone(),session:target.session,reading:BatteryReading{percent:*levels.iter().min()?,source:BatterySource::Gatt,at:Instant::now(),charging:None}})
+    Some(Sample{key:target.key.clone(),session:target.session,reading:BatteryReading{percent:*levels.iter().min()?,source:BatterySource::Gatt,at:Instant::now(),charging}})
 }
 
 pub(super) fn run(tx:SyncSender<Vec<super::Device>>,stop:Arc<AtomicBool>) {

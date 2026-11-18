@@ -64,26 +64,60 @@ fn bluetooth_notice_content(body:&str)->(&str,&str,Option<u8>){
             return (name,"已连接",Some(level));
         }
     }
+    // 电量事件：「名称 · 开始充电 · 64%」。
+    if let Some((rest,level))=body.rsplit_once(" · ") {
+        if let (Some(level),Some((name,status)))=(level.strip_suffix('%').and_then(|s|s.parse::<u8>().ok()).filter(|v|*v<=100),rest.rsplit_once(" · ")) {
+            return (name,status,Some(level));
+        }
+    }
     (body,"已连接",None)
 }
 
+/// 每种设备一个图标；入耳、骨传导、耳夹等各有外形，AirPods 系列按带杆样式单独画。
+pub(crate) fn device_icon_source(kind: crate::bt::DeviceKind) -> egui::ImageSource<'static> {
+    use crate::bt::DeviceKind::*;
+    match kind {
+        Headphones=>egui::include_image!("../assets/device-icons/headphones-round-bold.svg"),
+        Earbuds=>egui::include_image!("../assets/device-icons/earbuds.svg"),
+        EarbudsStem=>egui::include_image!("../assets/device-icons/earbuds-stem.svg"),
+        EarbudsStemTips=>egui::include_image!("../assets/device-icons/earbuds-stem-tips.svg"),
+        OpenEar=>egui::include_image!("../assets/device-icons/open-ear.svg"),
+        Bone=>egui::include_image!("../assets/device-icons/bone.svg"),
+        HearingAid=>egui::include_image!("../assets/device-icons/hearing-aid.svg"),
+        Speaker=>egui::include_image!("../assets/device-icons/speaker-bold.svg"),
+        Mic=>egui::include_image!("../assets/device-icons/mic.svg"),
+        Keyboard=>egui::include_image!("../assets/device-icons/keyboard-bold.svg"),
+        Mouse=>egui::include_image!("../assets/device-icons/mouse-bold.svg"),
+        Trackpad=>egui::include_image!("../assets/device-icons/trackpad.svg"),
+        Pen=>egui::include_image!("../assets/device-icons/pen.svg"),
+        Presenter=>egui::include_image!("../assets/device-icons/presenter.svg"),
+        Remote=>egui::include_image!("../assets/device-icons/remote.svg"),
+        Gamepad=>egui::include_image!("../assets/device-icons/gamepad-bold.svg"),
+        JoyCon=>egui::include_image!("../assets/device-icons/joycon.svg"),
+        Phone=>egui::include_image!("../assets/device-icons/smartphone-bold.svg"),
+        Tablet=>egui::include_image!("../assets/device-icons/tablet.svg"),
+        Watch=>egui::include_image!("../assets/device-icons/watch.svg"),
+        Band=>egui::include_image!("../assets/device-icons/band.svg"),
+        Health=>egui::include_image!("../assets/device-icons/health.svg"),
+        Other=>egui::include_image!("../assets/device-icons/bluetooth-linear.svg"),
+    }
+}
+pub(crate) const ALL_DEVICE_KINDS:[crate::bt::DeviceKind;23]={
+    use crate::bt::DeviceKind::*;
+    [Headphones,Earbuds,EarbudsStem,EarbudsStemTips,OpenEar,Bone,HearingAid,Speaker,Mic,Keyboard,Mouse,Trackpad,Pen,Presenter,Remote,Gamepad,JoyCon,Phone,Tablet,Watch,Band,Health,Other]
+};
 pub(crate) fn device_icon(c: &Card, kind: crate::bt::DeviceKind, x: f32, y: f32, size: f32) {
-    let icon=match kind {
-        crate::bt::DeviceKind::Bone | crate::bt::DeviceKind::Earbuds | crate::bt::DeviceKind::Headphones=>egui::include_image!("../assets/device-icons/headphones-round-bold.svg"),
-        crate::bt::DeviceKind::Speaker=>egui::include_image!("../assets/device-icons/speaker-bold.svg"),
-        crate::bt::DeviceKind::Keyboard=>egui::include_image!("../assets/device-icons/keyboard-bold.svg"),
-        crate::bt::DeviceKind::Mouse=>egui::include_image!("../assets/device-icons/mouse-bold.svg"),
-        crate::bt::DeviceKind::Gamepad=>egui::include_image!("../assets/device-icons/gamepad-bold.svg"),
-        crate::bt::DeviceKind::Phone=>egui::include_image!("../assets/device-icons/smartphone-bold.svg"),
-        crate::bt::DeviceKind::Other=>egui::include_image!("../assets/device-icons/bluetooth-linear.svg"),
-    };
+    device_icon_tinted(c,kind,x,y,size,Color32::WHITE);
+}
+pub(crate) fn device_icon_tinted(c: &Card, kind: crate::bt::DeviceKind, x: f32, y: f32, size: f32, tint: Color32) {
+    let icon=device_icon_source(kind);
     let rect=c.rect(x,y,size,size);
     let egui::ImageSource::Bytes{uri,bytes}=icon else{return};
     let pixels=(rect.width()*c.ui.ctx().pixels_per_point()).ceil() as u32;
     let icon=egui::Image::from_bytes(format!("{uri}/{pixels}.svg"),bytes);
     if let Ok(egui::load::TexturePoll::Ready { texture })=icon.fit_to_exact_size(rect.size()).load_for_size(c.ui.ctx(),rect.size()) {
         crate::skin_paint::mark_monochrome(texture.id);
-        c.painter.image(texture.id,rect,Rect::from_min_max(egui::Pos2::ZERO,egui::pos2(1.0,1.0)),Color32::WHITE);
+        c.painter.image(texture.id,rect,Rect::from_min_max(egui::Pos2::ZERO,egui::pos2(1.0,1.0)),tint);
     }
 }
 
@@ -269,7 +303,7 @@ impl App {
     }
     pub(crate) fn bluetooth_alert(&mut self, device: &crate::bt::Device, connected: bool) {
         if !self.settings.bluetooth_notifications { return; }
-        if connected && matches!(device.kind,crate::bt::DeviceKind::Bone|crate::bt::DeviceKind::Earbuds|crate::bt::DeviceKind::Headphones|crate::bt::DeviceKind::Speaker) {
+        if connected && device.kind.is_audio() {
             self.alerts.retain(|a|a.title!="系统音量");
             if self.notice.as_ref().is_some_and(|a|a.title=="系统音量") {self.notice=None;}
         }
@@ -284,7 +318,7 @@ impl App {
         };
         self.enqueue_alert(a, false);
     }
-    fn enqueue_alert(&mut self, a: Alert, system: bool) {
+    pub(crate) fn enqueue_alert(&mut self, a: Alert, system: bool) {
         // 通知仅保存在本次运行的内存中。
         if a.source==AlertSource::Internal {self.history.push_front(a.clone());}
         self.history.truncate(50);
@@ -499,7 +533,8 @@ impl App {
         if a.is_hud(){
             if a.title=="蓝牙设备" {
                 let (name,status,battery)=bluetooth_notice_content(&a.body);
-                nc.circle(26.0,24.0,14.0,if status=="已连接"{Color32::from_rgb(10,132,255)}else{Color32::from_gray(95)});
+                let badge=if status=="已连接"{Color32::from_rgb(10,132,255)}else if let Some(level)=battery.filter(|_|status!="已断开"){crate::bluetooth_ui::level_color(level)}else{Color32::from_gray(95)};
+                nc.circle(26.0,24.0,14.0,badge);
                 let kind=a.bluetooth.map(|(kind,_)|kind).unwrap_or(crate::bt::DeviceKind::Other);
                 device_icon(&nc,kind,17.0,15.0,18.0);
                 let right=HUD_W-14.0;
@@ -510,7 +545,7 @@ impl App {
                     nc.stroke(x,20.0,15.0,8.0,2.0,1.0,Color32::from_gray(175));
                     nc.fill(x+15.5,22.5,2.0,3.0,0.8,Color32::from_gray(175));
                     let fill=11.0*level as f32/100.0;
-                    if fill>0.0 {nc.fill(x+2.0,22.0,fill,4.0,1.0,if level<=20{theme::RED}else{theme::GREEN});}
+                    if fill>0.0 {nc.fill(x+2.0,22.0,fill,4.0,1.0,crate::bluetooth_ui::level_color(level));}
                     nc.centered_text(right,24.0,&pct,10.5,W::Semibold,theme::WHITE,H::Right);
                     x-8.0
                 } else {right};
@@ -754,19 +789,27 @@ mod tests {
 
     #[test]
     fn device_icons_render_as_visible_svg() {
-        let icons: &[&[u8]] = &[
-            include_bytes!("../assets/device-icons/headphones-round-bold.svg"),
-            include_bytes!("../assets/device-icons/speaker-bold.svg"),
-            include_bytes!("../assets/device-icons/keyboard-bold.svg"),
-            include_bytes!("../assets/device-icons/mouse-bold.svg"),
-            include_bytes!("../assets/device-icons/gamepad-bold.svg"),
-            include_bytes!("../assets/device-icons/smartphone-bold.svg"),
-            include_bytes!("../assets/device-icons/bluetooth-linear.svg"),
-        ];
-        for bytes in icons {
-            let image=egui_extras::image::load_svg_bytes(bytes).unwrap();
-            assert!(image.pixels.iter().any(|p|p.a()>0));
+        for kind in ALL_DEVICE_KINDS {
+            let egui::ImageSource::Bytes{bytes,..}=device_icon_source(kind) else {panic!("{kind:?}")};
+            let image=egui_extras::image::load_svg_bytes(&bytes).unwrap();
+            assert!(image.pixels.iter().any(|p|p.a()>0),"{kind:?}");
         }
+    }
+
+    /// 图标要在圆环里视觉居中：按 96px 渲染后，不透明部分的外框中心偏离不超过 0.25 个图标单位。
+    #[test]
+    fn device_icons_are_visually_centered() {
+        let mut off=vec![];
+        for kind in ALL_DEVICE_KINDS {
+            let egui::ImageSource::Bytes{uri,bytes}=device_icon_source(kind) else {panic!()};
+            let image=egui_extras::image::load_svg_bytes_with_size(&bytes,Some(egui::load::SizeHint::Size(96,96))).unwrap();
+            let [w,h]=image.size;let (mut x0,mut y0,mut x1,mut y1)=(w,h,0,0);
+            for y in 0..h {for x in 0..w {if image.pixels[y*w+x].a()>40 {x0=x0.min(x);y0=y0.min(y);x1=x1.max(x);y1=y1.max(y);}}}
+            let dx=(w as f32/2.0-(x0+x1+1) as f32/2.0)*24.0/w as f32;let dy=(h as f32/2.0-(y0+y1+1) as f32/2.0)*24.0/h as f32;
+            println!("ICON-OFFSET {uri} {dx:.2} {dy:.2}");
+            if dx.abs()>0.25||dy.abs()>0.25 {off.push(format!("{kind:?} 偏移 ({dx:.2},{dy:.2})"));}
+        }
+        assert!(off.is_empty(),"图标没有居中：{off:?}");
     }
 
     #[test]
@@ -1550,7 +1593,8 @@ impl App {
                             setting_row(ui,"电量","无电池设备自动隐藏",&mut self.settings.show_battery);
                             ui.separator();
                             setting_row(ui,"天气","天气图标和温度，点击打开天气页",&mut self.settings.show_weather);
-                            setting_row(ui,"无线设备","常驻最多两台设备；点击设备卡片上的圆点固定",&mut self.settings.show_bluetooth);
+                            setting_row(ui,"无线设备","蓝牙设备电量，最多常驻两台",&mut self.settings.show_bluetooth);
+                            if self.settings.show_bluetooth {self.wireless_resident_settings(ui);}
                             ui.separator();
                             let before=self.quota.config.compact;
                             setting_row(ui,"AI 额度","常驻账号；WorkBuddy 积分在前，DeepSeek 余额在最后",&mut self.quota.config.compact);
@@ -1857,6 +1901,8 @@ impl App {
                             setting_row(ui,"系统状态","音量、充电、网络和键盘状态",&mut self.settings.system_hud);
                             ui.separator();
                             setting_row(ui,"蓝牙设备","连接与断开时提醒；无线设备页的电量监控独立运行",&mut self.settings.bluetooth_notifications);
+                            ui.separator();
+                            setting_row(ui,"蓝牙设备电量","接上电源、充满、电量偏低时在岛上提示；同一台设备 10 分钟内不重复",&mut self.settings.bluetooth_battery_notifications);
                         });
                         // 聊天软件：一个软件一行、一个开关；附属选项缩进跟在所属软件下面。
                         let master=self.settings.notifications;

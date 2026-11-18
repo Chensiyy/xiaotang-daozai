@@ -5,7 +5,15 @@ use std::time::{Duration,Instant};
 pub const FRESH_FOR:Duration=Duration::from_secs(180);
 
 #[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
-pub enum DeviceKind {Bone,Earbuds,Headphones,Speaker,Keyboard,Mouse,Gamepad,Phone,#[default] Other}
+pub enum DeviceKind {
+    Headphones,Earbuds,EarbudsStem,EarbudsStemTips,OpenEar,Bone,HearingAid,Speaker,Mic,
+    Keyboard,Mouse,Trackpad,Pen,Presenter,Remote,Gamepad,JoyCon,Phone,Tablet,Watch,Band,Health,
+    #[default] Other,
+}
+impl DeviceKind {
+    /// 连接后会接管系统声音的设备；用于收起音量提示。
+    pub fn is_audio(self)->bool {matches!(self,Self::Headphones|Self::Earbuds|Self::EarbudsStem|Self::EarbudsStemTips|Self::OpenEar|Self::Bone|Self::HearingAid|Self::Speaker)}
+}
 
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub enum BatterySource {Windows,Gatt}

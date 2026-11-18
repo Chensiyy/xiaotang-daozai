@@ -1,32 +1,79 @@
 //! 蓝牙设备连接与多来源电量监控。
 mod state;
 pub use state::{Device,DeviceKind,BatterySource,BatteryReading,FRESH_FOR};
+
+/// 蓝牙电池服务的 Battery Level Status（0x2BED）：标志 1 字节 + 供电状态 2 字节。
+/// 供电状态第 5–6 位是充电状态：1 充电中，2/3 放电，0 未知。只认明确上报的值。
+pub(crate) fn parse_level_status(bytes: &[u8]) -> Option<bool> {
+    let state = u16::from_le_bytes([*bytes.get(1)?, *bytes.get(2)?]);
+    match (state >> 5) & 0b11 { 1 => Some(true), 2 | 3 => Some(false), _ => None }
+}
 #[cfg(windows)]
 mod windows;
 
+/// 识别顺序：具体型号词 → 通用名称词 → 蓝牙类别码 → 兜底名称词。
+/// 短词（pen、mic、band…）按整词匹配，避免 OpenRun 里的 pen 被认成触控笔。
 fn device_kind(name: &str, classic: bool, class: Option<u32>) -> DeviceKind {
     use DeviceKind::*;
     let name = name.to_lowercase();
-    if ["shokz", "aftershokz", "openmove", "openrun", "骨传导"].iter().any(|s| name.contains(s)) { return Bone; }
-    if ["earbuds", "airpods", "buds", "earphones", "入耳"].iter().any(|s| name.contains(s)) { return Earbuds; }
-    if ["keyboard", "键盘"].iter().any(|s| name.contains(s)) { return Keyboard; }
-    if ["mouse", "鼠标"].iter().any(|s| name.contains(s)) { return Mouse; }
-    if ["gamepad", "controller", "手柄"].iter().any(|s| name.contains(s)) { return Gamepad; }
-    if ["speaker", "音箱", "音响"].iter().any(|s| name.contains(s)) { return Speaker; }
+    let words: Vec<&str> = name.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect();
+    let word = |w: &str| words.contains(&w);
+    let any = |list: &[&str]| list.iter().any(|s| name.contains(s));
+    if name.contains("airpods") { return if word("max") { Headphones } else if word("pro") { EarbudsStemTips } else { EarbudsStem }; }
+    if name.contains("freebuds") && word("pro") { return EarbudsStemTips; }
+    if any(&["joy-con", "joycon"]) { return JoyCon; }
+    // Shokz 的开放式耳机不是骨传导，要先于骨传导规则。
+    if any(&["openfit", "opendots", "freeclip", "ultra open", "耳夹"]) { return OpenEar; }
+    if any(&["shokz", "aftershokz", "openmove", "openrun", "openswim", "骨传导"]) { return Bone; }
+    if word("wf") || any(&["earbuds", "buds", "earphones", "入耳"]) { return Earbuds; }
+    if word("wh") { return Headphones; }
+    if any(&["hearing", "助听"]) { return HearingAid; }
+    if any(&["trackpad", "touchpad", "触控板"]) { return Trackpad; }
+    if any(&["keyboard", "键盘"]) { return Keyboard; }
+    if any(&["mouse", "鼠标"]) { return Mouse; }
+    if any(&["stylus", "手写笔", "触控笔"]) || word("pen") || word("pencil") { return Pen; }
+    if any(&["presenter", "spotlight", "翻页"]) { return Presenter; }
+    if any(&["gamepad", "controller", "dualsense", "dualshock", "手柄"]) { return Gamepad; }
+    if any(&["speaker", "soundlink", "音箱", "音响"]) { return Speaker; }
+    if any(&["microphone", "麦克风"]) || word("mic") { return Mic; }
+    if any(&["遥控"]) || word("remote") { return Remote; }
+    if any(&["ipad", "tablet", "matepad", "平板"]) { return Tablet; }
+    if any(&["手表"]) || words.iter().any(|w| w.starts_with("watch")) { return Watch; }
+    if any(&["手环"]) || word("band") { return Band; }
+    if any(&["心率"]) || word("hrm") || word("heart") { return Health; }
     if let Some(class) = class {
         if classic {
+            let minor = (class >> 2) & 0x3f;
             match (class >> 8) & 0x1f {
+                1 if minor == 7 => return Tablet,
                 2 => return Phone,
-                4 => return if matches!((class >> 2) & 0x3f, 5 | 7 | 10) { Speaker } else { Headphones },
-                5 => return match (class >> 6) & 3 { 1 => Keyboard, 2 => Mouse, 3 => Keyboard, _ => Other },
+                4 => return match minor { 4 => Mic, 5 | 7 | 10 => Speaker, _ => Headphones },
+                5 => return match ((class >> 6) & 3, (class >> 2) & 0xf) {
+                    (1 | 3, _) => Keyboard, (2, _) => Mouse,
+                    (_, 1 | 2) => Gamepad, (_, 3) => Remote, (_, 5 | 7) => Pen, _ => Other,
+                },
+                7 if minor == 1 => return Watch,
+                9 => return Health,
                 _ => {}
             }
         } else {
+            // 低功耗蓝牙外观值：高 10 位是类别，低 6 位是子类别。
             match (class >> 6, class & 0x3f) {
                 (15, 1) => return Keyboard,
                 (15, 2) => return Mouse,
                 (15, 3 | 4) => return Gamepad,
+                (15, 5 | 7) => return Pen,
+                (15, 9) => return Trackpad,
+                (15, 10) => return Presenter,
                 (1, _) => return Phone,
+                (2, 7) => return Tablet,
+                (3, _) => return Watch,
+                (6, _) => return Remote,
+                (12 | 13 | 14 | 16 | 17 | 18 | 49 | 50, _) => return Health,
+                (33, _) => return Speaker,
+                (37, 1) => return Earbuds,
+                (37, _) => return Headphones,
+                (41, _) => return HearingAid,
                 _ => {}
             }
         }
@@ -62,8 +109,50 @@ mod tests {
         assert_eq!(device_kind("QingLong 87 Ultra 8K", false, Some(961)), DeviceKind::Keyboard);
         assert_eq!(device_kind("MX Anywhere", false, Some(962)), DeviceKind::Mouse);
         assert_eq!(device_kind("耳机", true, Some(0x0404)), DeviceKind::Headphones);
-        assert_eq!(device_kind("AirPods", true, None), DeviceKind::Earbuds);
+        assert_eq!(device_kind("AirPods", true, None), DeviceKind::EarbudsStem);
         assert_eq!(device_kind("未知设备", false, None), DeviceKind::Other);
+    }
+
+    #[test]
+    fn recognizes_specific_models_before_generic_words() {
+        use DeviceKind::*;
+        for (name, kind) in [
+            ("小明的 AirPods Pro", EarbudsStemTips), ("AirPods Max", Headphones), ("AirPods", EarbudsStem),
+            ("HUAWEI FreeBuds Pro 3", EarbudsStemTips), ("Galaxy Buds2 Pro", Earbuds), ("WF-1000XM5", Earbuds),
+            ("WH-1000XM5", Headphones), ("Shokz OpenFit", OpenEar), ("OpenRun Pro by Shokz", Bone),
+            ("Joy-Con (L)", JoyCon), ("Xbox Wireless Controller", Gamepad), ("Magic Trackpad", Trackpad),
+            ("Surface Slim Pen 2", Pen), ("HUAWEI M-Pencil", Pen), ("Logi Spotlight", Presenter),
+            ("DJI Mic 2", Mic), ("Galaxy Watch6", Watch), ("HUAWEI WATCH GT 4", Watch), ("Mi Smart Band 8", Band),
+            ("小米手环 8", Band), ("MatePad Pro", Tablet), ("JBL Flip 6 speaker", Speaker),
+        ] { assert_eq!(device_kind(name, false, None), kind, "{name}"); }
+    }
+
+    #[test]
+    fn recognizes_class_and_appearance_codes() {
+        use DeviceKind::*;
+        // 经典蓝牙：音频 · 麦克风、电脑 · 平板、外设 · 手柄 / 遥控 / 数字笔、可穿戴 · 手表。
+        assert_eq!(device_kind("X", true, Some(0x0410)), Mic);
+        assert_eq!(device_kind("X", true, Some(0x011C)), Tablet);
+        assert_eq!(device_kind("X", true, Some(0x0508)), Gamepad);
+        assert_eq!(device_kind("X", true, Some(0x050C)), Remote);
+        assert_eq!(device_kind("X", true, Some(0x051C)), Pen);
+        assert_eq!(device_kind("X", true, Some(0x0704)), Watch);
+        // 低功耗外观值：触控板、演示遥控、数字笔、助听器、入耳耳机、心率。
+        assert_eq!(device_kind("X", false, Some(15 << 6 | 9)), Trackpad);
+        assert_eq!(device_kind("X", false, Some(15 << 6 | 10)), Presenter);
+        assert_eq!(device_kind("X", false, Some(15 << 6 | 7)), Pen);
+        assert_eq!(device_kind("X", false, Some(41 << 6)), HearingAid);
+        assert_eq!(device_kind("X", false, Some(37 << 6 | 1)), Earbuds);
+        assert_eq!(device_kind("X", false, Some(13 << 6)), Health);
+    }
+
+    #[test]
+    fn battery_level_status_reports_only_explicit_charge_state() {
+        assert_eq!(parse_level_status(&[0, 0b0010_0000, 0]), Some(true));
+        assert_eq!(parse_level_status(&[0, 0b0100_0000, 0]), Some(false));
+        assert_eq!(parse_level_status(&[0, 0b0110_0000, 0]), Some(false));
+        assert_eq!(parse_level_status(&[0, 0, 0]), None);
+        assert_eq!(parse_level_status(&[0, 0b0010_0000]), None);
     }
 
     #[test]
