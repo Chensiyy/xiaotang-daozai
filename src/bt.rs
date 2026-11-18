@@ -2,12 +2,7 @@
 mod state;
 pub use state::{Device,DeviceKind,BatterySource,BatteryReading,FRESH_FOR};
 
-/// 蓝牙电池服务的 Battery Level Status（0x2BED）：标志 1 字节 + 供电状态 2 字节。
-/// 供电状态第 5–6 位是充电状态：1 充电中，2/3 放电，0 未知。只认明确上报的值。
-pub(crate) fn parse_level_status(bytes: &[u8]) -> Option<bool> {
-    let state = u16::from_le_bytes([*bytes.get(1)?, *bytes.get(2)?]);
-    match (state >> 5) & 0b11 { 1 => Some(true), 2 | 3 => Some(false), _ => None }
-}
+mod bas;
 #[cfg(windows)]
 mod windows;
 
@@ -144,15 +139,6 @@ mod tests {
         assert_eq!(device_kind("X", false, Some(41 << 6)), HearingAid);
         assert_eq!(device_kind("X", false, Some(37 << 6 | 1)), Earbuds);
         assert_eq!(device_kind("X", false, Some(13 << 6)), Health);
-    }
-
-    #[test]
-    fn battery_level_status_reports_only_explicit_charge_state() {
-        assert_eq!(parse_level_status(&[0, 0b0010_0000, 0]), Some(true));
-        assert_eq!(parse_level_status(&[0, 0b0100_0000, 0]), Some(false));
-        assert_eq!(parse_level_status(&[0, 0b0110_0000, 0]), Some(false));
-        assert_eq!(parse_level_status(&[0, 0, 0]), None);
-        assert_eq!(parse_level_status(&[0, 0b0010_0000]), None);
     }
 
     #[test]

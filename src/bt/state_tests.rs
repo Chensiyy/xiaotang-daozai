@@ -68,3 +68,20 @@ fn errors_age_readings_and_disconnected_history_expires(){
     state.discover(vec![],now+Duration::from_secs(900));
     assert!(state.devices(now+Duration::from_secs(900)).is_empty());
 }
+
+#[test]
+fn windows_service_nodes_only_match_the_remote_address_field() {
+    let service="{0000180F-0000-1000-8000-00805F9B34FB}";
+    for instance in [
+        format!(r"BTHLEDEVICE\{service}_DEV_VID&0204E8_PID&7021_REV&0001_AABBCCDDEE01\8&3B77208C&0&002A"),
+        format!(r"BTHLEDEVICE\{service}_AABBCCDDEE01\8&3B77208C&0&002A"),
+        format!(r"BTHENUM\{service}_VID&0001000A_PID&FFFF\7&331D6FF8&0&AABBCCDDEE01_C00000000"),
+    ] {
+        assert_eq!(pnp_address(&instance).as_deref(),Some("AABBCCDDEE01"));
+    }
+    for instance in [
+        format!(r"BTHLEDEVICE\{service}\8&3B77208C&0&002A"),
+        format!(r"BTHENUM\{service}\7&331D6FF8&0&000000000000_C00000000"),
+        format!(r"USB\{service}_AABBCCDDEE01\1"),
+    ] { assert_eq!(pnp_address(&instance),None); }
+}

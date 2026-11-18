@@ -123,10 +123,23 @@ pub(super) fn normalize_address(value:&str)->Option<String> {
     (value.len()==12&&value.bytes().all(|c|c.is_ascii_hexdigit())&&value!="000000000000").then(||value.to_ascii_uppercase())
 }
 pub(super) fn pnp_address(instance:&str)->Option<String> {
-    let upper=instance.to_ascii_uppercase();
-    if !upper.starts_with("BTH"){return None;}
-    let tail=upper.split_once("DEV_")?.1;
-    normalize_address(tail.split(['\\','&','_']).next()?)
+    let upper = instance.to_ascii_uppercase();
+    let mut parts = upper.split('\\');
+    let (bus, hardware, instance) = (parts.next()?, parts.next()?, parts.next()?);
+    if parts.next().is_some() { return None; }
+    let remote = match bus {
+        "BTHENUM" | "BTHLE" if hardware.starts_with("DEV_") => &hardware[4..],
+        "BTHLEDEVICE" if hardware.starts_with('{') => hardware.rsplit_once('_')?.1,
+        "BTHENUM" if hardware.starts_with('{') => {
+            let tail = instance.rsplit_once('&')?.1;
+            let (address, suffix) = tail.split_once("_C")?;
+            if suffix.len() != 8 || !suffix.bytes().all(|b| b.is_ascii_hexdigit()) { return None; }
+            address
+        }
+        _ => return None,
+    };
+    if remote.len() != 12 { return None; }
+    normalize_address(remote)
 }
 
 #[cfg(test)]

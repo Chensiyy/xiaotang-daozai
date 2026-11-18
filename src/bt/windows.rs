@@ -41,7 +41,8 @@ fn pnp_nodes()->Option<Vec<PnpNode>> {
         if unsafe {SetupDiGetDeviceInstanceIdW(set.0,&data,Some(&mut text),Some(&mut size))}.is_err(){continue;}
         let instance=String::from_utf16_lossy(&text[..(size as usize).saturating_sub(1).min(text.len())]);
         let Some(address)=pnp_address(&instance) else {continue};
-        let container=property(set.0,&data,&DEVPKEY_Device_ContainerId).and_then(|(ty,bytes)|{
+        let root = instance.split('\\').nth(1).is_some_and(|s| s.to_ascii_uppercase().starts_with("DEV_"));
+        let container=root.then(||property(set.0,&data,&DEVPKEY_Device_ContainerId)).flatten().and_then(|(ty,bytes)|{
             (ty==DEVPROP_TYPE_GUID&&bytes.len()==16&&bytes.iter().any(|b|*b!=0)).then(||bytes.iter().map(|b|format!("{b:02X}")).collect())
         });
         let battery=property(set.0,&data,&BATTERY).and_then(|(ty,bytes)|{
@@ -65,7 +66,7 @@ fn discover(previous:&[Target],nodes:&[PnpNode],stop:&AtomicBool)->Option<Vec<En
             if name.trim().is_empty(){continue;}
             let native_id=id.to_string();
             let cached=previous.iter().find(|t|t.endpoint.id==native_id);
-            let (address,kind)=if let Some(old)=cached {(old.endpoint.address.clone(),old.endpoint.kind)}else{
+            let (address,kind)=if let Some(old)=cached.filter(|t|t.endpoint.address.is_some()) {(old.endpoint.address.clone(),old.endpoint.kind)}else{
                 let (address,class)=if ble {
                     if let Some(device)=wait(BluetoothLEDevice::FromIdAsync(&id),stop){
                         let result=(device.BluetoothAddress().ok(),device.Appearance().ok().and_then(|v|v.RawValue().ok()).map(u32::from));let _=device.Close();result
@@ -88,41 +89,42 @@ impl Drop for BleHandle {fn drop(&mut self){let _=self.0.Close();}}
 struct GattService(GattDeviceService);
 impl Drop for GattService {fn drop(&mut self){let _=self.0.Close();}}
 
+// 每个服务独立读取。可选特征的访问错误只影响该特征。
+fn characteristic_value(service: &GattDeviceService, uuid: u128, stop: &AtomicBool) -> Option<Vec<u8>> {
+    let chars = wait(service.GetCharacteristicsForUuidAsync(GUID::from_u128(uuid)), stop)?;
+    if chars.Status().ok()? != GattCommunicationStatus::Success { return None; }
+    let characteristic = chars.Characteristics().ok()?.GetAt(0).ok()?;
+    let result = wait(characteristic.ReadValueWithCacheModeAsync(BluetoothCacheMode::Uncached), stop)?;
+    if result.Status().ok()? != GattCommunicationStatus::Success { return None; }
+    let buffer = result.Value().ok()?;
+    let length = buffer.Length().ok()? as usize;
+    if !(1..=64).contains(&length) { return None; }
+    let mut bytes = vec![0; length];
+    DataReader::FromBuffer(&buffer).ok()?.ReadBytes(&mut bytes).ok()?;
+    Some(bytes)
+}
+
 fn read_gatt(target:&Target,stop:&AtomicBool)->Option<Sample> {
     let device=BleHandle(wait(BluetoothLEDevice::FromIdAsync(&HSTRING::from(&target.endpoint.id)),stop)?);
     if device.0.ConnectionStatus().ok()?!=BluetoothConnectionStatus::Connected {return None;}
     let services=wait(device.0.GetGattServicesForUuidWithCacheModeAsync(GUID::from_u128(0x0000180f_0000_1000_8000_00805f9b34fb),BluetoothCacheMode::Uncached),stop)?;
     if services.Status().ok()?!=GattCommunicationStatus::Success {return None;}
     let services:Vec<_>=services.Services().ok()?.into_iter().map(GattService).collect();
-    let mut levels=vec![];
-    for service in &services {
-        let Some(chars)=wait(service.0.GetCharacteristicsForUuidAsync(GUID::from_u128(0x00002a19_0000_1000_8000_00805f9b34fb)),stop) else {continue};
-        if chars.Status().ok()!=Some(GattCommunicationStatus::Success){continue;}
-        for characteristic in chars.Characteristics().ok()? {
-            let Some(result)=wait(characteristic.ReadValueWithCacheModeAsync(BluetoothCacheMode::Uncached),stop) else {continue};
-            if result.Status().ok()!=Some(GattCommunicationStatus::Success){continue;}
-            let buffer=result.Value().ok()?;
-            if buffer.Length().ok()!=Some(1){continue;}
-            let level=DataReader::FromBuffer(&buffer).ok()?.ReadByte().ok()?;
-            if level<=100 {levels.push(level);}
-        }
-    }
-    // 充电状态只取设备明确上报的 Battery Level Status，读不到就保持未知。
-    let mut charging=None;
-    for service in &services {
-        let Some(chars)=wait(service.0.GetCharacteristicsForUuidAsync(GUID::from_u128(0x00002bed_0000_1000_8000_00805f9b34fb)),stop) else {continue};
-        if chars.Status().ok()!=Some(GattCommunicationStatus::Success){continue;}
-        for characteristic in chars.Characteristics().ok()? {
-            let Some(result)=wait(characteristic.ReadValueWithCacheModeAsync(BluetoothCacheMode::Uncached),stop) else {continue};
-            if result.Status().ok()!=Some(GattCommunicationStatus::Success){continue;}
-            let buffer=result.Value().ok()?;let len=buffer.Length().ok()? as usize;
-            if !(3..=64).contains(&len){continue;}
-            let mut bytes=vec![0u8;len];DataReader::FromBuffer(&buffer).ok()?.ReadBytes(&mut bytes).ok()?;
-            if let Some(state)=super::parse_level_status(&bytes){charging=Some(charging.unwrap_or(false)||state);}
-        }
-    }
-    // 多个标准电池实例取最低值；没有描述证据时不臆测左右耳或充电盒。
-    Some(Sample{key:target.key.clone(),session:target.session,reading:BatteryReading{percent:*levels.iter().min()?,source:BatterySource::Gatt,at:Instant::now(),charging}})
+    const LEVEL: u128 = 0x00002a19_0000_1000_8000_00805f9b34fb;
+    const STATUS: u128 = 0x00002bed_0000_1000_8000_00805f9b34fb;
+    let (percent, charging) = services.iter().filter_map(|service| {
+        let level = characteristic_value(&service.0, LEVEL, stop).and_then(|bytes| match bytes.as_slice() {
+            [v] if *v <= 100 => Some(*v),
+            _ => None,
+        });
+        let status = characteristic_value(&service.0, STATUS, stop)
+            .and_then(|bytes| super::bas::parse_status(&bytes));
+        super::bas::service_level(level, status)
+    }).min_by_key(|(percent, _)| *percent)?;
+    Some(Sample {
+        key: target.key.clone(), session: target.session,
+        reading: BatteryReading { percent, source: BatterySource::Gatt, at: Instant::now(), charging },
+    })
 }
 
 pub(super) fn run(tx:SyncSender<Vec<super::Device>>,stop:Arc<AtomicBool>) {
