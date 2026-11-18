@@ -697,6 +697,8 @@ const CENTER_SWEEP: f64 = 0.55;
 const CENTER_TINT: (f32, f32, f32) = (88.0, 222.0, 140.0);
 
 pub struct App {
+    #[cfg(feature="sdk-js")]
+    pub(crate) plugins: crate::sdk_spike::local::LocalPlugins,
     pub opts: Options,
     pub settings: model::Settings,
     /// 本次运行实际使用兼容渲染（Direct3D 12）；设置里的开关与它不同时提示重启。
@@ -906,6 +908,8 @@ impl App {
         let mut weather=crate::weather::State::load(&settings.weather_city,settings.weather_position.as_ref());
         if weather_source.displayed==crate::weather_source_ui::Provider::Qweather {weather.snapshot=weather_source.runtime.snapshot();}
         Self {
+            #[cfg(feature="sdk-js")]
+            plugins: crate::sdk_spike::local::LocalPlugins::open(model::config_dir().join("local-plugins")),
             opts,
             render_compat_running: settings.render_compat,
             settings,
@@ -1589,6 +1593,8 @@ impl App {
         if !visible && self.settings.visible_pages.iter().filter(|enabled|**enabled).count()==1
             && self.settings.visible_pages[page] { return; }
         self.settings.visible_pages[page]=visible;
+        #[cfg(feature="sdk-js")]
+        if page==TODO_PAGE && !visible{self.plugins.tick(false,"");}
         // 关掉专注模块时一并停止正在进行的计时，避免页面不可见却到点弹提醒。
         if !visible && page==FOCUS_PAGE {self.pomo.running=false;}
         if !self.settings.visible_pages[self.page] {
@@ -1795,6 +1801,8 @@ impl App {
     }
 
     pub(crate) fn expanded_height(&self)->f32 {
+        #[cfg(feature="sdk-js")]
+        if self.page==TODO_PAGE && self.plugins.has_card(){return PH+46.0;}
         if self.page==CALENDAR_PAGE {CALENDAR_H}else if self.page==WEATHER_PAGE {WEATHER_H}else if self.page==6{176.0}else if self.page==5&&self.mail.open_uid.is_some(){236.0}else{PH}
     }
 
@@ -3113,7 +3121,9 @@ impl App {
             1 => self.page_focus(c, env),
             2 => self.page_water(c, env),
             3 => self.page_shelf(c, env, cmds),
-            4 => self.page_todo(c, env, cmds),
+            4 => {self.page_todo(c, env, cmds);
+                #[cfg(feature="sdk-js")] self.plugins.card(c);
+            }
             5 => self.page_mail(c, env, cmds),
             6 => self.page_quota(c),
             8 => self.page_weather(c,env,cmds),
@@ -3191,6 +3201,8 @@ impl App {
         }
         let now = format!("{} {}", env.today, env.clock.get(..5).unwrap_or("00:00"));
         let todo_on=self.module_on(TODO_PAGE);
+        #[cfg(feature="sdk-js")]
+        self.plugins.tick(todo_on,&env.today);
         let due: Vec<_> = self.todos.items.iter().enumerate().filter(|(_, item)| todo_on && item.reminder_due(&now)).map(|(i,item)| (i,item.text.clone())).collect();
         for (i,text) in due { self.todos.items[i].mark_reminded(&now); self.todos.save(); self.alert("待办到时间了", text, 4, true); }
         // v0.5.5 会议提醒：.ics 里的开始时间，默认提前 15 分钟（可设 5/15/30）。
