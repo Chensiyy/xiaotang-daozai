@@ -4,7 +4,7 @@ fn endpoint(id:&str,address:&str,container:Option<&str>)->Endpoint {
     Endpoint {id:id.into(),address:normalize_address(address),container:container.map(str::to_owned),name:"同名耳机".into(),kind:DeviceKind::Earbuds,ble:false}
 }
 fn sample(key:&str,session:u64,source:BatterySource,percent:u8,at:Instant)->Sample {
-    Sample {key:key.into(),session,reading:BatteryReading{percent,source,at}}
+    Sample {key:key.into(),session,reading:BatteryReading{percent,source,at,charging:None}}
 }
 
 #[test]

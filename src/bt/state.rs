@@ -14,7 +14,8 @@ impl BatterySource {
 }
 
 #[derive(Clone,Debug,PartialEq,Eq)]
-pub struct BatteryReading {pub percent:u8,pub source:BatterySource,pub at:Instant}
+/// charging 为 None 表示来源没有上报充电状态，不能根据电量变化推断。
+pub struct BatteryReading {pub percent:u8,pub source:BatterySource,pub at:Instant,pub charging:Option<bool>}
 
 #[derive(Clone,Debug,PartialEq,Eq)]
 pub struct Device {

@@ -108,7 +108,7 @@ fn read_gatt(target:&Target,stop:&AtomicBool)->Option<Sample> {
         }
     }
     // 多个标准电池实例取最低值；没有描述证据时不臆测左右耳或充电盒。
-    Some(Sample{key:target.key.clone(),session:target.session,reading:BatteryReading{percent:*levels.iter().min()?,source:BatterySource::Gatt,at:Instant::now()}})
+    Some(Sample{key:target.key.clone(),session:target.session,reading:BatteryReading{percent:*levels.iter().min()?,source:BatterySource::Gatt,at:Instant::now(),charging:None}})
 }
 
 pub(super) fn run(tx:SyncSender<Vec<super::Device>>,stop:Arc<AtomicBool>) {
@@ -143,7 +143,7 @@ pub(super) fn run(tx:SyncSender<Vec<super::Device>>,stop:Arc<AtomicBool>) {
                 if let Some(fresh)=fresh_nodes{
                     for target in &targets {
                         if let Some(level)=target.endpoint.address.as_ref().and_then(|a|fresh.iter().filter(|n|&n.address==a).filter_map(|n|n.battery).min()){
-                            state.ingest(Sample{key:target.key.clone(),session:target.session,reading:BatteryReading{percent:level,source:BatterySource::Windows,at:Instant::now()}});
+                            state.ingest(Sample{key:target.key.clone(),session:target.session,reading:BatteryReading{percent:level,source:BatterySource::Windows,at:Instant::now(),charging:None}});
                         }
                     }
                     nodes=fresh;
