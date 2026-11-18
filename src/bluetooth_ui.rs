@@ -49,29 +49,31 @@ impl App {
     pub(crate) fn page_wireless(&mut self,c:&Card,env:&Env) {
         let devices=self.wireless_devices.clone();
         if devices.is_empty(){
-            crate::extras::device_icon(c,crate::bt::DeviceKind::Other,191.5,74.0,36.0);
-            c.text(209.5,139.0,if env.bt_ready{"还没有连接的设备"}else{"正在读取无线设备"},13.0,W::Semibold,theme::WHITE,H::Center);
-            c.text(209.5,162.0,"连接耳机、鼠标或键盘后在这里查看",10.5,W::Regular,theme::DIM,H::Center);return;
+            crate::extras::device_icon(c,crate::bt::DeviceKind::Other,191.5,51.0,36.0);
+            c.text(209.5,112.0,if env.bt_ready{"还没有连接的设备"}else{"正在读取无线设备"},13.0,W::Semibold,theme::WHITE,H::Center);
+            c.text(209.5,135.0,"连接耳机、鼠标或键盘后在这里查看",10.5,W::Regular,theme::DIM,H::Center);return;
         }
         let pages=devices.len().div_ceil(4);self.wireless_offset=self.wireless_offset.min(pages-1);
+        let count=(devices.len()-self.wireless_offset*4).min(4);
+        let start=(crate::app::PW-(count as f32*78.0+(count-1) as f32*9.0))/2.0;
         for (index,device) in devices.iter().skip(self.wireless_offset*4).take(4).enumerate(){
-            let x=40.0+index as f32*87.0;let cc=c.shifted(x,46.0);
+            let x=start+index as f32*87.0;let cc=c.shifted(x,42.0);
             let col=color(device);let stale=device.stale_at(Instant::now());let charging=charging(device);
             let attention=!stale&&(charging||device.battery.is_some_and(|v|v<20));
-            cc.fill(0.0,0.0,78.0,149.0,15.0,theme::CARD);
-            if attention {cc.fill(0.0,0.0,78.0,149.0,15.0,paint::alpha(col,0.045));}
-            cc.stroke(0.0,0.0,78.0,149.0,15.0,0.7,paint::alpha(if attention{col}else{theme::GRAY},0.15));
-            cc.circle(39.0,42.0,21.0,paint::alpha(col,0.035));
-            cc.ring(39.0,42.0,25.0,2.5,theme::TRACK);
-            if let Some(level)=device.battery.filter(|v|*v>0){cc.arc(39.0,42.0,25.0,-FRAC_PI_2,-FRAC_PI_2+TAU*level as f32/100.0,2.5,paint::alpha(col,if stale{0.45}else{1.0}));}
-            crate::extras::device_icon(&cc,device.kind,26.0,29.0,26.0);
-            if charging {cc.circle(58.0,60.0,8.0,theme::CARD);bolt(&cc,58.0,60.0,col);}
-            cc.text(39.0,94.0,&label(device),if stale{10.0}else{23.0},W::Semibold,col,H::Center);
+            cc.fill(0.0,0.0,78.0,118.0,13.0,theme::CARD);
+            if attention {cc.fill(0.0,0.0,78.0,118.0,13.0,paint::alpha(col,0.045));}
+            cc.stroke(0.0,0.0,78.0,118.0,13.0,0.7,paint::alpha(if attention{col}else{theme::GRAY},0.15));
+            cc.circle(39.0,32.0,18.0,paint::alpha(col,0.035));
+            cc.ring(39.0,32.0,21.0,2.5,theme::TRACK);
+            if let Some(level)=device.battery.filter(|v|*v>0){cc.arc(39.0,32.0,21.0,-FRAC_PI_2,-FRAC_PI_2+TAU*level as f32/100.0,2.5,paint::alpha(col,if stale{0.45}else{1.0}));}
+            crate::extras::device_icon(&cc,device.kind,28.0,21.0,22.0);
+            if charging {cc.circle(55.0,47.0,8.0,theme::CARD);bolt(&cc,55.0,47.0,col);}
+            cc.text(39.0,74.0,&label(device),if stale{10.0}else{20.0},W::Semibold,col,H::Center);
             let name=cc.fit(&device.name,10.0,W::Semibold,66.0);
-            cc.text(39.0,113.0,&name,10.0,W::Semibold,theme::WHITE,H::Center);
+            cc.text(39.0,91.0,&name,10.0,W::Semibold,theme::WHITE,H::Center);
             let status=if !device.connected{"已断开"}else if stale{"读数待更新"}else if device.battery.is_none(){"未上报电量"}else if charging{"正在充电"}else if device.battery.is_some_and(|b|b<=5){"即将耗尽"}else if device.battery.is_some_and(|b|b<20){"电量偏低"}else{"已连接"};
-            if attention {cc.fill(9.0,123.0,60.0,17.0,8.5,paint::alpha(col,0.10));}
-            cc.text(39.0,135.0,status,9.0,W::Regular,if attention{col}else{theme::DIM},H::Center);
+            if attention {cc.fill(9.0,98.0,60.0,16.0,8.5,paint::alpha(col,0.10));}
+            cc.text(39.0,109.0,status,9.0,W::Regular,if attention{col}else{theme::DIM},H::Center);
             let pinned=self.settings.bluetooth_pinned.contains(&device.id);
             cc.ring(66.0,11.0,2.5,1.0,if pinned{theme::CYAN}else{theme::DIM});
             if pinned{cc.circle(66.0,11.0,1.2,theme::CYAN);}
@@ -82,16 +84,16 @@ impl App {
                 self.settings.save();
             }
             let details=device.reading.as_ref().map(|r|format!("{}\n{} · {} 秒前读取",device.name,r.source.label(),r.at.elapsed().as_secs())).unwrap_or_else(||format!("{}\n设备尚未提供可用电量",device.name));
-            cc.hit(0.0,24.0,78.0,125.0,("wireless-device",&device.id)).on_hover_text(details);
+            cc.hit(0.0,24.0,78.0,94.0,("wireless-device",&device.id)).on_hover_text(details);
         }
         let count=devices.iter().filter(|d|d.connected).count();
-        c.text(42.0,217.0,&format!("{count} 台已连接"),9.5,W::Regular,theme::DIM,H::Left);
+        c.text(42.0,178.0,&format!("{count} 台已连接"),9.5,W::Regular,theme::DIM,H::Left);
         if pages>1 {
-            c.text(322.0,217.0,&format!("{} / {pages}",self.wireless_offset+1),9.5,W::Regular,theme::GRAY,H::Center);
+            c.text(322.0,178.0,&format!("{} / {pages}",self.wireless_offset+1),9.5,W::Regular,theme::GRAY,H::Center);
             for (x,next,text) in [(284.0,false,"‹"),(352.0,true,"›")] {
-                c.text(x,218.0,text,15.0,W::Semibold,theme::WHITE,H::Center);
-                if c.hit(x-12.0,202.0,24.0,20.0,("wireless-page",next)).clicked(){self.wireless_offset=(self.wireless_offset+if next{1}else{pages-1})%pages;}
+                c.text(x,179.0,text,15.0,W::Semibold,theme::WHITE,H::Center);
+                if c.hit(x-12.0,165.0,24.0,20.0,("wireless-page",next)).clicked(){self.wireless_offset=(self.wireless_offset+if next{1}else{pages-1})%pages;}
             }
-        }else{c.text(377.0,217.0,"自动更新",9.5,W::Regular,theme::DIM,H::Right);}
+        }else{c.text(377.0,178.0,"自动更新",9.5,W::Regular,theme::DIM,H::Right);}
     }
 }
