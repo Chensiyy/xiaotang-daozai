@@ -6,6 +6,33 @@ use std::time::{Duration, Instant};
 #[cfg(windows)]
 mod windows;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Metric {
+    Cpu, Gpu, Ram, Vram, GpuTemp, Download, Upload, Read, Write,
+}
+
+impl Metric {
+    pub(crate) const ALL: [Self; 9] = [
+        Self::Cpu, Self::Gpu, Self::Ram, Self::Vram, Self::GpuTemp,
+        Self::Download, Self::Upload, Self::Read, Self::Write,
+    ];
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Cpu => "CPU", Self::Gpu => "GPU", Self::Ram => "内存", Self::Vram => "显存",
+            Self::GpuTemp => "显卡温度", Self::Download => "下载", Self::Upload => "上传",
+            Self::Read => "磁盘读", Self::Write => "磁盘写",
+        }
+    }
+    pub(crate) fn bit(self) -> u16 { 1 << self as u16 }
+    fn width(self) -> f32 {
+        match self {
+            Self::Cpu | Self::Gpu | Self::Ram => 52.,
+            Self::Vram | Self::GpuTemp => 68.,
+            _ => 79.,
+        }
+    }
+}
+
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BarStyle {
     #[default]
@@ -13,11 +40,28 @@ pub enum BarStyle {
     Pulse,
     Network,
     Dashboard,
+    Custom,
 }
 impl BarStyle {
-    pub(crate) const ALL: [Self; 4] = [Self::Gauges, Self::Pulse, Self::Network, Self::Dashboard];
-    pub(crate) fn width(self) -> f32 {
+    pub(crate) fn columns(mask: u16) -> impl Iterator<Item = (Metric, Option<Metric>, f32)> {
+        let mut metrics = Metric::ALL.into_iter().filter(move |m| mask & m.bit() != 0);
+        let stacked = metrics.clone().count() > 3;
+        std::iter::from_fn(move || {
+            let first = metrics.next()?;
+            let second = if stacked { metrics.next() } else { None };
+            let width = second.map_or(first.width(), |m| first.width().max(m.width()));
+            Some((first, second, width))
+        })
+    }
+    pub(crate) fn side_height(self, mask: u16) -> f32 {
+        if self == Self::Custom {
+            Metric::ALL.into_iter().filter(|m| mask & m.bit() != 0).count() as f32 * 23.
+        } else { 34. }
+    }
+    pub(crate) const ALL: [Self; 5] = [Self::Custom, Self::Gauges, Self::Pulse, Self::Network, Self::Dashboard];
+    pub(crate) fn width(self, mask: u16) -> f32 {
         match self {
+            Self::Custom => Self::columns(mask).map(|(_, _, w)| w).sum(),
             Self::Gauges => 146.,
             Self::Pulse => 78.,
             Self::Network => 88.,
@@ -30,6 +74,7 @@ impl BarStyle {
             Self::Pulse => "pulse",
             Self::Network => "network",
             Self::Dashboard => "dashboard",
+            Self::Custom => "custom",
         }
     }
     pub(crate) fn label(self) -> &'static str {
@@ -38,6 +83,7 @@ impl BarStyle {
             Self::Pulse => "处理器脉冲",
             Self::Network => "上下行",
             Self::Dashboard => "综合监测",
+            Self::Custom => "自由搭配",
         }
     }
     pub(crate) fn parse(key: &str) -> Self {

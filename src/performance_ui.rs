@@ -1,7 +1,7 @@
 use crate::{
     app::{App, PERFORMANCE_PAGE},
     paint::{Card, H},
-    performance::{BarStyle, Reading, View},
+    performance::{BarStyle, Metric, Reading, View},
     theme::W,
 };
 use eframe::egui::{self, Color32};
@@ -46,6 +46,29 @@ fn capacity(value: Option<(u64, u64)>) -> String {
 fn metric(r: &Reading, i: usize) -> Option<f32> {
     [r.cpu, r.gpu, r.ram()][i]
 }
+fn resident_value(m: Metric, r: &Reading) -> String {
+    match m {
+        Metric::Cpu => percent(r.cpu),
+        Metric::Gpu => percent(r.gpu),
+        Metric::Ram => percent(r.ram()),
+        Metric::Vram => r.video_memory.map_or_else(|| "—".into(), |(used, _)| format!("{:.1} GiB", used as f64 / 1073741824.)),
+        Metric::GpuTemp => r.gpu_temp.map_or_else(|| "—".into(), |t| format!("{t:.0}°C")),
+        Metric::Download => speed(r.network[0]),
+        Metric::Upload => speed(r.network[1]),
+        Metric::Read => speed(r.disk[0]),
+        Metric::Write => speed(r.disk[1]),
+    }
+}
+
+fn metric_color(m: Metric) -> Color32 {
+    match m {
+        Metric::Cpu => CPU_COLOR,
+        Metric::Gpu | Metric::Vram | Metric::GpuTemp => GPU,
+        Metric::Ram | Metric::Read | Metric::Write => RAM,
+        Metric::Download | Metric::Upload => BLUE,
+    }
+}
+
 fn dial(c: &Card, x: f32, y: f32, r: f32, value: Option<f32>, color: Color32) {
     let start = 2.25;
     let sweep = 4.93;
@@ -58,13 +81,31 @@ fn dial(c: &Card, x: f32, y: f32, r: f32, value: Option<f32>, color: Color32) {
 impl App {
     pub(crate) fn performance_on_bar(&self) -> bool {
         self.module_on(PERFORMANCE_PAGE) && self.settings.show_performance && !self.effective_minimal()
+            && (self.settings.performance_bar != BarStyle::Custom || self.settings.performance_metrics != 0)
     }
     pub(crate) fn paint_performance_bar(&self, c: &Card, x: f32) {
         let r = &self.performance.latest;
         match self.settings.performance_bar {
+            BarStyle::Custom => {
+                let mask = self.settings.performance_metrics;
+                let mut left = x - BarStyle::Custom.width(mask) / 2.;
+                for (first, second, width) in BarStyle::columns(mask) {
+                    if let Some(second) = second {
+                        for (m, y) in [(first, 9.), (second, 21.)] {
+                            c.centered_text(left + 2., y, m.label(), 8., W::Bold, metric_color(m), H::Left);
+                            c.centered_text(left + width - 4., y, &resident_value(m, r), 9., W::Bold, INK, H::Right);
+                        }
+                    } else {
+                        let cx = left + width / 2.;
+                        c.centered_text(cx, 8., first.label(), 8., W::Bold, metric_color(first), H::Center);
+                        c.centered_text(cx, 20., &resident_value(first, r), 12., W::Bold, INK, H::Center);
+                    }
+                    left += width;
+                }
+            }
             BarStyle::Gauges | BarStyle::Dashboard => {
                 let dashboard = self.settings.performance_bar == BarStyle::Dashboard;
-                let left_edge = x - self.settings.performance_bar.width() / 2.;
+                let left_edge = x - self.settings.performance_bar.width(self.settings.performance_metrics) / 2.;
                 if dashboard {
                     self.performance_plot(c, 0, [left_edge, 8., 26., 15.], 16.);
                     for (j, (values, labels, color)) in [(r.network, ["↓", "↑"], BLUE), (r.disk, ["读", "写"], RAM)]
@@ -105,7 +146,7 @@ impl App {
     }
     pub(crate) fn performance_bar(&mut self, c: &Card, x: f32) {
         self.paint_performance_bar(c, x);
-        let width = self.settings.performance_bar.width();
+        let width = self.settings.performance_bar.width(self.settings.performance_metrics);
         if crate::quota_ui::bar_tooltip(
             c.hit(x - width / 2., 0., width, 30., "performance-open"),
             "打开系统性能".into(),
@@ -115,9 +156,19 @@ impl App {
             self.show_page(PERFORMANCE_PAGE);
         }
     }
-    pub(crate) fn side_performance(&mut self, c: &Card, x: f32, y: f32) {
+    pub(crate) fn side_performance(&mut self, c: &Card, x: f32, y: f32, height: f32) {
         let r = &self.performance.latest;
         match self.settings.performance_bar {
+            BarStyle::Custom => {
+                let mut top = y - height / 2.;
+                for m in Metric::ALL.into_iter().filter(|m| self.settings.performance_metrics & m.bit() != 0) {
+                    let value = resident_value(m, r).replace(' ', "");
+                    let size = 10. * (32. / c.text_w(&value, 10., W::Bold)).min(1.);
+                    c.centered_text(x, top + 6., m.label(), 8., W::Bold, metric_color(m), H::Center);
+                    c.centered_text(x, top + 16., &value, size, W::Bold, INK, H::Center);
+                    top += 23.;
+                }
+            }
             BarStyle::Dashboard => {
                 for i in 0..3 {
                     let cy = y - 10. + i as f32 * 10.;
@@ -143,7 +194,7 @@ impl App {
                 }
             }
         }
-        if crate::quota_ui::bar_tooltip(c.hit(x - 16., y - 17., 32., 34., "side-performance"), "打开系统性能".into())
+        if crate::quota_ui::bar_tooltip(c.hit(x - 16., y - height / 2., 32., height, "side-performance"), "打开系统性能".into())
             .clicked()
         {
             self.show_page(PERFORMANCE_PAGE);
@@ -317,6 +368,18 @@ impl App {
                     }
                 });
                 let hint = match self.settings.performance_bar {
+                    BarStyle::Custom => {
+                        ui.add_space(4.);
+                        ui.horizontal_wrapped(|ui| {
+                            for m in Metric::ALL {
+                                let mut checked = self.settings.performance_metrics & m.bit() != 0;
+                                if ui.checkbox(&mut checked, m.label()).changed() {
+                                    self.settings.performance_metrics ^= m.bit();
+                                }
+                            }
+                        });
+                        if self.settings.performance_metrics == 0 { "未选择指标，常驻区已收起。" } else { "仅在岛上显示勾选的指标。" }
+                    }
                     BarStyle::Gauges => "依次显示处理器、显卡和内存占用率。",
                     BarStyle::Pulse => "显示处理器占用率和最近 16 秒的负载曲线。",
                     BarStyle::Dashboard => "横向并排显示负载曲线、三项占用率、网速和磁盘读写；侧边停靠时显示三项占用率。",

@@ -19,8 +19,8 @@ impl crate::app::App {
         ui.add_space(12.0);
         let indices=self.quota_bar_indices();let count=indices.len();
         let weather_snapshot=self.weather_pill().cloned();
-        let performance_enabled=self.module_on(crate::app::PERFORMANCE_PAGE);
-        let performance_width=if performance_enabled {self.settings.performance_bar.width()}else{20.0};
+        let performance_enabled=self.module_on(crate::app::PERFORMANCE_PAGE) && self.settings.performance_bar.width(self.settings.performance_metrics)>0.0;
+        let performance_width=if performance_enabled {self.settings.performance_bar.width(self.settings.performance_metrics)}else{20.0};
         let mut layout=preview_layout(&order,count,performance_width);
         for (position,extra) in self.quota_balance_layout(ui.ctx()){layout.balance_tail(position,extra);}
         if self.settings.clock_period!=0 { layout.widen_clock(40.0); }

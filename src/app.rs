@@ -1873,7 +1873,7 @@ impl App {
         let performance_visible=!env.fullscreen_hidden && !env.screen_locked &&
             (if self.open {self.page==PERFORMANCE_PAGE} else {performance_bar && self.notice.is_none() && !self.island_lyrics_active()});
         self.performance.tick(self.module_on(PERFORMANCE_PAGE),performance_visible,&ctx);
-        if performance_bar {layout.add_performance(self.settings.performance_bar.width());}
+        if performance_bar {layout.add_performance(self.settings.performance_bar.width(self.settings.performance_metrics));}
         layout.reorder(&self.settings.resident_order);
         for (position,extra) in self.quota_balance_layout(&ctx){layout.balance_tail(position,extra);}
         if self.settings.clock_period!=0 { layout.widen_clock(40.0); }

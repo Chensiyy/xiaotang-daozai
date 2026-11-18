@@ -244,7 +244,7 @@ mod tests {
     fn performance_width_keeps_extra_quota_slots_separate(){
         for style in crate::performance::BarStyle::ALL {
             let mut layout=Layout::new(true,7,true,true,false,true,true);
-            layout.add_performance(style.width());
+            layout.add_performance(style.width(0x1ff));
             let mut order=DEFAULT_ORDER;order.reverse();layout.reorder(&order);
             layout.balance_tail(6,58.0);layout.widen_clock(24.0);
             let mut boxes:Vec<_>=layout.x.iter().enumerate().filter_map(|(i,x)|x.map(|x|(x-layout.widths[i]/2.0,x+layout.widths[i]/2.0))).collect();

@@ -7428,7 +7428,7 @@ fn side_dock_stacks_ai_quota_and_opens_the_account(){
     let total=h.app.side_bar_len()-14.0;
     let mut y=top+(h.app.h.pos-total)/2.0;
     for item in h.app.side_items() {
-        let height=match item {crate::side_dock::SideItem::Quota(i,hh) if h.app.quota.config.accounts[i].id==wb=>{y+=hh/2.0;break;},crate::side_dock::SideItem::Quota(_,hh)=>hh,crate::side_dock::SideItem::Clock=>32.0,crate::side_dock::SideItem::Weather=>40.0,crate::side_dock::SideItem::Battery=>20.0,crate::side_dock::SideItem::Performance=>34.0,crate::side_dock::SideItem::Music=>18.0,crate::side_dock::SideItem::Focus|crate::side_dock::SideItem::Bell=>22.0};
+        let height=match item {crate::side_dock::SideItem::Quota(i,hh) if h.app.quota.config.accounts[i].id==wb=>{y+=hh/2.0;break;},crate::side_dock::SideItem::Quota(_,hh)=>hh,crate::side_dock::SideItem::Clock=>32.0,crate::side_dock::SideItem::Weather=>40.0,crate::side_dock::SideItem::Battery=>20.0,crate::side_dock::SideItem::Performance(hh)=>hh,crate::side_dock::SideItem::Music=>18.0,crate::side_dock::SideItem::Focus|crate::side_dock::SideItem::Bell=>22.0};
         y+=height;
     }
     let click=Pos2::new(18.0,y);
@@ -9170,4 +9170,32 @@ fn performance_gallery() {
 /// 设置页的 AI 额度账号默认收起成一行；需要检查明细的测试先把所有账号展开。
 pub(crate) fn open_quota_details(h:&H){
     for account in &h.app.quota.config.accounts {h.ctx.data_mut(|d|d.insert_temp(egui::Id::new(("quota-account-open",account.id.clone())),true));}
+}
+
+#[test]
+fn performance_custom_selection_controls_both_docks_and_persists() {
+    use crate::performance::{BarStyle, Metric};
+    let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=H::new();
+    h.app.set_page_visible(crate::app::PERFORMANCE_PAGE,true);
+    h.app.settings.performance_bar=BarStyle::Custom;
+    for metrics in [vec![], vec![Metric::Ram], vec![Metric::Upload],
+                    vec![Metric::Ram,Metric::Upload,Metric::Write], Metric::ALL.to_vec()] {
+        let mask=metrics.iter().fold(0,|bits,m|bits|m.bit());
+        h.app.settings.performance_metrics=mask;
+        let shown=BarStyle::columns(mask).flat_map(|(m,n,_)|std::iter::once(m).chain(n)).collect::<Vec<_>>();
+        assert_eq!(shown,metrics);
+        assert_eq!(h.app.performance_on_bar(),!metrics.is_empty());
+        h.frame(vec![]);
+        let w=h.app.resident.current();
+        assert_eq!(w.x[crate::bar_layout::PERFORMANCE].is_some(),!metrics.is_empty());
+        if !metrics.is_empty() {assert_eq!(w.widths[crate::bar_layout::PERFORMANCE],BarStyle::Custom.width(mask));}
+        let side=h.app.side_items().into_iter().find_map(|item|match item {
+            crate::side_dock::SideItem::Performance(h)=>Some(h), _=>None,
+        });
+        assert_eq!(side,(!metrics.is_empty()).then_some(metrics.len() as f32*23.));
+        h.app.settings.save();
+        let loaded=crate::model::Settings::load();
+        assert_eq!((loaded.performance_bar,loaded.performance_metrics),(BarStyle::Custom,mask));
+    }
 }
