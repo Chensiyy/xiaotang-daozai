@@ -454,6 +454,26 @@ fn weather_negative_temperature_draws_a_hyphen_length_minus_on_the_digit_midline
 }
 
 #[test]
+fn weather_city_ime_enter_keeps_focus_and_waits_for_confirmed_text(){
+    let _guard=ENV_LOCK.lock().unwrap_or_else(|err|err.into_inner());let mut harness=H::new();
+    let mut draw=|events| {
+        harness.t+=1.0;harness.app.t=harness.t;
+        let input=egui::RawInput{events,time:Some(harness.t),screen_rect:Some(Rect::from_min_size(Pos2::ZERO,Vec2::new(560.0,380.0))),..Default::default()};
+        let output=harness.ctx.run(input,|ctx|{egui::CentralPanel::default().show(ctx,|ui|{assert!(!harness.app.weather_city_picker(ui));});});
+        let hint=output.shapes.iter().find_map(|shape|match &shape.shape{egui::Shape::Text(text) if text.galley.text()=="输入城市名称搜索"=>Some(text.visual_bounding_rect().center()),_=>None});
+        (hint,harness.ctx.memory(|memory|memory.focused()),harness.app.weather.city_input.clone())
+    };
+    let point=draw(vec![]).0.unwrap();
+    for pressed in [true,false]{draw(vec![egui::Event::PointerMoved(point),egui::Event::PointerButton{pos:point,button:egui::PointerButton::Primary,pressed,modifiers:Default::default()}]);}
+    let focused=draw(vec![egui::Event::Ime(egui::ImeEvent::Enabled),egui::Event::Ime(egui::ImeEvent::Preedit("hang".into()))]).1;
+    assert!(focused.is_some());
+    let enter=||egui::Event::Key{key:egui::Key::Enter,physical_key:None,pressed:true,repeat:false,modifiers:Default::default()};
+    let (_,after,text)=draw(vec![enter(),egui::Event::Ime(egui::ImeEvent::Commit("杭州".into()))]);
+    assert_eq!(focused,after);assert_eq!(text,"杭州");
+    assert_ne!(draw(vec![enter()]).1,focused);
+}
+
+#[test]
 fn weather_city_dropdown_selects_the_region_without_applying_the_draft(){
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();
     let correct=crate::weather::Position{lat:23.02677,lon:113.13148,label:"佛山市".into(),region:"广东 · 中国".into()};
@@ -1191,7 +1211,7 @@ impl H {
     }
     fn frame(&mut self, events: Vec<egui::Event>) {
         self.t += 1.0 / 60.0;
-        let mut raw = egui::RawInput {
+        let raw = egui::RawInput {
             screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(crate::app::CANVAS_W, WIN_H))),
             time: Some(self.t),
             events,
@@ -1200,7 +1220,6 @@ impl H {
             focused: true,
             ..Default::default()
         };
-        self.app.filter_todo_input(&mut raw);
         let env = Env {
             t: self.t,
             clock: "09:41:00".into(),
@@ -3509,6 +3528,24 @@ fn empty_todo_draft_can_be_cancelled_by_clicking_elsewhere(){
 }
 
 #[test]
+fn editor_ime_confirmation_keeps_calendar_and_task_drafts_open(){
+    let _guard=ENV_LOCK.lock().unwrap_or_else(|err|err.into_inner());
+    for calendar in [false,true] {
+        let mut harness=H::new();
+        if calendar {harness.app.open_calendar(None);harness.app.open_calendar_editor(None);}
+        else {harness.app.todos.items.push(crate::model::TodoItem::new(String::new()));harness.app.open_task_dialog(0);}
+        harness.hover(H::local(300.0,60.0),1.0);
+        let press=|key|egui::Event::Key{key,physical_key:None,pressed:true,repeat:false,modifiers:Default::default()};
+        harness.frame(vec![egui::Event::Ime(egui::ImeEvent::Enabled),press(egui::Key::Escape)]);
+        harness.frame(vec![egui::Event::Ime(egui::ImeEvent::Commit("明天10点开会".into())),press(egui::Key::Enter)]);
+        assert!(harness.app.is_editing(),"确认候选不能关闭编辑器：日历={calendar}");
+        harness.frame(vec![press(egui::Key::Enter)]);
+        if calendar {assert_eq!(harness.app.calendar.local[0].event.title,"明天10点开会");}
+        else {assert_eq!(harness.app.todos.items[0].text,"明天10点开会");}
+    }
+}
+
+#[test]
 fn todo_ime_first_backspace_keeps_committed_text(){
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();
     h.app.show_page(4);h.hover(H::local(300.0,60.0),1.0);h.click(H::local(70.0,109.0));
@@ -3528,7 +3565,7 @@ fn todo_ime_focus_change_preserves_empty_draft(){
     assert!(h.app.adding,"输入法候选窗口造成的失焦不能取消空白待办");
     assert!(h.app.open);
     assert!(!h.cmds.iter().any(|cmd|matches!(cmd,crate::app::Cmd::Focus)),"不能和输入法窗口反复争抢焦点");
-    h.app.foreground_changed();h.frame(vec![]);
+    h.app.foreground_changed(&h.ctx);h.frame(vec![]);
     assert!(h.app.adding,"输入法组合输入期间的前台切换应保留草稿");
     h.frame(vec![egui::Event::WindowFocused(true),egui::Event::Ime(egui::ImeEvent::Preedit("zhong".into()))]);
     h.frame(vec![egui::Event::Ime(egui::ImeEvent::Commit("中文".into())),egui::Event::Ime(egui::ImeEvent::Disabled)]);
@@ -3557,7 +3594,7 @@ fn todo_ime_candidate_closing_does_not_discard_the_empty_draft(){
     h.frame(vec![egui::Event::Ime(egui::ImeEvent::Enabled)]);
     h.frame(vec![egui::Event::Ime(egui::ImeEvent::Disabled),egui::Event::WindowFocused(false)]);
     assert!(h.app.adding,"关闭输入法候选窗口的同一帧不能取消空白草稿");
-    h.frame(vec![egui::Event::WindowFocused(true)]);h.app.foreground_changed();h.frame(vec![]);
+    h.frame(vec![egui::Event::WindowFocused(true)]);h.app.foreground_changed(&h.ctx);h.frame(vec![]);
     assert!(!h.app.adding,"之后真正切换应用时仍应取消空白草稿");
 }
 
@@ -3613,7 +3650,7 @@ fn switching_apps_cancels_only_empty_new_todos(){
     for text in ["","   ","保留未提交的内容"]{
         let mut h=H::new();h.app.show_page(4);h.hover(H::local(300.0,60.0),1.0);h.click(H::local(70.0,109.0));
         if !text.is_empty(){h.frame(vec![egui::Event::Text(text.into())]);}
-        h.cmds.clear();h.app.foreground_changed();h.frame(vec![]);
+        h.cmds.clear();h.app.foreground_changed(&h.ctx);h.frame(vec![]);
         assert_eq!(h.app.adding,!text.trim().is_empty());
         assert_eq!(h.app.buf,if text.trim().is_empty(){""}else{text});
         assert!(h.app.todos.items.is_empty());

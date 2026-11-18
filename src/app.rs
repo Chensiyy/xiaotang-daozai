@@ -798,8 +798,6 @@ pub struct App {
     pub(crate) editing: Option<usize>,
     pub(crate) buf: String,
     pub(crate) todo_input_focused: bool,
-    todo_ime_active: bool,
-    todo_ime_frame: bool,
     pub(crate) todo_pop: Spring,
 
     // 音乐
@@ -979,8 +977,6 @@ impl App {
             reset_spin: Spring::new(0.0, 160.0, 0.82),
             adding: false,
             todo_input_focused: false,
-            todo_ime_active: false,
-            todo_ime_frame: false,
             editing: None,
             buf: String::new(),
             todo_pop: Spring::new(0.0, 500.0, 0.45),
@@ -1636,23 +1632,8 @@ impl App {
         self.adding || self.editing.is_some() || self.todo_choosing || self.task_dialog.is_some() || self.calendar.draft.is_some() || self.settings_editing
     }
 
-    pub fn filter_todo_input(&mut self,input:&mut egui::RawInput) {
-        self.todo_ime_frame=false;
-        if !self.adding && self.editing.is_none(){self.todo_ime_active=false;return;}
-        self.todo_ime_frame=self.todo_ime_active || input.events.iter().any(|event|matches!(event,egui::Event::Ime(egui::ImeEvent::Enabled|egui::ImeEvent::Preedit(_)|egui::ImeEvent::Commit(_))));
-        for event in &input.events {
-            match event {
-                egui::Event::Ime(egui::ImeEvent::Enabled|egui::ImeEvent::Preedit(_))=>self.todo_ime_active=true,
-                egui::Event::Ime(egui::ImeEvent::Commit(_)|egui::ImeEvent::Disabled)=>self.todo_ime_active=false,
-                _=>{},
-            }
-        }
-        // 首帧和结束帧的按键、失焦仍属于组合输入，不能透传给待办编辑。
-        if self.todo_ime_frame {input.events.retain(|event|!matches!(event,egui::Event::Key{key:egui::Key::Backspace|egui::Key::Delete|egui::Key::Enter|egui::Key::Escape|egui::Key::ArrowLeft|egui::Key::ArrowRight|egui::Key::ArrowUp|egui::Key::ArrowDown,..}));}
-    }
-
-    pub fn foreground_changed(&mut self) {
-        if self.todo_ime_frame {return;}
+    pub fn foreground_changed(&mut self,ctx:&egui::Context) {
+        if ctx.viewport(|viewport|viewport.ime_owns_keys) {return;}
         self.hover_lock=true;
         if self.adding && self.buf.trim().is_empty(){self.cancel_edit();}
     }
@@ -1693,8 +1674,6 @@ impl App {
         self.calendar.draft=None;
         self.buf.clear();
         self.todo_input_focused=false;
-        self.todo_ime_active=false;
-        self.todo_ime_frame=false;
     }
 
     /// 外壳据此调整音乐采样频率：看着音乐页时最快，收起显示歌词次之，其余只需跟上歌名和播放状态。
@@ -3509,7 +3488,7 @@ impl App {
         let first_focus=!self.todo_input_focused;
         self.buf=buf;
         let lost_window=ui.input(|i|i.events.iter().any(|event|matches!(event,egui::Event::WindowFocused(false))));
-        if !first_focus && !self.todo_ime_frame && self.adding && self.buf.trim().is_empty() && (resp.clicked_elsewhere() || lost_window) {
+        if !first_focus && !ui.ctx().viewport(|viewport|viewport.ime_owns_keys) && self.adding && self.buf.trim().is_empty() && (resp.clicked_elsewhere() || lost_window) {
             resp.surrender_focus();
             self.cancel_edit();
             return;

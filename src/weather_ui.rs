@@ -734,7 +734,7 @@ impl App {
                 input.union(arrow)
             }).inner
         });
-        self.weather.cities.update(&self.weather.city_input,self.t);
+        if !ui.ctx().viewport(|viewport|viewport.ime_composing){self.weather.cities.update(&self.weather.city_input,self.t);}
         if self.weather.cities.pending() && self.weather.city_input.trim().chars().count()>=2 {ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));}
         let mut selected=None;
         let saved=self.settings.weather_saved.clone();

@@ -344,10 +344,6 @@ impl Shell {
 }
 
 impl eframe::App for Shell {
-    fn raw_input_hook(&mut self,_ctx:&egui::Context,input:&mut egui::RawInput) {
-        if input.viewport_id==egui::ViewportId::ROOT {self.app.filter_todo_input(input);}
-    }
-
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         [0.0; 4]
     }
@@ -389,7 +385,7 @@ impl eframe::App for Shell {
         #[cfg(windows)]
         if foreground_changed {
             // 切到别的程序：收起，并在光标离开前不再自动展开
-            self.app.foreground_changed();
+            self.app.foreground_changed(ctx);
         }
         #[cfg(windows)]
         let offset=self.app.placement_offset();
