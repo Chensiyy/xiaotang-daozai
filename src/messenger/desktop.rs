@@ -29,16 +29,42 @@ fn main_frame(client:Messenger,class:&str,style:u32,extended:u32)->bool{
     }
 }
 pub(crate) unsafe fn main_window(window:HWND,client:Messenger)->bool{
-    use windows::Win32::Foundation::RECT;
     if !IsWindow(window).as_bool() || GetWindow(window,GW_OWNER).is_ok()
         || !client_main_frame(client,&class_name(window),GetWindowLongW(window,GWL_STYLE)as u32,GetWindowLongW(window,GWL_EXSTYLE)as u32){return false;}
-    if client==Messenger::DingTalk && class_name(window)!=DINGTALK_FRAME && has_dingtalk_frame(window_pid(window)){return false;}
+    if client==Messenger::DingTalk && class_name(window)!=DINGTALK_FRAME{
+        let pid=window_pid(window);
+        if has_dingtalk_frame(pid) || !IsWindowVisible(window).as_bool() && has_visible_dingtalk_qt(pid){return false;}
+    }
     if client==Messenger::Feishu && !feishu_title(&window_title(window)) && feishu_main_frame(window_pid(window)).is_some(){return false;}
+    window_sized(window)
+}
+/// 最小化，或至少 300×300：排除同进程的小弹窗。
+unsafe fn window_sized(window:HWND)->bool{
+    use windows::Win32::Foundation::RECT;
     if IsIconic(window).as_bool(){return true;}
     let mut rect=RECT::default();
     GetWindowRect(window,&mut rect).is_ok() && rect.right-rect.left>=300 && rect.bottom-rect.top>=300
 }
 const DINGTALK_FRAME:&str="StandardFrame_DingTalk";
+/// 钉钉 9.0.5 的另一种窗口组合（用户诊断包）：没有 StandardFrame_DingTalk，主窗口本身是 Qt 窗口，
+/// 同进程还有几个隐藏的 Qt 对话框。主窗口可见（含最小化）时，隐藏的 Qt 窗口不算第二个主窗口；
+/// 全部隐藏（主窗口关到托盘）时分不出来，仍按原规则不猜账号。
+unsafe fn has_visible_dingtalk_qt(pid:u32)->bool{
+    struct Search{pid:u32,found:bool}
+    unsafe extern "system" fn visit(window:HWND,data:LPARAM)->BOOL{
+        let search=&mut *(data.0 as *mut Search);
+        if window_pid(window)==search.pid && IsWindowVisible(window).as_bool() && GetWindow(window,GW_OWNER).is_err(){
+            let class=class_name(window);
+            if class.starts_with("Qt") && class.ends_with("QWindowIcon")
+                && main_frame(Messenger::DingTalk,&class,GetWindowLongW(window,GWL_STYLE)as u32,GetWindowLongW(window,GWL_EXSTYLE)as u32)
+                && window_sized(window){search.found=true;return false.into();}
+        }
+        true.into()
+    }
+    let mut search=Search{pid,found:false};
+    let _=EnumWindows(Some(visit),LPARAM((&mut search as *mut Search)as isize));
+    search.found
+}
 /// 新版钉钉的主窗口是 StandardFrame_DingTalk；同进程里的 Qt 窗口只是对话框（常为隐藏状态），
 /// 不能算作第二个主窗口。主窗口本身隐藏到托盘时仍然认它。只有旧版没有该窗口时才按 Qt 主窗口识别。
 unsafe fn has_dingtalk_frame(pid:u32)->bool{
@@ -55,6 +81,29 @@ unsafe fn has_dingtalk_frame(pid:u32)->bool{
     let _=EnumWindows(Some(visit),LPARAM((&mut search as *mut Search)as isize));
     search.found
 }
+/// 闪动没能对应到账号时写进诊断日志：同进程所有无所属窗口的顶层窗口，
+/// 列出类名、样式、尺寸、可见状态和是否算主窗口，不读标题。最多列 12 个。
+pub(crate) fn describe_process_windows(client:Messenger,pid:u32)->String{unsafe{
+    use windows::Win32::Foundation::RECT;
+    struct Search{pid:u32,windows:Vec<HWND>}
+    unsafe extern "system" fn visit(window:HWND,data:LPARAM)->BOOL{
+        let search=&mut *(data.0 as *mut Search);
+        if window_pid(window)==search.pid && GetWindow(window,GW_OWNER).is_err(){search.windows.push(window);}
+        true.into()
+    }
+    let mut search=Search{pid,windows:Vec::new()};
+    let _=EnumWindows(Some(visit),LPARAM((&mut search as *mut Search)as isize));
+    let total=search.windows.len();
+    let mut lines=search.windows.iter().take(12).map(|&window|{
+        let mut rect=RECT::default();let _=GetWindowRect(window,&mut rect);
+        format!("{:#x} {} 样式 {:#010x}/{:#x} {}×{}{}{}{}",window.0 as usize,class_name(window),
+            GetWindowLongW(window,GWL_STYLE)as u32,GetWindowLongW(window,GWL_EXSTYLE)as u32,rect.right-rect.left,rect.bottom-rect.top,
+            if IsWindowVisible(window).as_bool(){""}else{" 隐藏"},if IsIconic(window).as_bool(){" 最小化"}else{""},
+            if main_window(window,client){" 主窗口"}else{""})
+    }).collect::<Vec<_>>();
+    if total>12{lines.push(format!("另有 {} 个",total-12));}
+    format!("进程 {pid} 顶层窗口 {total} 个：{}",lines.join("；"))
+}}
 /// 飞书主窗口的标题固定为应用名（切换消息、云文档等页面不变，关到托盘后仍保留）；
 /// 「在独立窗口打开」的会话、文档窗口与主窗口同进程、同类名、同样式，只有标题是会话或文档名。
 const FEISHU_TITLES:[&str;3]=["飞书","Feishu","Lark"];
@@ -272,6 +321,27 @@ mod tests{
             assert_eq!(flash_target(Messenger::DingTalk,dialogs[0],&paths),Some(Unread::of(Messenger::DingTalk)),"旧版多个 Qt 主窗口仍不能猜账号");
             for dialog in dialogs{DestroyWindow(dialog).unwrap();}
         }
+        // 另一位用户诊断包里钉钉 9.0.5 的窗口组合：没有 StandardFrame_DingTalk，主窗口是 Qt 窗口，同进程有隐藏的 Qt 对话框。
+        // 主窗口显示或最小化时必须对应到原进程；主窗口也关到托盘时分不出来，仍不猜账号。
+        for (state,main_style,known) in [("显示",0x16cf0000u32,true),("最小化",0x36cf0000,true),("关到托盘",0x06cf0000,false)]{
+            let main=CreateWindowExW(WINDOW_EX_STYLE(0x100),w!("Qt51511QWindowIcon"),w!("Daozai synthetic client"),WINDOW_STYLE(main_style),-10000,-10000,1200,800,None,None,instance,None).unwrap();
+            let dialogs=[0;3].map(|_|CreateWindowExW(WINDOW_EX_STYLE(0x100),w!("Qt51511QWindowIcon"),w!(""),WINDOW_STYLE(0x86cf0000),-10000,-10000,655,517,None,None,instance,None).unwrap());
+            let original=Target{unread:Unread{source:Messenger::DingTalk,pid,window:main.0 as isize},started};
+            if known{
+                assert!(dialogs.iter().all(|dialog|!main_window(*dialog,Messenger::DingTalk)),"{state}：主窗口可见时隐藏的 Qt 对话框不能算主窗口");
+                assert!(ready_with_paths(original,&paths),"{state}：主窗口必须可识别");
+                assert_eq!(flash_target(Messenger::DingTalk,main,&paths),Some(original.unread),"{state}：闪动必须对应到原进程");
+            }else{
+                assert_eq!(flash_target(Messenger::DingTalk,main,&paths),Some(Unread::of(Messenger::DingTalk)),"{state}：全部隐藏时不猜账号");
+            }
+            let log=describe_process_windows(Messenger::DingTalk,pid);
+            assert!(log.contains("Qt51511QWindowIcon") && log.contains("655×517") && !log.contains("Daozai"),"{state}：诊断只记类名和尺寸，不记标题：{log}");
+            DestroyWindow(main).unwrap();for dialog in dialogs{DestroyWindow(dialog).unwrap();}
+        }
+        // 两个可见的 Qt 主窗口仍不能猜账号（隐藏规则只去掉隐藏窗口）。
+        let pair=[0;2].map(|_|CreateWindowExW(WINDOW_EX_STYLE(0x100),w!("Qt51511QWindowIcon"),w!(""),WINDOW_STYLE(0x16cf0000),-10000,-10000,1200,800,None,None,instance,None).unwrap());
+        assert_eq!(flash_target(Messenger::DingTalk,pair[0],&paths),Some(Unread::of(Messenger::DingTalk)),"两个可见 Qt 主窗口不猜");
+        for window in pair{DestroyWindow(window).unwrap();}
         // 本机飞书 8.6 实测：主窗口标题「飞书」，「在独立窗口打开」的会话窗口与它同进程、同类名、同样式，标题是会话名。
         // 主窗口正常显示和关到托盘（隐藏）两种状态都要能对应到原进程，独立窗口闪动归到主窗口。
         for (state,main_style) in [("显示",0x16cf0000u32),("关到托盘",0x06cf0000)]{

@@ -495,6 +495,10 @@ unsafe extern "system" fn subclass(hwnd: HWND, message: u32, wp: WPARAM, lp: LPA
                         let target=office.map_or(target,|unread|HWND(unread.window as *mut _));
                         let queued=state.attention(pid,target.0 as isize,Instant::now());
                         client_trace(state.source,format!("  → {}",if queued{"提交提醒或更新窗口"}else{"合并同一轮闪动"}));
+                        // 办公客户端没能对应到账号时，记下同进程的窗口组合，便于判断主窗口规则缺了哪种情况。
+                        if queued && office.is_some_and(|unread|unread.pid==0){
+                            client_trace(state.source,format!("  → 未能对应账号 · {}",crate::messenger::desktop::describe_process_windows(state.source,source_pid)));
+                        }
                         if queued{state.ctx.request_repaint();}
                     }
                 }
