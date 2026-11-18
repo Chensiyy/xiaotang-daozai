@@ -85,3 +85,42 @@ fn windows_service_nodes_only_match_the_remote_address_field() {
         format!(r"USB\{service}_AABBCCDDEE01\1"),
     ] { assert_eq!(pnp_address(&instance),None); }
 }
+
+#[test]
+fn windows_poll_ages_same_value_and_rename_preserves_identity() {
+    let now=Instant::now();
+    let mut state=State::default();
+    let mut ep=endpoint("classic","AABBCCDDEE01",None);
+    state.discover(vec![ep.clone()],now);
+    let t=state.targets().remove(0);
+    let later=now+FRESH_FOR+Duration::from_secs(1);
+    for at in [now,later] {state.ingest(sample(&t.key,t.session,BatterySource::Windows,20,at));}
+    let d=state.devices(later).remove(0);
+    assert!(d.stale_at(later));
+    assert_eq!(d.reading.unwrap().at,now);
+    ep.name="新的耳机名称".into();
+    state.discover(vec![ep],later);
+    let d=state.devices(later).remove(0);
+    assert_eq!((d.id,d.name,d.battery),(t.key.clone(),"新的耳机名称".into(),Some(20)));
+    state.ingest(sample(&t.key,t.session,BatterySource::Windows,19,later+Duration::from_secs(2)));
+    assert_eq!(state.devices(later+Duration::from_secs(2))[0].reading.as_ref().unwrap().at,later+Duration::from_secs(2));
+}
+
+#[test]
+fn windows_cached_value_after_reconnect_needs_a_poll_and_keeps_age() {
+    let now=Instant::now();
+    let mut state=State::default();
+    let ep=endpoint("ble","AABBCCDDEE01",None);
+    state.discover(vec![ep.clone()],now);
+    let t=state.targets().remove(0);
+    state.ingest(sample(&t.key,t.session,BatterySource::Windows,20,now));
+    let later=now+FRESH_FOR+Duration::from_secs(1);
+    state.discover(vec![],later);
+    state.discover(vec![ep],later);
+    assert!(state.devices(later)[0].reading.is_none());
+    let t=state.targets().remove(0);
+    state.ingest(sample(&t.key,t.session,BatterySource::Windows,20,later));
+    assert!(state.devices(later)[0].stale_at(later));
+    state.ingest(sample(&t.key,t.session,BatterySource::Windows,10,later-Duration::from_secs(1)));
+    assert_eq!(state.devices(later)[0].battery,Some(20));
+}

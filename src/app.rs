@@ -1502,11 +1502,19 @@ impl App {
                 self.volume_ui = Some(v);
             }
         }
-        if !self.settings.bluetooth_notifications {
+        let battery_enabled=self.settings.bluetooth_battery_notifications&&self.module_on(BLUETOOTH_PAGE);
+        let connection_enabled=self.settings.bluetooth_notifications;
+        if !battery_enabled||!connection_enabled {
+            let enabled=|a:&crate::extras::Alert| {
+                a.source!=crate::extras::AlertSource::Internal||a.title!="蓝牙设备"||
+                    if a.page==BLUETOOTH_PAGE {battery_enabled} else {connection_enabled}
+            };
+            self.alerts.retain(&enabled);
+            if self.notice.as_ref().is_some_and(|a|!enabled(a)) {self.notice=None;}
+        }
+        if !connection_enabled {
             self.bt_shown.clear();
             self.bt_initialized=false;
-            self.alerts.retain(|a|a.source!=crate::extras::AlertSource::Internal || a.title!="蓝牙设备");
-            if self.notice.as_ref().is_some_and(|a|a.source==crate::extras::AlertSource::Internal && a.title=="蓝牙设备") {self.notice=None;}
             return;
         }
         if !env.bt_ready { return; }

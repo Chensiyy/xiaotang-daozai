@@ -61,11 +61,14 @@ fn discover(previous:&[Target],nodes:&[PnpNode],stop:&AtomicBool)->Option<Vec<En
         let selector=HSTRING::from(format!("({selector}) AND System.Devices.Aep.IsConnected:=System.StructuredQueryType.Boolean#True"));
         // 任何一个传输枚举失败，都不把不完整快照当作设备断开。
         let infos=wait(DeviceInformation::FindAllAsyncAqsFilter(&selector),stop)?;
-        for info in infos {
-            let id=info.Id().ok()?;let name=info.Name().ok()?.to_string();
-            if name.trim().is_empty(){continue;}
+        for index in 0..infos.Size().ok()? {
+            let Ok(info)=infos.GetAt(index) else {continue};
+            let Ok(id)=info.Id() else {continue};
             let native_id=id.to_string();
             let cached=previous.iter().find(|t|t.endpoint.id==native_id);
+            let name=info.Name().ok().map(|s|s.to_string()).filter(|s|!s.trim().is_empty())
+                .or_else(||cached.map(|t|t.endpoint.name.clone()));
+            let Some(name)=name else {continue};
             let (address,kind)=if let Some(old)=cached.filter(|t|t.endpoint.address.is_some()) {(old.endpoint.address.clone(),old.endpoint.kind)}else{
                 let (address,class)=if ble {
                     if let Some(device)=wait(BluetoothLEDevice::FromIdAsync(&id),stop){
@@ -91,7 +94,7 @@ impl Drop for GattService {fn drop(&mut self){let _=self.0.Close();}}
 
 // 每个服务独立读取。可选特征的访问错误只影响该特征。
 fn characteristic_value(service: &GattDeviceService, uuid: u128, stop: &AtomicBool) -> Option<Vec<u8>> {
-    let chars = wait(service.GetCharacteristicsForUuidAsync(GUID::from_u128(uuid)), stop)?;
+    let chars = wait(service.GetCharacteristicsForUuidWithCacheModeAsync(GUID::from_u128(uuid),BluetoothCacheMode::Cached), stop)?;
     if chars.Status().ok()? != GattCommunicationStatus::Success { return None; }
     let characteristic = chars.Characteristics().ok()?.GetAt(0).ok()?;
     let result = wait(characteristic.ReadValueWithCacheModeAsync(BluetoothCacheMode::Uncached), stop)?;
@@ -107,7 +110,7 @@ fn characteristic_value(service: &GattDeviceService, uuid: u128, stop: &AtomicBo
 fn read_gatt(target:&Target,stop:&AtomicBool)->Option<Sample> {
     let device=BleHandle(wait(BluetoothLEDevice::FromIdAsync(&HSTRING::from(&target.endpoint.id)),stop)?);
     if device.0.ConnectionStatus().ok()?!=BluetoothConnectionStatus::Connected {return None;}
-    let services=wait(device.0.GetGattServicesForUuidWithCacheModeAsync(GUID::from_u128(0x0000180f_0000_1000_8000_00805f9b34fb),BluetoothCacheMode::Uncached),stop)?;
+    let services=wait(device.0.GetGattServicesForUuidWithCacheModeAsync(GUID::from_u128(0x0000180f_0000_1000_8000_00805f9b34fb),BluetoothCacheMode::Cached),stop)?;
     if services.Status().ok()?!=GattCommunicationStatus::Success {return None;}
     let services:Vec<_>=services.Services().ok()?.into_iter().map(GattService).collect();
     const LEVEL: u128 = 0x00002a19_0000_1000_8000_00805f9b34fb;
@@ -127,6 +130,30 @@ fn read_gatt(target:&Target,stop:&AtomicBool)->Option<Sample> {
     })
 }
 
+#[derive(Default)]
+struct PollSchedule { last:Option<Instant>, targets:Vec<(String,u64)> }
+impl PollSchedule {
+    fn due(&self,now:Instant)->bool {
+        self.last.is_none_or(|at|now.saturating_duration_since(at)>=Duration::from_secs(60))
+    }
+    fn needs_read(&self,now:Instant,targets:&[(String,u64)])->bool {
+        self.due(now)||targets!=self.targets
+    }
+}
+
+fn windows_samples(targets:&[Target],nodes:&[PnpNode],now:Instant)->Vec<Sample> {
+    let mut levels=std::collections::BTreeMap::new();
+    for target in targets {
+        let Some(address)=&target.endpoint.address else {continue};
+        if let Some(level)=nodes.iter().filter(|n|&n.address==address).filter_map(|n|n.battery).min() {
+            let value=levels.entry((&target.key,target.session)).or_insert(level);
+            *value=level.min(*value);
+        }
+    }
+    levels.into_iter().map(|((key,session),percent)|Sample{key:key.clone(),session,
+        reading:BatteryReading{percent,source:BatterySource::Windows,at:now,charging:None}}).collect()
+}
+
 pub(super) fn run(tx:SyncSender<Vec<super::Device>>,stop:Arc<AtomicBool>) {
     let Some(_apartment)=Apartment::new() else {return};
     let (jobs,requests)=mpsc::sync_channel::<Vec<Target>>(1);
@@ -143,28 +170,25 @@ pub(super) fn run(tx:SyncSender<Vec<super::Device>>,stop:Arc<AtomicBool>) {
             }
         }
     }).ok();
-    let mut state=State::default();let mut nodes=vec![];let mut battery_at=None;let mut last_targets=vec![];
+    let mut state=State::default();let mut nodes=vec![];let mut schedule=PollSchedule::default();
     while !stop.load(Ordering::Relaxed){
         let now=Instant::now();
-        let due=battery_at.is_none_or(|at:Instant|now.saturating_duration_since(at)>=Duration::from_secs(60));
+        let due=schedule.due(now);
         let mut fresh_nodes=if due {pnp_nodes()}else{None};
         if let Some(found)=&fresh_nodes {nodes=found.clone();}
         if let Some(found)=discover(&state.targets(),&nodes,&stop){
             state.discover(found,now);let targets=state.targets();
             let ids:Vec<_>=targets.iter().map(|t|(t.endpoint.id.clone(),t.session)).collect();
-            let changed=ids!=last_targets;
-            if due||changed {
+            if schedule.needs_read(now,&ids) {
                 // 新连接需要重新查询，不能把上轮缓存重新打上当前时间。
-                if changed&&!due {fresh_nodes=pnp_nodes();}
+                if !due {fresh_nodes=pnp_nodes();}
                 if let Some(fresh)=fresh_nodes{
-                    for target in &targets {
-                        if let Some(level)=target.endpoint.address.as_ref().and_then(|a|fresh.iter().filter(|n|&n.address==a).filter_map(|n|n.battery).min()){
-                            state.ingest(Sample{key:target.key.clone(),session:target.session,reading:BatteryReading{percent:level,source:BatterySource::Windows,at:Instant::now(),charging:None}});
-                        }
-                    }
+                    for sample in windows_samples(&targets,&fresh,Instant::now()) {state.ingest(sample);}
                     nodes=fresh;
                 }
-                let _=jobs.try_send(targets);battery_at=Some(now);last_targets=ids;
+                if !matches!(jobs.try_send(targets),Err(mpsc::TrySendError::Full(_))) {
+                    schedule.last=Some(now);schedule.targets=ids;
+                }
             }
             while let Ok(reading)=readings.try_recv(){state.ingest(reading);}
             if matches!(tx.try_send(state.devices(Instant::now())),Err(mpsc::TrySendError::Disconnected(_))){break;}
@@ -176,6 +200,43 @@ pub(super) fn run(tx:SyncSender<Vec<super::Device>>,stop:Arc<AtomicBool>) {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn bluetooth_poll_interval_and_reconnect() {
+        let now=Instant::now();
+        let ids=vec![("le".to_string(),1)];
+        let initial=PollSchedule::default();
+        assert!(initial.needs_read(now,&ids));
+        let schedule=PollSchedule{last:Some(now),targets:ids.clone()};
+        assert!(!schedule.needs_read(now+Duration::from_secs(59),&ids));
+        assert!(schedule.needs_read(now+Duration::from_secs(60),&ids));
+        assert!(schedule.needs_read(now,&[("le".into(),2)]));
+        assert!(schedule.needs_read(now,&[]));
+    }
+
+    #[test]
+    fn bluetooth_windows_nodes_merge_before_gatt_fallback() {
+        let now=Instant::now();
+        let mut state=State::default();
+        let ep=|id:&str,addr:&str|Endpoint{id:id.into(),name:id.into(),address:Some(addr.into()),
+            kind:DeviceKind::Other,container:Some("group".into()),ble:true};
+        state.discover(vec![ep("a","001122334455"),ep("b","001122334456")],now);
+        let targets=state.targets();
+        let node=|addr:&str,battery|PnpNode{address:addr.into(),battery,container:None};
+        let nodes=[node("001122334455",None),node("001122334456",Some(32)),node("001122334455",Some(70)),node("001122334457",Some(1))];
+        let mut samples=windows_samples(&targets,&nodes,now);
+        assert_eq!(samples.len(),1);
+        let mut sample=samples.pop().unwrap();assert_eq!(sample.reading.percent,32);
+        state.ingest(sample.clone());
+        sample.reading=BatteryReading{percent:35,source:BatterySource::Gatt,charging:Some(true),at:now};
+        state.ingest(sample);
+        assert_eq!(state.devices(now)[0].battery,Some(35));
+        let later=now+FRESH_FOR+Duration::from_secs(1);
+        for s in windows_samples(&targets,&[node("001122334455",Some(30))],later) {state.ingest(s);}
+        assert_eq!(state.devices(later)[0].battery,Some(30));
+    }
+
     #[test]
     #[ignore="按需读取本机已连接设备，等待两个来源返回"]
     fn bluetooth_live_sources(){
@@ -184,7 +245,7 @@ mod tests {
             if let Ok(devices)=service.rx.recv_timeout(std::time::Duration::from_secs(1)){
                 snapshots+=1;
                 if snapshots==1||start.elapsed().as_secs()>=18 {
-                    for device in &devices {println!("{} | connected={} | battery={:?} | source={:?}",device.name,device.connected,device.battery,device.reading.as_ref().map(|r|r.source));}
+                    for device in &devices {println!("{} | connected={} | battery={:?} | source={:?} | charging={:?}",device.name,device.connected,device.battery,device.reading.as_ref().map(|r|r.source),device.reading.as_ref().and_then(|r|r.charging));}
                     println!("snapshot devices={}",devices.len());
                 }
             }

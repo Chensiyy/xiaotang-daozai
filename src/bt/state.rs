@@ -59,8 +59,10 @@ pub(super) struct Target {pub endpoint:Endpoint,pub key:String,pub session:u64}
 #[derive(Clone,Debug)]
 pub(super) struct Sample {pub key:String,pub session:u64,pub reading:BatteryReading}
 
+struct SourceReading { value:BatteryReading, observed:Instant, active:bool }
+
 struct Entry {
-    key:String,aliases:BTreeSet<String>,name:String,kind:DeviceKind,connected:bool,seen:bool,last_seen:Instant,session:u64,readings:Vec<BatteryReading>,
+    key:String,aliases:BTreeSet<String>,name:String,kind:DeviceKind,connected:bool,seen:bool,last_seen:Instant,session:u64,readings:Vec<SourceReading>,
 }
 #[derive(Default)]
 pub(super) struct State {entries:Vec<Entry>,endpoints:Vec<Endpoint>,generation:u64}
@@ -84,10 +86,16 @@ impl State {
                 for reading in other.readings {merge_reading(&mut entry.readings,reading);}
             }
             let entry=&mut self.entries[first];
-            if !entry.connected {self.generation+=1;entry.session=self.generation;entry.readings.clear();}
+            if !entry.connected {
+                self.generation+=1;entry.session=self.generation;
+                // 重连后须重新取值，同一个 Windows 缓存值仍沿用原来的变化时间。
+                entry.readings.retain(|r|r.value.source==BatterySource::Windows);
+                for r in &mut entry.readings {r.active=false;}
+            }
+            // 同一轮按端点 ID 排序，优先使用首个端点的名称。
+            if !entry.seen&&!endpoint.name.trim().is_empty() {entry.name.clone_from(&endpoint.name);}
             entry.aliases.extend(aliases);entry.connected=true;entry.seen=true;entry.last_seen=now;
             if entry.kind==DeviceKind::Other {entry.kind=endpoint.kind;}
-            if entry.name.is_empty(){entry.name=endpoint.name.clone();}
         }
         for entry in &mut self.entries {entry.connected=entry.seen;}
         self.entries.retain(|e|e.connected||now.saturating_duration_since(e.last_seen)<Duration::from_secs(600));
@@ -101,11 +109,11 @@ impl State {
     }
     pub fn ingest(&mut self,sample:Sample) {
         if sample.reading.percent>100 {return;}
-        if let Some(entry)=self.entries.iter_mut().find(|e|e.key==sample.key&&e.session==sample.session&&e.connected){merge_reading(&mut entry.readings,sample.reading);}
+        if let Some(entry)=self.entries.iter_mut().find(|e|e.key==sample.key&&e.session==sample.session&&e.connected){merge_reading(&mut entry.readings,SourceReading{observed:sample.reading.at,value:sample.reading,active:true});}
     }
     pub fn devices(&self,now:Instant)->Vec<Device> {
         let mut devices:Vec<_>=self.entries.iter().map(|e|{
-            let reading=e.readings.iter().max_by_key(|r|{
+            let reading=e.readings.iter().filter(|r|r.active).map(|r|&r.value).max_by_key(|r|{
                 let fresh=now.saturating_duration_since(r.at)<=FRESH_FOR;
                 (fresh,fresh&&r.source==BatterySource::Gatt,r.at)
             }).cloned();
@@ -114,9 +122,16 @@ impl State {
         devices.sort_by(|a,b|b.connected.cmp(&a.connected).then_with(||a.id.cmp(&b.id)));devices
     }
 }
-fn merge_reading(readings:&mut Vec<BatteryReading>,reading:BatteryReading) {
-    if let Some(old)=readings.iter_mut().find(|r|r.source==reading.source){if reading.at>old.at {*old=reading;}}
-    else {readings.push(reading);}
+fn merge_reading(readings:&mut Vec<SourceReading>,mut reading:SourceReading) {
+    let Some(old)=readings.iter_mut().find(|r|r.value.source==reading.value.source) else {
+        readings.push(reading);
+        return;
+    };
+    if reading.observed<=old.observed {return;}
+    if reading.value.source==BatterySource::Windows&&old.value.percent==reading.value.percent {
+        reading.value.at=old.value.at.min(reading.value.at);
+    }
+    *old=reading;
 }
 pub(super) fn normalize_address(value:&str)->Option<String> {
     let value:String=value.chars().filter(|c|!matches!(c,':'|'-')).collect();

@@ -13,7 +13,7 @@ fn set_level(d:&mut Device,level:u8) {d.battery=Some(level);d.reading.as_mut().u
 #[test]
 fn wireless_custom_resident_persists_from_detail_toggle(){
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();h.bt=fixture();h.app.settings.bluetooth_notifications=false;
-    open_page(&mut h);
+    h.app.settings.bluetooth_battery_notifications=false;open_page(&mut h);
     assert_eq!(h.app.wireless_devices.len(),4);assert!(h.app.notice.is_none());
     // 自动模式：只挑有电量读数的设备，电量低的在前，最多两台。
     assert_eq!(h.app.wireless_resident().iter().map(|d|d.id.as_str()).collect::<Vec<_>>(),["device-1","device-2"]);
@@ -57,6 +57,10 @@ fn wireless_detail_marks_charging_with_text_only_when_fresh(){
     h.bt[2].reading.as_mut().unwrap().charging=Some(true);
     open_page(&mut h);h.app.wireless_focus=Some("device-2".into());h.frame(vec![]);
     assert!(texts(&h).iter().any(|s|s=="充电中"));
+    h.bt[2].reading.as_mut().unwrap().source=BatterySource::Windows;
+    h.bt[2].reading.as_mut().unwrap().charging=None;h.frame(vec![]);
+    assert!(texts(&h).iter().any(|s|s=="充电中"));
+    assert!(texts(&h).iter().any(|s|s.starts_with("上次变化于")));
     h.bt[2].reading.as_mut().unwrap().at-=std::time::Duration::from_secs(181);h.frame(vec![]);
     assert!(!texts(&h).iter().any(|s|s=="充电中"),"过期读数不能继续显示充电状态");
 }
@@ -105,6 +109,8 @@ fn ring_only_resident_shows_numbers_for_low_or_charging(){
 #[test]
 fn battery_events_notify_once_and_respect_setting(){
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();h.bt=fixture();h.app.settings.bluetooth_notifications=false;
+    h.bt[2].reading.as_mut().unwrap().charging=Some(false);
+    h.bt[0].reading.as_mut().unwrap().charging=Some(false);
     let sent=|h:&H,body:&str|h.app.history.iter().filter(|a|a.body==body).count();
     set_level(&mut h.bt[1],21);h.frame(vec![]);
     set_level(&mut h.bt[1],19);h.t+=1.0;h.frame(vec![]);
@@ -140,5 +146,81 @@ fn wireless_native_preview(){
             if frame==64 {raster.buf.fill([0.15,0.17,0.21,1.0]);raster.draw(&h.ctx.tessellate(out.shapes,1.0),1.0);}
         }
         let mut bytes=vec![];raster.to_rgba8(&mut bytes);image::save_buffer(dest.join(name),&bytes,640,height as u32,image::ColorType::Rgba8).unwrap();
+    }
+}
+
+#[test]
+fn wireless_unknown_charge_preserves_transitions_and_full() {
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=H::new();h.bt=vec![fixture().remove(0)];
+    h.bt[0].reading.as_mut().unwrap().charging=Some(true);
+    h.frame(vec![]);
+    for charge in [None,Some(true),None] {
+        h.t+=610.0;
+        let r=h.bt[0].reading.as_mut().unwrap();
+        r.source=if charge.is_none(){BatterySource::Windows}else{BatterySource::Gatt};
+        r.charging=charge;h.frame(vec![]);
+        assert!(h.app.wireless_fx.get("device-0").is_none_or(|fx|fx.plug.is_none()&&fx.unplug.is_none()));
+    }
+    set_level(&mut h.bt[0],100);h.frame(vec![]);
+    assert!(!h.app.history.iter().any(|a|a.body.contains("已充满")));
+    let r=h.bt[0].reading.as_mut().unwrap();r.source=BatterySource::Gatt;r.charging=Some(false);
+    h.frame(vec![]);
+    let fx=&h.app.wireless_fx["device-0"];
+    assert!(fx.unplug.is_some()&&fx.full.is_some());
+    assert!(h.app.history.iter().any(|a|a.body.contains("已充满")));
+}
+
+#[test]
+fn wireless_first_low_and_disabled_module() {
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=H::new();h.bt=vec![fixture().remove(0)];
+    h.app.settings.bluetooth_notifications=false;
+    let reading=h.bt[0].reading.take();h.bt[0].battery=None;h.frame(vec![]);
+    h.bt[0].reading=reading;set_level(&mut h.bt[0],8);h.frame(vec![]);
+    assert!(h.app.alerts.iter().chain(h.app.notice.iter()).any(|a|a.body.contains("即将耗尽")));
+    h.t+=610.0;h.frame(vec![]);
+    assert_eq!(h.app.history.iter().filter(|a|a.body.contains("即将耗尽")).count(),1);
+    h.app.settings.bluetooth_notifications=true;
+    h.app.settings.visible_pages[BLUETOOTH_PAGE]=false;
+    set_level(&mut h.bt[0],25);h.frame(vec![]);set_level(&mut h.bt[0],19);h.frame(vec![]);
+    assert!(!h.app.history.iter().any(|a|a.body.contains("电量偏低")));
+}
+
+#[test]
+fn wireless_cross_source_threshold_keeps_color_and_events_stable() {
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    for threshold in [10,20,50] {
+        let mut h=H::new();h.bt=vec![fixture().remove(0)];
+        h.app.settings.bluetooth_notifications=false;
+        let previous=crate::bluetooth_ui::level_color(threshold);
+        for (source,level) in [(BatterySource::Windows,threshold),(BatterySource::Gatt,threshold-1),
+                (BatterySource::Gatt,threshold-1),(BatterySource::Windows,threshold),(BatterySource::Gatt,threshold-1)] {
+            set_level(&mut h.bt[0],level);
+            h.bt[0].reading.as_mut().unwrap().source=source;
+            h.t+=3.0;h.frame(vec![]);
+            assert_eq!(h.app.wireless_devices[0].battery,Some(level));
+            assert_eq!(crate::bluetooth_ui::color(&h.bt[0],h.app.wireless_fx.get("device-0")),previous);
+            let warnings=h.app.history.iter().filter(|a|a.body.contains("即将耗尽")||a.body.contains("电量偏低")).count();
+            assert_eq!(warnings,usize::from(threshold==10));
+        }
+        set_level(&mut h.bt[0],threshold-2);h.frame(vec![]);
+        assert_eq!(crate::bluetooth_ui::color(&h.bt[0],h.app.wireless_fx.get("device-0")),crate::bluetooth_ui::level_color(threshold-2));
+    }
+}
+
+#[test]
+fn wireless_legacy_pins_migrate_unless_mode_is_explicit() {
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let _h=H::new();
+    let dir=crate::model::config_dir();
+    std::fs::create_dir_all(&dir).unwrap();
+    let pins=r#"bluetooth_pinned=["device-1"]"#;
+    for (contents,custom) in [(pins.to_string(),true),(format!("{pins}\nbluetooth_resident_custom=0"),false),
+            (format!("bluetooth_resident_custom=0\n{pins}"),false),("bluetooth_pinned=[]".into(),false)] {
+        std::fs::write(dir.join("settings.txt"),&contents).unwrap();
+        let s=crate::model::Settings::load();
+        assert_eq!(s.bluetooth_resident_custom,custom);
+        assert_eq!(s.bluetooth_pinned.len(),usize::from(contents.contains("device-1")));
     }
 }
