@@ -91,7 +91,8 @@ impl Layout {
     }
     pub fn reorder(&mut self,order:&[usize]) {
         if !valid_order(order){return;}
-        let original=self.x.clone();let mut cursor=-self.width/2.0+16.0;
+        let original=self.x.clone();
+        let mut cursor=original.iter().enumerate().filter_map(|(i,x)|x.map(|x|x-self.widths[i]/2.0)).fold(f32::INFINITY,f32::min);
         for slot in order.iter().copied().chain(std::iter::once(BELL)) {
             let slots:Vec<usize>=if slot==QUOTA{self.quota_slots().collect()}else{vec![slot]};
             let left=slots.iter().filter_map(|&i|original[i].map(|x|x-self.widths[i]/2.0)).fold(f32::INFINITY,f32::min);
@@ -119,34 +120,47 @@ impl Layout {
 pub(crate) struct Motion {
     pub target: Layout,
     positions: Vec<Spring>,
+    center_offset: f32,
     initialized: bool,
 }
 impl Default for Motion {
-    fn default()->Self {Self {target:Layout::new(false,0,false,false,false,false,false),positions:vec![Spring::new(0.0,360.0,0.76);10],initialized:false}}
+    fn default()->Self {Self {target:Layout::new(false,0,false,false,false,false,false),positions:vec![Spring::new(0.0,360.0,0.76);10],center_offset:0.0,initialized:false}}
 }
 impl Motion {
-    pub fn step(&mut self,target:Layout,dt:f32,animate:bool) {
+    pub fn step(&mut self,target:Layout,dt:f32,animate:bool,centered:bool) {
         self.positions.resize(target.x.len(),Spring::new(0.0,360.0,0.76));
+        let (mut left,mut right)=(f32::INFINITY,f32::NEG_INFINITY);
         for (i,x) in target.x.iter().enumerate() {
             if let Some(x)=x {
                 let spring=&mut self.positions[i];spring.target=*x;
                 if !self.initialized || self.target.x.get(i).copied().flatten().is_none() || !animate {spring.snap(*x);}else{spring.step(dt);}
+                let half=target.widths[i]/2.0;
+                left=left.min(spring.pos-half);
+                right=right.max(spring.pos+half);
             }
         }
+        // 新组件立即出现，已有组件仍在移动。按本帧的实际边界对齐整排。
+        self.center_offset=if centered && left<=right {(left+right)/2.0}else{0.0};
         self.target=target;self.initialized=true;
     }
     pub fn current(&self)->Layout {
         let mut layout=self.target.clone();
-        for (i,x) in layout.x.iter_mut().enumerate() {if x.is_some(){*x=Some(self.positions[i].pos);}}
+        for (i,x) in layout.x.iter_mut().enumerate() {if x.is_some(){*x=Some(self.position(i));}}
         layout
     }
-    pub fn position(&self,slot:usize)->f32 {self.positions[slot].pos}
+    pub fn position(&self,slot:usize)->f32 {self.positions[slot].pos-self.center_offset}
     pub fn settled(&self)->bool {self.target.x.iter().enumerate().all(|(i,x)|x.is_none()||self.positions[i].settled(100.0))}
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn reordered_clock_stays_centered_at_minimum_width(){
+        let mut layout=Layout::new(false,0,false,false,false,false,false);
+        layout.reorder(&DEFAULT_ORDER);
+        assert_eq!(layout.x[CLOCK],Some(0.0));
+    }
     #[test]
     fn hidden_clock_closes_its_gap_in_custom_orders(){
         for reverse in [false,true] {for count in [0,5] {
@@ -274,11 +288,11 @@ mod tests {
     #[test]
     fn replacing_battery_moves_continuously_and_supports_an_instant_state(){
         let before=Layout::new(true,1,true,false,false,true,false);let after=Layout::new(false,1,true,false,false,true,false);
-        let mut motion=Motion::default();motion.step(before.clone(),0.0,true);
-        motion.step(after.clone(),1.0/60.0,true);let mid=motion.current().x[QUOTA].unwrap();
+        let mut motion=Motion::default();motion.step(before.clone(),0.0,true,true);
+        motion.step(after.clone(),1.0/60.0,true,true);let mid=motion.current().x[QUOTA].unwrap();
         assert!(mid<before.x[QUOTA].unwrap()&&mid>after.x[QUOTA].unwrap());
-        for _ in 0..120 {motion.step(after.clone(),1.0/60.0,true);}
+        for _ in 0..120 {motion.step(after.clone(),1.0/60.0,true,true);}
         assert!((motion.current().x[QUOTA].unwrap()-after.x[QUOTA].unwrap()).abs()<0.01);
-        motion.step(before.clone(),1.0/60.0,false);assert_eq!(motion.current().x,before.x);
+        motion.step(before.clone(),1.0/60.0,false,true);assert_eq!(motion.current().x,before.x);
     }
 }

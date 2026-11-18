@@ -1768,7 +1768,7 @@ impl App {
         } else if self.effective_minimal()&&self.t>=self.notification_bell_until {
             (BAR_W_MIN, BAR_H_MIN)
         } else {
-            (self.resident.target.width.min(WIN_W-32.0), BAR_H)
+            (self.resident.target.width.min(self.resident_limit()), BAR_H)
         }
     }
 
@@ -1859,13 +1859,13 @@ impl App {
             if let Some(a)=self.notice.as_ref().filter(|_|!self.compact_notices()&&!self.open){layout.x[bar::PET]=Some(22.0-(self.notice_size(a).0+self.pet_space())/2.0);}
             else if self.island_lyrics_active() {layout.x[bar::PET]=Some(60.0-self.lyric_bar_width()/2.0);}
         }
-        self.resident.step(layout,dt,ctx.style().animation_time>0.0&&bar::animations_enabled());
+        let centered=!self.island_lyrics_active() && (self.notice.is_none() || self.open);
+        self.resident.step(layout,dt,ctx.style().animation_time>0.0&&bar::animations_enabled(),centered);
         if self.opts.fetch_lyrics {
             self.poll_lyrics();
         }
         self.update_island_lyric_layout(&ctx);
 
-        let cx = win.center().x;
         // 胶囊皮肤悬浮在屏幕顶边下方。
         let pill = self.settings.island_shape==model::IslandShape::Pill;
         let top = win.top() + if pill { PILL_GAP } else { 0.0 };
@@ -1899,7 +1899,9 @@ impl App {
 
         // ---------- 输入：悬停 ----------
         let p_prev = self.progress();
-        let hit = if side {self.side_hit_rect(win,p_prev)} else {self.hit_rect(cx, top, p_prev)};
+        let (offset,badge,notice)=self.bar_parts(win,self.island_rect(win,self.w.pos,self.h.pos));
+        let cx=win.center().x+offset.x;
+        let hit = if side {self.side_hit_rect(win,p_prev).translate(offset)} else {self.hit_rect(cx, top, p_prev)};
         let page_before=self.page;
         let previous_menu=self.shelf_menu_rect.take();
         let inside = env.cursor.is_some_and(|c| hit.contains(c) || previous_menu.is_some_and(|r|r.contains(c)));
@@ -1907,7 +1909,7 @@ impl App {
             && !env.fullscreen_hidden && !env.screen_locked && env.cursor.is_some_and(|c|area.contains(c))
             && !ctx.input(|i|i.pointer.any_pressed() || i.key_pressed(egui::Key::Escape)));
         let page_hover=inside || self.page_scroll_area.is_some();
-        let on_notice=env.cursor.is_some_and(|c|self.messenger_badge_rect(win,self.island_rect(win,self.w.pos,self.h.pos)).is_some_and(|r|r.contains(c)) || self.notice_rect(cx,top).is_some_and(|r|r.contains(c))||self.notice_details_rect(cx,top).is_some_and(|r|r.contains(c)));
+        let on_notice=env.cursor.is_some_and(|c|badge.is_some_and(|r|r.contains(c)) || notice.is_some_and(|r|r.contains(c))||self.notice_details_rect(notice).is_some_and(|r|r.contains(c)));
         if !inside {
             self.hover_lock = false;
         }
@@ -1930,7 +1932,7 @@ impl App {
                 self.wheel_delta=0.0;
                 self.navigate_page(right);
             } else if scroll!=0.0 {
-                let cursor=env.cursor.unwrap()-self.content_origin(win).to_vec2();
+                let cursor=env.cursor.unwrap()-(self.content_origin(win)+offset).to_vec2();
                 let mail_reading=inside && self.page==5 && self.mail.open_uid.is_some();
                 let mail_list=self.page==5 && !self.mail.accounts.is_empty() && self.mail.open_uid.is_none() && self.mail_list_bounds().contains(cursor);
                 let music_volume=self.page==0 && (Rect::from_min_max(Pos2::new(354.0,106.0),Pos2::new(380.0,130.0)).contains(cursor)
@@ -1976,7 +1978,6 @@ impl App {
         let volume_dragging=self.music_volume_open && ctx.is_being_dragged(egui::Id::new(("card-drag",true,"m-volume-track")));
         let want = (page_hover && !self.hover_lock && (self.compact_notices()||self.notice.is_none()||self.open)) || self.open && on_notice || (self.open && self.t<self.forced_open_until) || self.drag_hot || volume_dragging || (self.is_editing() && self.open);
         self.morph(want, inside, env.t, dt);
-        self.update_pet(env, cx);
 
         // ---------- 绘制 ----------
         let p = self.progress();
@@ -1985,13 +1986,15 @@ impl App {
         let (max_w, max_h) = if side {(crate::side_dock::SIDE_W, crate::side_dock::SIDE_H)} else {(WIN_W, WIN_H)};
         let (w, h) = ((self.w.pos * sx).min((max_w - 24.0).max(self.w.pos)), (self.h.pos * sy).min((max_h - 24.0).max(self.h.pos)));
         let panel = self.island_rect(win, w, h);
-        let messenger_rect=self.messenger_badge_rect(win,panel);
+        let (offset,messenger_rect,notice_rect)=self.bar_parts(win,panel);
+        let panel=panel.translate(offset);
+        let cx=panel.center().x;
+        self.update_pet(env,cx);
         let appear=self.messenger_appear();
         let outside_badge=messenger_rect.filter(|_|appear>0.02);
         let pc = anim::clamp01(p);
         let painter = ui.painter_at(ui.max_rect().expand(40.0));
         let feather = 1.0 / ctx.pixels_per_point();
-        let notice_rect=self.notice_rect(cx,top);
         let notice_shape=notice_rect.map(|r|Rect::from_min_max(Pos2::new(r.left()-36.0,r.top()),r.max));
         let body=messenger_rect.filter(|_|outside_badge.is_none()).map_or(panel,|badge|panel.union(badge));
         let body=notice_shape.map_or(body,|notice|body.union(notice));
@@ -2043,7 +2046,7 @@ impl App {
         // 内容只随形体「揭开」：不缩放，按面板裁剪，到 55% 才开始淡入
         let reveal = if self.open { smoothstep(0.50, 0.97, p) } else { smoothstep(0.55, 0.92, p) };
         self.reveal = reveal;
-        let origin = self.content_origin(win);
+        let origin = self.content_origin(win)+offset;
         let clip = panel.intersect(win);
         let base = Card::new(ui, origin, clip);
         self.cursor_local = env.cursor.map(|p| base.to_local(p));
@@ -2097,7 +2100,7 @@ impl App {
             }
             keep_colors.push((from,crate::skin_paint::shape_count(&ctx,layer)));
         }
-        let notice_details=self.notice_details_rect(cx,top);
+        let notice_details=self.notice_details_rect(notice_rect);
         if let Some(rect)=notice_details {
             let radius=if self.hud_notice.as_ref().is_some_and(|a|a.meeting.is_some()){14.0}else{10.0};
             let from=crate::skin_paint::shape_count(&ctx,layer);
@@ -2114,7 +2117,7 @@ impl App {
         if pet_alpha>0.004 && !minimal_pill {
             let y=(h.min(self.base_size().1)-BAR_H).max(0.0)/2.0;
             // 吉祥物跟随皮肤换色：浅色底上变成深色版本，保持清晰。
-            let fit=if self.island_lyrics_active()||self.notice.is_some(){1.0}else{((WIN_W-32.0)/self.resident.target.width).min(1.0)};
+            let fit=if self.island_lyrics_active()||self.notice.is_some(){1.0}else{(self.resident_limit()/self.resident.target.width).min(1.0)};
             self.pet.draw(&base.scaled(cx-origin.x,15.0,fit).shifted(0.0,y).faded(pet_alpha),cx-origin.x+self.resident.position(bar::PET),self.t,self.skin_palette());
         }
         let mut page_transition=false;
@@ -2226,7 +2229,7 @@ impl App {
         // 交互形变保持 60 帧，媒体 30 帧；小表情 20 帧，睡眠 10 帧，静态界面每秒核对提醒。
         let repaint_after=std::time::Duration::from_secs_f64(if transitioning{1.0/60.0}else if ambient{1.0/30.0}else if pet_visible{if self.pet.state==PetState::Sleeping{0.1}else{0.05}}else{1.0});
         cmds.append(&mut self.pending);
-        let next_hit=if side {self.side_hit_rect(win,self.progress())} else {self.hit_rect(cx,top,self.progress())};
+        let next_hit=if side {self.side_hit_rect(win,self.progress()).translate(offset)} else {self.hit_rect(cx,top,self.progress())};
         if page_before!=self.page && self.open {
             let previous=self.page_scroll_area.map_or(hit,|area|hit.union(area));
             // 保留缩短一侧原有的整段宽度。和新页重叠一点，避免在边缘来回挪动时误收起。
@@ -2249,7 +2252,7 @@ impl App {
             page_scroll_area:self.page_scroll_area.map(rel),
             click_through: minimal_strip && !self.open && self.position_drag.is_none(),
             notice_hit:notice_shape.into_iter().chain(notice_details).chain(messenger_rect).chain(self.shelf_menu_rect).reduce(|a,b|a.union(b)).map(rel),
-            file_drop_zone:self.settings.visible_pages[3].then(||rel(if side {self.island_rect(win,PW,self.expanded_height())} else {Rect::from_min_size(Pos2::new(cx-PW/2.0,top),Vec2::new(PW,96.0))})),
+            file_drop_zone:self.settings.visible_pages[3].then(||rel(if side {self.island_rect(win,PW,self.expanded_height()).translate(offset)} else {Rect::from_min_size(Pos2::new(cx-PW/2.0,top),Vec2::new(PW,96.0))})),
             expanded: self.open,
             editing: self.is_editing(),
             animating,
@@ -2320,7 +2323,32 @@ impl App {
     /// 收起时叠放区沿胶囊方向的长度。
     fn unread_stack_len(&self,horizontal:bool)->f32 {
         let icons=(self.unread_sources().len()+self.health_badges().len()) as f32;
-        32.0+unread_step(horizontal)*(icons-1.0)
+        if icons==0.0 {0.0}else{32.0+unread_step(horizontal)*(icons-1.0)}
+    }
+
+    pub(crate) fn resident_limit(&self)->f32 {
+        let limit=if self.side(){crate::side_dock::SIDE_H-24.0}else{WIN_W-32.0};
+        if self.pending_messengers.is_empty() && !self.health_pending.contains(&true){return limit;}
+        limit-self.unread_stack_len(!self.side())
+    }
+
+    /// 并入岛体的图标与主内容共用停靠中线；展开后独立显示的胶囊自行定位。
+    fn bar_parts(&self,win:Rect,panel:Rect)->(Vec2,Option<Rect>,Option<Rect>) {
+        let badge=self.messenger_badge_rect(win,panel);
+        let notice=self.notice_rect(panel);
+        let merged=badge.filter(|_|self.messenger_appear()<=0.02).into_iter().chain(notice);
+        let body=merged.fold(panel,Rect::union);
+        let bounds=self.screen.map_or(win,|screen|screen.intersect(win));
+        let along=|center:f32,mid:f32,low:f32,high:f32|{
+            let shift=center-mid;
+            if low<=high {shift.clamp(low,high)}else{shift}
+        };
+        let offset=if body==panel {Vec2::ZERO} else if self.side(){
+            Vec2::new(0.0,along(win.center().y,body.center().y,bounds.top()-body.top(),bounds.bottom()-body.bottom()))
+        }else{
+            Vec2::new(along(win.center().x,body.center().x,bounds.left()-body.left(),bounds.right()-body.right()),0.0)
+        };
+        (offset,badge.map(|r|r.translate(offset)),notice.map(|r|r.translate(offset)))
     }
 
     fn messenger_badge_rect(&self,win:Rect,panel:Rect)->Option<Rect>{
@@ -2354,7 +2382,7 @@ impl App {
         }else{
             let right=panel.right()+self.notice_width.pos;
             let y=if self.notice.is_some() && !self.compact_notices(){panel.center().y-BAR_H/2.0}else{panel.top()};
-            (if right+width<=bounds.right(){right}else{panel.left()-width},y)
+            (if !self.side() || right+width<=bounds.right(){right}else{panel.left()-width},y)
         };
         Some(Rect::from_min_size(Pos2::new(x,y),Vec2::new(width,height)))
     }
@@ -2449,14 +2477,14 @@ impl App {
         self.w.tune(OPEN_W.0,OPEN_W.1);self.h.tune(OPEN_H.0,OPEN_H.1);
         self.w.target=PW;self.h.target=self.expanded_height();
     }
-    fn notice_rect(&self,cx:f32,top:f32)->Option<Rect>{
+    fn notice_rect(&self,panel:Rect)->Option<Rect>{
         if !self.compact_notices(){return None;}
         let width=self.notice_width.pos-8.0;
-        (width>0.5).then(||Rect::from_min_size(Pos2::new(cx+self.w.pos/2.0+8.0,top),Vec2::new(width,BAR_H)))
+        (width>0.5).then(||Rect::from_min_size(Pos2::new(panel.right()+8.0,panel.top()),Vec2::new(width,BAR_H)))
     }
-    fn notice_details_rect(&self,cx:f32,top:f32)->Option<Rect>{
+    fn notice_details_rect(&self,badge:Option<Rect>)->Option<Rect>{
         let a=self.hud_notice.as_ref().filter(|_|self.notice_details&&self.notice.is_some())?;
-        let badge=self.notice_rect(cx,top)?;let (width,height)=self.notice_size(a);
+        let badge=badge?;let (width,height)=self.notice_size(a);
         let mut x=badge.left();
         // 岛体靠近屏幕右缘时，详情卡片向左展开，始终完整留在屏幕内。
         if let Some(screen)=self.screen {x=x.min(screen.right()-width-8.0).max(screen.left()+8.0);}
@@ -2840,7 +2868,7 @@ impl App {
     // ---------------------------------------------------------------
     fn shared_header(&mut self, base: &Card, cx: f32, p: f32, reveal: f32, env: &Env) {
         let local_cx = cx - base.origin.x;
-        let fit=((WIN_W-32.0)/self.resident.target.width).min(1.0);
+        let fit=if self.island_lyrics_active(){1.0}else{(self.resident_limit()/self.resident.target.width).min(1.0)};
         let fitted=base.scaled(local_cx,15.0,lerp(fit,1.0,p));
         let base=&fitted;
         let lyric=self.island_lyric().map(|(index,_)|index);

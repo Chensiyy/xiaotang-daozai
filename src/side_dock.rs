@@ -56,7 +56,7 @@ impl App {
 
     /// 收起态尺寸（屏幕宽 × 高）。极简模式是贴边的一小段竖线。
     pub(crate) fn side_base_size(&self, minimal: bool) -> (f32, f32) {
-        if minimal { (BAR_H_MIN, BAR_W_MIN) } else { (SIDE_BAR_W, self.side_bar_len().min(SIDE_H-24.0)) }
+        if minimal { (BAR_H_MIN, BAR_W_MIN) } else { (SIDE_BAR_W, self.side_bar_len().min(self.resident_limit())) }
     }
 
     fn side_gap(&self) -> f32 {
@@ -117,7 +117,7 @@ impl App {
         let items = self.side_items();
         let total: f32 = items.iter().map(|i| i.height(self.settings.clock_seconds)).sum();
         let cx = width / 2.0;
-        let fitted=c.scaled(cx,height/2.0,((SIDE_H-24.0)/(total+14.0)).min(1.0));
+        let fitted=c.scaled(cx,height/2.0,(self.resident_limit()/(total+14.0)).min(1.0));
         let c=&fitted;
         let mut y = (height - total) / 2.0;
         for item in items {

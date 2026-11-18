@@ -1271,7 +1271,8 @@ impl H {
         let point=self.shapes.iter().find_map(|s|match &s.shape{egui::Shape::Text(t)if t.galley.text()==label&&t.opacity_factor>0.9&&s.clip_rect.contains(t.visual_bounding_rect().center())=>Some(t.visual_bounding_rect().center()),_=>None}).unwrap_or_else(||panic!("未找到可点击文字：{label}"));
         self.click(point);
     }
-    fn click_notice_badge(&mut self){if self.app.compact_notices(){self.click(Pos2::new(WIN_W/2.0+(self.app.current_width()-44.0)/2.0+26.0,15.0));}}
+    fn notice_button(&self)->Rect {self.ctx.read_response(egui::Id::new(("card",true,"notice-badge"))).expect("应显示通知入口").rect}
+    fn click_notice_badge(&mut self){if self.app.compact_notices(){self.click(self.notice_button().center());}}
     fn wheel(&mut self,delta:f32) {
         self.frame(vec![egui::Event::MouseWheel{unit:egui::MouseWheelUnit::Point,delta:Vec2::new(0.0,delta),modifiers:Default::default()}]);
     }
@@ -4528,7 +4529,7 @@ fn volume_hud_drag_maps_pointer_to_percentage(){
     assert!(!h.app.open);
     h.click_notice_badge();
     // 缩短后的系统音量条仍支持点击和拖动。
-    let (x0,y)=if h.app.compact_notices(){(WIN_W/2.0+(h.app.current_width()-44.0)/2.0+8.0+crate::app::HUD_TRACK_X,55.0)}else{(WIN_W/2.0-h.app.current_width()/2.0+h.app.pet_space()+crate::app::HUD_TRACK_X,19.0)};
+    let (x0,y)=if h.app.compact_notices(){(h.notice_button().left()+crate::app::HUD_TRACK_X,55.0)}else{(WIN_W/2.0-h.app.current_width()/2.0+h.app.pet_space()+crate::app::HUD_TRACK_X,19.0)};
     let press=Pos2::new(x0+52.0,y);
     h.cursor=Some(press);h.frame(vec![egui::Event::PointerMoved(press)]);
     h.frame(vec![egui::Event::PointerButton{pos:press,button:egui::PointerButton::Primary,pressed:true,modifiers:Default::default()}]);
@@ -4821,7 +4822,31 @@ fn lyric_caps_lock_notice_keeps_one_glass_outline(){
 }
 
 #[test]
-fn lyric_notifications_extend_right_and_keep_the_lyrics_in_place(){
+fn resident_components_stay_centered_during_add_and_remove(){
+    let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=H::new();
+    h.app.settings.pet=false;
+    for music in [false,true,false] {
+        h.media=if music {crate::smtc::NowPlaying{title:"Track".into(),artist:"Artist".into(),playing:true,..Default::default()}}else{Default::default()};
+        for _ in 0..45 {
+            h.frame(vec![]);
+            let layout=h.app.resident.current();
+            assert_eq!(layout.x[crate::bar_layout::MUSIC].is_some(),music);
+            let mut left=f32::INFINITY;
+            let mut right=f32::NEG_INFINITY;
+            for (slot,x) in layout.x.iter().enumerate() {
+                if let Some(x)=x {
+                    left=left.min(x-layout.widths[slot]/2.0);
+                    right=right.max(x+layout.widths[slot]/2.0);
+                }
+            }
+            assert!(((left+right)/2.0).abs()<0.01,"音乐状态 {music}，常驻内容边界 {left} 至 {right}");
+        }
+    }
+}
+
+#[test]
+fn lyric_notifications_expand_about_the_dock_center(){
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     let text=|h:&H,label:&str|h.shapes.iter().find_map(|s|match &s.shape{egui::Shape::Text(t)if t.galley.text()==label&&t.opacity_factor>0.9&&s.clip_rect.contains(t.visual_bounding_rect().center())=>Some(t.visual_bounding_rect()),_=>None}).unwrap_or_else(||panic!("应保留可见内容：{label}"));
         let mut h=H::new();h.app.settings.pet=true;h.app.settings.island_lyrics=true;h.power=(Some(75),false);
@@ -4830,9 +4855,15 @@ fn lyric_notifications_extend_right_and_keep_the_lyrics_in_place(){
         for _ in 0..90{h.frame(vec![]);}
         let label="晚风吹过了山岗";let original=text(&h,label);let right=WIN_W/2.0+h.app.current_width()/2.0;
         h.app.alert("大写锁定","已开启",5,false);
-        for _ in 0..60{h.frame(vec![]);assert!(text(&h,label).center().distance(original.center())<0.2,"提示不能挤动或替换原内容");}
+        for _ in 0..60 {
+            h.frame(vec![]);
+            let extra=h.app.current_width()-h.app.w.pos;
+            let shift=if extra>8.5 {extra/2.0}else{0.0};
+            assert!((text(&h,label).center().x-original.center().x+shift).abs()<0.6,"歌词应随主内容让出一半提示宽度");
+        }
         assert!((h.app.current_width()-(right-WIN_W/2.0)*2.0-44.0).abs()<1.0,"通知图标占用 44 点宽度");
         assert!(h.region.right()<right+64.0);assert!(!h.app.open);
+        assert!((h.notice_button().right()-right-22.0).abs()<1.0);
         h.t+=3.0;for _ in 0..100{h.frame(vec![]);}
         assert!(text(&h,label).center().distance(original.center())<0.2);
 }
@@ -6399,7 +6430,7 @@ fn hover_tooltips_fit_native_region_and_release_it_after_leaving(){
             h.app.alert("邮件验证码","收到邮件，验证码 123456，请在十分钟内使用",5,false);
             h.hover(Pos2::new(600.0,220.0),1.0);
             label="邮件验证码\n收到邮件，验证码 123456，请在十分钟内使用".to_string();
-            pointer=Pos2::new(WIN_W/2.0+(h.app.current_width()-44.0)/2.0+26.0,15.0);
+            pointer=h.notice_button().center();
         }
         h.hover(pointer,0.4);
         let hit_before_tooltip=h.hit;
@@ -6785,7 +6816,7 @@ fn compact_canvas_preserves_panel_and_notice_pixels(){
         let mut rgba=Vec::new();
         for frame in 0..180 {
             if notice && frame==60{h.app.alert("收到新邮件","会议通知及验证码 834921",5,true);}
-            let click=(notice && (frame==90 || frame==91)).then(||Pos2::new(WIN_W/2.0+(h.app.current_width()-44.0)/2.0+26.0,15.0));
+            let click=(notice && h.app.compact_notices() && (frame==90 || frame==91)).then(||h.notice_button().center());
             let t=frame as f64/60.0;
             let env=Env{t,clock:"09:41:00".into(),today:"2026-10-28".into(),date:"10月28日 周三".into(),media:media.clone(),cursor:click.or_else(||page.map(|_|H::local(300.0,40.0))),..Default::default()};
             let output=h.ctx.run(egui::RawInput{screen_rect:Some(Rect::from_min_size(Pos2::ZERO,Vec2::new(width,WIN_H))),time:Some(t),events:click.map(|pos|vec![egui::Event::PointerMoved(pos),egui::Event::PointerButton{pos,button:egui::PointerButton::Primary,pressed:frame==90,modifiers:Default::default()}]).unwrap_or_default(),..Default::default()},|ctx|{
@@ -6879,7 +6910,7 @@ fn compact_font_atlas_preserves_panel_and_notice_pixels(){
         let mut rgba=Vec::new();
         for frame in 0..180 {
             if notice && frame==60{h.app.alert("收到新邮件","会议通知及验证码 834921",5,true);}
-            let click=(notice && (frame==90 || frame==91)).then(||Pos2::new(WIN_W/2.0+(h.app.current_width()-44.0)/2.0+26.0,15.0));
+            let click=(notice && h.app.compact_notices() && (frame==90 || frame==91)).then(||h.notice_button().center());
             let t=frame as f64/60.0;
             let env=Env{t,clock:"09:41:00".into(),today:"2026-10-28".into(),date:"10月28日 周三".into(),media:media.clone(),cursor:click.or_else(||page.map(|_|H::local(300.0,40.0))),..Default::default()};
             let output=h.ctx.run(egui::RawInput{screen_rect:Some(Rect::from_min_size(Pos2::ZERO,Vec2::new(960.0,WIN_H))),max_texture_side:Some(texture_side),time:Some(t),events:click.map(|pos|vec![egui::Event::PointerMoved(pos),egui::Event::PointerButton{pos,button:egui::PointerButton::Primary,pressed:frame==90,modifiers:Default::default()}]).unwrap_or_default(),..Default::default()},|ctx|{
@@ -8114,7 +8145,7 @@ fn messenger_notifications_side_docks_keep_one_column(){
         let win=Rect::from_min_size(Pos2::ZERO,Vec2::new(WIN_W,WIN_H));
         let stack=h.ctx.read_response(egui::Id::new(("card",true,"messenger-stack"))).unwrap().rect;
         let bar=h.app.island_rect(win,h.app.w.pos,h.app.h.pos);
-        assert!((stack.center().x-bar.center().x).abs()<1.0 && stack.top()>=bar.bottom()-0.5,"收起时叠放在竖胶囊下方");
+        assert!((stack.center().x-bar.center().x).abs()<1.0 && (stack.top()-(bar.bottom()-stack.height()/2.0)).abs()<0.5,"收起时竖胶囊和下方未读整体居中");
         h.click(stack.center());for _ in 0..90{h.frame(vec![]);}
         let rect=|name|h.ctx.read_response(egui::Id::new(("card",true,name))).unwrap().rect;
         let a=rect("微信");let b=rect("QQ");
