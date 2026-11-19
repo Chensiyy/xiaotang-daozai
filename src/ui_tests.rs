@@ -740,6 +740,7 @@ fn v0649_settings_and_mail_accounts_survive_upgrade(){
         "mail_enabled=0\nmail_code=0\nmail_interval=300\nmail_ics=30\ncalendar_prompt=0\ncalendar_auto_sync=0\n");
     std::fs::write(directory.join("settings.txt"),legacy).unwrap();
     let upgraded=crate::model::Settings::load();
+    assert!(!upgraded.mail_code_only_notifications);
     assert!(upgraded.display_id.is_empty() && upgraded.avoid_apps.is_empty());
     assert!(upgraded.avoid_browsers && upgraded.bluetooth_notifications);
     assert!(!upgraded.clock_12h && !upgraded.notification_preview);
@@ -3440,6 +3441,45 @@ fn regression_microsoft_traditional_mail_creates_code_card() {
         h.t+=61.0;h.frame(vec![]);
         assert!(!h.shapes.iter().any(|shape|matches!(&shape.shape,egui::Shape::Text(t) if t.galley.text()=="431872")),"繁体验证码同样应按隐私设置自动隐藏");
     }
+}
+
+#[test]
+fn mail_code_only_notifications_filter_new_mail_across_accounts() {
+    use crate::mail::{Account, Event, Item, Provider};
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut h = H::new();
+    let addresses = ["work@example.com", "home@example.com"];
+    h.app.mail.accounts = addresses.iter().map(|&email| Account {
+        email: email.into(), provider: Provider::Qq, enabled: true, custom: None,
+    }).collect();
+    assert!(!h.app.settings.mail_code_only_notifications);
+    h.app.settings.mail_code = false;
+    for (index, (only_codes, account, subject, new, should_alert)) in [
+        (false, addresses[0], "订阅周报", true, true),
+        (true, addresses[0], "春招岗位更新", true, false),
+        (true, addresses[1], "电子账单", true, false),
+        (true, addresses[1], "登录验证码 482913", true, true),
+        (true, addresses[0], "登录验证码 654321", false, false),
+    ].into_iter().enumerate() {
+        h.app.settings.mail_code_only_notifications = only_codes;
+        let raw = format!("Subject: {subject}\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n");
+        let parsed = crate::mail::parse_message(raw.as_bytes());
+        let item = Item {
+            account: account.into(), subject: parsed.subject.clone(), code: crate::mail::code_of(&parsed),
+            uid: index as u32 + 1, from: "测试".into(), time: "09:41".into(), received_unix: None,
+            html: String::new().into(), summary: String::new().into(), links: vec![], meeting: None,
+        };
+        let alerts = h.app.alerts.len();
+        let bell_until = h.app.notification_bell_until;
+        h.app.t += 10.0;
+        h.app.mail_event(Event::Mail { item, new });
+        assert_eq!(h.app.mail.recent.len(), index + 1);
+        assert_eq!(h.app.mail.recent[0].subject, subject);
+        assert_eq!(h.app.alerts.len() - alerts, usize::from(should_alert), "{subject}");
+        assert_eq!(h.app.notification_bell_until > bell_until, should_alert, "{subject}");
+    }
+    h.app.settings.save();
+    assert!(crate::model::Settings::load().mail_code_only_notifications);
 }
 
 #[test]

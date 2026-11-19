@@ -1101,11 +1101,12 @@ impl App {
                 self.mail
                     .recent
                     .retain(|m| !(m.account.eq_ignore_ascii_case(&item.account) && m.uid == item.uid));
+                let notify = new && (!self.settings.mail_code_only_notifications || item.code.is_some());
                 self.mail.recent.insert(0, item);
                 self.mail.recent.truncate(60);
                 if new{self.mail.manage.next_refresh=0.0;}
                 self.mail.privacy.retain(self.mail.recent.iter().chain(&self.mail.manage.trash).chain(&self.mail.reading));
-                if new && self.mail_active() {
+                if notify {
                     let item=&self.mail.recent[0];
                     let body=format!("{} · {}",item.from,item.subject);
                     let body=item.code.as_ref().map(|code|crate::mail_privacy::mask(&body,code)).unwrap_or(body);

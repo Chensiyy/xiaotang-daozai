@@ -1944,6 +1944,8 @@ impl App {
                         ui.add_enabled_ui(on,|ui|{
                         settings_label(ui,"设置");
                         settings_card(ui,|ui|{
+                            setting_row(ui,"仅提醒验证码邮件","所有邮箱共用。其他邮件静默收进列表，可随时查看。",&mut self.settings.mail_code_only_notifications);
+                            ui.separator();
                             setting_row(ui,"验证码高亮","识别到验证码时在岛上放大显示，点击即复制",&mut self.settings.mail_code);
                             ui.separator();
                             let sync_before=self.settings.mail_sync_operations;
