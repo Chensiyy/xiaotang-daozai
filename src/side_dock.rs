@@ -21,14 +21,14 @@ pub const SIDE_HALF_EXTENT: f32 = 150.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum SideItem {
-    Clock, Weather, Battery, Music, Focus, Bell,
+    Clock, Weather, Battery, Music, Focus, Bell, Performance(f32),
     /// AI 额度：账号下标（None 为「+N」）与高度。
     Quota(usize, f32),
 }
 
 impl SideItem {
     fn height(self, clock_seconds: bool) -> f32 {
-        match self { Self::Clock => if clock_seconds {46.0}else{32.0}, Self::Weather => 40.0, Self::Battery => 20.0, Self::Music => 18.0, Self::Focus => 22.0, Self::Bell => 22.0, Self::Quota(_, h) => h }
+        match self { Self::Performance(h) => h, Self::Clock => if clock_seconds {46.0}else{32.0}, Self::Weather => 40.0, Self::Battery => 20.0, Self::Music => 18.0, Self::Focus => 22.0, Self::Bell => 22.0, Self::Quota(_, h) => h }
     }
 }
 
@@ -42,6 +42,7 @@ impl App {
         if self.settings.show_clock {items.push(SideItem::Clock);}
         if self.weather_pill().is_some() {items.push(SideItem::Weather);}
         if self.settings.show_battery && self.resident_power.0.is_some() { items.push(SideItem::Battery); }
+        if self.performance_on_bar() {items.push(SideItem::Performance(self.settings.performance_bar.side_height(self.settings.performance_metrics)));}
         if self.media.is_music() { items.push(SideItem::Music); }
         if self.pomo.running { items.push(SideItem::Focus); }
         items.extend(self.quota_side_items().into_iter().map(|(index, h)| SideItem::Quota(index, h)));
@@ -141,6 +142,7 @@ impl App {
                     c.circle(cx, mid - 5.0, 3.0, color);
                     c.text(cx, mid + 9.0, &format!("{minutes}′"), size::TINY, W::Semibold, theme::WHITE, H::Center);
                 }
+                SideItem::Performance(h) => self.side_performance(c,cx,mid,h),
                 SideItem::Quota(index, h) => self.draw_quota_side(c, cx, mid, h, index),
                 SideItem::Bell => {
                     paint::bell(&c.scaled(cx, mid, 1.1), cx, mid, theme::WHITE, paint::bell_swing(self.t - self.notification_bell_at));

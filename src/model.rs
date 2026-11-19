@@ -216,11 +216,15 @@ pub struct Settings {
     pub browser_minimal: bool,
     pub avoid_browsers: bool,
     pub avoid_apps: Vec<(String,String)>,
-    pub visible_pages: [bool; 9],
-    pub page_order: [usize; 9],
+    pub visible_pages: [bool; 10],
+    pub page_order: [usize; 10],
     pub show_clock: bool,
     pub show_battery: bool,
     pub show_weather: bool,
+    pub show_performance: bool,
+    pub performance_bar: crate::performance::BarStyle,
+    pub performance_metrics: u16,
+    pub performance_view: crate::performance::View,
     pub clock_12h: bool,
     pub clock_period: u8,
     pub clock_seconds: bool,
@@ -290,7 +294,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { display_id: String::new(), skin: Skin::Classic, island_shape: IslandShape::Notch, glass_blur: true, island_size: 100, island_offset: 0, oled_shift: false, dock: Dock::Top, settings_theme: Default::default(), pet: true, minimal: false, browser_minimal: false, avoid_browsers: true, avoid_apps: Vec::new(), visible_pages: [true; 9], page_order: [0,1,2,3,4,5,6,7,8], show_clock: true, show_battery: true, show_weather: true, clock_12h: false, clock_period: 0, clock_seconds: false, resident_order: Vec::new(), system_hud: true, bluetooth_notifications: true, read_notifications:false, wechat_notifications:false, wecom_notifications:false, feishu_notifications:false, dingtalk_notifications:false, wechat_tray_open:false, qq_only:false, notification_preview:false, notifications: true, system_notify: true, sound: false, lyrics_enabled:true, island_lyrics:false, lyric_delay_ms:-350, hide_fullscreen: true, avoid_top_bar: true, top_bar_on_top: false, focus_minutes: 25, rest_minutes: 5, water_minutes: 45, serving_ml: 250, water_start: 9, water_end: 22, sit_remind: true, sit_minutes: 60, lunch_rest: true, lunch_start: 720, lunch_end: 810, mail_enabled: true, mail_sync_operations:false, mail_code_only_notifications: false, mail_code: true, mail_code_hide_seconds:60, mail_interval: 120, mail_ics: 15, ignored_mail_events: Vec::new(), calendar_prompt: true, calendar_auto_sync: true, clipboard_history: true, weather_city: String::new(), weather_position: None, weather_saved: Vec::new(), render_compat: false, render_compat_reason: String::new() }
+        Self { display_id: String::new(), skin: Skin::Classic, island_shape: IslandShape::Notch, glass_blur: true, island_size: 100, island_offset: 0, oled_shift: false, dock: Dock::Top, settings_theme: Default::default(), pet: true, minimal: false, browser_minimal: false, avoid_browsers: true, avoid_apps: Vec::new(), visible_pages: [true,true,true,true,true,true,true,true,true,false], page_order: [0,1,2,3,4,5,6,7,8,9], show_clock: true, show_battery: true, show_weather: true, show_performance: true, performance_bar: Default::default(), performance_metrics: 7, performance_view: Default::default(), clock_12h: false, clock_period: 0, clock_seconds: false, resident_order: Vec::new(), system_hud: true, bluetooth_notifications: true, read_notifications:false, wechat_notifications:false, wecom_notifications:false, feishu_notifications:false, dingtalk_notifications:false, wechat_tray_open:false, qq_only:false, notification_preview:false, notifications: true, system_notify: true, sound: false, lyrics_enabled:true, island_lyrics:false, lyric_delay_ms:-350, hide_fullscreen: true, avoid_top_bar: true, top_bar_on_top: false, focus_minutes: 25, rest_minutes: 5, water_minutes: 45, serving_ml: 250, water_start: 9, water_end: 22, sit_remind: true, sit_minutes: 60, lunch_rest: true, lunch_start: 720, lunch_end: 810, mail_enabled: true, mail_sync_operations:false, mail_code_only_notifications: false, mail_code: true, mail_code_hide_seconds:60, mail_interval: 120, mail_ics: 15, ignored_mail_events: Vec::new(), calendar_prompt: true, calendar_auto_sync: true, clipboard_history: true, weather_city: String::new(), weather_position: None, weather_saved: Vec::new(), render_compat: false, render_compat_reason: String::new() }
     }
 }
 
@@ -348,16 +352,13 @@ impl Settings {
                     if order.len()==6 && !order.contains(&crate::bar_layout::WEATHER) {
                         if let Some(clock)=order.iter().position(|slot|*slot==crate::bar_layout::CLOCK){order.insert(clock+1,crate::bar_layout::WEATHER);}
                     }
+                    if order.len()==7 && !order.contains(&crate::bar_layout::PERFORMANCE) {order.push(crate::bar_layout::PERFORMANCE);}
                     if crate::bar_layout::valid_order(&order){s.resident_order=order;}
                 }
                 "page_order" => {
                     if let Ok(order)=v.split(',').map(str::parse::<usize>).collect::<Result<Vec<_>,_>>() {
-                        if order.len()==9 && (0..9).all(|page|order.contains(&page)) {
-                            s.page_order.copy_from_slice(&order);
-                        } else if order.len()==8 && (0..8).all(|page|order.contains(&page)) {
-                            // 旧配置里没有天气页：接在最后，其余顺序保持不变。
-                            s.page_order[..8].copy_from_slice(&order);
-                            s.page_order[8]=8;
+                        if (8..=s.page_order.len()).contains(&order.len()) && (0..order.len()).all(|page|order.contains(&page)) {
+                            s.page_order[..order.len()].copy_from_slice(&order);
                         }
                     }
                 }
@@ -367,9 +368,13 @@ impl Settings {
                 "show_battery" => s.show_battery = v != "0",
                 "show_clock" => s.show_clock = v != "0",
                 "show_weather" => s.show_weather = v != "0",
-                "visible_pages" if (6..=9).contains(&v.len()) && v.bytes().all(|b| b==b'0' || b==b'1') => {
+                "show_performance" => s.show_performance = v != "0",
+                "performance_bar" => s.performance_bar = crate::performance::BarStyle::parse(&v),
+                "performance_metrics" => s.performance_metrics = v.parse::<u16>().unwrap_or(s.performance_metrics) & 0x1ff,
+                "performance_view" => s.performance_view = crate::performance::View::parse(&v),
+                "visible_pages" if (6..=10).contains(&v.len()) && v.bytes().all(|b| b==b'0' || b==b'1') => {
                     for (enabled,value) in s.visible_pages.iter_mut().zip(v.bytes()) { *enabled=value==b'1'; }
-                    for enabled in &mut s.visible_pages[v.len()..]{*enabled=v.bytes().any(|b|b==b'1');}
+                    for enabled in s.visible_pages[..9].iter_mut().skip(v.len()){*enabled=v.bytes().any(|b|b==b'1');}
                 }
                 "read_notifications" => s.read_notifications=v=="1",
                 "wechat_notifications" => s.wechat_notifications=v=="1",
@@ -449,6 +454,10 @@ impl Settings {
                 ("avoid_apps".into(), serde_json::to_string(&self.avoid_apps).unwrap_or_default()),
                 ("visible_pages".into(), self.visible_pages.iter().map(|enabled|if *enabled {'1'}else{'0'}).collect()),
                 ("page_order".into(),self.page_order.iter().map(usize::to_string).collect::<Vec<_>>().join(",")),
+                ("show_performance".into(),u8::from(self.show_performance).to_string()),
+                ("performance_bar".into(),self.performance_bar.key().into()),
+                ("performance_metrics".into(),self.performance_metrics.to_string()),
+                ("performance_view".into(),self.performance_view.key().into()),
                 ("resident_order".into(),self.resident_order.iter().map(usize::to_string).collect::<Vec<_>>().join(",")),
                 ("clock_period".into(), self.clock_period.to_string()),
                 ("clock_12h".into(), (self.clock_12h as u8).to_string()),

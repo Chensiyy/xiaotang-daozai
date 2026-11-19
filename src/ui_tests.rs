@@ -749,8 +749,8 @@ fn v0649_settings_and_mail_accounts_survive_upgrade(){
         crate::model::Settings::load().save();
         let saved=std::fs::read_to_string(directory.join("settings.txt")).unwrap();
         for line in legacy.lines().filter(|line|!line.starts_with("visible_pages=")&&!line.starts_with("page_order=")){assert!(saved.lines().any(|value|value==line),"升级保存不能改变旧设置：{line}");}
-        assert!(saved.lines().any(|value|value=="visible_pages=101111111"),"旧页面开关应保留，并默认开启天气页");
-        assert!(saved.lines().any(|value|value=="page_order=5,2,0,1,3,4,6,7,8"),"旧顺序应保留，并把天气页接在最后");
+        assert!(saved.lines().any(|value|value=="visible_pages=1011111110"),"旧页面开关应保留，并默认开启天气页");
+        assert!(saved.lines().any(|value|value=="page_order=5,2,0,1,3,4,6,7,8,9"),"旧顺序应保留，并把天气页接在最后");
     }
     std::fs::write(directory.join("mail-accounts.json"),br#"[{"email":"OldUser@qq.com","provider":"qq","enabled":true},{"email":"old@icloud.com","provider":"icloud","enabled":false}]"#).unwrap();
     let accounts=crate::mail::load_accounts();
@@ -1027,7 +1027,7 @@ fn settings_keep_dark_buttons_when_system_theme_changes() {
 fn expanded_settings_routes_preserve_inline_controls(){
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     for (page,tab) in crate::app::PAGE_SETTINGS_TABS.into_iter().enumerate(){
-        let mut h=H::new();h.app.show_page(page);h.hover(H::local(200.0,40.0),1.0);
+        let mut h=H::new();h.app.set_page_visible(page,true);h.app.show_page(page);h.hover(H::local(200.0,40.0),1.0);
         h.click(H::local(394.0,18.0));
         assert!(h.app.settings_open,"页面 {page} 应打开设置窗口");
         assert_eq!(h.app.settings_tab,tab);assert_eq!(h.app.page,page);
@@ -2533,8 +2533,9 @@ fn minimal_hover_does_not_catch_tabs_during_collapse() {
 fn music_header_shortcut_returns_from_every_page_without_controlling_playback() {
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     for playing in [true,false] {
-        let mut h=H::new();h.app.settings.page_order=[5,2,0,1,3,4,6,7,8];
+        let mut h=H::new();h.app.settings.page_order=[5,2,0,1,3,4,6,7,8,9];
         h.media=crate::smtc::NowPlaying{source:"cloudmusic.exe".into(),title:"Track".into(),artist:"Artist".into(),playing,duration:120.0,..Default::default()};
+        h.app.set_page_visible(crate::app::PERFORMANCE_PAGE,true);
         for page in 1..crate::app::PAGE_NAMES.len() {
             h.app.show_page(page);h.hover(H::local(300.0,60.0),0.8);h.cmds.clear();
             h.click(H::local(367.0,18.0));
@@ -3279,7 +3280,7 @@ fn quota_accounts_switch_independently_and_hide_with_the_page() {
 fn page_visibility_is_saved_and_sets_the_starting_page() {
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     let mut h=H::new();
-    assert_eq!(h.app.settings.visible_pages,[true;9]);
+    assert_eq!(h.app.settings.visible_pages,[true,true,true,true,true,true,true,true,true,false]);
     assert!(h.app.settings.show_battery);
     h.app.settings.show_battery=false;
     h.app.set_page_visible(0,false);
@@ -3287,17 +3288,17 @@ fn page_visibility_is_saved_and_sets_the_starting_page() {
     h.app.settings.save();
     let settings=crate::model::Settings::load();
     assert!(!settings.show_battery);
-    assert_eq!(settings.visible_pages,[false,true,true,false,true,true,true,true,true]);
+    assert_eq!(settings.visible_pages,[false,true,true,false,true,true,true,true,true,false]);
     let restarted=App::new(&h.ctx,Options{fetch_lyrics:false,pet_idle:1e9});
     assert_eq!(restarted.page(),1);
     assert_eq!(restarted.settings.visible_pages,settings.visible_pages);
     assert!(!restarted.settings.show_battery);
     std::fs::write(crate::model::config_dir().join("settings.txt"),"visible_pages=000000\n").unwrap();
-    assert_eq!(crate::model::Settings::load().visible_pages,[true,false,false,false,false,false,false,false,false]);
+    assert_eq!(crate::model::Settings::load().visible_pages,[true,false,false,false,false,false,false,false,false,false]);
     std::fs::write(crate::model::config_dir().join("settings.txt"),"visible_pages=1000000\n").unwrap();
-    assert_eq!(crate::model::Settings::load().visible_pages,[true,false,false,false,false,false,false,true,true],"旧版页面开关应保留，并开启新增的日程页与天气页");
+    assert_eq!(crate::model::Settings::load().visible_pages,[true,false,false,false,false,false,false,true,true,false],"旧版页面开关应保留，并开启新增的日程页与天气页");
     std::fs::write(crate::model::config_dir().join("settings.txt"),"visible_pages=invalid\n").unwrap();
-    assert_eq!(crate::model::Settings::load().visible_pages,[true;9]);
+    assert_eq!(crate::model::Settings::load().visible_pages,[true,true,true,true,true,true,true,true,true,false]);
 }
 
 #[test]
@@ -6091,7 +6092,7 @@ fn weather_resident_settings_preserve_old_orders_and_the_status_switch(){
     let path=crate::model::config_dir().join("settings.txt");std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     std::fs::write(&path,"resident_order=7,6,2,0,9,1\nshow_weather=0\n").unwrap();
     h.app.settings=crate::model::Settings::load();
-    assert_eq!(h.app.settings.resident_order,[FOCUS,MUSIC,QUOTA,CLOCK,WEATHER,PET,BATTERY],"旧排列应在时钟后插入天气并保留其余顺序");
+    assert_eq!(h.app.settings.resident_order,[FOCUS,MUSIC,QUOTA,CLOCK,WEATHER,PET,BATTERY,crate::bar_layout::PERFORMANCE],"旧排列应在时钟后插入天气并保留其余顺序");
     h.app.weather.snapshot=Some(crate::weather::Snapshot{temp:9.0,..Default::default()});
     assert!(h.app.weather_pill().is_none(),"状态开关关闭后天气不占常驻位置");
     assert!(h.app.module_on(8),"关闭常驻天气应保留天气页面");
@@ -6303,10 +6304,10 @@ fn calendar_sync_result_does_not_enqueue_another_sync() {
 fn page_order_persists_and_controls_navigation() {
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     let mut h=H::new();
-    h.app.settings.page_order=[5,2,0,1,3,4,6,7,8];
+    h.app.settings.page_order=[5,2,0,1,3,4,6,7,8,9];
     h.app.settings.save();
     let settings=crate::model::Settings::load();
-    assert_eq!(settings.page_order,[5,2,0,1,3,4,6,7,8]);
+    assert_eq!(settings.page_order,[5,2,0,1,3,4,6,7,8,9]);
     let restarted=App::new(&h.ctx,Options{fetch_lyrics:false,pet_idle:1e9});
     assert_eq!(restarted.page(),5);
     for page in [1,3,4,6,7,8] {h.app.set_page_visible(page,false);}
@@ -6322,7 +6323,7 @@ fn page_order_persists_and_controls_navigation() {
     assert_eq!(h.app.page,5);
     for invalid in ["0,0,1,2,3,4,5,6","8,1,2,3,4,5,6,7","0,1","invalid"] {
         std::fs::write(crate::model::config_dir().join("settings.txt"),format!("page_order={invalid}\n")).unwrap();
-        assert_eq!(crate::model::Settings::load().page_order,[0,1,2,3,4,5,6,7,8]);
+        assert_eq!(crate::model::Settings::load().page_order,[0,1,2,3,4,5,6,7,8,9]);
     }
 }
 
@@ -6349,9 +6350,9 @@ fn page_order_drag_applies_on_release_and_saves() {
     draw(&mut h,vec![egui::Event::PointerMoved(from),button(from,true)]);
     draw(&mut h,vec![egui::Event::PointerMoved(from+egui::vec2(0.0,10.0))]);
     draw(&mut h,vec![egui::Event::PointerMoved(to)]);
-    assert_eq!(h.app.settings.page_order,[0,1,2,3,4,5,6,7,8]);
+    assert_eq!(h.app.settings.page_order,[0,1,2,3,4,5,6,7,8,9]);
     draw(&mut h,vec![button(to,false)]);
-    assert_eq!(h.app.settings.page_order,[1,2,0,3,4,5,6,7,8]);
+    assert_eq!(h.app.settings.page_order,[1,2,0,3,4,5,6,7,8,9]);
     assert_eq!(crate::model::Settings::load().page_order,h.app.settings.page_order);
 }
 
@@ -7420,7 +7421,7 @@ fn deepseek_balance_gallery(){
 #[test]
 fn deepseek_compact_amount_fits_text_and_opens_account(){
     use crate::quota::{Provider,Event};
-    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();h.quota_accounts(5);h.app.settings.pet=false;h.app.settings.resident_order=vec![1,9,2,0,5,6,7];
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();h.quota_accounts(5);h.app.settings.pet=false;h.app.settings.resident_order=vec![1,9,2,0,5,6,7,10];
     let id=h.app.quota.config.connect_deepseek("preview".into(),"DeepSeek".into());let mut width:Option<f32>=None;let mut amount_rect=Rect::NOTHING;
     for (amount,label) in [("4.18","¥4.1"),("12800.00","¥1.28万"),("128000.00","¥12.8万")]{
         let snapshot=crate::quota::parse(Provider::DeepSeek,&serde_json::json!({"is_available":true,"balance_infos":[{"currency":"CNY","total_balance":amount,"topped_up_balance":amount,"granted_balance":"0.00"}]})).unwrap();h.app.quota_event(Event{id:id.clone(),result:Ok(snapshot)});
@@ -7698,7 +7699,7 @@ fn side_dock_stacks_ai_quota_and_opens_the_account(){
     let total=h.app.side_bar_len()-14.0;
     let mut y=top+(h.app.h.pos-total)/2.0;
     for item in h.app.side_items() {
-        let height=match item {crate::side_dock::SideItem::Quota(i,hh) if h.app.quota.config.accounts[i].id==wb=>{y+=hh/2.0;break;},crate::side_dock::SideItem::Quota(_,hh)=>hh,crate::side_dock::SideItem::Clock=>32.0,crate::side_dock::SideItem::Weather=>40.0,crate::side_dock::SideItem::Battery=>20.0,crate::side_dock::SideItem::Music=>18.0,crate::side_dock::SideItem::Focus|crate::side_dock::SideItem::Bell=>22.0};
+        let height=match item {crate::side_dock::SideItem::Quota(i,hh) if h.app.quota.config.accounts[i].id==wb=>{y+=hh/2.0;break;},crate::side_dock::SideItem::Quota(_,hh)=>hh,crate::side_dock::SideItem::Clock=>32.0,crate::side_dock::SideItem::Weather=>40.0,crate::side_dock::SideItem::Battery=>20.0,crate::side_dock::SideItem::Performance(hh)=>hh,crate::side_dock::SideItem::Music=>18.0,crate::side_dock::SideItem::Focus|crate::side_dock::SideItem::Bell=>22.0};
         y+=height;
     }
     let click=Pos2::new(18.0,y);
@@ -9361,7 +9362,7 @@ fn background_services_follow_the_module_switch(){
 
 #[test]
 fn every_module_settings_tab_maps_to_its_page(){
-    let titles=["通用","音乐","专注","健康","待办","置物","消息提醒","邮箱","日程","关于","页面管理","AI 额度","天气","外观","位置"];
+    let titles=["通用","音乐","专注","健康","待办","置物","消息提醒","邮箱","日程","关于","页面管理","AI 额度","天气","外观","位置","系统性能"];
     let mut pages:Vec<_>=(0..titles.len()).filter_map(crate::extras::settings_tab_module).collect();
     for tab in 0..titles.len() {
         if let Some(page)=crate::extras::settings_tab_module(tab) {assert!(crate::app::PAGE_NAMES[page].chars().next()==titles[tab].chars().next(),"{} ↔ {}",titles[tab],crate::app::PAGE_NAMES[page]);}
@@ -9369,7 +9370,152 @@ fn every_module_settings_tab_maps_to_its_page(){
     pages.sort();assert_eq!(pages,(0..crate::app::PAGE_NAMES.len()).collect::<Vec<_>>(),"每个功能页面各有一个设置分页");
 }
 
+
+#[test]
+fn performance_badge_opens_overview_and_drills_into_details() {
+    use crate::{app::PERFORMANCE_PAGE,bar_layout::PERFORMANCE,performance::{BarStyle,View},performance_ui::{overview_card_center,view_tab_center,BACK}};
+    let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=H::new();
+    h.app.set_page_visible(PERFORMANCE_PAGE,true);
+    h.app.settings.performance_bar=BarStyle::Pulse;
+    for _ in 0..40 {h.frame(vec![]);}
+    let badge=h.ctx.read_response(egui::Id::new(("card",true,"performance-open"))).expect("应绘制可交互的性能徽标");
+    assert!(badge.rect.is_positive(),"{:?}",badge.rect);
+    h.click(badge.rect.center());
+    assert_eq!(h.app.debug_state(),(PERFORMANCE_PAGE,true));
+    assert_eq!(h.app.performance.view,None,"展开先显示设置里的总览");
+    let tap=|h:&mut H,(x,y):(f32,f32)|{h.hover(H::local(x,y),0.8);h.click(H::local(x,y));};
+    tap(&mut h,overview_card_center(View::Gpu));
+    assert_eq!(h.app.performance.view,Some(View::Gpu),"点总览卡片进入对应详情");
+    tap(&mut h,view_tab_center(3));
+    assert_eq!(h.app.performance.view,Some(View::Disk),"详情页签可以横向切换");
+    tap(&mut h,(BACK[0]+BACK[2]/2.,BACK[1]+BACK[3]/2.));
+    assert_eq!(h.app.performance.view,Some(View::Overview),"返回键回到总览");
+    assert_eq!(h.app.settings.performance_view,View::Overview,"岛内浏览不改设置");
+    h.app.performance.view=Some(View::Memory);
+    h.app.set_page_visible(PERFORMANCE_PAGE,false);
+    h.frame(vec![]);
+    assert!(h.app.resident.current().x[PERFORMANCE].is_none());
+    assert_eq!(h.app.performance.view,None,"离开页面后下次从设置里的页面开始");
+}
+
+#[cfg(windows)]
+#[test]
+fn performance_keeps_sampling_across_hidden_and_open_views() {
+    let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=H::new();
+    h.app.set_page_visible(crate::app::PERFORMANCE_PAGE,true);
+    h.app.settings.performance_bar=crate::performance::BarStyle::Network;
+    h.fullscreen=true;
+    h.frame(vec![]);
+    std::thread::sleep(std::time::Duration::from_millis(3400));
+    h.fullscreen=false;
+    h.frame(vec![]);
+    assert!(h.app.performance.history.len()>=3,"隐藏时也要按秒采样");
+    assert!(h.app.performance.latest.cpu.is_some());
+    let at=h.app.performance.history.back().unwrap().0;
+    h.app.show_page(crate::app::PERFORMANCE_PAGE);
+    h.frame(vec![]);
+    assert!(h.app.performance.latest.cpu.is_some() && h.app.performance.history.back().unwrap().0>=at);
+    h.app.set_page_visible(crate::app::PERFORMANCE_PAGE,false);
+    h.frame(vec![]);
+    assert!(h.app.performance.history.is_empty());
+}
+
+#[cfg(windows)]
+#[test]
+#[ignore="读取一分钟实际性能数据，导出常驻与展开预览"]
+fn performance_gallery() {
+    use crate::performance::{View,BarStyle};
+    let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let dir=std::path::PathBuf::from(std::env::var_os("DAOZAI_PERFORMANCE_PREVIEW_DIR").unwrap());
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut h=H::new();
+    h.app.set_page_visible(crate::app::PERFORMANCE_PAGE,true);
+    let start=std::time::Instant::now();
+    while start.elapsed().as_secs()<61 {
+        h.app.performance.tick(true,true,true,&h.ctx);
+        std::thread::sleep(std::time::Duration::from_millis(40));
+    }
+    let today=chrono::Local::now().date_naive().to_string();
+    let mut raster=feature_raster();
+    h.app.show_page(crate::app::PERFORMANCE_PAGE);
+    for view in View::ALL {
+        h.app.performance.view=Some(view);
+        shoot_feature(&mut h,&mut raster,&dir,&format!("page-{}",view.key()),75,Some(H::local(28.,228.)),&today);
+    }
+    // 悬停内存点阵：程序那一段高亮。
+    h.app.performance.view=Some(View::Memory);
+    shoot_feature(&mut h,&mut raster,&dir,"memory-hover",20,Some(H::local(170.,110.)),&today);
+    // 悬停内存页的第二个程序：构成条里属于它的那一截亮起，其余压暗。
+    shoot_feature(&mut h,&mut raster,&dir,"memory-program-hover",20,Some(H::local(230.,268.)),&today);
+    // 悬停总览的处理器卡片。
+    h.app.performance.view=Some(View::Overview);
+    shoot_feature(&mut h,&mut raster,&dir,"overview-hover",40,Some(H::local(80.,90.)),&today);
+    h.app.performance.view=None;
+    h.app.settings.performance_metrics=crate::performance::Metric::ALL.iter().fold(0,|bits,m|bits|m.bit());
+    for style in BarStyle::ALL {
+        h.app.settings.performance_bar=style;
+        shoot_feature(&mut h,&mut raster,&dir,style.key(),240,None,&today);
+    }
+    // 设置页：深色 / 浅色各一张，再加一张自由搭配。
+    h.app.open_settings();h.ctx.set_embed_viewports(false);h.app.settings_tab=15;
+    let mut settings_raster=crate::preview_raster::Raster::new(690,1240);
+    let output=std::sync::Arc::new(std::sync::Mutex::new(None));let capture=output.clone();
+    egui::Context::set_immediate_viewport_renderer(move|ctx,mut viewport|{
+        let id=viewport.ids.this;
+        let raw=egui::RawInput{viewport_id:id,screen_rect:Some(Rect::from_min_size(Pos2::ZERO,egui::vec2(690.0,1240.0))),
+            viewports:std::iter::once((id,egui::ViewportInfo{native_pixels_per_point:Some(1.0),..Default::default()})).collect(),..Default::default()};
+        *capture.lock().unwrap()=Some(ctx.run(raw,|ctx|(viewport.viewport_ui_cb)(ctx)));
+    });
+    for (name,theme,style) in [("settings-dark",crate::settings_theme::SettingsTheme::Dark,BarStyle::Dashboard),
+        ("settings-light",crate::settings_theme::SettingsTheme::Light,BarStyle::Gauges),
+        ("settings-custom",crate::settings_theme::SettingsTheme::Dark,BarStyle::Custom)] {
+        h.app.settings.settings_theme=theme;h.app.settings.performance_bar=style;
+        h.app.settings.performance_metrics=if style==BarStyle::Custom {0b1_1000_0101} else {7};
+        for frame in 0..3 {
+            let root=h.ctx.run(Default::default(),|ctx|h.app.settings_ui(ctx,false));
+            let child=output.lock().unwrap().take().unwrap();
+            settings_raster.update_textures(&root.textures_delta);settings_raster.update_textures(&child.textures_delta);
+            if frame==2 {
+                settings_raster.buf.fill([0.0,0.0,0.0,1.0]);settings_raster.draw(&h.ctx.tessellate(child.shapes,child.pixels_per_point),child.pixels_per_point);
+                let mut rgba=Vec::new();settings_raster.to_rgba8(&mut rgba);
+                image::save_buffer(dir.join(format!("{name}.png")),&rgba,690,1240,image::ColorType::Rgba8).unwrap();
+            }
+            settings_raster.free_textures(&root.textures_delta);settings_raster.free_textures(&child.textures_delta);
+        }
+    }
+}
+
 /// 设置页的 AI 额度账号默认收起成一行；需要检查明细的测试先把所有账号展开。
 pub(crate) fn open_quota_details(h:&H){
     for account in &h.app.quota.config.accounts {h.ctx.data_mut(|d|d.insert_temp(egui::Id::new(("quota-account-open",account.id.clone())),true));}
+}
+
+#[test]
+fn performance_custom_selection_controls_both_docks_and_persists() {
+    use crate::performance::{BarStyle, Metric};
+    let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=H::new();
+    h.app.set_page_visible(crate::app::PERFORMANCE_PAGE,true);
+    h.app.settings.performance_bar=BarStyle::Custom;
+    for metrics in [vec![], vec![Metric::Ram], vec![Metric::Upload],
+                    vec![Metric::Ram,Metric::Upload,Metric::Write], Metric::ALL.to_vec()] {
+        let mask=metrics.iter().fold(0,|bits,m|bits|m.bit());
+        h.app.settings.performance_metrics=mask;
+        let shown=BarStyle::columns(mask).flat_map(|(m,n,_)|std::iter::once(m).chain(n)).collect::<Vec<_>>();
+        assert_eq!(shown,metrics);
+        assert_eq!(h.app.performance_on_bar(),!metrics.is_empty());
+        h.frame(vec![]);
+        let w=h.app.resident.current();
+        assert_eq!(w.x[crate::bar_layout::PERFORMANCE].is_some(),!metrics.is_empty());
+        if !metrics.is_empty() {assert_eq!(w.widths[crate::bar_layout::PERFORMANCE],BarStyle::Custom.width(mask));}
+        let side=h.app.side_items().into_iter().find_map(|item|match item {
+            crate::side_dock::SideItem::Performance(h)=>Some(h), _=>None,
+        });
+        assert_eq!(side,(!metrics.is_empty()).then_some(metrics.len() as f32*23.));
+        h.app.settings.save();
+        let loaded=crate::model::Settings::load();
+        assert_eq!((loaded.performance_bar,loaded.performance_metrics),(BarStyle::Custom,mask));
+    }
 }

@@ -736,7 +736,7 @@ mod tests {
 
     #[test]
     fn settings_groups_keep_every_page_reachable() {
-        let groups = ["通用", "音乐", "专注与健康", "专注与健康", "待办与置物", "待办与置物", "消息提醒", "邮箱", "日程", "关于", "页面管理", "AI 额度", "天气", "外观", "位置"];
+        let groups = ["通用", "音乐", "专注与健康", "专注与健康", "待办与置物", "待办与置物", "消息提醒", "邮箱", "日程", "关于", "页面管理", "AI 额度", "天气", "外观", "位置", "系统性能"];
         for (tab, expected) in groups.iter().enumerate() {
             let matches: Vec<_> = SETTINGS_GROUPS.iter().filter(|(_,start,end,_)| (*start..=*end).contains(&tab)).collect();
             assert_eq!(matches.len(), 1, "页面 {tab} 必须且只能属于一个分组");
@@ -1261,6 +1261,7 @@ fn settings_page_icon(page:usize)->egui::ImageSource<'static>{
         MAIL_PAGE=>("mail",include_bytes!("../assets/settings-icons/system/mail.svg")),
         QUOTA_PAGE=>("quota",include_bytes!("../assets/settings-icons/system/quota.svg")),
         CALENDAR_PAGE=>("calendar",include_bytes!("../assets/settings-icons/system/calendar.svg")),
+        PERFORMANCE_PAGE=>("performance",include_bytes!("../assets/settings-icons/system/performance.svg")),
         _=>("weather",include_bytes!("../assets/settings-icons/system/weather.svg")),
     };
     egui::ImageSource::Bytes{uri:format!("bytes://settings-header-{name}.svg").into(),bytes:bytes.into()}
@@ -1270,7 +1271,7 @@ fn settings_page_icon(page:usize)->egui::ImageSource<'static>{
 #[cfg_attr(not(test),allow(dead_code))]
 pub(crate) fn settings_tab_module(tab:usize)->Option<usize>{
     use crate::app::*;
-    match tab {1=>Some(MUSIC_PAGE),2=>Some(FOCUS_PAGE),3=>Some(WATER_PAGE),4=>Some(TODO_PAGE),5=>Some(SHELF_PAGE),7=>Some(MAIL_PAGE),8=>Some(CALENDAR_PAGE),11=>Some(QUOTA_PAGE),12=>Some(WEATHER_PAGE),_=>None}
+    match tab {1=>Some(MUSIC_PAGE),2=>Some(FOCUS_PAGE),3=>Some(WATER_PAGE),4=>Some(TODO_PAGE),5=>Some(SHELF_PAGE),7=>Some(MAIL_PAGE),8=>Some(CALENDAR_PAGE),11=>Some(QUOTA_PAGE),12=>Some(WEATHER_PAGE),15=>Some(PERFORMANCE_PAGE),_=>None}
 }
 
 pub(crate) fn settings_label(ui:&mut egui::Ui,text:&str){
@@ -1419,9 +1420,9 @@ pub(crate) const SETTINGS_TAB_APPEARANCE: usize = 13;
 pub(crate) const SETTINGS_TAB_POSITION: usize = 14;
 /// 侧栏：一项就是一页，不再有页内子标签。专注与健康（2、3）、待办与置物（4、5）各合成一页；关于固定左下角。
 /// 第四列是这一项之前的分组标题。
-const SETTINGS_GROUPS: [(&str,usize,usize,&str);13] = [
+const SETTINGS_GROUPS: [(&str,usize,usize,&str);14] = [
     ("通用",0,0,"岛仔"), ("外观",SETTINGS_TAB_APPEARANCE,SETTINGS_TAB_APPEARANCE,""), ("位置",SETTINGS_TAB_POSITION,SETTINGS_TAB_POSITION,""), ("页面管理",10,10,""),
-    ("音乐",1,1,"功能"), ("专注与健康",2,3,""), ("待办与置物",4,5,""), ("消息提醒",6,6,""), ("邮箱",7,7,""), ("日程",8,8,""), ("AI 额度",11,11,""), ("天气",12,12,""),
+    ("音乐",1,1,"功能"), ("专注与健康",2,3,""), ("待办与置物",4,5,""), ("消息提醒",6,6,""), ("邮箱",7,7,""), ("日程",8,8,""), ("AI 额度",11,11,""), ("天气",12,12,""), ("系统性能",15,15,""),
     ("关于",9,9,""),
 ];
 /// 分页标题；合并页（3→2、5→4）显示合并后的名字。
@@ -1524,6 +1525,7 @@ impl App {
                         2=>egui::include_image!("../assets/settings-icons/system/focus.svg"),
                         4=>egui::include_image!("../assets/settings-icons/system/tasks.svg"),
                         6=>egui::include_image!("../assets/settings-icons/system/notifications.svg"),
+                        15=>egui::include_image!("../assets/settings-icons/system/performance.svg"),
                         12=>egui::include_image!("../assets/settings-icons/system/weather.svg"),
                         7=>egui::include_image!("../assets/settings-icons/system/mail.svg"),
                         8=>egui::include_image!("../assets/settings-icons/system/calendar.svg"),
@@ -1547,6 +1549,10 @@ impl App {
                     // 右侧给滚动条留出空隙，卡片和开关不会被它压住。
                     ui.set_width((ui.available_width()-12.0).max(240.0));
                     match tab {
+                    15=>{
+                        let on=self.settings_feature_header(ui,crate::app::PERFORMANCE_PAGE,"查看硬件负载和实时吞吐量",|_,_|{});
+                        ui.add_enabled_ui(on,|ui|self.performance_settings(ui));
+                    }
                     12=>{
                         let on=self.settings_feature_header(ui,crate::app::WEATHER_PAGE,"当地天气与七日预报",|_,_|{});
                         ui.add_space(4.0);
@@ -1570,13 +1576,15 @@ impl App {
                             ui.separator();
                             setting_row(ui,"天气","天气图标和温度，点击打开天气页",&mut self.settings.show_weather);
                             ui.separator();
+                            ui.add_enabled_ui(self.module_on(crate::app::PERFORMANCE_PAGE),|ui|setting_row(ui,"系统性能","点击常驻指标打开性能页",&mut self.settings.show_performance));
+                            ui.separator();
                             let before=self.quota.config.compact;
                             setting_row(ui,"AI 额度","常驻账号；WorkBuddy 积分在前，DeepSeek 余额在最后",&mut self.quota.config.compact);
                             if before!=self.quota.config.compact {self.quota.config.save();}
                         });
                         settings_label(ui,"功能页面");
                         settings_card(ui,|ui|{
-                            let descriptions=["播放控制与同步歌词","番茄钟与休息计时","喝水与久坐提醒","临时收纳文件位置","任务清单与到期提醒","邮件摘要与验证码","Agent 剩余额度和账号切换","月历、邮件邀请与工作日程","当地天气与七日预报"];
+                            let descriptions=["播放控制与同步歌词","番茄钟与休息计时","喝水与久坐提醒","临时收纳文件位置","任务清单与到期提醒","邮件摘要与验证码","Agent 剩余额度和账号切换","月历、邮件邀请与工作日程","当地天气与七日预报","处理器、显卡、内存、网络与磁盘"];
                             ui.label(egui::RichText::new("拖动左侧手柄调整顺序；关闭的功能不在后台运行，不同步也不提醒，已有数据保留。").size(11.5).color(settings_color(ctx,Color32::from_gray(180),Color32::from_gray(75))));
                             #[derive(Clone)]
                             struct PageDrag(usize);
