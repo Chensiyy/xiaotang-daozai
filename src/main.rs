@@ -362,13 +362,19 @@ impl eframe::App for Shell {
             daozai::resources::GALLEYS.store(ctx.fonts(|fonts|fonts.num_galleys_in_cache()),std::sync::atomic::Ordering::Relaxed);
             self.resource_at=PollClock::now();
         }
+        let music_on=self.app.module_on(app::MUSIC_PAGE);
         let guarded=daozai::resources::GUARD.tripped();
-        if guarded && !self.guard_notified {
+        if music_on && guarded && !self.guard_notified {
             // 资源保护熔断：停止音乐会话轮询（含封面、网易云日志）与歌词查询，保住用户电脑，重启后恢复。
             self.guard_notified=true;self.app.opts.fetch_lyrics=false;
             self.app.alert("岛仔已暂停音乐功能","检测到资源占用异常，已暂停读取音乐信息和歌词。重启岛仔即可恢复；诊断记录在数据目录的 diagnostics 文件夹。",0,false);
         }
-        self.media_enabled.store(self.app.settings.visible_pages[0] && !guarded,std::sync::atomic::Ordering::Relaxed);
+        self.media_enabled.store(music_on && !guarded,std::sync::atomic::Ordering::Relaxed);
+        if !music_on {
+            self.seek_rx=None;
+            self.music_volume_rx=None;
+            self.media_fast_until=None;
+        }
         if self.media_fast_until.is_some_and(|until|Instant::now()>=until){self.media_fast_until=None;}
         self.media_enabled.set_interval(if self.media_fast_until.is_some(){smtc::POLL_FAST}else{self.app.media_poll_interval()});
         // 设置里改了岛体大小：下一帧起主窗口按新倍率栅格化，定位逻辑随像素比变化同步调整画布。
@@ -666,6 +672,7 @@ impl eframe::App for Shell {
         for cmd in out.cmds {
             match cmd {
                 Cmd::Media(t) => {
+                    if !self.app.module_on(app::MUSIC_PAGE) {continue;}
                     self.media_fast_until=Some(Instant::now()+Duration::from_secs(3));self.media_enabled.set_interval(smtc::POLL_FAST);
                     let source=self.media.lock().map(|media|media.source.clone()).unwrap_or_default();
                     let message=if source.eq_ignore_ascii_case("cloudmusic.exe"){"网易云暂未适配进度跳转，请在客户端调整"}
@@ -678,6 +685,7 @@ impl eframe::App for Shell {
                     }
                 }
                 Cmd::MusicVolume(command,source)=>{
+                    if !self.app.module_on(app::MUSIC_PAGE) {continue;}
                     self.media_fast_until=Some(Instant::now()+Duration::from_secs(3));self.media_enabled.set_interval(smtc::POLL_FAST);
                     if self.media_control.is_none(){self.media_control=smtc::ControlWorker::start(ctx.clone());}
                     match self.media_control.as_ref().ok_or(()).and_then(|worker|worker.submit(command,source.clone())){

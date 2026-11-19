@@ -56,6 +56,24 @@ impl Alert {
     }
     pub(crate) fn is_hud(&self)->bool {self.source==AlertSource::Internal && matches!(self.title.as_str(),"系统音量"|"大写锁定"|"键盘输入语言"|"网络连接"|"电源已连接"|"已切换电池供电"|"蓝牙设备")}
 }
+
+fn reminder_module(title:&str)->Option<usize> {
+    use crate::app::*;
+    match title {
+        "岛仔已暂停音乐功能"=>Some(MUSIC_PAGE),
+        "专注计时"=>Some(FOCUS_PAGE),
+        "喝水时间到了"|SIT_TITLE|"今日饮水目标达成"=>Some(WATER_PAGE),
+        "待办到时间了"=>Some(TODO_PAGE),
+        "新邮件"=>Some(MAIL_PAGE),
+        "会议提醒"=>Some(CALENDAR_PAGE),
+        _=>None,
+    }
+}
+
+fn mail_invitation(title:&str,body:&str)->bool {
+    title=="会议提醒" && body.ends_with(" · 邮件邀请")
+}
+
 fn bluetooth_notice_content(body:&str)->(&str,&str,Option<u8>){
     if let Some(name)=body.strip_suffix(" · 已断开") {return (name,"已断开",None);}
     if body=="已断开连接" {return ("蓝牙设备","已断开",None);}
@@ -272,11 +290,6 @@ impl App {
         system: bool,
     ) {
         let title = title.into();
-        if let Some(kind)=HealthReminder::ALL.into_iter().find(|kind|title==kind.title()) {
-            if self.health_pending[kind as usize]{return;}
-            self.health_pending[kind as usize]=true;
-            crate::model::save_health_pending(self.health_pending);
-        }
         let transient = matches!(
             title.as_str(),
             "系统音量" | "大写锁定" | "键盘输入语言" | "网络连接" | "电源已连接" | "已切换电池供电" | "蓝牙设备"
@@ -319,6 +332,14 @@ impl App {
         self.enqueue_alert(a, false);
     }
     pub(crate) fn enqueue_alert(&mut self, a: Alert, system: bool) {
+        if a.source==AlertSource::Internal &&
+            (reminder_module(&a.title).is_some_and(|page|!self.module_on(page))
+                || mail_invitation(&a.title,&a.body)&&!self.module_on(crate::app::MAIL_PAGE)) {return;}
+        if let Some(kind)=a.health() {
+            if self.health_pending[kind as usize]{return;}
+            self.health_pending[kind as usize]=true;
+            crate::model::save_health_pending(self.health_pending);
+        }
         // 通知仅保存在本次运行的内存中。
         if a.source==AlertSource::Internal {self.history.push_front(a.clone());}
         self.history.truncate(50);
@@ -342,6 +363,16 @@ impl App {
                 self.alerts.pop_front();
             }
         }
+    }
+    /// 清除模块尚在显示、排队或等待交给系统的提醒。跳转页码可能与其他提醒共用。
+    pub(crate) fn clear_module_reminders(&mut self,page:usize) {
+        let belongs=|title:&str,body:&str|reminder_module(title)==Some(page)
+            || page==crate::app::MAIL_PAGE&&mail_invitation(title,body);
+        let matches=|a:&Alert|a.source==AlertSource::Internal&&belongs(&a.title,&a.body);
+        self.alerts.retain(|a|!matches(a));
+        if self.notice.as_ref().is_some_and(matches){self.notice=None;}
+        if self.hud_notice.as_ref().is_some_and(matches){self.hud_notice=None;}
+        self.pending.retain(|cmd|!matches!(cmd,Cmd::Notify(title,body) if belongs(title,body)));
     }
     /// 该来源的所有账号都已查看。
     pub fn viewed_messenger(&mut self,source:crate::app::Messenger){
@@ -1512,6 +1543,10 @@ impl App {
         self.module_on(page)
     }
     pub fn settings_ui(&mut self,ctx:&egui::Context,autostart:bool){
+        // 设置弹窗独立于页面的灰显区域。模块关掉后撤下弹窗，避免继续操作。
+        if !self.module_on(crate::app::MAIL_PAGE) {self.mail.form.open=false;}
+        if !self.module_on(crate::app::CALENDAR_PAGE) {self.calendar.form.open=false;}
+        if !self.module_on(crate::app::QUOTA_PAGE)&&self.quota.connect_open {self.quota_close_connection();}
         if !self.settings_open{self.window_layout().close();release_support_codes(ctx);self.weather_source.close();}
         self.updates.poll(ctx);
         self.updates.dialog_ui(ctx);
@@ -2383,7 +2418,9 @@ impl App {
             if before!=format!("{:?}",self.settings){self.settings.save();}
             ctx.set_style(original_style);
         });
-        if !self.settings_open{self.window_layout().close();self.weather_source.close();}else{self.weather_tutorial_ui(ctx);}
+        if !self.settings_open {self.window_layout().close();}
+        if self.settings_open&&self.module_on(crate::app::WEATHER_PAGE) {self.weather_tutorial_ui(ctx);}
+        else {self.weather_source.close();}
     }
 }
 

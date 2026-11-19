@@ -734,6 +734,7 @@ impl App {
                 input.union(arrow)
             }).inner
         });
+        if !ui.is_enabled() {return false;}
         self.weather.cities.update(&self.weather.city_input,self.t);
         if self.weather.cities.pending() && self.weather.city_input.trim().chars().count()>=2 {ui.ctx().request_repaint_after(std::time::Duration::from_millis(100));}
         let mut selected=None;
@@ -1100,6 +1101,8 @@ impl App {
     pub(crate) fn weather_settings(&mut self, ui: &mut egui::Ui) {
         use crate::extras::{settings_card, settings_hint, settings_label};
         use crate::settings_theme::color;
+        // 已打开的候选浮层不会继承父级禁用状态。
+        if !ui.is_enabled() {ui.memory_mut(|memory|memory.close_popup());}
         let ctx=ui.ctx().clone();
         let accent=color(&ctx,Color32::from_rgb(96,164,255),Color32::from_rgb(34,108,220));
         ui.add_space(4.0);

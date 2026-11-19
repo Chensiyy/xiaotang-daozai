@@ -2525,13 +2525,21 @@ fn music_header_shortcut_returns_from_every_page_without_controlling_playback() 
 }
 
 #[test]
-fn music_header_shortcut_keeps_hidden_music_page_disabled() {
+fn music_header_shortcut_disappears_when_module_is_disabled() {
+    use crate::app::MUSIC_PAGE;
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();
     h.media=crate::smtc::NowPlaying{title:"Track".into(),artist:"Artist".into(),playing:true,duration:120.0,..Default::default()};
-    h.app.set_page_visible(0,false);h.app.show_page(4);h.hover(H::local(300.0,60.0),0.8);
+    h.app.show_page(4);h.hover(H::local(300.0,60.0),0.8);
+    let shortcut=egui::Id::new(("card",true,"header-music"));
+    assert!(h.ctx.read_response(shortcut).is_some());
+    h.app.set_page_visible(MUSIC_PAGE,false);h.hover(H::local(300.0,60.0),0.8);
+    assert!(h.ctx.read_response(shortcut).is_none(),"关闭后应隐藏音乐快捷入口");
+    assert!(!h.app.side_items().contains(&crate::side_dock::SideItem::Music));
     h.click(H::local(367.0,18.0));
-    assert_eq!(h.app.page,4);assert!(!h.app.settings.visible_pages[0]);
-    assert!(h.app.settings_open);assert_eq!(h.app.settings_tab,1);
+    assert_eq!(h.app.page,4);assert!(!h.app.settings_open);
+    h.app.set_page_visible(MUSIC_PAGE,true);h.hover(H::local(300.0,60.0),0.8);
+    h.click(H::local(367.0,18.0));
+    assert_eq!(h.app.page,MUSIC_PAGE);
 }
 
 #[test]
@@ -3499,7 +3507,7 @@ fn mail_page_shows_code_and_copies_on_click() {
         },
         new: true,
     });
-    assert!(h.app.notification_bell_until > 0.0, "新邮件应点亮铃铛");
+    assert!(h.app.notification_bell().is_some(), "新邮件应点亮铃铛");
     assert!(h.app.alerts.iter().any(|a|a.title=="新邮件"&&a.page==5),"新邮件应进入通知队列，不能只有收起时才可见的铃铛");
     h.app.show_page(5);
     h.hover(Pos2::new(WIN_W / 2.0, 12.0), 0.6);
@@ -5994,6 +6002,22 @@ fn page_management_resident_switches_follow_their_modules(){
             _=>None,
         }).expect("找不到开关圆点")
     };
+
+    // 逐项使用页面管理的开关，检查退出当前页面、保存以及重新进入。
+    for (page,name) in PAGE_NAMES.iter().enumerate() {
+        h.app.show_page(page);
+        draw_page_management(&mut h,vec![]);
+        let point=switch(&h,name,true).0.center();
+        click(&mut h,point);
+        assert!(!h.app.module_on(page),"{name} 应可关闭");
+        assert_ne!(h.app.page(),page,"关闭 {name} 时应退出当前页");
+        assert!(!crate::model::Settings::load().visible_pages[page]);
+        click(&mut h,point);
+        assert!(h.app.module_on(page),"{name} 应可重新开启");
+        assert!(crate::model::Settings::load().visible_pages[page]);
+        h.app.show_page(page);
+        assert_eq!(h.app.page(),page,"重新开启后应能进入 {name}");
+    }
 
     let residents=[(WEATHER_PAGE,"天气"),(BLUETOOTH_PAGE,"无线设备电量"),(QUOTA_PAGE,"AI 额度")];
     for (page,_) in residents {
@@ -9213,9 +9237,9 @@ fn background_services_follow_the_module_switch(){
     assert!(h.app.mail_active() && h.app.clipboard_active() && h.app.quota_active());
     for page in [MAIL_PAGE,QUOTA_PAGE,SHELF_PAGE] {h.app.set_page_visible(page,false);}
     assert!(!h.app.mail_active() && !h.app.clipboard_active() && !h.app.quota_active(),"页面开关就是模块总开关");
-    h.frame(vec![]);
-    assert!(!h.app.clipboard.is_enabled(),"置物架关闭后不再记录剪贴板");
+    assert!(!h.app.clipboard.is_enabled(),"置物架关闭后立即停止记录剪贴板");
     for page in [MAIL_PAGE,QUOTA_PAGE,SHELF_PAGE] {h.app.set_page_visible(page,true);}
+    assert!(h.app.clipboard.is_enabled(),"重开时恢复原来的剪贴板记录偏好");
     h.app.settings.mail_enabled=false;h.app.settings.clipboard_history=false;h.app.quota.config.enabled=false;
     assert!(!h.app.mail_active() && !h.app.clipboard_active() && !h.app.quota_active(),"模块内的开关仍然有效");
 }
@@ -9238,3 +9262,10 @@ pub(crate) fn open_quota_details(h:&H){
 
 #[path="bluetooth_ui_tests.rs"]
 mod bluetooth_ui_tests;
+
+#[path="module_settings_tests.rs"]
+mod module_settings_tests;
+#[path="module_mail_tests.rs"]
+mod module_mail_tests;
+#[path="module_reminder_tests.rs"]
+mod module_reminder_tests;
