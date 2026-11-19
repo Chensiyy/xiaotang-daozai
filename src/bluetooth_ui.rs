@@ -26,13 +26,17 @@ const FLOW:f64=1.8;
 const ENTER:f32=0.9;
 const STAGGER:f32=0.07;
 
-fn charging(device:&Device,fx:Option<&WirelessFx>)->bool {
+fn charge_state(device:&Device,fx:Option<&WirelessFx>)->Option<bool> {
     let now=Instant::now();
-    if device.stale_at(now) {return false;}
+    if device.stale_at(now) {return None;}
     device.reading.as_ref().and_then(|r|r.charging).or_else(|| {
         let report=fx?.last_charge?;
         (now.saturating_duration_since(report.at)<=crate::bt::FRESH_FOR).then_some(report.charging)
-    })==Some(true)
+    })
+}
+
+fn charging(device:&Device,fx:Option<&WirelessFx>)->bool {
+    charge_state(device,fx)==Some(true)
 }
 fn stale(device:&Device)->bool {device.stale_at(Instant::now())}
 /// 绿 ≥50 · 黄 20–49 · 橙 10–19 · 红 <10。
@@ -365,8 +369,14 @@ impl App {
         c.centered_text(x,66.0,&c.fit(&device.name,15.0,W::Bold,190.0),15.0,W::Bold,theme::WHITE,H::Left);
         reading(c,x,101.0,34.0,device,fx.as_ref(),self.t,true,enter,false);
         let mut mx=x;
-        if charging(device,fx.as_ref()) {mx+=c.text(mx,140.0,"充电中",10.5,W::Semibold,color(device,fx.as_ref()),H::Left)+10.0;}
-        let source=device.reading.as_ref().map_or("设备没有提供电量",|r|r.source.label());
+        match charge_state(device,fx.as_ref()) {
+            Some(true)=>{mx+=c.text(mx,140.0,"充电中",10.5,W::Semibold,color(device,fx.as_ref()),H::Left)+10.0;}
+            None if device.reading.is_some()&&!stale(device)=>{
+                c.text(x,126.0,"充电状态未知",10.5,W::Regular,theme::DIM,H::Left);
+            }
+            _=>{}
+        }
+        let source=device.reading.as_ref().map_or("暂未读到电量",|r|r.source.label());
         mx+=c.text(mx,140.0,source,10.5,W::Regular,theme::DIM,H::Left)+10.0;
         if let Some(ago)=reading_age(device) {c.text(mx,140.0,&ago,10.5,W::Regular,theme::DIM,H::Left);}
         let automatic=(!self.settings.bluetooth_resident_custom).then(||self.wireless_resident());

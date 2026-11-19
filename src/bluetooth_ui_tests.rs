@@ -90,6 +90,27 @@ fn wireless_rings_show_unknown_compact_and_paging(){
 }
 
 #[test]
+fn wireless_detail_explains_which_battery_data_is_missing() {
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=H::new();
+    h.bt=vec![fixture().remove(0)];
+    h.app.settings.bluetooth_notifications=false;
+    open_page(&mut h);
+    assert!(texts(&h).iter().any(|s|s=="82%"));
+    assert!(texts(&h).iter().any(|s|s=="充电状态未知"));
+
+    h.bt[0].reading.as_mut().unwrap().charging=Some(false);
+    h.frame(vec![]);
+    assert!(!texts(&h).iter().any(|s|matches!(s.as_str(),"充电状态未知"|"充电中")));
+
+    h.bt[0].battery=None;
+    h.bt[0].reading=None;
+    h.frame(vec![]);
+    assert!(texts(&h).iter().any(|s|s=="暂未读到电量"));
+    assert!(!texts(&h).iter().any(|s|s=="充电状态未知"));
+}
+
+#[test]
 fn wireless_detail_marks_charging_with_text_only_when_fresh(){
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();h.bt=fixture();h.app.settings.bluetooth_notifications=false;
     h.bt[2].reading.as_mut().unwrap().charging=Some(true);
@@ -172,13 +193,14 @@ fn battery_events_notify_once_and_respect_setting(){
 fn wireless_native_preview(){
     let Some(dest)=std::env::var_os("DAOZAI_BLUETOOTH_PREVIEW_DIR") else{return;};
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let dest=std::path::PathBuf::from(dest);std::fs::create_dir_all(&dest).unwrap();
-    for (name,skin) in [("native-dark.png",crate::model::Skin::Classic),("native-cream.png",crate::model::Skin::Cream),("native-resident.png",crate::model::Skin::Classic),("native-detail.png",crate::model::Skin::Classic)]{
+    for (name,skin) in [("native-dark.png",crate::model::Skin::Classic),("native-cream.png",crate::model::Skin::Cream),("native-resident.png",crate::model::Skin::Classic),("native-detail.png",crate::model::Skin::Classic),("native-detail-unknown.png",crate::model::Skin::Classic)]{
         let mut h=H::new();h.app.settings.skin=skin;h.app.settings.bluetooth_notifications=false;h.bt=fixture();h.bt[2].reading.as_mut().unwrap().charging=Some(true);
         h.bt[0].kind=DeviceKind::EarbudsStemTips;h.bt[0].name="AirPods Pro".into();
         let resident=name=="native-resident.png";
         if resident {h.app.settings.bluetooth_resident_custom=true;h.app.settings.bluetooth_pinned=vec!["device-1".into(),"device-2".into()];}
         if !resident {h.app.show_page(BLUETOOTH_PAGE);}
-        if name=="native-detail.png" {h.app.wireless_focus=Some(h.bt[2].id.clone());}
+        if name.starts_with("native-detail") {h.app.wireless_focus=Some(h.bt[2].id.clone());}
+        if name=="native-detail-unknown.png" {h.bt[2].reading.as_mut().unwrap().charging=None;}
         let height=if resident{50}else{210};
         let mut raster=crate::preview_raster::Raster::new(640,height);
         for frame in 0..65 {
