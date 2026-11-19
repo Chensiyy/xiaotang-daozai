@@ -117,12 +117,13 @@ pub(crate) fn device_icon_source(kind: crate::bt::DeviceKind) -> egui::ImageSour
         Watch=>egui::include_image!("../assets/device-icons/watch.svg"),
         Band=>egui::include_image!("../assets/device-icons/band.svg"),
         Health=>egui::include_image!("../assets/device-icons/health.svg"),
+        Receiver24G=>egui::include_image!("../assets/device-icons/usb-receiver.svg"),
         Other=>egui::include_image!("../assets/device-icons/bluetooth-linear.svg"),
     }
 }
-pub(crate) const ALL_DEVICE_KINDS:[crate::bt::DeviceKind;23]={
+pub(crate) const ALL_DEVICE_KINDS:[crate::bt::DeviceKind;24]={
     use crate::bt::DeviceKind::*;
-    [Headphones,Earbuds,EarbudsStem,EarbudsStemTips,OpenEar,Bone,HearingAid,Speaker,Mic,Keyboard,Mouse,Trackpad,Pen,Presenter,Remote,Gamepad,JoyCon,Phone,Tablet,Watch,Band,Health,Other]
+    [Headphones,Earbuds,EarbudsStem,EarbudsStemTips,OpenEar,Bone,HearingAid,Speaker,Mic,Keyboard,Mouse,Trackpad,Pen,Presenter,Remote,Gamepad,JoyCon,Phone,Tablet,Watch,Band,Health,Receiver24G,Other]
 };
 pub(crate) fn device_icon(c: &Card, kind: crate::bt::DeviceKind, x: f32, y: f32, size: f32) {
     device_icon_tinted(c,kind,x,y,size,Color32::WHITE);
@@ -1629,7 +1630,7 @@ impl App {
                     ui.set_width((ui.available_width()-12.0).max(240.0));
                     match tab {
                     SETTINGS_TAB_WIRELESS=>{
-                        let on=self.settings_feature_header(ui,crate::app::BLUETOOTH_PAGE,"查看已连接设备的电量和充电状态",|_,_|{});
+                        let on=self.settings_feature_header(ui,crate::app::BLUETOOTH_PAGE,"查看蓝牙电量和 2.4G 接收器状态",|_,_|{});
                         ui.add_enabled_ui(on,|ui|{
                             settings_label(ui,"岛上常驻");
                             settings_card(ui,|ui|{

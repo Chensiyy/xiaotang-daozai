@@ -6,6 +6,9 @@ fn fixture()->Vec<Device> {
         id:format!("device-{i}"),name:name.into(),kind,battery,reading:battery.map(|percent|BatteryReading::new(percent,BatterySource::Gatt,std::time::Instant::now(),None)),..Default::default()
     }).collect()
 }
+fn receiver_fixture()->Device {
+    Device{id:"usb:test".into(),name:"罗技 Bolt 接收器".into(),kind:DeviceKind::Receiver24G,..Default::default()}
+}
 fn texts(h:&H)->Vec<String> {h.shapes.iter().filter_map(|s|if let egui::Shape::Text(t)=&s.shape{Some(t.galley.text().to_string())}else{None}).collect()}
 fn open_page(h:&mut H) {h.app.show_page(BLUETOOTH_PAGE);h.hover(H::local(200.0,100.0),1.0);}
 fn set_level(d:&mut Device,level:u8) {d.battery=Some(level);d.reading.as_mut().unwrap().percent=level;}
@@ -111,6 +114,44 @@ fn wireless_detail_explains_which_battery_data_is_missing() {
 }
 
 #[test]
+fn wireless_receiver_shows_presence_and_stays_out_of_resident_controls() {
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=H::new();
+    h.bt=vec![fixture().remove(0)];
+    h.app.settings.bluetooth_resident_custom=true;
+    h.app.settings.bluetooth_pinned=vec!["usb:test".into(),"device-0".into()];
+    h.receivers=vec![receiver_fixture()];
+    open_page(&mut h);
+    assert!(texts(&h).iter().any(|s|s=="接收器已插入"));
+    assert!(texts(&h).iter().any(|s|s=="电量未知"));
+    assert_eq!(h.app.wireless_resident().iter().map(|d|d.id.as_str()).collect::<Vec<_>>(),["device-0"]);
+
+    let tile=h.ctx.read_response(egui::Id::new(("card",true,("wireless-device","usb:test")))).unwrap();
+    h.click(tile.rect.center());
+    h.frame(vec![]);
+    assert_eq!(h.app.wireless_focus.as_deref(),Some("usb:test"));
+    let labels=texts(&h);
+    for label in ["罗技 Bolt 接收器","接收器已插入","电量未知"] {
+        assert!(labels.iter().any(|s|s==label),"缺少 {label}");
+    }
+    assert!(!labels.iter().any(|s|matches!(s.as_str(),"常驻显示"|"充电状态未知"|"暂未读到电量")));
+
+    h.t+=1.0/60.0;
+    let out=h.ctx.run(egui::RawInput{time:Some(h.t),screen_rect:Some(Rect::from_min_size(Pos2::ZERO,egui::vec2(640.0,390.0))),..Default::default()},|ctx|{
+        egui::CentralPanel::default().show(ctx,|ui|h.app.wireless_resident_settings(ui));
+    });
+    h.shapes=out.shapes;
+    let settings_labels=texts(&h);
+    assert!(settings_labels.iter().any(|s|s.contains("耳机 · 82%")));
+    assert!(!settings_labels.iter().any(|s|s.contains("Bolt")));
+
+    h.receivers.clear();
+    h.frame(vec![]);
+    assert!(h.app.wireless_focus.is_none());
+    assert!(!texts(&h).iter().any(|s|s=="接收器已插入"));
+}
+
+#[test]
 fn wireless_detail_marks_charging_with_text_only_when_fresh(){
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();h.bt=fixture();h.app.settings.bluetooth_notifications=false;
     h.bt[2].reading.as_mut().unwrap().charging=Some(true);
@@ -193,7 +234,8 @@ fn battery_events_notify_once_and_respect_setting(){
 fn wireless_native_preview(){
     let Some(dest)=std::env::var_os("DAOZAI_BLUETOOTH_PREVIEW_DIR") else{return;};
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let dest=std::path::PathBuf::from(dest);std::fs::create_dir_all(&dest).unwrap();
-    for (name,skin) in [("native-dark.png",crate::model::Skin::Classic),("native-cream.png",crate::model::Skin::Cream),("native-resident.png",crate::model::Skin::Classic),("native-detail.png",crate::model::Skin::Classic),("native-detail-unknown.png",crate::model::Skin::Classic)]{
+    for (name,skin) in [("native-dark.png",crate::model::Skin::Classic),("native-cream.png",crate::model::Skin::Cream),("native-resident.png",crate::model::Skin::Classic),("native-detail.png",crate::model::Skin::Classic),("native-detail-unknown.png",crate::model::Skin::Classic),
+            ("native-receiver-overview.png",crate::model::Skin::Classic),("native-receiver-detail.png",crate::model::Skin::Classic)]{
         let mut h=H::new();h.app.settings.skin=skin;h.app.settings.bluetooth_notifications=false;h.bt=fixture();h.bt[2].reading.as_mut().unwrap().charging=Some(true);
         h.bt[0].kind=DeviceKind::EarbudsStemTips;h.bt[0].name="AirPods Pro".into();
         let resident=name=="native-resident.png";
@@ -201,10 +243,12 @@ fn wireless_native_preview(){
         if !resident {h.app.show_page(BLUETOOTH_PAGE);}
         if name.starts_with("native-detail") {h.app.wireless_focus=Some(h.bt[2].id.clone());}
         if name=="native-detail-unknown.png" {h.bt[2].reading.as_mut().unwrap().charging=None;}
+        if name.starts_with("native-receiver") {h.receivers.push(receiver_fixture());}
+        if name=="native-receiver-detail.png" {h.app.wireless_focus=Some(h.receivers[0].id.clone());}
         let height=if resident{50}else{210};
         let mut raster=crate::preview_raster::Raster::new(640,height);
         for frame in 0..65 {
-            let env=crate::app::Env{t:frame as f64/60.0,clock:"10:24:00".into(),date:"11月18日 周三".into(),bt:h.bt.clone(),bt_ready:true,cursor:if resident{None}else{Some(H::local(200.0,100.0))},..Default::default()};
+            let env=crate::app::Env{t:frame as f64/60.0,clock:"10:24:00".into(),date:"11月18日 周三".into(),bt:h.bt.clone(),bt_ready:true,receivers:h.receivers.clone(),cursor:if resident{None}else{Some(H::local(200.0,100.0))},..Default::default()};
             let out=h.ctx.run(egui::RawInput{screen_rect:Some(Rect::from_min_size(Pos2::ZERO,egui::vec2(640.0,height as f32))),..Default::default()},|ctx|{egui::CentralPanel::default().frame(egui::Frame::new()).show(ctx,|ui|{h.app.frame(ui,Rect::from_min_size(Pos2::ZERO,egui::vec2(WIN_W,WIN_H)),&env);});});
             raster.update_textures(&out.textures_delta);
             if frame==64 {raster.buf.fill([0.15,0.17,0.21,1.0]);raster.draw(&h.ctx.tessellate(out.shapes,1.0),1.0);}

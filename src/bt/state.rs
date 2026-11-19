@@ -7,7 +7,7 @@ pub const FRESH_FOR:Duration=Duration::from_secs(180);
 #[derive(Clone,Copy,Debug,Default,PartialEq,Eq)]
 pub enum DeviceKind {
     Headphones,Earbuds,EarbudsStem,EarbudsStemTips,OpenEar,Bone,HearingAid,Speaker,Mic,
-    Keyboard,Mouse,Trackpad,Pen,Presenter,Remote,Gamepad,JoyCon,Phone,Tablet,Watch,Band,Health,
+    Keyboard,Mouse,Trackpad,Pen,Presenter,Remote,Gamepad,JoyCon,Phone,Tablet,Watch,Band,Health,Receiver24G,
     #[default] Other,
 }
 impl DeviceKind {

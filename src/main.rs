@@ -77,6 +77,9 @@ struct Shell {
     bt_rx: Option<daozai::bt::Service>,
     bt: Vec<daozai::bt::Device>,
     bt_ready: bool,
+    #[cfg(windows)]
+    receiver_rx: Option<daozai::bt::Service>,
+    receivers: Vec<daozai::bt::Device>,
     volume_quiet: PollClock,
     /// v0.5.5：邮件收信服务（工作线程），以及上次同步给它的账号/开关快照。
     /// 邮箱模块开启时才存在；关闭后收信与整理线程随之退出。
@@ -223,6 +226,9 @@ impl Shell {
             bt_rx: None,
             bt: Vec::new(),
             bt_ready: false,
+            #[cfg(windows)]
+            receiver_rx: None,
+            receivers: Vec::new(),
             volume_quiet: PollClock::default(),
             mail: None,
             mail_sig: None,
@@ -332,6 +338,7 @@ impl Shell {
             volume: self.system_state.volume,
             bt: self.bt.clone(),
             bt_ready: self.bt_ready,
+            receivers: self.receivers.clone(),
             screen,
             backdrop,
             glass_blur,
@@ -468,7 +475,8 @@ impl eframe::App for Shell {
             } else {
                 self.backdrop=None;
             }
-            if self.app.settings.bluetooth_notifications || self.app.module_on(daozai::app::BLUETOOTH_PAGE) {
+            let wireless_on=self.app.module_on(app::BLUETOOTH_PAGE);
+            if self.app.settings.bluetooth_notifications || wireless_on {
                 if self.bt_rx.is_none() {self.bt_rx=Some(daozai::bt::spawn());}
             } else {
                 self.bt_rx=None;
@@ -477,6 +485,16 @@ impl eframe::App for Shell {
             }
             if let Some(service)=&self.bt_rx {
                 while let Ok(found)=service.rx.try_recv(){ self.bt=found; self.bt_ready=true; }
+            }
+            if wireless_on {
+                let service=self.receiver_rx.get_or_insert_with(||{
+                    let ctx=ctx.clone();
+                    daozai::bt::spawn_receivers(move||ctx.request_repaint())
+                });
+                while let Ok(found)=service.rx.try_recv(){self.receivers=found;}
+            } else {
+                self.receiver_rx=None;
+                self.receivers.clear();
             }
             let previous_pending=self.app.pending_messengers.clone();
             for event in self.messengers.poll_taskbar(ctx,&self.app.settings){match event{

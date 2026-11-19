@@ -1169,6 +1169,7 @@ struct H {
     page_transition:bool,
     shapes:Vec<egui::epaint::ClippedShape>,
     bt: Vec<crate::bt::Device>,
+    receivers: Vec<crate::bt::Device>,
     media: crate::smtc::NowPlaying,
     power: (Option<u8>, bool),
     network: Option<bool>,
@@ -1187,7 +1188,7 @@ impl H {
         std::env::set_var("DAOZAI_DATA_DIR", &dir);
         let ctx = egui::Context::default();
         let app = App::new(&ctx, Options { fetch_lyrics: false, pet_idle: 1e9 });
-        Self { ctx, app, t: 0.0, cursor: None,cmds:vec![],region:Rect::NOTHING,hit:Rect::NOTHING,animating:false,page_transition:false,shapes:Vec::new(), bt:Vec::new(),media:Default::default(),power:(None,false),network:None,system_idle:None,screen_locked:false,fullscreen:false,browser_at_top:None,file_drop_zone:None,hovered_files:vec![],dropped_files:vec![] }
+        Self { ctx, app, t: 0.0, cursor: None,cmds:vec![],region:Rect::NOTHING,hit:Rect::NOTHING,animating:false,page_transition:false,shapes:Vec::new(), bt:Vec::new(),receivers:Vec::new(),media:Default::default(),power:(None,false),network:None,system_idle:None,screen_locked:false,fullscreen:false,browser_at_top:None,file_drop_zone:None,hovered_files:vec![],dropped_files:vec![] }
     }
     fn frame(&mut self, events: Vec<egui::Event>) {
         self.t += 1.0 / 60.0;
@@ -1209,6 +1210,7 @@ impl H {
             cursor: self.cursor,
             bt: self.bt.clone(),
             bt_ready: true,
+            receivers: self.receivers.clone(),
             media:self.media.clone(),
             battery:self.power.0,
             charging:self.power.1,
@@ -4562,6 +4564,30 @@ fn volume_hud_drag_maps_pointer_to_percentage(){
     h.frame(vec![egui::Event::PointerButton{pos:to,button:egui::PointerButton::Primary,pressed:false,modifiers:Default::default()}]);
     let last=h.cmds.iter().rev().find_map(|c|match c{crate::app::Cmd::SetVolume(v)=>Some(*v),_=>None});
     assert_eq!(last,Some(70));
+}
+
+#[test]
+fn wireless_receiver_presence_updates_without_bluetooth_notices(){
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=H::new();
+    h.app.settings.visible_pages[crate::app::BLUETOOTH_PAGE]=true;
+    h.app.settings.bluetooth_notifications=true;
+    h.frame(vec![]);
+    let receiver=crate::bt::Device{id:"usb:receiver".into(),name:"USB 接收器".into(),kind:crate::bt::DeviceKind::Receiver24G,..Default::default()};
+    h.receivers.push(receiver.clone());
+    h.frame(vec![]);
+    assert_eq!(h.app.wireless_devices,[receiver.clone()]);
+    assert!(h.app.notice.is_none()&&h.app.alerts.is_empty());
+
+    h.receivers.clear();
+    h.frame(vec![]);
+    assert!(h.app.wireless_devices.is_empty());
+    assert!(h.app.notice.is_none()&&h.app.alerts.is_empty());
+
+    h.app.settings.visible_pages[crate::app::BLUETOOTH_PAGE]=false;
+    h.receivers.push(receiver);
+    h.frame(vec![]);
+    assert!(h.app.wireless_devices.is_empty());
 }
 
 #[test]

@@ -25,6 +25,8 @@ struct ChargeReport { charging:bool, level:u8, at:Instant }
 const FLOW:f64=1.8;
 const ENTER:f32=0.9;
 const STAGGER:f32=0.07;
+const RECEIVER_INSERTED:&str="接收器已插入";
+const UNKNOWN_BATTERY:&str="电量未知";
 
 fn charge_state(device:&Device,fx:Option<&WirelessFx>)->Option<bool> {
     let now=Instant::now();
@@ -150,6 +152,7 @@ fn ring(c:&Card,cx:f32,cy:f32,spec:&RingSpec,device:&Device,fx:Option<&WirelessF
 fn reading(c:&Card,x:f32,cy:f32,size:f32,device:&Device,fx:Option<&WirelessFx>,t:f64,live:bool,enter:f32,centered:bool)->f32 {
     let col=color(device,fx);
     let text=match device.battery {
+        None if device.kind==DeviceKind::Receiver24G=>UNKNOWN_BATTERY.to_string(),
         None=>"···".to_string(),
         Some(level)=>{
             let mut shown=level as f32;
@@ -261,7 +264,7 @@ impl App {
     pub(crate) fn wireless_resident(&self)->Vec<Device> {
         if !self.settings.show_bluetooth||!self.module_on(BLUETOOTH_PAGE){return vec![];}
         let custom=self.settings.bluetooth_resident_custom;
-        let mut devices:Vec<_>=self.wireless_devices.iter().filter(|d|d.connected)
+        let mut devices:Vec<_>=self.wireless_devices.iter().filter(|d|d.connected&&d.kind!=DeviceKind::Receiver24G)
             .filter(|d|if custom {self.settings.bluetooth_pinned.contains(&d.id)} else {d.battery.is_some()}).cloned().collect();
         devices.sort_by_key(|d|(stale(d),d.battery.unwrap_or(101)));
         devices.truncate(2);devices
@@ -324,7 +327,7 @@ impl App {
         if devices.is_empty(){
             crate::extras::device_icon(c,DeviceKind::Other,191.5,51.0,36.0);
             c.text(209.5,112.0,if env.bt_ready{"还没有连接的设备"}else{"正在读取无线设备"},13.0,W::Semibold,theme::WHITE,H::Center);
-            c.text(209.5,135.0,"连接耳机、鼠标或键盘后在这里查看",10.5,W::Regular,theme::DIM,H::Center);return;
+            c.text(209.5,135.0,"连接蓝牙设备或插入支持的 2.4G 接收器",10.5,W::Regular,theme::DIM,H::Center);return;
         }
         let per_page=if devices.len()<=6 {devices.len()} else {4};
         let pages=devices.len().div_ceil(per_page);self.wireless_offset=self.wireless_offset.min(pages-1);
@@ -335,8 +338,13 @@ impl App {
         let start=(crate::app::PW-(count*col_w+(count-1.0)*gap))/2.0;
         for (index,device) in shown.iter().enumerate() {
             let x=start+index as f32*(col_w+gap);let cx=x+col_w/2.0;
-            let details=device.reading.as_ref().map(|r|format!("{}\n{} · {}",device.name,r.source.label(),reading_age(device).unwrap_or_default())).unwrap_or_else(||format!("{}\n设备尚未提供可用电量",device.name));
-            let hit=c.hit(x,ring_y-r-6.0,col_w,name_y-ring_y+r+14.0,("wireless-device",&device.id)).on_hover_text(details);
+            let receiver=device.kind==DeviceKind::Receiver24G;
+            let details=if receiver {format!("{}\n{RECEIVER_INSERTED} · {UNKNOWN_BATTERY}",device.name)} else {
+                device.reading.as_ref().map(|r|format!("{}\n{} · {}",device.name,r.source.label(),reading_age(device).unwrap_or_default())).unwrap_or_else(||format!("{}\n设备尚未提供可用电量",device.name))
+            };
+            let tile_top=ring_y-r-6.0;
+            let tile_bottom=name_y+if receiver{19.0}else{8.0};
+            let hit=c.hit(x,tile_top,col_w,tile_bottom-tile_top,("wireless-device",&device.id)).on_hover_text(details);
             let hover=hit.hovered();
             let enter=self.wireless_enter(index);let fx=self.wireless_fx.get(&device.id).cloned();
             let cc=if device.connected {c.clone()} else {c.faded(0.4)};
@@ -346,6 +354,7 @@ impl App {
             reading(&tc,cx,pct_y+rise,pct,device,fx.as_ref(),self.t,true,enter,true);
             let label=tc.fit(&device.name,name,W::Regular,col_w-2.0);
             tc.centered_text(cx,name_y+rise,&label,name,W::Regular,if hover{theme::WHITE}else{theme::DIM},H::Center);
+            if receiver {tc.centered_text(cx,name_y+14.0+rise,RECEIVER_INSERTED,9.0,W::Regular,theme::DIM,H::Center);}
             if hit.clicked() {self.wireless_focus=Some(device.id.clone());}
         }
         if pages>1 {
@@ -367,6 +376,11 @@ impl App {
         ring(c,112.0,100.0,&RingSpec{r:50.0,w:6.0,icon:38.0,live:true,enter,hover:false},device,fx.as_ref(),self.t);
         let x=190.0;
         c.centered_text(x,66.0,&c.fit(&device.name,15.0,W::Bold,190.0),15.0,W::Bold,theme::WHITE,H::Left);
+        if device.kind==DeviceKind::Receiver24G {
+            c.centered_text(x,101.0,RECEIVER_INSERTED,18.0,W::Semibold,theme::WHITE,H::Left);
+            c.centered_text(x,129.0,UNKNOWN_BATTERY,11.0,W::Regular,theme::DIM,H::Left);
+            return;
+        }
         reading(c,x,101.0,34.0,device,fx.as_ref(),self.t,true,enter,false);
         let mut mx=x;
         match charge_state(device,fx.as_ref()) {
@@ -429,9 +443,9 @@ impl App {
         self.settings.bluetooth_resident_custom=custom;
         settings_hint(ui,if custom {"优先显示所选设备中电量较低的设备"} else {"自动挑电量最低的设备常驻"});
         if custom {
-            let devices=self.wireless_devices.clone();
-            if devices.is_empty() {settings_hint(ui,"连接设备后可以在这里勾选");}
-            for device in &devices {
+            let mut devices=self.wireless_devices.iter().filter(|d|d.kind!=DeviceKind::Receiver24G).peekable();
+            if devices.peek().is_none() {settings_hint(ui,"连接蓝牙设备后可以在这里勾选");}
+            for device in devices {
                 let mut on=self.settings.bluetooth_pinned.contains(&device.id);
                 let label=match device.battery {Some(level)=>format!("{} · {level}%",device.name),None=>format!("{} · 未上报电量",device.name)};
                 if ui.checkbox(&mut on,label).changed() {

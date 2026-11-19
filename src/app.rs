@@ -141,6 +141,8 @@ pub struct Env {
     pub bt: Vec<crate::bt::Device>,
     /// 蓝牙服务是否已经完成首次扫描。
     pub bt_ready: bool,
+    /// Windows 当前识别到的 2.4G USB 接收器。
+    pub receivers: Vec<crate::bt::Device>,
     /// 岛所在屏幕（与 `win` 同一坐标系，逻辑点）；用于让通知详情留在屏幕内。
     pub screen: Option<Rect>,
     /// 毛玻璃皮肤：岛体四周采样得到的背景色（sRGB 0..1）。
@@ -1499,6 +1501,12 @@ impl App {
         if !(self.open&&self.page==BLUETOOTH_PAGE) {self.wireless_enter_at=None;}
         self.track_wireless_changes(&env.bt);
         self.wireless_devices=env.bt.clone();
+        if self.module_on(BLUETOOTH_PAGE) {
+            self.wireless_devices.extend(env.receivers.iter().cloned());
+        }
+        if self.wireless_focus.as_ref().is_some_and(|id|!self.wireless_devices.iter().any(|d|&d.id==id)) {
+            self.wireless_focus=None;
+        }
         if self.t >= self.volume_quiet_until {
             if let Some(v) = env.volume {
                 self.volume_ui = Some(v);
