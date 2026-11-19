@@ -109,8 +109,13 @@ fn wireless_detail_explains_which_battery_data_is_missing() {
     h.bt[0].battery=None;
     h.bt[0].reading=None;
     h.frame(vec![]);
-    assert!(texts(&h).iter().any(|s|s=="暂未读到电量"));
+    assert!(texts(&h).iter().any(|s|s=="正在读取电量"),"刚连上、还没读到电量时显示正在读取");
     assert!(!texts(&h).iter().any(|s|s=="充电状态未知"));
+    // 超过读取宽限期仍没有电量：按已连接显示，不再是灰色的“正在读取”。
+    h.t+=80.0;h.frame(vec![]);
+    let t=texts(&h);
+    assert!(t.iter().any(|s|s=="已连接")&&t.iter().any(|s|s=="设备没有提供电量"));
+    assert!(!t.iter().any(|s|s=="正在读取电量"));
 }
 
 #[test]
@@ -122,8 +127,9 @@ fn wireless_receiver_shows_presence_and_stays_out_of_resident_controls() {
     h.app.settings.bluetooth_pinned=vec!["usb:test".into(),"device-0".into()];
     h.receivers=vec![receiver_fixture()];
     open_page(&mut h);
-    assert!(texts(&h).iter().any(|s|s=="接收器已插入"));
-    assert!(texts(&h).iter().any(|s|s=="电量未知"));
+    let t=texts(&h);
+    assert!(t.iter().any(|s|s=="已连接")&&t.iter().any(|s|s=="2.4G"),"接收器一插上就是已连接，并带 2.4G 角标");
+    assert!(!t.iter().any(|s|s=="···"));
     assert_eq!(h.app.wireless_resident().iter().map(|d|d.id.as_str()).collect::<Vec<_>>(),["device-0"]);
 
     let tile=h.ctx.read_response(egui::Id::new(("card",true,("wireless-device","usb:test")))).unwrap();
@@ -131,10 +137,10 @@ fn wireless_receiver_shows_presence_and_stays_out_of_resident_controls() {
     h.frame(vec![]);
     assert_eq!(h.app.wireless_focus.as_deref(),Some("usb:test"));
     let labels=texts(&h);
-    for label in ["罗技 Bolt 接收器","接收器已插入","电量未知"] {
+    for label in ["罗技 Bolt 接收器","已连接","2.4G","2.4G 接收器 · 这类接收器不提供电量"] {
         assert!(labels.iter().any(|s|s==label),"缺少 {label}");
     }
-    assert!(!labels.iter().any(|s|matches!(s.as_str(),"常驻显示"|"充电状态未知"|"暂未读到电量")));
+    assert!(!labels.iter().any(|s|matches!(s.as_str(),"常驻显示"|"充电状态未知"|"正在读取电量")));
 
     h.t+=1.0/60.0;
     let out=h.ctx.run(egui::RawInput{time:Some(h.t),screen_rect:Some(Rect::from_min_size(Pos2::ZERO,egui::vec2(640.0,390.0))),..Default::default()},|ctx|{

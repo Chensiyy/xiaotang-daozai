@@ -25,8 +25,11 @@ struct ChargeReport { charging:bool, level:u8, at:Instant }
 const FLOW:f64=1.8;
 const ENTER:f32=0.9;
 const STAGGER:f32=0.07;
-const RECEIVER_INSERTED:&str="接收器已插入";
-const UNKNOWN_BATTERY:&str="电量未知";
+const LINKED:&str="已连接";
+const RECEIVER_NOTE:&str="2.4G 接收器 · 这类接收器不提供电量";
+const NO_BATTERY_NOTE:&str="设备没有提供电量";
+/// 连上后这么久还没有电量读数，就当作设备不提供电量（Windows 和电池服务每分钟各读一次）。
+const READ_GRACE:f64=75.0;
 
 fn charge_state(device:&Device,fx:Option<&WirelessFx>)->Option<bool> {
     let now=Instant::now();
@@ -80,7 +83,8 @@ fn bolt_scale(device:&Device,fx:Option<&WirelessFx>,t:f64,live:bool)->f32 {
     if u<0.82 {1.0} else if u<0.91 {1.0+0.22*(u-0.82)/0.09} else {1.22-0.22*(u-0.91)/0.09}
 }
 
-struct RingSpec {r:f32,w:f32,icon:f32,live:bool,enter:f32,hover:bool}
+/// linked：已连接但没有电量可看（2.4G 接收器，或确认不报电量的设备），画蓝色连接环。
+struct RingSpec {r:f32,w:f32,icon:f32,live:bool,enter:f32,hover:bool,linked:bool}
 
 /// 弧线从 12 点钟顺时针。展开时叠加：低电量呼吸、充电流光与弧端闪点、接电/充满波纹、充满扫光、跌档晃动。
 fn ring(c:&Card,cx:f32,cy:f32,spec:&RingSpec,device:&Device,fx:Option<&WirelessFx>,t:f64) {
@@ -92,6 +96,9 @@ fn ring(c:&Card,cx:f32,cy:f32,spec:&RingSpec,device:&Device,fx:Option<&WirelessF
     let fx=fx.filter(|_|spec.live);
     if spec.live&&critical&&!stale(device)&&!chg {track=paint::mix(track,theme::RED,0.22);}
     match device.battery {
+        // 已连接无电量：轨道中线压一条细蓝环，表示“连着”，不表示电量。
+        None if spec.linked=>{c.ring_centered(cx,cy,rr,spec.w,track);c.ring_centered(cx,cy,rr,spec.w*0.5,paint::alpha(theme::LINK,0.9));}
+        // 虚线只留给“正在读取”。
         None=>for i in 0..24 {let a=i as f32/24.0*TAU;c.arc(cx,cy,rr,a,a+TAU/24.0*0.42,spec.w*0.8,track);},
         Some(_)=>c.ring_centered(cx,cy,rr,spec.w,track),
     }
@@ -144,15 +151,29 @@ fn ring(c:&Card,cx:f32,cy:f32,spec:&RingSpec,device:&Device,fx:Option<&WirelessF
     if let Some(at)=fx.and_then(|fx|fx.nudge).filter(|_|spec.live) {
         let e=(t-at) as f32;if (0.0..1.2).contains(&e) {dx=2.5*(e/0.6*TAU).sin()*(1.0-e/1.2);}
     }
-    let tint=if stale(device)||!device.connected {theme::DIM} else {theme::WHITE};
-    crate::extras::device_icon_tinted(c,device.kind,cx-spec.icon/2.0+dx,cy-spec.icon/2.0,spec.icon,tint);
+    let tint=if (stale(device)&&!spec.linked)||!device.connected {theme::DIM} else {theme::WHITE};
+    // 2.4G 接收器在环底压一枚“2.4G”角标，图标略上移给角标让位；常驻小环里不画。
+    let chip=device.kind==DeviceKind::Receiver24G&&spec.r>=15.0;
+    let dy=if chip {-spec.r*0.08} else {0.0};
+    crate::extras::device_icon_tinted(c,device.kind,cx-spec.icon/2.0+dx,cy-spec.icon/2.0+dy,spec.icon,tint);
+    if chip {
+        let k=if spec.r>35.0 {1.4} else {1.0};
+        let (w,h)=(28.0*k,14.0*k);let y=cy+spec.r-h/2.0+spec.r*0.08;
+        c.fill(cx-w/2.0-2.0,y-h/2.0-2.0,w+4.0,h+4.0,h/2.0+2.0,Color32::BLACK);
+        c.fill(cx-w/2.0,y-h/2.0,w,h,h/2.0,theme::LINK);
+        c.centered_text(cx,y,"2.4G",9.0*k,W::Bold,theme::WHITE,H::Center);
+    }
 }
 
 /// 百分比（充电时前面带闪电）。centered 时整组以 x 居中，否则从 x 左对齐。返回总宽。
-fn reading(c:&Card,x:f32,cy:f32,size:f32,device:&Device,fx:Option<&WirelessFx>,t:f64,live:bool,enter:f32,centered:bool)->f32 {
+fn reading(c:&Card,x:f32,cy:f32,size:f32,device:&Device,fx:Option<&WirelessFx>,t:f64,live:bool,enter:f32,centered:bool,linked:bool)->f32 {
+    if linked&&device.battery.is_none() {
+        let size=size*0.87;let tw=c.text_w(LINKED,size,W::Semibold);
+        c.centered_text(if centered {x-tw/2.0} else {x},cy,LINKED,size,W::Semibold,theme::LINK_SOFT,H::Left);
+        return tw;
+    }
     let col=color(device,fx);
     let text=match device.battery {
-        None if device.kind==DeviceKind::Receiver24G=>UNKNOWN_BATTERY.to_string(),
         None=>"···".to_string(),
         Some(level)=>{
             let mut shown=level as f32;
@@ -206,9 +227,16 @@ impl App {
             || self.wireless_devices.iter().any(|d|{let fx=self.wireless_fx.get(&d.id);d.connected&&(charging(d,fx)||low(d,fx))})
             || self.wireless_fx.values().any(|fx|[fx.morph.map(|m|m.1),fx.plug,fx.unplug,fx.full,fx.nudge].into_iter().flatten().any(|at|self.t-at<2.0))
     }
+    /// 已连接但没有电量可看：接收器一插上就是；其他设备连上超过 READ_GRACE 仍没读数才算。
+    fn wireless_linked(&self,device:&Device)->bool {
+        device.connected&&device.battery.is_none()&&(device.kind==DeviceKind::Receiver24G
+            ||self.wireless_seen_at.get(&device.id).is_none_or(|at|self.t-at>=READ_GRACE))
+    }
     /// 对比新旧快照，记录一次性动效并按需在岛上提示。
     pub(crate) fn track_wireless_changes(&mut self,next:&[Device]) {
         let now=self.t;
+        self.wireless_seen_at.retain(|id,_|next.iter().any(|d|d.connected&&d.id==*id));
+        for device in next.iter().filter(|d|d.connected) {self.wireless_seen_at.entry(device.id.clone()).or_insert(now);}
         self.wireless_fx.retain(|id,_|next.iter().any(|d|d.connected&&d.id==*id));
         self.wireless_alerted.retain(|_,at|now-*at<600.0);
         for device in next.iter().filter(|d|d.connected&&!stale(d)) {
@@ -290,10 +318,10 @@ impl App {
         let mut left=cx+x-total/2.0;
         for device in &devices {
             let w=self.resident_slot(device);if left+w>cx+x+total/2.0+0.5 {break;}
-            let spec=RingSpec{r:9.0,w:2.0,icon:10.0,live:false,enter:1.0,hover:false};
+            let spec=RingSpec{r:9.0,w:2.0,icon:10.0,live:false,enter:1.0,hover:false,linked:self.wireless_linked(device)};
             let fx=self.wireless_fx.get(&device.id);
             ring(c,left+9.0,15.0,&spec,device,fx,self.t);
-            if self.resident_value(device) {reading(c,left+21.0+(w-21.0)/2.0,15.5,9.5,device,fx,self.t,false,1.0,true);}
+            if self.resident_value(device) {reading(c,left+21.0+(w-21.0)/2.0,15.5,9.5,device,fx,self.t,false,1.0,true,false);}
             let tip=format!("{} · {}",device.name,device.battery.map_or("未上报电量".into(),|b|format!("{b}%")));
             let hit=c.hit(left-2.0,2.0,w+4.0,26.0,("wireless-resident",&device.id));
             if crate::quota_ui::bar_tooltip(hit,tip).clicked(){self.wireless_focus=Some(device.id.clone());self.show_page(BLUETOOTH_PAGE);}
@@ -302,12 +330,12 @@ impl App {
     }
     pub(crate) fn draw_wireless_side(&mut self,c:&Card,cx:f32,y:f32) {
         let Some(device)=self.wireless_resident().into_iter().next() else{return;};
-        let spec=RingSpec{r:11.0,w:2.2,icon:12.0,live:false,enter:1.0,hover:false};
+        let spec=RingSpec{r:11.0,w:2.2,icon:12.0,live:false,enter:1.0,hover:false,linked:self.wireless_linked(&device)};
         let value=self.resident_value(&device);
         let ring_y=if value {y-6.0} else {y};
         let fx=self.wireless_fx.get(&device.id);
         ring(c,cx,ring_y,&spec,&device,fx,self.t);
-        if value {reading(c,cx,y+14.0,8.5,&device,fx,self.t,false,1.0,true);}
+        if value {reading(c,cx,y+14.0,8.5,&device,fx,self.t,false,1.0,true,false);}
         let hit=c.hit(cx-17.0,y-18.0,34.0,37.0,"wireless-side");
         if crate::quota_ui::bar_tooltip(hit,device.name.clone()).clicked(){self.wireless_focus=Some(device.id.clone());self.show_page(BLUETOOTH_PAGE);}
     }
@@ -338,23 +366,23 @@ impl App {
         let start=(crate::app::PW-(count*col_w+(count-1.0)*gap))/2.0;
         for (index,device) in shown.iter().enumerate() {
             let x=start+index as f32*(col_w+gap);let cx=x+col_w/2.0;
-            let receiver=device.kind==DeviceKind::Receiver24G;
-            let details=if receiver {format!("{}\n{RECEIVER_INSERTED} · {UNKNOWN_BATTERY}",device.name)} else {
-                device.reading.as_ref().map(|r|format!("{}\n{} · {}",device.name,r.source.label(),reading_age(device).unwrap_or_default())).unwrap_or_else(||format!("{}\n设备尚未提供可用电量",device.name))
+            let linked=self.wireless_linked(device);
+            let details=if device.kind==DeviceKind::Receiver24G {format!("{}\n{RECEIVER_NOTE}",device.name)}
+                else if linked {format!("{}\n{LINKED} · {NO_BATTERY_NOTE}",device.name)} else {
+                device.reading.as_ref().map(|r|format!("{}\n{} · {}",device.name,r.source.label(),reading_age(device).unwrap_or_default())).unwrap_or_else(||format!("{}\n正在读取电量",device.name))
             };
             let tile_top=ring_y-r-6.0;
-            let tile_bottom=name_y+if receiver{19.0}else{8.0};
+            let tile_bottom=name_y+8.0;
             let hit=c.hit(x,tile_top,col_w,tile_bottom-tile_top,("wireless-device",&device.id)).on_hover_text(details);
             let hover=hit.hovered();
             let enter=self.wireless_enter(index);let fx=self.wireless_fx.get(&device.id).cloned();
             let cc=if device.connected {c.clone()} else {c.faded(0.4)};
-            ring(&cc,cx,ring_y,&RingSpec{r,w,icon,live:true,enter,hover},device,fx.as_ref(),self.t);
+            ring(&cc,cx,ring_y,&RingSpec{r,w,icon,live:true,enter,hover,linked},device,fx.as_ref(),self.t);
             let rise=(1.0-anim::ease_out_cubic(anim::clamp01((enter-0.25)/0.55)))*6.0;
             let tc=cc.faded(anim::clamp01((enter-0.25)/0.55));
-            reading(&tc,cx,pct_y+rise,pct,device,fx.as_ref(),self.t,true,enter,true);
+            reading(&tc,cx,pct_y+rise,pct,device,fx.as_ref(),self.t,true,enter,true,linked);
             let label=tc.fit(&device.name,name,W::Regular,col_w-2.0);
             tc.centered_text(cx,name_y+rise,&label,name,W::Regular,if hover{theme::WHITE}else{theme::DIM},H::Center);
-            if receiver {tc.centered_text(cx,name_y+14.0+rise,RECEIVER_INSERTED,9.0,W::Regular,theme::DIM,H::Center);}
             if hit.clicked() {self.wireless_focus=Some(device.id.clone());}
         }
         if pages>1 {
@@ -373,15 +401,16 @@ impl App {
             if c.hit(6.0,4.0,wa+46.0,30.0,"wireless-back").clicked(){self.wireless_focus=None;}
         }
         let fx=self.wireless_fx.get(&device.id).cloned();let enter=self.wireless_enter(0);
-        ring(c,112.0,100.0,&RingSpec{r:50.0,w:6.0,icon:38.0,live:true,enter,hover:false},device,fx.as_ref(),self.t);
+        let linked=self.wireless_linked(device);
+        ring(c,112.0,100.0,&RingSpec{r:50.0,w:6.0,icon:38.0,live:true,enter,hover:false,linked},device,fx.as_ref(),self.t);
         let x=190.0;
         c.centered_text(x,66.0,&c.fit(&device.name,15.0,W::Bold,190.0),15.0,W::Bold,theme::WHITE,H::Left);
         if device.kind==DeviceKind::Receiver24G {
-            c.centered_text(x,101.0,RECEIVER_INSERTED,18.0,W::Semibold,theme::WHITE,H::Left);
-            c.centered_text(x,129.0,UNKNOWN_BATTERY,11.0,W::Regular,theme::DIM,H::Left);
+            reading(c,x,101.0,26.0,device,None,self.t,true,1.0,false,true);
+            c.text(x,140.0,RECEIVER_NOTE,10.5,W::Regular,theme::DIM,H::Left);
             return;
         }
-        reading(c,x,101.0,34.0,device,fx.as_ref(),self.t,true,enter,false);
+        reading(c,x,101.0,if linked {26.0} else {34.0},device,fx.as_ref(),self.t,true,enter,false,linked);
         let mut mx=x;
         match charge_state(device,fx.as_ref()) {
             Some(true)=>{mx+=c.text(mx,140.0,"充电中",10.5,W::Semibold,color(device,fx.as_ref()),H::Left)+10.0;}
@@ -390,7 +419,7 @@ impl App {
             }
             _=>{}
         }
-        let source=device.reading.as_ref().map_or("暂未读到电量",|r|r.source.label());
+        let source=device.reading.as_ref().map_or(if linked {NO_BATTERY_NOTE} else {"正在读取电量"},|r|r.source.label());
         mx+=c.text(mx,140.0,source,10.5,W::Regular,theme::DIM,H::Left)+10.0;
         if let Some(ago)=reading_age(device) {c.text(mx,140.0,&ago,10.5,W::Regular,theme::DIM,H::Left);}
         let automatic=(!self.settings.bluetooth_resident_custom).then(||self.wireless_resident());
