@@ -165,13 +165,21 @@ fn reading(c:&Card,x:f32,cy:f32,size:f32,device:&Device,fx:Option<&WirelessFx>,t
     tw+bw
 }
 
+/// 读数时长：1 分钟内按秒，1 小时内按分钟，1 天内按小时（带零头分钟），再往上按天。
+pub(crate) fn duration_text(secs:u64)->String {
+    let (minutes,hours,days)=(secs/60,secs/3600,secs/86400);
+    if secs<60 {format!("{secs} 秒")}
+    else if hours==0 {format!("{minutes} 分钟")}
+    else if days==0 {if minutes%60==0 {format!("{hours} 小时")} else {format!("{hours} 小时 {} 分钟",minutes%60)}}
+    else {format!("{days} 天")}
+}
 fn reading_age(device:&Device)->Option<String> {
     let reading=device.reading.as_ref()?;
     let secs=match reading.source {
         BatterySource::Windows=>reading.observed.saturating_duration_since(reading.value_since).as_secs(),
         BatterySource::Gatt=>reading.observed.elapsed().as_secs(),
     };
-    let age=if secs<60 {format!("{secs} 秒")} else {format!("{} 分钟",secs/60)};
+    let age=duration_text(secs);
     Some(match reading.source {
         BatterySource::Windows if secs==0=>"刚读到".into(),
         BatterySource::Windows=>format!("读数已保持 {age}"),

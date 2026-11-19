@@ -310,3 +310,11 @@ fn wireless_settings_controls_are_in_their_own_page() {
         }
     }
 }
+
+#[test]
+fn reading_age_switches_to_hours_and_days(){
+    use crate::bluetooth_ui::duration_text;
+    for (secs,text) in [(0,"0 秒"),(59,"59 秒"),(60,"1 分钟"),(3599,"59 分钟"),(3600,"1 小时"),(5*3600+7*60,"5 小时 7 分钟"),(86399,"23 小时 59 分钟"),(86400,"1 天"),(3*86400+5*3600,"3 天")] {
+        assert_eq!(duration_text(secs),text,"{secs} 秒");
+    }
+}
