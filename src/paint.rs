@@ -178,6 +178,13 @@ impl<'a> Card<'a> {
     pub fn ring(&self, x: f32, y: f32, r: f32, width: f32, color: Color32) {
         self.painter.circle_stroke(self.pos(x, y), r * self.s, Stroke::new(width * self.s, color));
     }
+    /// 以半径为中线的圆环描边，和 arc 同一套几何。
+    /// egui 的 circle_stroke 把线宽整段画在半径外侧，和圆弧叠放时会错开半个线宽。
+    pub fn ring_centered(&self, x: f32, y: f32, r: f32, width: f32, color: Color32) {
+        let n = 96;
+        let v: Vec<Pos2> = (0..n).map(|i| {let a = TAU * i as f32 / n as f32; self.pos(x + r * a.cos(), y + r * a.sin())}).collect();
+        self.painter.add(egui::Shape::closed_line(v, Stroke::new(width * self.s, color)));
+    }
     pub fn seg(&self, a: (f32, f32), b: (f32, f32), width: f32, color: Color32) {
         self.painter.line_segment([self.pos(a.0, a.1), self.pos(b.0, b.1)], Stroke::new(width * self.s, color));
     }

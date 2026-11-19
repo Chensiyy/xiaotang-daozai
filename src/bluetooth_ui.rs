@@ -87,7 +87,7 @@ fn ring(c:&Card,cx:f32,cy:f32,spec:&RingSpec,device:&Device,fx:Option<&WirelessF
     if spec.live&&critical&&!stale(device)&&!chg {track=paint::mix(track,theme::RED,0.22);}
     match device.battery {
         None=>for i in 0..24 {let a=i as f32/24.0*TAU;c.arc(cx,cy,rr,a,a+TAU/24.0*0.42,spec.w*0.8,track);},
-        Some(_)=>c.ring(cx,cy,rr,spec.w,track),
+        Some(_)=>c.ring_centered(cx,cy,rr,spec.w,track),
     }
     let target=device.battery.map_or(0.0,|b|b as f32/100.0);
     let mut frac=target;
@@ -115,7 +115,7 @@ fn ring(c:&Card,cx:f32,cy:f32,spec:&RingSpec,device:&Device,fx:Option<&WirelessF
         for at in [fx.plug,fx.full].into_iter().flatten() {
             for i in 0..2 {
                 let k=((t-at) as f32-i as f32*0.9)/0.9;
-                if (0.0..1.0).contains(&k) {c.ring(cx,cy,spec.r*(0.95+0.5*k),(spec.w*0.5).max(1.0),paint::alpha(col,0.85*(1.0-k)));}
+                if (0.0..1.0).contains(&k) {c.ring_centered(cx,cy,spec.r*(0.95+0.5*k),(spec.w*0.5).max(1.0),paint::alpha(col,0.85*(1.0-k)));}
             }
         }
         if let Some(at)=fx.full {
