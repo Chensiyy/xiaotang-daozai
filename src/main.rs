@@ -599,6 +599,8 @@ impl eframe::App for Shell {
                 out = Some(self.app.frame(ui, win, &env));
             });
         let Some(out) = out else { return };
+        #[cfg(windows)]
+        let interactive_transition = !self.hidden && (out.page_transition || out.water_view_transition);
 
         #[cfg(windows)]
         {
@@ -630,15 +632,14 @@ impl eframe::App for Shell {
                     i.events.iter().any(|e|!matches!(e,egui::Event::Screenshot{..})),
                 ));
                 let changed=shot.as_ref().is_some_and(|image|native.present_frame(image.size,image.as_raw()));
-                let turning=out.page_transition && !self.hidden;
-                let interactive=other_input || turning;
+                let interactive=other_input || interactive_transition;
                 if shot.is_none() || changed || interactive {
-                    // 翻页期间即使滚轮已经停下，也要交付当前帧；持续动效仍按自身的低频节奏读回。
+                    // 输入结束后，短暂的切换过渡仍需逐帧交付。
                     let now=Instant::now();
                     match daozai::layered::readback_delay(self.readback_at,now,interactive,out.repaint_after) {
                         None=>{
                             self.readback_at=Some(now);
-                            let data=if turning && self.app.render_compat_running {
+                            let data=if interactive_transition && self.app.render_compat_running {
                                 egui::UserData::new(eframe::InteractiveCapture(self.frame_at+out.repaint_after))
                             } else {Default::default()};
                             ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(data));
@@ -803,9 +804,9 @@ impl eframe::App for Shell {
         #[cfg(not(windows))] let autostart = false;
         self.app.settings_ui(ctx, autostart);
         self.app.mail_reader_ui(ctx);
-        // 翻页以帧起点为准，扣掉本帧已花的时间；入口处的限帧仍然生效。
+        // 交互切换以帧起点为准，扣掉本帧已经花费的时间。
         #[cfg(windows)] let repaint_after=if self.hidden {Duration::from_secs(1)}
-            else if out.page_transition {out.repaint_after.saturating_sub(self.frame_at.elapsed())}
+            else if interactive_transition {out.repaint_after.saturating_sub(self.frame_at.elapsed())}
             else {out.repaint_after};
         #[cfg(not(windows))] let repaint_after=out.repaint_after;
         schedule_repaint(ctx,repaint_after);

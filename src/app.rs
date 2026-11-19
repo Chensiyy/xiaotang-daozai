@@ -440,6 +440,8 @@ pub struct FrameOut {
     pub animating: bool,
     /// 当前帧正在绘制翻页过渡。
     pub page_transition: bool,
+    /// 喝水页的百分比环和柱状图正在切换。
+    pub water_view_transition: bool,
     pub repaint_after: std::time::Duration,
     pub cmds: Vec<Cmd>,
 }
@@ -2203,7 +2205,10 @@ impl App {
             shapes
         });
         self.update_position_drag(&ctx,env,dt);
-        let transitioning = self.position_drag.is_some() || self.drag_glide.is_some() || !self.drag_lift.settled(1.0) || !self.drag_stretch.settled(1.0) || !self.w.settled(PW)
+        let water_view_transition = self.open && self.page == WATER_PAGE && self.subpage.is_none() && !self.sit_mode
+            // 点击在本帧推进弹簧之后处理，先识别尚未同步的目标。
+            && (self.water_view_t.target != self.water_view as f32 || !self.water_view_t.settled(1.0));
+        let transitioning = water_view_transition || self.position_drag.is_some() || self.drag_glide.is_some() || !self.drag_lift.settled(1.0) || !self.drag_stretch.settled(1.0) || !self.w.settled(PW)
             || self.center_guide>0.002 || self.center_lock_a>0.002 || self.t-self.center_lock_at<CENTER_SWEEP
             || !self.h.settled(self.expanded_height())
             || self.page_e() < 0.7
@@ -2257,6 +2262,7 @@ impl App {
             editing: self.is_editing(),
             animating,
             page_transition,
+            water_view_transition,
             repaint_after,
             cmds,
         }

@@ -3736,6 +3736,29 @@ fn reminders_are_visible_while_collapsed_and_can_be_disabled(){
     h.app.water.remind=false;h.app.settings.sit_remind=false;h.app.notice=None;h.cmds.clear();h.t+=2800.0;h.frame(vec![]);assert!(h.app.notice.is_none());
 }
 #[test]
+fn water_view_transition_keeps_repainting_after_the_click() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut h = H::new();
+    h.app.show_page(crate::app::WATER_PAGE);
+    let toggle = H::local(292.0, 78.0);
+    h.hover(toggle, 2.0);
+    assert!(!h.animating);
+
+    for target in [1, 0] {
+        h.click(toggle);
+        assert_eq!(h.app.water_view, target);
+        assert!(h.animating, "点击松开当帧就应继续安排重绘");
+        for _ in 0..12 {
+            h.frame(vec![]);
+            assert!(h.animating, "没有后续输入时也应持续重绘过渡");
+        }
+        for _ in 0..48 { h.frame(vec![]); }
+        assert!(h.app.water_view_t.settled(1.0));
+        assert!(!h.animating, "过渡结束后应恢复静态刷新");
+    }
+}
+
+#[test]
 fn water_serving_and_undo_are_consistent(){
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();h.hover(Pos2::new(WIN_W/2.0,12.0),1.0);h.app.go(2,1.0);h.hover(H::local(300.0,60.0),0.8);
     h.app.settings.serving_ml=350;h.click(H::local(70.0,110.0));assert_eq!(h.app.water.drunk_ml,350);assert_eq!(h.app.water.hours[9],350);
