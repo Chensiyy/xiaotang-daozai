@@ -7,6 +7,7 @@ if not exist "target\claude-skin\." mkdir "target\claude-skin" || exit /b 1
 set "LOG=%~dp0target\claude-skin\build.log"
 set CARGO=cargo
 set "CARGO_BUILD_JOBS=1"
+set "DAOZAI_TEST_BUILD=1"
 where cargo >nul 2>nul || set CARGO=%USERPROFILE%\.cargo\bin\cargo.exe
 echo [%date% %time%] 开始编译 > "%LOG%"
 "%CARGO%" --version >> "%LOG%" 2>&1
