@@ -112,7 +112,9 @@ fn wireless_detail_explains_which_battery_data_is_missing() {
     assert!(texts(&h).iter().any(|s|s=="正在读取电量"),"刚连上、还没读到电量时显示正在读取");
     assert!(!texts(&h).iter().any(|s|s=="充电状态未知"));
     // 超过读取宽限期仍没有电量：按已连接显示，不再是灰色的“正在读取”。
-    h.t+=80.0;h.frame(vec![]);
+    h.t+=10.0;h.frame(vec![]);
+    assert!(texts(&h).iter().any(|s|s=="正在读取电量"),"15 秒内仍按正在读取显示");
+    h.t+=6.0;h.frame(vec![]);
     let t=texts(&h);
     assert!(t.iter().any(|s|s=="已连接")&&t.iter().any(|s|s=="设备没有提供电量"));
     assert!(!t.iter().any(|s|s=="正在读取电量"));

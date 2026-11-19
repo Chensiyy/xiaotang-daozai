@@ -28,8 +28,8 @@ const STAGGER:f32=0.07;
 const LINKED:&str="已连接";
 const RECEIVER_NOTE:&str="2.4G 接收器 · 这类接收器不提供电量";
 const NO_BATTERY_NOTE:&str="设备没有提供电量";
-/// 连上后这么久还没有电量读数，就当作设备不提供电量（Windows 和电池服务每分钟各读一次）。
-const READ_GRACE:f64=75.0;
+/// 连上后这么久还没有电量读数，就当作设备不提供电量。新连接会立即读一次，读数通常几秒内到。
+const READ_GRACE:f64=15.0;
 
 fn charge_state(device:&Device,fx:Option<&WirelessFx>)->Option<bool> {
     let now=Instant::now();
