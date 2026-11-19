@@ -5960,6 +5960,7 @@ fn page_management_resident_switches_follow_their_modules(){
     use crate::app::{BLUETOOTH_PAGE,PAGE_NAMES,QUOTA_PAGE,WEATHER_PAGE};
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     let mut h=H::new();
+    h.app.settings.settings_theme=crate::settings_theme::SettingsTheme::Dark;
     h.app.settings_tab=10;h.app.open_settings();h.ctx.set_embed_viewports(false);
     h.app.settings.show_clock=true;
     h.app.settings.show_battery=true;
@@ -6020,16 +6021,17 @@ fn page_management_resident_switches_follow_their_modules(){
     }
 
     let residents=[(WEATHER_PAGE,"天气",true),(BLUETOOTH_PAGE,"无线设备电量",false),(QUOTA_PAGE,"AI 额度",true)];
+    draw_page_management(&mut h,vec![]);
+    let active_fills=residents.map(|(_,label,_)|switch(&h,label,false).1);
     for (page,_,_) in residents {
         let point=switch(&h,PAGE_NAMES[page],true).0.center();
         click(&mut h,point);
         assert!(!h.app.module_on(page));
     }
-    for (_,label,preferred) in residents {
+    for ((_,label,preferred),active_fill) in residents.into_iter().zip(active_fills) {
         let (rect,fill)=switch(&h,label,false);
         assert_eq!(selected(&h,rect),preferred,"{label} 功能关闭后应保留开关圆点位置");
-        let channels=[fill.r(),fill.g(),fill.b()];
-        assert!(channels.iter().max().unwrap()-channels.iter().min().unwrap()<16,"{label} 应显示为灰色");
+        assert_eq!(fill,egui::Visuals::dark().gray_out(active_fill),"{label} 应按原轨道颜色淡化");
         click(&mut h,rect.center());
         assert_eq!(selected(&h,switch(&h,label,false).0),preferred,"{label} 置灰后应无法切换");
     }

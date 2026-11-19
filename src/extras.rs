@@ -1139,15 +1139,13 @@ impl App {
 
 fn switch(ui:&mut egui::Ui,value:&mut bool)->bool {
     let (rect,response)=ui.allocate_exact_size(egui::vec2(34.0,20.0),egui::Sense::click());
-    let enabled=response.enabled();
-    let changed=enabled&&response.clicked();
-    if changed {*value=!*value;}
-    let fill=if enabled&&*value{Color32::from_rgb(48,184,92)}else{settings_color(&ui.ctx().clone(),Color32::from_rgb(82,82,87),Color32::from_rgb(203,207,214))};
+    if response.clicked(){*value=!*value;}
+    let fill=if *value{Color32::from_rgb(48,184,92)}else{settings_color(&ui.ctx().clone(),Color32::from_rgb(82,82,87),Color32::from_rgb(203,207,214))};
     ui.painter().rect_filled(rect,10.0,fill);
     let x=if *value{rect.right()-10.0}else{rect.left()+10.0};
     ui.painter().circle_filled(egui::pos2(x,rect.center().y+0.5),7.5,Color32::from_black_alpha(35));
     ui.painter().circle_filled(egui::pos2(x,rect.center().y),7.0,Color32::WHITE);
-    changed
+    response.clicked()
 }
 /// 设置页版式：标签列宽、开关尺寸、控件与卡片右边缘之间的固定留白。
 pub(crate) const SETTINGS_LABEL_W: f32 = 80.0;
