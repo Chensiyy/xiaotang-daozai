@@ -126,7 +126,7 @@ fn read_gatt(target:&Target,stop:&AtomicBool)->Option<Sample> {
     }).min_by_key(|(percent, _)| *percent)?;
     Some(Sample {
         key: target.key.clone(), session: target.session,
-        reading: BatteryReading { percent, source: BatterySource::Gatt, at: Instant::now(), charging },
+        reading: BatteryReading::new(percent,BatterySource::Gatt,Instant::now(),charging),
     })
 }
 
@@ -136,8 +136,11 @@ impl PollSchedule {
     fn due(&self,now:Instant)->bool {
         self.last.is_none_or(|at|now.saturating_duration_since(at)>=Duration::from_secs(60))
     }
-    fn needs_read(&self,now:Instant,targets:&[(String,u64)])->bool {
-        self.due(now)||targets!=self.targets
+    fn begin_read(&mut self,now:Instant,targets:Vec<(String,u64)>)->bool {
+        if !self.due(now)&&targets==self.targets {return false;}
+        self.last=Some(now);
+        self.targets=targets;
+        true
     }
 }
 
@@ -151,7 +154,7 @@ fn windows_samples(targets:&[Target],nodes:&[PnpNode],now:Instant)->Vec<Sample> 
         }
     }
     levels.into_iter().map(|((key,session),percent)|Sample{key:key.clone(),session,
-        reading:BatteryReading{percent,source:BatterySource::Windows,at:now,charging:None}}).collect()
+        reading:BatteryReading::new(percent,BatterySource::Windows,now,None)}).collect()
 }
 
 pub(super) fn run(tx:SyncSender<Vec<super::Device>>,stop:Arc<AtomicBool>) {
@@ -179,16 +182,14 @@ pub(super) fn run(tx:SyncSender<Vec<super::Device>>,stop:Arc<AtomicBool>) {
         if let Some(found)=discover(&state.targets(),&nodes,&stop){
             state.discover(found,now);let targets=state.targets();
             let ids:Vec<_>=targets.iter().map(|t|(t.endpoint.id.clone(),t.session)).collect();
-            if schedule.needs_read(now,&ids) {
+            if schedule.begin_read(now,ids) {
                 // 新连接需要重新查询，不能把上轮缓存重新打上当前时间。
                 if !due {fresh_nodes=pnp_nodes();}
                 if let Some(fresh)=fresh_nodes{
                     for sample in windows_samples(&targets,&fresh,Instant::now()) {state.ingest(sample);}
                     nodes=fresh;
                 }
-                if !matches!(jobs.try_send(targets),Err(mpsc::TrySendError::Full(_))) {
-                    schedule.last=Some(now);schedule.targets=ids;
-                }
+                let _=jobs.try_send(targets);
             }
             while let Ok(reading)=readings.try_recv(){state.ingest(reading);}
             if matches!(tx.try_send(state.devices(Instant::now())),Err(mpsc::TrySendError::Disconnected(_))){break;}
@@ -206,13 +207,27 @@ mod tests {
     fn bluetooth_poll_interval_and_reconnect() {
         let now=Instant::now();
         let ids=vec![("le".to_string(),1)];
-        let initial=PollSchedule::default();
-        assert!(initial.needs_read(now,&ids));
-        let schedule=PollSchedule{last:Some(now),targets:ids.clone()};
-        assert!(!schedule.needs_read(now+Duration::from_secs(59),&ids));
-        assert!(schedule.needs_read(now+Duration::from_secs(60),&ids));
-        assert!(schedule.needs_read(now,&[("le".into(),2)]));
-        assert!(schedule.needs_read(now,&[]));
+        let mut schedule=PollSchedule::default();
+        assert!(schedule.begin_read(now,ids.clone()));
+        assert!(!schedule.begin_read(now+Duration::from_secs(59),ids.clone()));
+        let next=now+Duration::from_secs(60);
+        assert!(schedule.begin_read(next,ids));
+        assert!(schedule.begin_read(next,vec![("le".into(),2)]));
+        assert!(schedule.begin_read(next,vec![]));
+    }
+
+    #[test]
+    fn bluetooth_poll_interval_advances_when_gatt_queue_is_full() {
+        let now=Instant::now();
+        let ids=vec![("le".to_string(),1)];
+        let (jobs,_requests)=mpsc::sync_channel(1);
+        jobs.try_send(()).unwrap();
+
+        let mut schedule=PollSchedule::default();
+        assert!(schedule.begin_read(now,ids.clone()));
+        assert!(matches!(jobs.try_send(()),Err(mpsc::TrySendError::Full(()))));
+        assert!(!schedule.begin_read(now+Duration::from_secs(2),ids.clone()));
+        assert!(schedule.begin_read(now+Duration::from_secs(60),ids));
     }
 
     #[test]
@@ -229,7 +244,7 @@ mod tests {
         assert_eq!(samples.len(),1);
         let mut sample=samples.pop().unwrap();assert_eq!(sample.reading.percent,32);
         state.ingest(sample.clone());
-        sample.reading=BatteryReading{percent:35,source:BatterySource::Gatt,charging:Some(true),at:now};
+        sample.reading=BatteryReading::new(35,BatterySource::Gatt,now,Some(true));
         state.ingest(sample);
         assert_eq!(state.devices(now)[0].battery,Some(35));
         let later=now+FRESH_FOR+Duration::from_secs(1);

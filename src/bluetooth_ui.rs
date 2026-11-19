@@ -165,11 +165,18 @@ fn reading(c:&Card,x:f32,cy:f32,size:f32,device:&Device,fx:Option<&WirelessFx>,t
     tw+bw
 }
 
-fn seconds_ago(device:&Device)->Option<String> {
+fn reading_age(device:&Device)->Option<String> {
     let reading=device.reading.as_ref()?;
-    let secs=reading.at.elapsed().as_secs();
-    let age=if secs<60 {format!("{secs} 秒前")} else {format!("{} 分钟前",secs/60)};
-    Some(match reading.source {BatterySource::Windows=>format!("上次变化于{age}"),BatterySource::Gatt=>format!("{age}读取")})
+    let secs=match reading.source {
+        BatterySource::Windows=>reading.observed.saturating_duration_since(reading.value_since).as_secs(),
+        BatterySource::Gatt=>reading.observed.elapsed().as_secs(),
+    };
+    let age=if secs<60 {format!("{secs} 秒")} else {format!("{} 分钟",secs/60)};
+    Some(match reading.source {
+        BatterySource::Windows if secs==0=>"刚读到".into(),
+        BatterySource::Windows=>format!("读数已保持 {age}"),
+        BatterySource::Gatt=>format!("{age}前读取"),
+    })
 }
 
 impl App {
@@ -203,7 +210,7 @@ impl App {
                 if r.percent==100&&was.is_some_and(|r|r.level<100&&(r.charging||charging)) {
                     fx.full=Some(now);events.push("已充满，可以拔掉了");
                 }
-                fx.last_charge=Some(ChargeReport{charging,level:r.percent,at:r.at});
+                fx.last_charge=Some(ChargeReport{charging,level:r.percent,at:r.observed});
             }
             let old=fx.last_level;
             let old_band=band(fx.band_level);
@@ -314,7 +321,7 @@ impl App {
         let start=(crate::app::PW-(count*col_w+(count-1.0)*gap))/2.0;
         for (index,device) in shown.iter().enumerate() {
             let x=start+index as f32*(col_w+gap);let cx=x+col_w/2.0;
-            let details=device.reading.as_ref().map(|r|format!("{}\n{} · {}",device.name,r.source.label(),seconds_ago(device).unwrap_or_default())).unwrap_or_else(||format!("{}\n设备尚未提供可用电量",device.name));
+            let details=device.reading.as_ref().map(|r|format!("{}\n{} · {}",device.name,r.source.label(),reading_age(device).unwrap_or_default())).unwrap_or_else(||format!("{}\n设备尚未提供可用电量",device.name));
             let hit=c.hit(x,ring_y-r-6.0,col_w,name_y-ring_y+r+14.0,("wireless-device",&device.id)).on_hover_text(details);
             let hover=hit.hovered();
             let enter=self.wireless_enter(index);let fx=self.wireless_fx.get(&device.id).cloned();
@@ -351,7 +358,7 @@ impl App {
         if charging(device,fx.as_ref()) {mx+=c.text(mx,140.0,"充电中",10.5,W::Semibold,color(device,fx.as_ref()),H::Left)+10.0;}
         let source=device.reading.as_ref().map_or("设备没有提供电量",|r|r.source.label());
         mx+=c.text(mx,140.0,source,10.5,W::Regular,theme::DIM,H::Left)+10.0;
-        if let Some(ago)=seconds_ago(device) {c.text(mx,140.0,&ago,10.5,W::Regular,theme::DIM,H::Left);}
+        if let Some(ago)=reading_age(device) {c.text(mx,140.0,&ago,10.5,W::Regular,theme::DIM,H::Left);}
         // 常驻显示：和设置里的自定义列表是同一份数据。
         let on=self.settings.bluetooth_resident_custom&&self.settings.bluetooth_pinned.contains(&device.id);
         let (tx,ty)=(x,158.0);

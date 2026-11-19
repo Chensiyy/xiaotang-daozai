@@ -22,8 +22,21 @@ impl BatterySource {
 }
 
 #[derive(Clone,Debug,PartialEq,Eq)]
-/// charging 为 None 表示来源没有上报充电状态，不能根据电量变化推断。
-pub struct BatteryReading {pub percent:u8,pub source:BatterySource,pub at:Instant,pub charging:Option<bool>}
+pub struct BatteryReading {
+    pub percent:u8,
+    pub source:BatterySource,
+    /// 该来源最近一次成功读取的时间。
+    pub observed:Instant,
+    /// 本机首次观察到当前读数的时间。Windows 连续读到相同电量时保留这个值。
+    pub value_since:Instant,
+    /// None 表示来源没有上报充电状态。
+    pub charging:Option<bool>,
+}
+impl BatteryReading {
+    pub(crate) fn new(percent:u8,source:BatterySource,observed:Instant,charging:Option<bool>)->Self {
+        Self{percent,source,observed,value_since:observed,charging}
+    }
+}
 
 #[derive(Clone,Debug,PartialEq,Eq)]
 pub struct Device {
@@ -38,7 +51,7 @@ impl Default for Device {
     fn default()->Self {Self{id:String::new(),name:String::new(),battery:None,kind:DeviceKind::Other,reading:None,connected:true}}
 }
 impl Device {
-    pub fn stale_at(&self,now:Instant)->bool {!self.connected||self.reading.as_ref().is_some_and(|r|now.saturating_duration_since(r.at)>FRESH_FOR)}
+    pub fn stale_at(&self,now:Instant)->bool {!self.connected||self.reading.as_ref().is_some_and(|r|now.saturating_duration_since(r.observed)>FRESH_FOR)}
     pub fn summary(&self)->String {match self.battery.filter(|_|!self.stale_at(Instant::now())) {Some(b)=>format!("{} · 电量 {b}%",self.name),None=>self.name.clone()}}
 }
 
@@ -59,7 +72,7 @@ pub(super) struct Target {pub endpoint:Endpoint,pub key:String,pub session:u64}
 #[derive(Clone,Debug)]
 pub(super) struct Sample {pub key:String,pub session:u64,pub reading:BatteryReading}
 
-struct SourceReading { value:BatteryReading, observed:Instant, active:bool }
+struct SourceReading { value:BatteryReading, active:bool }
 
 struct Entry {
     key:String,aliases:BTreeSet<String>,name:String,kind:DeviceKind,connected:bool,seen:bool,last_seen:Instant,session:u64,readings:Vec<SourceReading>,
@@ -88,7 +101,7 @@ impl State {
             let entry=&mut self.entries[first];
             if !entry.connected {
                 self.generation+=1;entry.session=self.generation;
-                // 重连后须重新取值，同一个 Windows 缓存值仍沿用原来的变化时间。
+                // 重连后须重新取值，同一个 Windows 缓存值仍沿用首次观察时间。
                 entry.readings.retain(|r|r.value.source==BatterySource::Windows);
                 for r in &mut entry.readings {r.active=false;}
             }
@@ -109,13 +122,13 @@ impl State {
     }
     pub fn ingest(&mut self,sample:Sample) {
         if sample.reading.percent>100 {return;}
-        if let Some(entry)=self.entries.iter_mut().find(|e|e.key==sample.key&&e.session==sample.session&&e.connected){merge_reading(&mut entry.readings,SourceReading{observed:sample.reading.at,value:sample.reading,active:true});}
+        if let Some(entry)=self.entries.iter_mut().find(|e|e.key==sample.key&&e.session==sample.session&&e.connected){merge_reading(&mut entry.readings,SourceReading{value:sample.reading,active:true});}
     }
     pub fn devices(&self,now:Instant)->Vec<Device> {
         let mut devices:Vec<_>=self.entries.iter().map(|e|{
             let reading=e.readings.iter().filter(|r|r.active).map(|r|&r.value).max_by_key(|r|{
-                let fresh=now.saturating_duration_since(r.at)<=FRESH_FOR;
-                (fresh,fresh&&r.source==BatterySource::Gatt,r.at)
+                let fresh=now.saturating_duration_since(r.observed)<=FRESH_FOR;
+                (fresh,fresh&&r.source==BatterySource::Gatt,r.observed)
             }).cloned();
             Device{id:e.key.clone(),name:e.name.clone(),kind:e.kind,battery:reading.as_ref().map(|r|r.percent),reading,connected:e.connected}
         }).collect();
@@ -127,9 +140,9 @@ fn merge_reading(readings:&mut Vec<SourceReading>,mut reading:SourceReading) {
         readings.push(reading);
         return;
     };
-    if reading.observed<=old.observed {return;}
+    if reading.value.observed<=old.value.observed {return;}
     if reading.value.source==BatterySource::Windows&&old.value.percent==reading.value.percent {
-        reading.value.at=old.value.at.min(reading.value.at);
+        reading.value.value_since=old.value.value_since.min(reading.value.value_since);
     }
     *old=reading;
 }

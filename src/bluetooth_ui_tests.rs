@@ -3,7 +3,7 @@ use crate::{bt::{Device,DeviceKind,BatteryReading,BatterySource},app::BLUETOOTH_
 
 fn fixture()->Vec<Device> {
     [("耳机",DeviceKind::Headphones,Some(82)),("MX Master 3S",DeviceKind::Mouse,Some(18)),("MX Keys Mini",DeviceKind::Keyboard,Some(64)),("桌面音箱",DeviceKind::Speaker,None)].into_iter().enumerate().map(|(i,(name,kind,battery))|Device{
-        id:format!("device-{i}"),name:name.into(),kind,battery,reading:battery.map(|percent|BatteryReading{percent,source:BatterySource::Gatt,at:std::time::Instant::now(),charging:None}),..Default::default()
+        id:format!("device-{i}"),name:name.into(),kind,battery,reading:battery.map(|percent|BatteryReading::new(percent,BatterySource::Gatt,std::time::Instant::now(),None)),..Default::default()
     }).collect()
 }
 fn texts(h:&H)->Vec<String> {h.shapes.iter().filter_map(|s|if let egui::Shape::Text(t)=&s.shape{Some(t.galley.text().to_string())}else{None}).collect()}
@@ -57,11 +57,15 @@ fn wireless_detail_marks_charging_with_text_only_when_fresh(){
     h.bt[2].reading.as_mut().unwrap().charging=Some(true);
     open_page(&mut h);h.app.wireless_focus=Some("device-2".into());h.frame(vec![]);
     assert!(texts(&h).iter().any(|s|s=="充电中"));
-    h.bt[2].reading.as_mut().unwrap().source=BatterySource::Windows;
-    h.bt[2].reading.as_mut().unwrap().charging=None;h.frame(vec![]);
+    let reading=h.bt[2].reading.as_mut().unwrap();
+    reading.source=BatterySource::Windows;
+    reading.charging=None;
+    reading.value_since=reading.observed-std::time::Duration::from_secs(240);
+    h.frame(vec![]);
     assert!(texts(&h).iter().any(|s|s=="充电中"));
-    assert!(texts(&h).iter().any(|s|s.starts_with("上次变化于")));
-    h.bt[2].reading.as_mut().unwrap().at-=std::time::Duration::from_secs(181);h.frame(vec![]);
+    assert!(texts(&h).iter().any(|s|s=="读数已保持 4 分钟"));
+    assert_eq!(crate::bluetooth_ui::color(&h.bt[2],None),crate::bluetooth_ui::level_color(64));
+    h.bt[2].reading.as_mut().unwrap().observed-=std::time::Duration::from_secs(181);h.frame(vec![]);
     assert!(!texts(&h).iter().any(|s|s=="充电中"),"过期读数不能继续显示充电状态");
 }
 
