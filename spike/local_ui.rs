@@ -79,7 +79,10 @@ impl LocalPlugins {
             .filter(|(_, r)| r.package.is_some())
             .map(|(id, _)| id.clone())
             .collect();
-        if ids.is_empty() {
+        for id in &self.invalid {
+            ui.label(format!("{id} · 需要重新安装"));
+        }
+        if ids.is_empty() && self.invalid.is_empty() {
             ui.label("尚未安装插件");
         }
         for id in ids {

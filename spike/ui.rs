@@ -12,6 +12,8 @@ struct View {
     error: String,
     tick: Instant,
     kind: String,
+    calls: u64,
+    work: Duration,
 }
 impl View {
     fn load(kind: &str) -> Result<Self> {
@@ -24,13 +26,18 @@ impl View {
             error: String::new(),
             tick: Instant::now(),
             kind: kind.into(),
+            calls: 1,
+            work: Duration::ZERO,
         })
     }
     fn draw(&mut self, c: &Card) {
         if self.tick.elapsed() >= Duration::from_secs(1) {
+            let started = Instant::now();
             if let Err(e) = self.session.refresh() {
                 self.error = e.to_string()
             }
+            self.calls += 1;
+            self.work += started.elapsed();
             self.tick = Instant::now()
         }
         c.ui.ctx().request_repaint_after(Duration::from_secs(1));
@@ -116,6 +123,10 @@ struct Preview {
     view: View,
     path: Option<PathBuf>,
     frames: u8,
+    profile: Option<PathBuf>,
+    drawn: u64,
+    last_report: Instant,
+    repaint_interval: Option<Duration>,
 }
 impl eframe::App for Preview {
     fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
@@ -128,6 +139,24 @@ impl eframe::App for Preview {
             ui.label("倒计时设置");
             self.view.settings(ui);
         });
+        self.drawn += 1;
+        if let Some(interval) = self.repaint_interval {
+            ctx.request_repaint_after(interval);
+        }
+        if let Some(path) = &self.profile {
+            if self.last_report.elapsed() >= Duration::from_secs(1) {
+                let _ = fs::write(
+                    path,
+                    format!(
+                        "{} {} {}",
+                        self.drawn,
+                        self.view.calls,
+                        self.view.work.as_micros()
+                    ),
+                );
+                self.last_report = Instant::now();
+            }
+        }
         if let Some(path) = &self.path {
             self.frames = self.frames.saturating_add(1);
             if self.frames == 4 {
@@ -159,6 +188,8 @@ pub(super) fn window(kind: &str, path: Option<PathBuf>) -> Result<()> {
     let view = View::load(kind)?;
     let opts = eframe::NativeOptions {
         renderer: eframe::Renderer::Glow,
+        // 与正常岛体一致；测量时可显式恢复旧验证窗口的垂直同步。
+        vsync: !cfg!(windows) || env::var_os("DAOZAI_SPIKE_LEGACY_VSYNC").is_some(),
         viewport: egui::ViewportBuilder::default().with_inner_size([445., 318.]),
         ..Default::default()
     };
@@ -171,6 +202,14 @@ pub(super) fn window(kind: &str, path: Option<PathBuf>) -> Result<()> {
                 view,
                 path,
                 frames: 0,
+                profile: env::var_os("DAOZAI_SPIKE_COUNTERS").map(PathBuf::from),
+                drawn: 0,
+                repaint_interval: env::var("DAOZAI_SPIKE_REDRAW_MS")
+                    .ok()
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .filter(|v| *v > 0)
+                    .map(Duration::from_millis),
+                last_report: Instant::now(),
             }))
         }),
     )

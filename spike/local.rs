@@ -36,6 +36,11 @@ struct Manifest {
     data_version: u32,
     permissions: BTreeMap<String, Value>,
     settings: Vec<Field>,
+    #[serde(default = "default_refresh")]
+    refresh_seconds: u32,
+}
+fn default_refresh() -> u32 {
+    60
 }
 type Values = BTreeMap<String, String>;
 #[derive(Clone, Serialize, Deserialize)]
@@ -87,11 +92,11 @@ fn valid_field(f: &Field, v: &str) -> bool {
         _ => false,
     }
 }
-impl Package {
-    fn read(path: &Path) -> Result<Self> {
-        let manifest: Manifest = serde_json::from_str(&bounded(path, 32 * 1024)?)?;
-        let m = &manifest;
+impl Manifest {
+    fn validate(&self) -> Result<()> {
+        let m = self;
         if !valid_id(&m.id)
+            || !(60..=86400).contains(&m.refresh_seconds)
             || m.api != 1
             || m.data_version != 1
             || m.runtime != "js"
@@ -99,6 +104,7 @@ impl Package {
             || m.name.trim().is_empty()
             || m.name.chars().count() > 80
             || m.author.trim().is_empty()
+            || m.author.chars().count() > 80
             || m.version.split('.').count() != 3
             || !m
                 .version
@@ -121,6 +127,7 @@ impl Package {
             || !m.settings.iter().all(|f| {
                 valid_field(f, &f.default)
                     && !f.label.trim().is_empty()
+                    && f.label.chars().count() <= 80
                     && f.key.starts_with(|c: char| c.is_ascii_lowercase())
                     && f.key.len() <= 40
                     && f.key.bytes().all(|b| {
@@ -132,13 +139,29 @@ impl Package {
             return Err(fail("设置项名称、类型或默认值无效"));
         }
         let entry = Path::new(&m.entry);
-        if !m.entry.ends_with(".js")
+        let allowed_name = |s: &str| {
+            !s.is_empty()
+                && s.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        };
+        if !m
+            .entry
+            .strip_suffix(".js")
+            .is_some_and(|name| name.split('/').all(allowed_name))
             || !entry
                 .components()
                 .all(|c| matches!(c, Component::Normal(_)))
         {
             return Err(fail("脚本入口必须在插件目录内"));
         }
+        Ok(())
+    }
+}
+impl Package {
+    fn read(path: &Path) -> Result<Self> {
+        let manifest: Manifest = serde_json::from_str(&bounded(path, 32 * 1024)?)?;
+        manifest.validate()?;
+        let entry = Path::new(&manifest.entry);
         let base = path
             .parent()
             .ok_or_else(|| fail("缺少包目录"))?
@@ -147,10 +170,11 @@ impl Package {
         if !resolved.starts_with(base) || !resolved.is_file() {
             return Err(fail("入口越出插件目录"));
         }
-        Ok(Self {
-            source: bounded(&resolved, 256 * 1024)?,
-            manifest,
-        })
+        let source = bounded(&resolved, 256 * 1024)?;
+        if source.trim().is_empty() {
+            return Err(fail("入口脚本为空"));
+        }
+        Ok(Self { source, manifest })
     }
     fn render(&self, values: &Values, storage: &Value, today: &str) -> Result<Output> {
         let runtime = rquickjs::Runtime::new()?;
@@ -179,7 +203,24 @@ impl Package {
     }
 }
 
+// 后台先写好临时快照。只有界面仍接受这次结果，才替换正式记录。
+struct Staged(PathBuf);
+impl Drop for Staged {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+struct Rendered {
+    output: Output,
+    staged: Option<Staged>,
+}
+struct Job {
+    valid: bool,
+    result: std::thread::JoinHandle<std::result::Result<Rendered, String>>,
+}
 pub struct LocalPlugins {
+    jobs: BTreeMap<String, Job>,
+    invalid: std::collections::BTreeSet<String>,
     dir: PathBuf,
     records: BTreeMap<String, Record>,
     cards: BTreeMap<String, String>,
@@ -194,6 +235,8 @@ pub struct LocalPlugins {
 impl LocalPlugins {
     pub fn open(dir: PathBuf) -> Self {
         let mut s = Self {
+            jobs: BTreeMap::new(),
+            invalid: Default::default(),
             dir,
             records: BTreeMap::new(),
             cards: BTreeMap::new(),
@@ -217,17 +260,28 @@ impl LocalPlugins {
                     .and_then(|v| v.to_str())
                     .and_then(|s| s.strip_prefix("local-"))
                     .unwrap_or_default();
-                match fs::read(&p)
+                if !valid_id(id) {
+                    continue;
+                }
+                let parsed = bounded(&p, 2 * 1024 * 1024)
                     .ok()
-                    .and_then(|v| serde_json::from_slice::<Record>(&v).ok())
-                {
-                    Some(r)
-                        if valid_id(id)
-                            && r.package.as_ref().is_none_or(|p| p.manifest.id == id) =>
-                    {
-                        s.records.insert(id.into(), r);
-                    }
-                    _ => s.notice = format!("无法读取插件记录 {id}"),
+                    .and_then(|v| serde_json::from_str::<Record>(&v).ok());
+                let valid = parsed.as_ref().is_some_and(|r| {
+                    r.package.as_ref().is_none_or(|p| {
+                        p.manifest.id == id
+                            && p.manifest.validate().is_ok()
+                            && !p.source.trim().is_empty()
+                            && p.source.len() <= 256 * 1024
+                            && p.manifest
+                                .settings
+                                .iter()
+                                .all(|f| r.values.get(&f.key).is_some_and(|v| valid_field(f, v)))
+                    })
+                });
+                if valid {
+                    s.records.insert(id.into(), parsed.unwrap());
+                } else {
+                    s.invalid.insert(id.into());
                 }
             }
             Ok(())
@@ -246,6 +300,9 @@ impl LocalPlugins {
         Ok(())
     }
     fn forget_view(&mut self, id: &str) {
+        if let Some(job) = self.jobs.get_mut(id) {
+            job.valid = false;
+        }
         self.cards.remove(id);
         self.next.remove(id);
         self.errors.remove(id);
@@ -271,7 +328,7 @@ impl LocalPlugins {
             }
             record.storage = old.storage.clone();
             record.values = old.values.clone();
-        } else if self.path(&id).exists() {
+        } else if self.path(&id).exists() && !self.invalid.contains(&id) {
             return Err(fail("已有无法读取的插件记录"));
         }
         let mut values = Values::new();
@@ -288,7 +345,9 @@ impl LocalPlugins {
         }
         record.values = values;
         record.package = Some(pkg);
-        self.put(&id, record)
+        self.put(&id, record)?;
+        self.invalid.remove(&id);
+        Ok(())
     }
     fn installed(&self, id: &str) -> Result<Record> {
         self.records
@@ -339,6 +398,45 @@ impl LocalPlugins {
         if !owner {
             self.cards.clear();
             self.next.clear();
+            for job in self.jobs.values_mut() {
+                job.valid = false;
+            }
+        }
+        let finished: Vec<_> = self
+            .jobs
+            .iter()
+            .filter(|(_, j)| j.result.is_finished())
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in finished {
+            let job = self.jobs.remove(&id).unwrap();
+            if !job.valid {
+                continue;
+            }
+            let result = job
+                .result
+                .join()
+                .unwrap_or_else(|_| Err("插件线程退出".into()))
+                .and_then(|rendered| {
+                    if let Some(staged) = rendered.staged {
+                        crate::model::replace_file(&staged.0, &self.path(&id))
+                            .map_err(|e| e.to_string())?;
+                        self.records.get_mut(&id).unwrap().storage = rendered.output.storage;
+                    }
+                    Ok(rendered.output.card)
+                });
+            match result {
+                Ok(card) => {
+                    self.errors.remove(&id);
+                    self.cards.insert(id, card);
+                }
+                Err(e) => {
+                    self.cards.remove(&id);
+                    self.errors.insert(id, e);
+                }
+            }
+        }
+        if !owner || self.jobs.len() >= 2 {
             return;
         }
         let now = Instant::now();
@@ -346,7 +444,8 @@ impl LocalPlugins {
             .records
             .iter()
             .filter(|(id, r)| {
-                r.enabled
+                !self.jobs.contains_key(*id)
+                    && r.enabled
                     && r.package.as_ref().is_some_and(|pkg| {
                         self.next.get(*id).is_none_or(|t| {
                             *t <= now && pkg.manifest.capabilities.iter().any(|c| c == "timer")
@@ -355,32 +454,43 @@ impl LocalPlugins {
             })
             .map(|(id, _)| id.clone())
             .collect();
-        for id in due {
-            self.next.insert(id.clone(), now + Duration::from_secs(60));
-            let result = (|| -> Result<String> {
-                let r = &self.records[&id];
+        for id in due.into_iter().take(2 - self.jobs.len()) {
+            let mut r = self.records[&id].clone();
+            let today = today.to_owned();
+            let pkg = r.package.as_ref().unwrap();
+            self.next.insert(
+                id.clone(),
+                now + Duration::from_secs(pkg.manifest.refresh_seconds.into()),
+            );
+            static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let seq = SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let stage = self
+                .path(&id)
+                .with_extension(format!("{}-{seq}.pending", std::process::id()));
+            let result = std::thread::spawn(move || {
                 let output = r
                     .package
                     .as_ref()
                     .unwrap()
-                    .render(&r.values, &r.storage, today)?;
-                if output.storage != r.storage {
-                    let mut updated = r.clone();
-                    updated.storage = output.storage;
-                    self.put(&id, updated)?
-                }
-                Ok(output.card)
-            })();
-            match result {
-                Ok(card) => {
-                    self.errors.remove(&id);
-                    self.cards.insert(id, card);
-                }
-                Err(e) => {
-                    self.cards.remove(&id);
-                    self.errors.insert(id, e.to_string());
-                }
-            }
+                    .render(&r.values, &r.storage, &today)
+                    .map_err(|e| e.to_string())?;
+                let staged = if r.storage != output.storage {
+                    r.storage = output.storage.clone();
+                    let data = serde_json::to_vec(&r).map_err(|e| e.to_string())?;
+                    crate::model::atomic_write(&stage, &data).map_err(|e| e.to_string())?;
+                    Some(Staged(stage))
+                } else {
+                    None
+                };
+                Ok(Rendered { output, staged })
+            });
+            self.jobs.insert(
+                id,
+                Job {
+                    valid: true,
+                    result,
+                },
+            );
         }
     }
     pub fn has_card(&self) -> bool {

@@ -160,11 +160,11 @@ impl Shell {
         #[cfg(windows)]
         let autostart = daozai::tray::autostart_enabled();
         #[cfg(windows)]
-        let tray = app.start_tray(daozai::tray::State {
+        let tray = if profiling_island(){None}else{app.start_tray(daozai::tray::State {
             pet: app.settings.pet,
             minimal: app.settings.minimal,
             autostart,
-        });
+        })};
         diagnostics::startup("初始化通知监听");
         #[cfg(windows)]
         let incoming=if app.settings.read_notifications {match daozai::system::connect_with_settings(cc.egui_ctx.clone(),&app.settings){Ok(rx)=>Some(rx),Err(e)=>{app.listener_status=format!("Windows 无法读取通知：{}",e.code());None}}}else{None};
@@ -1041,19 +1041,24 @@ fn main() -> std::process::ExitCode {
     }
 }
 
+// 性能复测使用独立数据目录，避开日常岛仔的托盘和安装信息。
+fn profiling_island()->bool {
+    cfg!(feature="sdk-js") && std::env::var_os("DAOZAI_DATA_DIR").is_some() && std::env::args().any(|a|a=="--sdk-profile-island")
+}
+
 fn run() -> eframe::Result<()> {
     // 自动重启或「立即重启」拉起的新进程：先等旧进程退出，再做单实例检查。
     diagnostics::wait_for_previous_instance();
     // 单实例（与原版同名互斥体）
     #[cfg(windows)]
-    if !daozai::tray::single_instance() {
+    if !profiling_island() && !daozai::tray::single_instance() {
         if !daozai::tray::activate_existing(std::env::args().any(|arg|arg=="--calendar")) {
             diagnostics::report("岛仔已在运行，但暂时无法打开窗口。\n请稍后重试；若仍无法打开，请在任务管理器的“详细信息”中结束 daozai.exe 后重试。", "已有实例可能正在启动或已无响应。请稍后重试；若仍无法打开，请在任务管理器的“详细信息”中结束 daozai.exe，再重新启动。");
         }
         return Ok(());
     }
     #[cfg(windows)]
-    std::thread::spawn(daozai::record_install_size);
+    if !profiling_island(){std::thread::spawn(daozai::record_install_size);}
     diagnostics::startup("初始化图形窗口");
     let viewport = egui::ViewportBuilder::default()
         .with_title("岛仔").with_icon(daozai::theme::app_icon())

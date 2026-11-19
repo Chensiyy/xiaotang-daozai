@@ -5,6 +5,7 @@
   "version": "1.0.0",
   "api": 1,
   "runtime": "js",
+  "refreshSeconds": 60,
   "entry": "main.js",
   "owner": "tasks",
   "capabilities": [

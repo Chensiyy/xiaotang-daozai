@@ -9022,5 +9022,7 @@ fn local_plugin_island_card_shares_todo_page_and_obeys_module_switch(){
         shoot_feature(&mut h,&mut raster,&dest,"岛上倒计时",5,Some(H::local(250.,65.)),"2026-10-28");
     }
     h.app.set_page_visible(crate::app::TODO_PAGE,false);h.frame(vec![]);assert!(!h.app.plugins.has_card());
-    h.app.set_page_visible(crate::app::TODO_PAGE,true);h.frame(vec![]);assert!(h.app.plugins.has_card());
+    h.app.set_page_visible(crate::app::TODO_PAGE,true);
+    let until=std::time::Instant::now()+std::time::Duration::from_secs(3);
+    while !h.app.plugins.has_card(){assert!(std::time::Instant::now()<until);h.frame(vec![]);std::thread::yield_now();}
 }

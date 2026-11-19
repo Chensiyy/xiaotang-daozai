@@ -74,6 +74,12 @@
       "maxItems": 32,
       "uniqueItems": true
     },
+    "refreshSeconds": {"type":"integer","minimum":60,"maximum":86400,"default":60},
+    "actions": {
+      "description": "待宿主实现。列出可供用户点击或提交的动作名称。",
+      "type": "array", "uniqueItems": true, "maxItems": 32,
+      "items": {"type":"string","pattern":"^[a-z][a-z0-9_-]{0,39}$"}
+    },
     "dataVersion": {
       "type": "integer",
       "minimum": 1
