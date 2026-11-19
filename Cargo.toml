@@ -47,6 +47,7 @@ raw-window-handle = "0.6"
 # v0.5.5 邮件：MIME 解析与验证码打分是纯逻辑，保持跨平台。
 mailparse = "0.18"
 regex = "1"
+roxmltree = "0.19"
 url = "2"
 chrono = "0.4"
 chrono-tz = "0.10"

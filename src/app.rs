@@ -1160,11 +1160,12 @@ impl App {
                     self.calendar.note_error = true;
                     return;
                 }
-                self.calendar.note = if message=="连接成功"{format!("已连接 · 未来 24 小时 {count} 个日程")}else{format!("已连接 · {message}")};
+                self.calendar.note = if message.is_empty(){format!("已连接 · 未来 24 小时 {count} 个日程")}else{format!("已连接 · {message}")};
                 self.calendar.note_error = false;
-                self.calendar.warning.clear();
+                self.calendar.warning = message.clone();
                 if self.calendar.config.as_ref()!=Some(&cfg) {
                     self.calendar.events.clear();
+                    self.calendar.last_sync.clear();
                     self.calendar.view.events.clear();
                     self.calendar.view.loaded=None;
                     self.calendar.view.loading=false;
@@ -1174,11 +1175,16 @@ impl App {
                     self.calendar.feeds.retain(|feed| feed.config.provider != cfg.provider);
                     self.calendar.feeds.push(CalendarFeed::new(cfg.clone()));
                 }
+                if let Some(feed) = self.calendar.feeds.iter_mut().find(|feed| feed.config == cfg) {
+                    feed.connected = true;
+                    feed.failures = 0;
+                    feed.error.clear();
+                    feed.warning = message;
+                }
                 self.calendar.config = Some(cfg);
                 self.calendar.connected = true;
                 self.calendar.failures = 0;
                 self.calendar.error.clear();
-                self.calendar.last_sync = calendar::now_label();
                 self.calendar.test_password.clear();
                 self.calendar.form.password.clear();
                 self.pending.push(Cmd::CalendarSync);
@@ -1227,8 +1233,18 @@ impl App {
                         feed.month.warning=message;self.refresh_calendar_month_status();
                     }
                 }else{
-                    if let Some(feed)=self.calendar.feeds.iter_mut().find(|feed|feed.config==config){feed.warning=message.clone();}
-                    if self.calendar.config.as_ref()==Some(&config){self.calendar.warning=message;}
+                    if let Some(feed) = self.calendar.feeds.iter_mut().find(|feed| feed.config == config) {
+                        feed.connected = true;
+                        feed.failures = 0;
+                        feed.error.clear();
+                        feed.warning = message.clone();
+                    }
+                    if self.calendar.config.as_ref() == Some(&config) {
+                        self.calendar.connected = true;
+                        self.calendar.failures = 0;
+                        self.calendar.error.clear();
+                        self.calendar.warning = message;
+                    }
                 }
             }
             calendar::Event::Failed { config, message } => {

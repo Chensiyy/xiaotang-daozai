@@ -534,6 +534,7 @@ dependencies = [
  "raw-window-handle",
  "regex",
  "ring",
+ "roxmltree",
  "rquickjs",
  "rrule",
  "serde",
