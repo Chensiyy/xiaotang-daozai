@@ -902,7 +902,8 @@ impl App {
 }
 
 fn notice_button(c:&Card,x:f32,y:f32,w:f32,text:&str,id:&str)->bool {
-    let (r,b)=crate::paint::capsule(c,x,y,w,20.0,id,Color32::from_gray(35),theme::BTN_HOVER);
+    let Some(c)=c.edge_control(x,y,w,20.0) else {return false};
+    let (r,b)=crate::paint::capsule(&c,x,y,w,20.0,id,Color32::from_gray(35),theme::BTN_HOVER);
     b.centered_text(x+w/2.0,y+10.0,text,10.5,W::Semibold,theme::WHITE,H::Center);
     r.clicked()
 }

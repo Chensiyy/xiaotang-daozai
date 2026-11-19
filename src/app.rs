@@ -3069,11 +3069,14 @@ impl App {
     // 面板主体：页标题 + 页面（带切页过渡）+ 翻页箭头 + 页码豆
     // ---------------------------------------------------------------
     fn panel_body(&mut self, c: &Card, env: &Env, cmds: &mut Vec<Cmd>) -> bool {
-        let settings=c.hit(380.0,4.0,28.0,28.0,"page-settings").on_hover_text(format!("打开{}设置窗口",PAGE_NAMES[self.page]));
-        let (hover,press)=c.hover_t(&settings);
-        c.circle(394.0,18.0,13.0,Color32::from_white_alpha((hover*24.0) as u8));
-        paint::gear(&c.scaled(394.0,18.0,0.8*(1.0-press*0.08)),394.0,18.0,paint::mix(theme::GRAY,theme::WHITE,hover));
-        if settings.clicked(){self.settings_tab=PAGE_SETTINGS_TABS[self.page];self.open_settings();}
+        let settings_card=if self.side() {c.edge_control(380.0,4.0,28.0,28.0)} else {Some(c.clone())};
+        if let Some(c)=settings_card {
+            let settings=c.hit(380.0,4.0,28.0,28.0,"page-settings").on_hover_text(format!("打开{}设置窗口",PAGE_NAMES[self.page]));
+            let (hover,press)=c.hover_t(&settings);
+            c.circle(394.0,18.0,13.0,Color32::from_white_alpha((hover*24.0) as u8));
+            paint::gear(&c.scaled(394.0,18.0,0.8*(1.0-press*0.08)),394.0,18.0,paint::mix(theme::GRAY,theme::WHITE,hover));
+            if settings.clicked(){self.settings_tab=PAGE_SETTINGS_TABS[self.page];self.open_settings();}
+        }
         if self.subpage==Some(self.page) {
             c.text(15.0,25.0,"‹",19.0,W::Bold,theme::WHITE,H::Left);
             // 健康提醒设置沿用主页的标题 + 喝水/久坐切换，切到哪边就设置哪边。
@@ -3138,14 +3141,14 @@ impl App {
         let pages: Vec<_>=self.settings.page_order.iter().copied().filter(|page|self.settings.visible_pages[*page]).collect();
         if pages.len()<2 { return; }
         let arrow_y=if self.page==6||self.page==8{88.0}else{68.0};
-        let l = c.hit(8.0, arrow_y-13.0, 26.0, 26.0, "nav-l");
-        let r = c.hit(385.0, arrow_y-13.0, 26.0, 26.0, "nav-r");
-        let (lh, lp) = c.hover_t(&l);
-        let (rh, rp) = c.hover_t(&r);
-        paint::chevron(c, 21.0, arrow_y, -1.0, lh, lp);
-        paint::chevron(c, 398.0, arrow_y, 1.0, rh, rp);
-        if l.clicked() { self.navigate_page(false); }
-        if r.clicked() { self.navigate_page(true); }
+        for (x, direction, id) in [(21.0,-1.0,"nav-l"),(398.0,1.0,"nav-r")] {
+            let arrow_card=if self.side() {c.edge_control(x-13.0,arrow_y-13.0,26.0,26.0)} else {Some(c.clone())};
+            let Some(arrow_card)=arrow_card else {continue};
+            let button=arrow_card.hit(x-13.0,arrow_y-13.0,26.0,26.0,id);
+            let (hover,press)=arrow_card.hover_t(&button);
+            paint::chevron(&arrow_card,x,arrow_y,direction,hover,press);
+            if button.clicked() {self.navigate_page(direction>0.0);}
+        }
         // 页码豆：宽度由弹簧驱动，整行实时居中；当前页是白色长条
         let gap = 4.0;
         let dot_y=self.expanded_height()-7.2;

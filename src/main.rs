@@ -632,14 +632,20 @@ impl eframe::App for Shell {
                     i.events.iter().any(|e|!matches!(e,egui::Event::Screenshot{..})),
                 ));
                 let changed=shot.as_ref().is_some_and(|image|native.present_frame(image.size,image.as_raw()));
-                let interactive=other_input || interactive_transition;
+                let startup_capture=(!self.hidden && native.waiting_for_first_layered_frame())
+                    .then(||self.frame_at+Duration::from_secs_f64(1.0/60.0));
+                // 若首张截图没产生回调，也继续尝试，直到正常交接或走轮廓回退。
+                if let Some(deadline)=startup_capture {schedule_repaint(ctx,deadline.saturating_duration_since(Instant::now()));}
+                let interactive=other_input || interactive_transition || startup_capture.is_some();
                 if shot.is_none() || changed || interactive {
                     // 输入结束后，短暂的切换过渡仍需逐帧交付。
                     let now=Instant::now();
                     match daozai::layered::readback_delay(self.readback_at,now,interactive,out.repaint_after) {
                         None=>{
                             self.readback_at=Some(now);
-                            let data=if interactive_transition && self.app.render_compat_running {
+                            let data=if let Some(deadline)=startup_capture {
+                                egui::UserData::new(eframe::InteractiveCapture(deadline))
+                            } else if interactive_transition && self.app.render_compat_running {
                                 egui::UserData::new(eframe::InteractiveCapture(self.frame_at+out.repaint_after))
                             } else {Default::default()};
                             ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(data));

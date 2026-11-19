@@ -5344,6 +5344,117 @@ fn todo_notice_view_locates_the_reminded_task() {
     assert!(h.app.todo_first>=4,"打开待办页时应能看到收到提醒的任务");
 }
 
+fn frame_control_draw(h:&mut H,cursor:Option<Pos2>,events:Vec<egui::Event>) {
+    use crate::side_dock::{SIDE_H,SIDE_W};
+    let size=if h.app.settings.dock.is_side(){Vec2::new(SIDE_W,SIDE_H)}else{Vec2::new(WIN_W,WIN_H)};
+    let ppp=1.25*h.app.settings.island_scale();
+    h.t+=1.0/120.0;
+    let env=Env{t:h.t,clock:"09:41:00".into(),today:"2026-10-28".into(),cursor,media:h.media.clone(),
+        opaque_surface:true,..Default::default()};
+    let win=Rect::from_min_size(Pos2::ZERO,size);
+    let raw=egui::RawInput{screen_rect:Some(win),time:Some(h.t),events,focused:true,
+        viewports:std::iter::once((egui::ViewportId::ROOT,egui::ViewportInfo{
+            native_pixels_per_point:Some(ppp),..Default::default()
+        })).collect(),..Default::default()};
+    let output=h.ctx.run(raw,|ctx|{egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx,|ui|{
+        h.app.frame(ui,win,&env);
+    });});
+    h.shapes=output.shapes;
+}
+
+#[test]
+fn frame_control_fluid_left_keeps_gear_and_next_arrow_whole() {
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=H::new();
+    h.app.settings.skin=crate::model::Skin::Fluid;
+    h.app.settings.dock=crate::model::Dock::Left;
+    h.app.settings.island_shape=crate::model::IslandShape::Pill;
+    h.app.settings.island_size=105;
+    h.app.settings.render_compat=true;
+    h.app.settings.pet=false;
+    h.media=crate::smtc::NowPlaying{title:"测试曲目".into(),artist:"测试歌手".into(),duration:120.0,..Default::default()};
+    let check=|h:&H|{
+        let mut drawn=[false;2];
+        for part in &h.shapes {
+            let bounds=part.shape.visual_bounding_rect();
+            let x=bounds.center().x-crate::app::PILL_GAP;
+            let index=match &part.shape {
+                egui::Shape::Path(path) if path.closed && path.points.len()==64 && (x-394.0).abs()<0.5=>0,
+                egui::Shape::Circle(circle) if (circle.radius-9.0).abs()<0.5 && (x-398.0).abs()<0.5=>1,
+                _=>continue,
+            };
+            if part.clip_rect.intersect(bounds).is_positive() {
+                assert!(part.clip_rect.contains_rect(bounds),"右侧控件 {index} 不能只露出一部分，进度 {}",h.app.progress());
+                drawn[index]=true;
+            }
+        }
+        for (id,size) in [("page-settings",28.0),("nav-r",26.0)] {
+            for live in [true,false] {
+                if let Some(r)=h.ctx.read_response(egui::Id::new(("card",live,id))).filter(|r|r.interact_rect.is_positive()) {
+                    assert!((r.interact_rect.size()-Vec2::splat(size)).length()<0.01,"{id} 不能只有一部分可点击");
+                }
+            }
+        }
+        drawn
+    };
+    for _ in 0..12 {frame_control_draw(&mut h,None,vec![]);}
+    let edge=Pos2::new(24.0,crate::side_dock::SIDE_H/2.0);
+    for _ in 0..120 {
+        frame_control_draw(&mut h,Some(edge),vec![egui::Event::PointerMoved(edge)]);
+        check(&h);
+    }
+    assert!(h.app.open);
+    assert_eq!(check(&h),[true,true],"展开后必须完整显示设置和右翻页");
+    for id in ["page-settings","nav-r"] {
+        assert!(h.ctx.read_response(egui::Id::new(("card",true,id))).is_some_and(|r|r.interact_rect.is_positive()));
+    }
+    for _ in 0..96 {
+        frame_control_draw(&mut h,None,vec![egui::Event::PointerGone]);
+        check(&h);
+    }
+    assert!(!h.app.open);
+    assert_eq!(check(&h),[false,false]);
+}
+
+#[test]
+fn frame_control_cream_startup_notice_keeps_view_action_whole() {
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=H::new();
+    h.app.settings.skin=crate::model::Skin::Cream;
+    h.app.settings.island_shape=crate::model::IslandShape::Notch;
+    h.app.settings.island_size=80;
+    h.app.settings.render_compat=true;
+    h.app.settings.pet=false;
+    h.app.todos.items.push(crate::model::TodoItem{text:"窗口边界逐帧验证".into(),due:Some("2026-10-28 09:40".into()),..Default::default()});
+    let action=egui::Id::new(("card",true,"notice-action"));
+    for _ in 0..120 {
+        frame_control_draw(&mut h,None,vec![]);
+        for part in &h.shapes {
+            if let egui::Shape::Text(t)=&part.shape {
+                let bounds=t.visual_bounding_rect();
+                if t.galley.text()=="查看" && part.clip_rect.intersect(bounds).is_positive() {
+                    assert!(part.clip_rect.contains_rect(bounds),"通知动画不能截掉查看文字");
+                }
+            }
+        }
+        if let Some(r)=h.ctx.read_response(action).filter(|r|r.interact_rect.is_positive()) {
+            assert!((r.interact_rect.size()-Vec2::new(60.0,20.0)).length()<0.01,"查看按钮不能只有一部分可点击");
+        }
+    }
+    assert!(h.app.todos.items[0].reminded,"该用例必须触发启动时已有的待办");
+    let button=h.ctx.read_response(action).expect("待办通知展开后应有查看按钮");
+    assert!(h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t)
+        if t.galley.text()=="查看" && s.clip_rect.contains_rect(t.visual_bounding_rect()))));
+    let pos=button.interact_rect.center();
+    frame_control_draw(&mut h,Some(pos),vec![egui::Event::PointerMoved(pos)]);
+    for pressed in [true,false] {
+        frame_control_draw(&mut h,Some(pos),vec![egui::Event::PointerButton{
+            pos,button:egui::PointerButton::Primary,pressed,modifiers:Default::default()
+        }]);
+    }
+    assert_eq!(h.app.page,4,"稳定态的查看按钮仍应打开待办页");
+}
+
 #[test]
 fn mail_hyperlink_click_requests_the_default_browser() {
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());

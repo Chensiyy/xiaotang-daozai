@@ -71,6 +71,19 @@ impl<'a> Card<'a> {
         c
     }
 
+    /// 控件靠近形变边缘时整颗淡出，避免露出半个按钮或留下半块热区。
+    pub(crate) fn edge_control(&self, x: f32, y: f32, w: f32, h: f32) -> Option<Self> {
+        let clip = self.painter.clip_rect();
+        let rect = self.rect(x, y, w, h);
+        let margin = (rect.left() - clip.left()).min(clip.right() - rect.right());
+        if margin <= 0.0 || rect.top() < clip.top() || rect.bottom() > clip.bottom() {
+            return None;
+        }
+        let alpha = crate::anim::smoothstep(0.0, 6.0 * self.s, margin);
+        let control = self.faded(alpha);
+        Some(if alpha < 0.8 { control.ghost() } else { control })
+    }
+
     // ---------- 文字（y 一律是基线，跨字体对齐稳定） ----------
     pub fn font(&self, size: f32, w: W) -> FontId {
         font(size * self.s, w)

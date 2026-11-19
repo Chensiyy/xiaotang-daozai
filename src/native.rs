@@ -12,7 +12,7 @@
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use crate::poll_clock::PollClock;
 use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{CombineRgn, CreatePolygonRgn, CreateRectRgn, CreateRoundRectRgn, DeleteObject, SetWindowRgn, HRGN, RGN_OR, WINDING};
@@ -397,9 +397,10 @@ unsafe fn top_bar_above(hwnd:HWND,bounds:crate::display_layout::Bounds)->bool {
     false
 }
 
-/// 兼容后端的分层窗口状态：先按轮廓裁剪，读回到带透明的画面后再切到分层窗口。
+/// 兼容后端的分层窗口状态。Direct3D 首帧交付前先保持主窗口的区域为空。
 #[derive(Default)]
 enum Layering {
+    Starting(Option<Instant>),
     /// 不需要（透明合成正常）或还没收到第一帧。
     #[default]
     Pending,
@@ -538,7 +539,8 @@ impl Window {
         let opaque_surface=surface_needs_outline_clip(backend,&vendor,&renderer) || outline_test().is_some();
         if opaque_surface{glass_diagnostic(&format!("渲染兼容：{vendor} {renderer} {backend:?}，不直接信任系统透明合成，首帧前先按轮廓裁剪"));}
         watch_drag(hwnd,cc.egui_ctx.clone());
-        Some(Self { hwnd, layering:Layering::Pending, region: (i32::MIN, 0, 0, 0), expanded: false, hook, page_wheel_hook:None, browser_state:(None,PollClock::default()), drag_capture:DragCapture::default(), glass:None, backdrop:None, blur:false, blur_unavailable:false, opaque_surface, outline:ShapeAlpha::default() })
+        let layering=if backend==Some(eframe::wgpu::Backend::Dx12) {Layering::Starting(None)} else {Layering::Pending};
+        Some(Self { hwnd, layering, region: (i32::MIN, 0, 0, 0), expanded: false, hook, page_wheel_hook:None, browser_state:(None,PollClock::default()), drag_capture:DragCapture::default(), glass:None, backdrop:None, blur:false, blur_unavailable:false, opaque_surface, outline:ShapeAlpha::default() })
     }
 
     /// 使用目标屏幕的物理坐标定位，并在缩放、岛体大小、水平位置或屏幕连接变化后重新校正。
@@ -577,21 +579,37 @@ impl Window {
     /// 是否需要每帧读回画面交给分层窗口（兼容后端，且分层窗口仍可用）。
     pub fn wants_frames(&self)->bool {self.opaque_surface && !matches!(self.layering,Layering::Unavailable)}
 
+    pub fn waiting_for_first_layered_frame(&self)->bool {matches!(self.layering,Layering::Starting(_))}
+
     /// 交一帧读回的画面（RGBA，已预乘）。返回画面是否变化。
     /// 首帧看读回的画面有没有真正的透明像素：有就原样交给分层窗口；没有（部分 AMD 显卡的 OpenGL）
     /// 就按岛体轮廓补算边缘 alpha——普通模式也不再退回逐像素「有或没有」的轮廓裁剪。
     pub fn present_frame(&mut self,size:[usize;2],rgba:&[u8])->bool {
         if !self.wants_frames(){return false;}
-        if matches!(self.layering,Layering::Pending) {
+        if matches!(self.layering,Layering::Starting(_) | Layering::Pending) {
             let real=crate::layered::has_real_alpha(size,rgba) && outline_test()!=Some(true);
             // 还没收到过岛体轮廓时无从补 alpha，先保持轮廓裁剪，等下一帧。
             if !real && self.outline.polygons.is_empty() {return false;}
+            if real && !rgba.chunks_exact(4).any(|pixel|pixel[3]!=0) {return false;}
             match crate::layered::Layered::new() {
-                Ok(layered)=>{
-                    self.outline.active=!real;
-                    glass_diagnostic(if real {"渲染兼容：已切换为分层窗口逐像素透明（边缘抗锯齿）"}
-                        else {"渲染兼容：读回的画面没有透明通道，按岛体轮廓补算边缘透明度（分层窗口，边缘抗锯齿）"});
-                    self.layering=Layering::Active(layered);
+                Ok(mut layered)=>{
+                    let frame=if real {rgba} else {self.outline.apply(size,rgba)};
+                    match layered.present(self.hwnd,size,frame) {
+                        Ok(true)=>{
+                            self.outline.active=!real;
+                            glass_diagnostic(if real {"渲染兼容：已切换为分层窗口逐像素透明（边缘抗锯齿）"}
+                                else {"渲染兼容：读回的画面没有透明通道，按岛体轮廓补算边缘透明度（分层窗口，边缘抗锯齿）"});
+                            self.layering=Layering::Active(layered);
+                            return true;
+                        }
+                        Ok(false)=>return false,
+                        Err(error)=>{
+                            layered.detach(self.hwnd);
+                            glass_diagnostic(&format!("渲染兼容：首帧无法交给分层窗口，回到轮廓裁剪：{error:?}"));
+                            self.layering=Layering::Unavailable;
+                            return false;
+                        }
+                    }
                 }
                 Err(error)=>{
                     glass_diagnostic(&format!("渲染兼容：分层显示窗口创建失败：{error:?}"));
@@ -655,6 +673,13 @@ impl Window {
         let threshold=unsafe{((GetSystemMetrics(SM_CXDRAG)/2).max(1),(GetSystemMetrics(SM_CYDRAG)/2).max(1))};
         let capture=self.drag_capture.update(button_down,cursor,zone,threshold);
         let r=file_drag_region(r,zone,capture);
+        // 读回长期不可用时沿用轮廓裁剪，避免岛体一直隐藏。
+        let hold_startup=if let Layering::Starting(since)=&mut self.layering {
+            let now=Instant::now();
+            if now.duration_since(*since.get_or_insert(now))<Duration::from_secs(1) {true}
+            else {self.layering=Layering::Pending;false}
+        } else {false};
+        let r=if hold_startup {(0,0,0,0)} else {r};
         let h = (
             px(hit_rect.0),
             px(hit_rect.1),
@@ -707,7 +732,7 @@ impl Window {
             if let Some(shapes)=glass.filter(|g|!g.is_empty()) {self.outline.set_shapes(shapes,ppp);}
         }
         // 不可靠的透明合成路径按真实轮廓裁剪，避免圆角外侧和透明画布留下黑底。
-        let outline_clip=self.opaque_surface && !matches!(self.layering,Layering::Active(_));
+        let outline_clip=self.opaque_surface && !hold_startup && !matches!(self.layering,Layering::Active(_));
         match glass.filter(|_|outline_clip) {
             Some(shapes) => {
                 let key=glass_key(shapes,ppp);
@@ -874,6 +899,50 @@ mod tests {
                 if GetWindowRgn(hwnd,region).0!=0 {assert!(PtInRegion(region,10,150).as_bool(),"分层显示后窗口区域应回到矩形");}
                 let _=DeleteObject(region);
                 assert!(!native.present_frame([w,h],&opaque),"画面没变时不重复提交");
+            }
+            *hit().lock().unwrap_or_else(|e|e.into_inner())=saved;
+            let _=DestroyWindow(hwnd);
+        }
+    }
+
+    #[test]
+    fn frame_control_dx12_startup_hands_off_only_a_valid_visible_frame() {
+        use crate::app::GlassShape;
+        use eframe::egui::{pos2,Rect};
+        use windows::Win32::Graphics::Gdi::{GetWindowRgnBox,NULLREGION};
+        unsafe {
+            let hwnd=CreateWindowExW(WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE,windows::core::w!("STATIC"),windows::core::w!(""),WS_POPUP|WS_VISIBLE,-10000,-10000,32,16,None,None,None,None).unwrap();
+            let saved=hit().lock().unwrap_or_else(|e|e.into_inner()).clone();
+            {
+                let mut native=Window{hwnd,layering:Layering::Starting(None),region:(i32::MIN,0,0,0),expanded:false,hook:HWINEVENTHOOK::default(),page_wheel_hook:None,browser_state:(None,PollClock::now()),drag_capture:DragCapture::default(),glass:None,backdrop:None,blur:false,blur_unavailable:true,opaque_surface:true,outline:ShapeAlpha::default()};
+                let shapes=[GlassShape::Round(Rect::from_min_max(pos2(3.0,1.0),pos2(28.0,14.0)),4.0)];
+                let update=|window:&mut Window| window.update((0.0,0.0,32.0,16.0),(3.0,1.0,25.0,13.0),None,None,Some(&shapes),1.0,false,false);
+                let mut frame=[0u8;32*16*4];
+                update(&mut native);
+                assert_eq!(GetWindowRgnBox(hwnd,&mut RECT::default()),NULLREGION);
+                assert!(!native.present_frame([32,16],&frame),"全透明时继续等待");
+                frame[(4+4*32)*4..(5+4*32)*4].fill(255);
+                assert!(!native.present_frame([16,32],&frame),"定位前读回的旧尺寸不得生效");
+                assert!(matches!(native.layering,Layering::Starting(_)));
+                update(&mut native);
+                assert_eq!(GetWindowRgnBox(hwnd,&mut RECT::default()),NULLREGION);
+                native.layering=Layering::Starting(Some(Instant::now()-Duration::from_secs(1)));
+                update(&mut native);
+                assert!(matches!(native.layering,Layering::Pending) && native.wants_frames());
+                assert_ne!(GetWindowRgnBox(hwnd,&mut RECT::default()),NULLREGION,"超时后恢复轮廓显示并继续等待有效读回");
+                assert!(!native.present_frame([32,16],&[0u8;32*16*4]),"迟到的空帧不覆盖兜底画面");
+                native.layering=Layering::Starting(None);
+                update(&mut native);
+                assert!(native.present_frame([32,16],&frame));
+                let Layering::Active(layered)=&native.layering else {panic!("有效首帧应接管显示")};
+                assert!(!IsWindowVisible(layered.display()).as_bool(),"命中区域开放前保持不显示");
+                let mut alpha=0;
+                GetLayeredWindowAttributes(hwnd,None,Some(&mut alpha),None).unwrap();
+                assert_eq!(alpha,1,"开放区域前主交换链已淡化");
+                update(&mut native);
+                let Layering::Active(layered)=&native.layering else {panic!("分层窗口应保持活动")};
+                assert!(IsWindowVisible(layered.display()).as_bool());
+                assert_ne!(GetWindowRgnBox(hwnd,&mut RECT::default()),NULLREGION);
             }
             *hit().lock().unwrap_or_else(|e|e.into_inner())=saved;
             let _=DestroyWindow(hwnd);
