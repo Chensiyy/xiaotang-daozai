@@ -29,6 +29,44 @@ fn wireless_custom_resident_persists_from_detail_toggle(){
     h.app.settings.show_bluetooth=false;h.frame(vec![]);assert!(h.app.wireless_resident().is_empty());
 }
 
+
+#[test]
+fn wireless_auto_resident_can_be_turned_off_from_detail() {
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=H::new();
+    h.bt=fixture();h.app.settings.bluetooth_notifications=false;
+    h.app.settings.bluetooth_battery_notifications=false;
+    open_page(&mut h);
+    assert_eq!(h.app.wireless_resident().iter().map(|d|d.id.as_str()).collect::<Vec<_>>(),["device-1","device-2"]);
+    let tile=h.ctx.read_response(egui::Id::new(("card",true,("wireless-device","device-1")))).unwrap();
+    h.click(tile.rect.center());h.frame(vec![]);
+    let pin=h.ctx.read_response(egui::Id::new(("card",true,("wireless-pin","device-1")))).unwrap();
+    h.click(pin.rect.center());
+    assert_eq!(h.app.wireless_resident().iter().map(|d|d.id.as_str()).collect::<Vec<_>>(),["device-2"]);
+    h.app.settings=crate::model::Settings::load();
+    h.frame(vec![]);
+    assert!(h.app.settings.bluetooth_resident_custom);
+    assert_eq!(h.app.settings.bluetooth_pinned,["device-2"]);
+    h.click(pin.rect.center());
+    assert!(h.app.wireless_resident().iter().any(|d|d.id=="device-1"));
+}
+
+#[test]
+fn wireless_pin_can_restore_resident_from_the_island() {
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=H::new();
+    h.bt=vec![fixture().remove(0)];
+    h.app.settings.show_bluetooth=false;
+    h.app.settings.bluetooth_notifications=false;
+    open_page(&mut h);
+    assert!(h.app.wireless_resident().is_empty());
+    let pin=h.ctx.read_response(egui::Id::new(("card",true,("wireless-pin","device-0")))).unwrap();
+    h.click(pin.rect.center());
+    assert_eq!(h.app.wireless_resident()[0].id,"device-0");
+    h.click(pin.rect.center());
+    assert!(h.app.wireless_resident().is_empty());
+}
+
 #[test]
 fn wireless_history_does_not_suppress_disconnect_notifications(){
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();h.bt=fixture();h.frame(vec![]);
@@ -226,5 +264,49 @@ fn wireless_legacy_pins_migrate_unless_mode_is_explicit() {
         let s=crate::model::Settings::load();
         assert_eq!(s.bluetooth_resident_custom,custom);
         assert_eq!(s.bluetooth_pinned.len(),usize::from(contents.contains("device-1")));
+    }
+}
+
+#[test]
+fn wireless_settings_controls_are_in_their_own_page() {
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=H::new();
+    h.app.wireless_devices=fixture();
+    h.app.open_settings();
+    h.ctx.set_embed_viewports(false);
+    let output=std::sync::Arc::new(Mutex::new(None));
+    let capture=output.clone();
+    egui::Context::set_immediate_viewport_renderer(move|ctx,mut viewport|{
+        let id=viewport.ids.this;
+        let raw=egui::RawInput{
+            viewport_id:id,screen_rect:Some(Rect::from_min_size(Pos2::ZERO,egui::vec2(690.0,560.0))),
+            viewports:std::iter::once((id,egui::ViewportInfo::default())).collect(),..Default::default()
+        };
+        *capture.lock().unwrap()=Some(ctx.run(raw,|ctx|(viewport.viewport_ui_cb)(ctx)));
+    });
+    let mut raster=crate::preview_raster::Raster::new(690,560);
+    for (tab,name,visible,hidden) in [
+        (10,"wireless-page-management",vec!["无线设备电量"],vec!["常驻样式","常驻设备","电量提醒"]),
+        (crate::extras::SETTINGS_TAB_WIRELESS,"wireless-settings",vec!["岛上常驻","常驻样式","常驻设备","电量提醒"],vec!["蓝牙设备连接"]),
+        (6,"wireless-notifications",vec!["蓝牙设备连接"],vec!["无线设备电量","电量提醒"]),
+    ] {
+        h.app.settings_tab=tab;
+        for _ in 0..3 {
+            let _=h.ctx.run(Default::default(),|ctx|h.app.settings_ui(ctx,false));
+            let frame=output.lock().unwrap().take().unwrap();
+            raster.update_textures(&frame.textures_delta);
+            h.shapes=frame.shapes;
+        }
+        let labels=texts(&h);
+        for label in visible {assert!(labels.iter().any(|s|s==label),"缺少 {label}");}
+        for label in hidden {assert!(!labels.iter().any(|s|s==label),"意外显示 {label}");}
+        if let Some(dest)=std::env::var_os("DAOZAI_BLUETOOTH_PREVIEW_DIR") {
+            let dest=std::path::PathBuf::from(dest);
+            std::fs::create_dir_all(&dest).unwrap();
+            raster.buf.fill([0.10,0.10,0.11,1.0]);
+            raster.draw(&h.ctx.tessellate(h.shapes.clone(),1.0),1.0);
+            let mut bytes=vec![];raster.to_rgba8(&mut bytes);
+            image::save_buffer(dest.join(format!("{name}.png")),&bytes,690,560,image::ColorType::Rgba8).unwrap();
+        }
     }
 }

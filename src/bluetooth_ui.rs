@@ -280,7 +280,8 @@ impl App {
             ring(c,left+9.0,15.0,&spec,device,fx,self.t);
             if self.resident_value(device) {reading(c,left+21.0+(w-21.0)/2.0,15.5,9.5,device,fx,self.t,false,1.0,true);}
             let tip=format!("{} · {}",device.name,device.battery.map_or("未上报电量".into(),|b|format!("{b}%")));
-            if c.hit(left-2.0,2.0,w+4.0,26.0,("wireless-resident",&device.id)).on_hover_text(tip).clicked(){self.wireless_focus=Some(device.id.clone());self.show_page(BLUETOOTH_PAGE);}
+            let hit=c.hit(left-2.0,2.0,w+4.0,26.0,("wireless-resident",&device.id));
+            if crate::quota_ui::bar_tooltip(hit,tip).clicked(){self.wireless_focus=Some(device.id.clone());self.show_page(BLUETOOTH_PAGE);}
             left+=w+8.0;
         }
     }
@@ -292,7 +293,8 @@ impl App {
         let fx=self.wireless_fx.get(&device.id);
         ring(c,cx,ring_y,&spec,&device,fx,self.t);
         if value {reading(c,cx,y+14.0,8.5,&device,fx,self.t,false,1.0,true);}
-        if c.hit(cx-17.0,y-18.0,34.0,37.0,"wireless-side").on_hover_text(&device.name).clicked(){self.wireless_focus=Some(device.id.clone());self.show_page(BLUETOOTH_PAGE);}
+        let hit=c.hit(cx-17.0,y-18.0,34.0,37.0,"wireless-side");
+        if crate::quota_ui::bar_tooltip(hit,device.name.clone()).clicked(){self.wireless_focus=Some(device.id.clone());self.show_page(BLUETOOTH_PAGE);}
     }
 
     pub(crate) fn page_wireless(&mut self,c:&Card,env:&Env) {
@@ -359,18 +361,36 @@ impl App {
         let source=device.reading.as_ref().map_or("设备没有提供电量",|r|r.source.label());
         mx+=c.text(mx,140.0,source,10.5,W::Regular,theme::DIM,H::Left)+10.0;
         if let Some(ago)=reading_age(device) {c.text(mx,140.0,&ago,10.5,W::Regular,theme::DIM,H::Left);}
-        // 常驻显示：和设置里的自定义列表是同一份数据。
-        let on=self.settings.bluetooth_resident_custom&&self.settings.bluetooth_pinned.contains(&device.id);
+        let automatic=(!self.settings.bluetooth_resident_custom).then(||self.wireless_resident());
+        let selected=automatic.as_ref().map_or_else(
+            ||self.settings.bluetooth_pinned.contains(&device.id),
+            |devices|devices.iter().any(|d|d.id==device.id),
+        );
+        let on=self.settings.show_bluetooth&&selected;
         let (tx,ty)=(x,158.0);
         c.fill(tx,ty-7.0,24.0,14.0,7.0,if on{theme::CYAN}else{theme::TRACK});
         c.circle(if on{tx+17.0}else{tx+7.0},ty,5.0,if on{Color32::BLACK}else{theme::DIM});
         c.centered_text(tx+31.0,ty,"常驻显示",10.5,W::Regular,if on{theme::WHITE}else{theme::DIM},H::Left);
-        let hint=if on {"取消常驻显示"} else {"在收起的岛上常驻显示这台设备"};
+        let hint=match (on,automatic.is_some()) {
+            (true,true)=>"取消这台设备的常驻，保留其他常驻设备",
+            (true,false)=>"取消这台设备的常驻",
+            (false,_)=>"在收起的岛上常驻显示这台设备",
+        };
         if c.hit(tx-4.0,ty-11.0,92.0,22.0,("wireless-pin",&device.id)).on_hover_text(hint).clicked() {
-            if on {self.settings.bluetooth_pinned.retain(|id|id!=&device.id);}
-            else {
-                if !self.settings.bluetooth_resident_custom {self.settings.bluetooth_pinned.clear();self.settings.bluetooth_resident_custom=true;}
-                self.settings.bluetooth_pinned.push(device.id.clone());
+            if let Some(devices)=automatic {
+                self.settings.bluetooth_resident_custom=true;
+                self.settings.bluetooth_pinned.clear();
+                if on {
+                    self.settings.bluetooth_pinned.extend(devices.into_iter().map(|d|d.id));
+                }
+            }
+            if on {
+                self.settings.bluetooth_pinned.retain(|id|id!=&device.id);
+            } else {
+                self.settings.show_bluetooth=true;
+                if !self.settings.bluetooth_pinned.contains(&device.id) {
+                    self.settings.bluetooth_pinned.push(device.id.clone());
+                }
             }
             self.settings.save();
         }
@@ -378,30 +398,28 @@ impl App {
 }
 
 impl App {
-    /// 设置 › 页面管理 › 无线设备 下的两项：常驻样式、常驻设备（自动 / 自定义 + 勾选列表）。
+    /// 无线设备设置中的常驻样式与设备选择。
     pub(crate) fn wireless_resident_settings(&mut self,ui:&mut eframe::egui::Ui) {
         use crate::extras::{settings_control_row_right,settings_segmented,settings_hint};
-        ui.indent("wireless-resident-settings",|ui|{
-            let mut style=self.settings.bluetooth_resident_style;
-            settings_control_row_right(ui,"常驻样式",|ui|{settings_segmented(ui,&mut style,&[(0,"环 + 数字"),(1,"只显示环")],76.0);});
-            self.settings.bluetooth_resident_style=style;
-            settings_hint(ui,if style==0 {"小环加百分比，信息最完整"} else {"只显示小环；电量偏低或充电中的设备才显示百分比"});
-            ui.add_space(6.0);
-            let mut custom=self.settings.bluetooth_resident_custom;
-            settings_control_row_right(ui,"常驻设备",|ui|{settings_segmented(ui,&mut custom,&[(false,"自动"),(true,"自定义")],62.0);});
-            self.settings.bluetooth_resident_custom=custom;
-            settings_hint(ui,if custom {"只在勾选的设备里挑；常驻条放不下时先显示电量低的"} else {"自动挑电量最低的设备常驻"});
-            if custom {
-                let devices=self.wireless_devices.clone();
-                if devices.is_empty() {settings_hint(ui,"连接设备后可以在这里勾选");}
-                for device in &devices {
-                    let mut on=self.settings.bluetooth_pinned.contains(&device.id);
-                    let label=match device.battery {Some(level)=>format!("{} · {level}%",device.name),None=>format!("{} · 未上报电量",device.name)};
-                    if ui.checkbox(&mut on,label).changed() {
-                        if on {self.settings.bluetooth_pinned.push(device.id.clone());} else {self.settings.bluetooth_pinned.retain(|id|id!=&device.id);}
-                    }
+        let mut style=self.settings.bluetooth_resident_style;
+        settings_control_row_right(ui,"常驻样式",|ui|{settings_segmented(ui,&mut style,&[(0,"环 + 数字"),(1,"只显示环")],76.0);});
+        self.settings.bluetooth_resident_style=style;
+        settings_hint(ui,if style==0 {"显示电量环和百分比"} else {"电量偏低或充电时显示百分比"});
+        ui.separator();
+        let mut custom=self.settings.bluetooth_resident_custom;
+        settings_control_row_right(ui,"常驻设备",|ui|{settings_segmented(ui,&mut custom,&[(false,"自动"),(true,"自定义")],62.0);});
+        self.settings.bluetooth_resident_custom=custom;
+        settings_hint(ui,if custom {"优先显示所选设备中电量较低的设备"} else {"自动挑电量最低的设备常驻"});
+        if custom {
+            let devices=self.wireless_devices.clone();
+            if devices.is_empty() {settings_hint(ui,"连接设备后可以在这里勾选");}
+            for device in &devices {
+                let mut on=self.settings.bluetooth_pinned.contains(&device.id);
+                let label=match device.battery {Some(level)=>format!("{} · {level}%",device.name),None=>format!("{} · 未上报电量",device.name)};
+                if ui.checkbox(&mut on,label).changed() {
+                    if on {self.settings.bluetooth_pinned.push(device.id.clone());} else {self.settings.bluetooth_pinned.retain(|id|id!=&device.id);}
                 }
             }
-        });
+        }
     }
 }

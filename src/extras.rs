@@ -770,7 +770,7 @@ mod tests {
 
     #[test]
     fn settings_groups_keep_every_page_reachable() {
-        let groups = ["通用", "音乐", "专注与健康", "专注与健康", "待办与置物", "待办与置物", "消息提醒", "邮箱", "日程", "关于", "页面管理", "AI 额度", "天气", "外观", "位置"];
+        let groups = ["通用", "音乐", "专注与健康", "专注与健康", "待办与置物", "待办与置物", "消息提醒", "邮箱", "日程", "关于", "页面管理", "AI 额度", "天气", "外观", "位置", "无线设备"];
         for (tab, expected) in groups.iter().enumerate() {
             let matches: Vec<_> = SETTINGS_GROUPS.iter().filter(|(_,start,end,_)| (*start..=*end).contains(&tab)).collect();
             assert_eq!(matches.len(), 1, "页面 {tab} 必须且只能属于一个分组");
@@ -1299,16 +1299,22 @@ fn settings_page_icon(page:usize)->egui::ImageSource<'static>{
         MAIL_PAGE=>("mail",include_bytes!("../assets/settings-icons/system/mail.svg")),
         QUOTA_PAGE=>("quota",include_bytes!("../assets/settings-icons/system/quota.svg")),
         CALENDAR_PAGE=>("calendar",include_bytes!("../assets/settings-icons/system/calendar.svg")),
+        BLUETOOTH_PAGE=>("wireless",include_bytes!("../assets/device-icons/bluetooth-linear.svg")),
         _=>("weather",include_bytes!("../assets/settings-icons/system/weather.svg")),
     };
     egui::ImageSource::Bytes{uri:format!("bytes://settings-header-{name}.svg").into(),bytes:bytes.into()}
+}
+
+fn paint_wireless_settings_icon(ui:&egui::Ui,rect:egui::Rect,icon:egui::ImageSource<'static>){
+    ui.painter().rect_filled(rect,rect.width()*0.25,Color32::from_rgb(57,118,211));
+    egui::Image::new(icon).paint_at(ui,rect.shrink(rect.width()*0.15));
 }
 
 /// 设置分页对应的功能模块（页面序号）；通用、外观、位置、消息提醒、关于、页面管理不属于任何模块。
 #[cfg_attr(not(test),allow(dead_code))]
 pub(crate) fn settings_tab_module(tab:usize)->Option<usize>{
     use crate::app::*;
-    match tab {1=>Some(MUSIC_PAGE),2=>Some(FOCUS_PAGE),3=>Some(WATER_PAGE),4=>Some(TODO_PAGE),5=>Some(SHELF_PAGE),7=>Some(MAIL_PAGE),8=>Some(CALENDAR_PAGE),11=>Some(QUOTA_PAGE),12=>Some(WEATHER_PAGE),_=>None}
+    match tab {1=>Some(MUSIC_PAGE),2=>Some(FOCUS_PAGE),3=>Some(WATER_PAGE),4=>Some(TODO_PAGE),5=>Some(SHELF_PAGE),7=>Some(MAIL_PAGE),8=>Some(CALENDAR_PAGE),11=>Some(QUOTA_PAGE),12=>Some(WEATHER_PAGE),SETTINGS_TAB_WIRELESS=>Some(BLUETOOTH_PAGE),_=>None}
 }
 
 pub(crate) fn settings_label(ui:&mut egui::Ui,text:&str){
@@ -1438,14 +1444,15 @@ fn setting_choices(ui:&mut egui::Ui,title:&str,value:&mut u32,values:[u32;3],uni
     let options:Vec<(u32,&str)>=values.iter().zip(labels.iter()).map(|(v,l)|(*v,l.as_str())).collect();
     settings_control_row_right(ui,title,|ui|{settings_segmented(ui,value,&options,62.0);});
 }
-/// 设置页分页序号。旧序号保持不变（岛上入口、测试都按序号跳转），新增外观与位置两页。
+/// 设置页分页序号。岛上入口和测试按序号跳转。
 pub(crate) const SETTINGS_TAB_APPEARANCE: usize = 13;
 pub(crate) const SETTINGS_TAB_POSITION: usize = 14;
+pub(crate) const SETTINGS_TAB_WIRELESS: usize = 15;
 /// 侧栏：一项就是一页，不再有页内子标签。专注与健康（2、3）、待办与置物（4、5）各合成一页；关于固定左下角。
 /// 第四列是这一项之前的分组标题。
-const SETTINGS_GROUPS: [(&str,usize,usize,&str);13] = [
+const SETTINGS_GROUPS: [(&str,usize,usize,&str);14] = [
     ("通用",0,0,"岛仔"), ("外观",SETTINGS_TAB_APPEARANCE,SETTINGS_TAB_APPEARANCE,""), ("位置",SETTINGS_TAB_POSITION,SETTINGS_TAB_POSITION,""), ("页面管理",10,10,""),
-    ("音乐",1,1,"功能"), ("专注与健康",2,3,""), ("待办与置物",4,5,""), ("消息提醒",6,6,""), ("邮箱",7,7,""), ("日程",8,8,""), ("AI 额度",11,11,""), ("天气",12,12,""),
+    ("音乐",1,1,"功能"), ("专注与健康",2,3,""), ("待办与置物",4,5,""), ("消息提醒",6,6,""), ("邮箱",7,7,""), ("日程",8,8,""), ("AI 额度",11,11,""), ("天气",12,12,""), ("无线设备",SETTINGS_TAB_WIRELESS,SETTINGS_TAB_WIRELESS,""),
     ("关于",9,9,""),
 ];
 /// 分页标题；合并页（3→2、5→4）显示合并后的名字。
@@ -1464,7 +1471,13 @@ impl App {
         let (mut enable,mut open)=(false,false);
         settings_card(ui,|ui|{
             ui.horizontal(|ui|{
-                ui.add(egui::Image::new(settings_page_icon(page)).fit_to_exact_size(egui::vec2(36.0,36.0)));
+                let icon=settings_page_icon(page);
+                if page==crate::app::BLUETOOTH_PAGE {
+                    let (rect,_)=ui.allocate_exact_size(egui::vec2(36.0,36.0),egui::Sense::hover());
+                    paint_wireless_settings_icon(ui,rect,icon);
+                }else{
+                    ui.add(egui::Image::new(icon).fit_to_exact_size(egui::vec2(36.0,36.0)));
+                }
                 ui.add_space(4.0);
                 ui.vertical(|ui|{
                     ui.spacing_mut().item_spacing.y=2.0;
@@ -1522,7 +1535,7 @@ impl App {
             let before=format!("{:?}",self.settings);
             egui::SidePanel::left("settings-sidebar").resizable(false).exact_width(180.0).frame(egui::Frame::new().fill(settings_color(ctx,Color32::from_rgb(29,29,32),Color32::from_rgb(237,239,243))).stroke(egui::Stroke::NONE).inner_margin(egui::Margin::symmetric(10,12))).show(ctx,|ui|{
                 ui.add_space(2.0);
-                // 13 项加两个分组标题：窗口拉到最矮时按可用高度压缩行高，「关于」始终留在底部可见。
+                // 窗口拉到最矮时按可用高度压缩行高，「关于」始终留在底部可见。
                 // 每项占 行高 + 控件间距(3) + 行后空隙；两个分组标题和「关于」上方预留约 80。
                 let per=(ui.available_height()-80.0)/SETTINGS_GROUPS.len() as f32;
                 let row_h=(per-6.0).clamp(20.0,32.0);
@@ -1541,6 +1554,7 @@ impl App {
                         ui.painter().rect_filled(rect,7.0,if selected{settings_color(ctx,Color32::from_rgb(43,43,46),Color32::from_rgb(214,221,232))}else{settings_color(ctx,Color32::from_rgb(30,30,33),Color32::from_rgb(225,230,238))});
                     }
                     let icon=match start {
+                        SETTINGS_TAB_WIRELESS=>egui::include_image!("../assets/device-icons/bluetooth-linear.svg"),
                         0=>egui::include_image!("../assets/settings-icons/system/general.svg"),
                         11=>egui::include_image!("../assets/settings-icons/system/quota.svg"),
                         10=>egui::include_image!("../assets/settings-icons/system/pages.svg"),
@@ -1556,7 +1570,8 @@ impl App {
                         _=>egui::include_image!("../assets/settings-icons/system/about.svg"),
                     };
                     let icon_bg=egui::Rect::from_center_size(egui::pos2(rect.left()+21.0,rect.center().y),egui::vec2(23.0,23.0));
-                    egui::Image::new(icon).paint_at(ui,icon_bg);
+                    if start==SETTINGS_TAB_WIRELESS {paint_wireless_settings_icon(ui,icon_bg,icon);}
+                    else {egui::Image::new(icon).paint_at(ui,icon_bg);}
                     ui.painter().text(egui::pos2(rect.left()+40.0,rect.center().y),egui::Align2::LEFT_CENTER,name,egui::FontId::proportional(13.0),if selected{settings_color(ctx,Color32::WHITE,Color32::from_rgb(30,34,41))}else{settings_color(ctx,Color32::from_gray(225),Color32::from_gray(55))});
                     ui.add_space(row_gap);
                 }
@@ -1571,6 +1586,23 @@ impl App {
                     // 右侧给滚动条留出空隙，卡片和开关不会被它压住。
                     ui.set_width((ui.available_width()-12.0).max(240.0));
                     match tab {
+                    SETTINGS_TAB_WIRELESS=>{
+                        let on=self.settings_feature_header(ui,crate::app::BLUETOOTH_PAGE,"查看已连接设备的电量和充电状态",|_,_|{});
+                        ui.add_enabled_ui(on,|ui|{
+                            settings_label(ui,"岛上常驻");
+                            settings_card(ui,|ui|{
+                                setting_row(ui,"无线设备电量","收起时显示，最多两台",&mut self.settings.show_bluetooth);
+                                if self.settings.show_bluetooth {
+                                    settings_separator(ui);
+                                    self.wireless_resident_settings(ui);
+                                }
+                            });
+                            settings_label(ui,"电量提醒");
+                            settings_card(ui,|ui|{
+                                setting_row(ui,"岛上提示","接上电源、充满或电量偏低时提醒",&mut self.settings.bluetooth_battery_notifications);
+                            });
+                        });
+                    }
                     12=>{
                         let on=self.settings_feature_header(ui,crate::app::WEATHER_PAGE,"当地天气与七日预报",|_,_|{});
                         ui.add_space(4.0);
@@ -1593,8 +1625,11 @@ impl App {
                             setting_row(ui,"电量","无电池设备自动隐藏",&mut self.settings.show_battery);
                             ui.separator();
                             setting_row(ui,"天气","天气图标和温度，点击打开天气页",&mut self.settings.show_weather);
-                            setting_row(ui,"无线设备","蓝牙设备电量，最多常驻两台",&mut self.settings.show_bluetooth);
-                            if self.settings.show_bluetooth {self.wireless_resident_settings(ui);}
+                            ui.separator();
+                            let wireless_on=self.module_on(crate::app::BLUETOOTH_PAGE);
+                            ui.add_enabled_ui(wireless_on,|ui|{
+                                setting_row(ui,"无线设备电量",if wireless_on {"收起时显示，最多两台"}else{"无线设备功能页已关闭"},&mut self.settings.show_bluetooth);
+                            });
                             ui.separator();
                             let before=self.quota.config.compact;
                             setting_row(ui,"AI 额度","常驻账号；WorkBuddy 积分在前，DeepSeek 余额在最后",&mut self.quota.config.compact);
@@ -1900,9 +1935,7 @@ impl App {
                         settings_card(ui,|ui|{
                             setting_row(ui,"系统状态","音量、充电、网络和键盘状态",&mut self.settings.system_hud);
                             ui.separator();
-                            setting_row(ui,"蓝牙设备","连接与断开时提醒；无线设备页的电量监控独立运行",&mut self.settings.bluetooth_notifications);
-                            ui.separator();
-                            setting_row(ui,"蓝牙设备电量","接上电源、充满、电量偏低时在岛上提示；同一台设备 10 分钟内不重复",&mut self.settings.bluetooth_battery_notifications);
+                            setting_row(ui,"蓝牙设备连接","连接与断开时提醒",&mut self.settings.bluetooth_notifications);
                         });
                         // 聊天软件：一个软件一行、一个开关；附属选项缩进跟在所属软件下面。
                         let master=self.settings.notifications;

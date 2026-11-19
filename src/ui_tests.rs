@@ -3378,6 +3378,60 @@ fn page_visibility_does_not_reopen_hidden_pages_through_shortcuts_or_drops() {
 }
 
 #[test]
+fn wireless_module_hides_resident_shortcuts_and_exits_detail() {
+    use crate::{app::BLUETOOTH_PAGE,bt::Device,model::Dock};
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let frame=|h:&mut H,cursor,events|{
+        if h.app.side() {side_frame_events(h,cursor,events);}
+        else {h.cursor=cursor;h.frame(events);}
+    };
+    let click=|h:&mut H,pos|{
+        frame(h,Some(pos),vec![egui::Event::PointerMoved(pos)]);
+        for pressed in [true,false] {
+            frame(h,Some(pos),vec![egui::Event::PointerButton{pos,button:egui::PointerButton::Primary,pressed,modifiers:Default::default()}]);
+        }
+    };
+    for dock in [Dock::Top,Dock::Left,Dock::Right] {
+        let mut h=H::new();
+        h.app.settings.dock=dock;
+        h.app.settings.pet=false;
+        h.app.settings.notifications=false;
+        h.bt.push(Device{id:"keyboard".into(),name:"键盘".into(),battery:Some(93),..Default::default()});
+        let id=if dock==Dock::Top {
+            egui::Id::new(("card",true,("wireless-resident","keyboard")))
+        } else {
+            egui::Id::new(("card",true,"wireless-side"))
+        };
+        for _ in 0..60 {frame(&mut h,None,vec![]);}
+        let shortcut=h.ctx.read_response(id).expect("启用时应有常驻入口").rect.center();
+        click(&mut h,shortcut);
+        assert_eq!(h.app.page(),BLUETOOTH_PAGE,"{dock:?} 常驻入口应打开详情");
+        assert_eq!(h.app.wireless_focus.as_deref(),Some("keyboard"));
+
+        h.app.set_page_visible(BLUETOOTH_PAGE,false);
+        assert_ne!(h.app.page(),BLUETOOTH_PAGE);
+        assert!(h.app.wireless_focus.is_none());
+        h.t+=5.0;
+        for _ in 0..60 {frame(&mut h,None,vec![egui::Event::PointerGone]);}
+        assert!(h.ctx.read_response(id).is_none(),"关闭后应移除原有热点：{dock:?}");
+        click(&mut h,shortcut);
+        assert_ne!(h.app.page(),BLUETOOTH_PAGE);
+        assert!(!h.app.settings_open);
+    }
+}
+
+#[test]
+fn wireless_page_gear_opens_its_settings() {
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=H::new();
+    h.app.show_page(crate::app::BLUETOOTH_PAGE);
+    h.hover(H::local(300.0,60.0),1.0);
+    h.click(H::local(394.0,18.0));
+    assert!(h.app.settings_open);
+    assert_eq!(h.app.settings_tab,crate::extras::SETTINGS_TAB_WIRELESS);
+}
+
+#[test]
 fn alphabetic_mail_codes_reach_the_card_without_changing_case() {
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     for (kind,value) in ["text/plain","text/html"].into_iter().flat_map(|kind|["AbCdEf","WWWWWWWW"].map(|value|(kind,value))) {
@@ -7539,7 +7593,7 @@ fn side_frame(h:&mut H,cursor:Option<Pos2>)->crate::app::FrameOut{
 fn side_frame_events(h:&mut H,cursor:Option<Pos2>,events:Vec<egui::Event>)->crate::app::FrameOut{
     let (w,hgt)=(crate::side_dock::SIDE_W,crate::side_dock::SIDE_H);
     h.t+=1.0/60.0;
-    let env=Env{t:h.t,clock:"09:41:00".into(),today:"2026-11-04".into(),date:"11月4日 周三".into(),cursor,bt_ready:true,battery:Some(76),..Default::default()};
+    let env=Env{t:h.t,clock:"09:41:00".into(),today:"2026-11-04".into(),date:"11月4日 周三".into(),cursor,bt:h.bt.clone(),bt_ready:true,battery:Some(76),..Default::default()};
     let raw=egui::RawInput{screen_rect:Some(Rect::from_min_size(Pos2::ZERO,Vec2::new(w,hgt))),time:Some(h.t),focused:true,
         events,..Default::default()};
     let app=&mut h.app;let mut out=None;
@@ -9084,13 +9138,13 @@ fn background_services_follow_the_module_switch(){
 
 #[test]
 fn every_module_settings_tab_maps_to_its_page(){
-    let titles=["通用","音乐","专注","健康","待办","置物","消息提醒","邮箱","日程","关于","页面管理","AI 额度","天气","外观","位置"];
+    let titles=["通用","音乐","专注","健康","待办","置物","消息提醒","邮箱","日程","关于","页面管理","AI 额度","天气","外观","位置","无线设备"];
     let mut pages:Vec<_>=(0..titles.len()).filter_map(crate::extras::settings_tab_module).collect();
     for tab in 0..titles.len() {
         if let Some(page)=crate::extras::settings_tab_module(tab) {assert!(crate::app::PAGE_NAMES[page].chars().next()==titles[tab].chars().next(),"{} ↔ {}",titles[tab],crate::app::PAGE_NAMES[page]);}
     }
-    pages.sort();assert_eq!(pages,(0..crate::app::BLUETOOTH_PAGE).collect::<Vec<_>>(),"原有功能页面各有一个设置分页");
-    assert_eq!(crate::app::PAGE_SETTINGS_TABS[crate::app::BLUETOOTH_PAGE],0,"无线设备的常驻开关位于通用设置");
+    pages.sort();assert_eq!(pages,(0..crate::app::PAGE_NAMES.len()).collect::<Vec<_>>(),"每个功能页面各有一个设置分页");
+    assert_eq!(crate::app::PAGE_SETTINGS_TABS[crate::app::BLUETOOTH_PAGE],crate::extras::SETTINGS_TAB_WIRELESS);
 }
 
 /// 设置页的 AI 额度账号默认收起成一行；需要检查明细的测试先把所有账号展开。

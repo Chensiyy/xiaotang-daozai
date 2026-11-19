@@ -80,7 +80,7 @@ fn pill_shadow(painter:&egui::Painter,rect:Rect,radius:f32,strength:f32){
     }
 }
 pub(crate) const PAGE_NAMES: [&str; 10] = ["音乐", "专注", "健康", "置物架", "待办", "邮箱", "AI 额度", "日程", "天气", "无线设备"];
-pub(crate) const PAGE_SETTINGS_TABS: [usize; 10] = [1,2,3,5,4,7,11,8,12,0];
+pub(crate) const PAGE_SETTINGS_TABS: [usize; 10] = [1,2,3,5,4,7,11,8,12,crate::extras::SETTINGS_TAB_WIRELESS];
 
 // ---------- 动效参数 ----------
 /// 悬停意图缓冲：光标停留这么久才真正展开（期间药丸轻微胀大作为反馈），防误触。
@@ -1617,6 +1617,10 @@ impl App {
         self.settings.visible_pages[page]=visible;
         // 关掉专注模块时一并停止正在进行的计时，避免页面不可见却到点弹提醒。
         if !visible && page==FOCUS_PAGE {self.pomo.running=false;}
+        if !visible && page==BLUETOOTH_PAGE {
+            self.wireless_focus=None;
+            self.wireless_offset=0;
+        }
         if !self.settings.visible_pages[self.page] {
             if let Some(first)=self.settings.page_order.iter().copied().find(|page|self.settings.visible_pages[*page]) { self.go(first,1.0); }
         }
@@ -3085,7 +3089,7 @@ impl App {
             let old_a = 1.0 - smoothstep(0.0, 0.16, e);
             let new_a = smoothstep(0.03, 0.28, e);
             let old_dx = -self.page_dir * 18.0 * anim::ease_out_cubic(e / 0.3);
-            if old_a > 0.0 {
+            if old_a > 0.0 && self.module_on(self.page_from) {
                 let oc = c.faded(old_a).ghost();
                 self.page_title(self.page_from, &oc);
                 self.render_page(self.page_from, &oc.shifted(old_dx, 0.0), env, &mut Vec::new());
