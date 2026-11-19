@@ -9095,8 +9095,8 @@ fn every_module_settings_tab_maps_to_its_page(){
 
 
 #[test]
-fn performance_badge_opens_and_views_persist() {
-    use crate::{app::PERFORMANCE_PAGE,bar_layout::PERFORMANCE,performance::{BarStyle,View}};
+fn performance_badge_opens_overview_and_drills_into_details() {
+    use crate::{app::PERFORMANCE_PAGE,bar_layout::PERFORMANCE,performance::{BarStyle,View},performance_ui::{overview_card_center,view_tab_center,BACK}};
     let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     let mut h=H::new();
     h.app.set_page_visible(PERFORMANCE_PAGE,true);
@@ -9106,14 +9106,20 @@ fn performance_badge_opens_and_views_persist() {
     assert!(badge.rect.is_positive(),"{:?}",badge.rect);
     h.click(badge.rect.center());
     assert_eq!(h.app.debug_state(),(PERFORMANCE_PAGE,true));
-    h.hover(H::local(108.,48.),0.8);
-    h.click(H::local(108.,48.));
-    assert_eq!(h.app.settings.performance_view,View::History);
-    let saved=crate::model::Settings::load();
-    assert_eq!((saved.performance_view,saved.performance_bar),(View::History,BarStyle::Pulse));
+    assert_eq!(h.app.performance.view,None,"展开先显示设置里的总览");
+    let tap=|h:&mut H,(x,y):(f32,f32)|{h.hover(H::local(x,y),0.8);h.click(H::local(x,y));};
+    tap(&mut h,overview_card_center(View::Gpu));
+    assert_eq!(h.app.performance.view,Some(View::Gpu),"点总览卡片进入对应详情");
+    tap(&mut h,view_tab_center(3));
+    assert_eq!(h.app.performance.view,Some(View::Disk),"详情页签可以横向切换");
+    tap(&mut h,(BACK[0]+BACK[2]/2.,BACK[1]+BACK[3]/2.));
+    assert_eq!(h.app.performance.view,Some(View::Overview),"返回键回到总览");
+    assert_eq!(h.app.settings.performance_view,View::Overview,"岛内浏览不改设置");
+    h.app.performance.view=Some(View::Memory);
     h.app.set_page_visible(PERFORMANCE_PAGE,false);
     h.frame(vec![]);
     assert!(h.app.resident.current().x[PERFORMANCE].is_none());
+    assert_eq!(h.app.performance.view,None,"离开页面后下次从设置里的页面开始");
 }
 
 #[cfg(windows)]
@@ -9151,19 +9157,56 @@ fn performance_gallery() {
     h.app.set_page_visible(crate::app::PERFORMANCE_PAGE,true);
     let start=std::time::Instant::now();
     while start.elapsed().as_secs()<61 {
-        h.app.performance.tick(true,true,&h.ctx);
+        h.app.performance.tick(true,true,true,&h.ctx);
         std::thread::sleep(std::time::Duration::from_millis(40));
     }
     let today=chrono::Local::now().date_naive().to_string();
     let mut raster=feature_raster();
     h.app.show_page(crate::app::PERFORMANCE_PAGE);
     for view in View::ALL {
-        h.app.settings.performance_view=view;
-        shoot_feature(&mut h,&mut raster,&dir,view.key(),75,Some(H::local(200.,115.)),&today);
+        h.app.performance.view=Some(view);
+        shoot_feature(&mut h,&mut raster,&dir,&format!("page-{}",view.key()),75,Some(H::local(28.,228.)),&today);
     }
+    // 悬停内存点阵：程序那一段高亮。
+    h.app.performance.view=Some(View::Memory);
+    shoot_feature(&mut h,&mut raster,&dir,"memory-hover",20,Some(H::local(170.,110.)),&today);
+    // 悬停内存页的第二个程序：构成条里属于它的那一截亮起，其余压暗。
+    shoot_feature(&mut h,&mut raster,&dir,"memory-program-hover",20,Some(H::local(230.,268.)),&today);
+    // 悬停总览的处理器卡片。
+    h.app.performance.view=Some(View::Overview);
+    shoot_feature(&mut h,&mut raster,&dir,"overview-hover",40,Some(H::local(80.,90.)),&today);
+    h.app.performance.view=None;
+    h.app.settings.performance_metrics=crate::performance::Metric::ALL.iter().fold(0,|bits,m|bits|m.bit());
     for style in BarStyle::ALL {
         h.app.settings.performance_bar=style;
         shoot_feature(&mut h,&mut raster,&dir,style.key(),240,None,&today);
+    }
+    // 设置页：深色 / 浅色各一张，再加一张自由搭配。
+    h.app.open_settings();h.ctx.set_embed_viewports(false);h.app.settings_tab=15;
+    let mut settings_raster=crate::preview_raster::Raster::new(690,1240);
+    let output=std::sync::Arc::new(std::sync::Mutex::new(None));let capture=output.clone();
+    egui::Context::set_immediate_viewport_renderer(move|ctx,mut viewport|{
+        let id=viewport.ids.this;
+        let raw=egui::RawInput{viewport_id:id,screen_rect:Some(Rect::from_min_size(Pos2::ZERO,egui::vec2(690.0,1240.0))),
+            viewports:std::iter::once((id,egui::ViewportInfo{native_pixels_per_point:Some(1.0),..Default::default()})).collect(),..Default::default()};
+        *capture.lock().unwrap()=Some(ctx.run(raw,|ctx|(viewport.viewport_ui_cb)(ctx)));
+    });
+    for (name,theme,style) in [("settings-dark",crate::settings_theme::SettingsTheme::Dark,BarStyle::Dashboard),
+        ("settings-light",crate::settings_theme::SettingsTheme::Light,BarStyle::Gauges),
+        ("settings-custom",crate::settings_theme::SettingsTheme::Dark,BarStyle::Custom)] {
+        h.app.settings.settings_theme=theme;h.app.settings.performance_bar=style;
+        h.app.settings.performance_metrics=if style==BarStyle::Custom {0b1_1000_0101} else {7};
+        for frame in 0..3 {
+            let root=h.ctx.run(Default::default(),|ctx|h.app.settings_ui(ctx,false));
+            let child=output.lock().unwrap().take().unwrap();
+            settings_raster.update_textures(&root.textures_delta);settings_raster.update_textures(&child.textures_delta);
+            if frame==2 {
+                settings_raster.buf.fill([0.0,0.0,0.0,1.0]);settings_raster.draw(&h.ctx.tessellate(child.shapes,child.pixels_per_point),child.pixels_per_point);
+                let mut rgba=Vec::new();settings_raster.to_rgba8(&mut rgba);
+                image::save_buffer(dir.join(format!("{name}.png")),&rgba,690,1240,image::ColorType::Rgba8).unwrap();
+            }
+            settings_raster.free_textures(&root.textures_delta);settings_raster.free_textures(&child.textures_delta);
+        }
     }
 }
 

@@ -66,7 +66,8 @@ fn settings_every_tab_renders_with_modules_on_and_off(){
     for on in [true,false] {
         let mut h=H::new();h.app.open_settings();h.ctx.set_embed_viewports(true);
         if !on {for page in 0..9 {if page!=crate::app::MUSIC_PAGE {h.app.settings.visible_pages[page]=false;}}}
-        for tab in 0..=14 {
+        if on {h.app.set_page_visible(crate::app::PERFORMANCE_PAGE,true);}
+        for tab in 0..=15 {
             h.app.settings_tab=tab;
             for _ in 0..2 {let _=h.ctx.run(egui::RawInput::default(),|ctx|h.app.settings_ui(ctx,false));}
             assert_eq!(h.app.settings_tab,tab,"绘制分页 {tab} 不应自行跳转");

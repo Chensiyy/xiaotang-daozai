@@ -41,6 +41,7 @@ pub enum BarStyle {
     Network,
     Dashboard,
     Custom,
+    Cores,
 }
 impl BarStyle {
     pub(crate) fn columns(mask: u16) -> impl Iterator<Item = (Metric, Option<Metric>, f32)> {
@@ -58,12 +59,13 @@ impl BarStyle {
             Metric::ALL.into_iter().filter(|m| mask & m.bit() != 0).count() as f32 * 23.
         } else { 34. }
     }
-    pub(crate) const ALL: [Self; 5] = [Self::Custom, Self::Gauges, Self::Pulse, Self::Network, Self::Dashboard];
+    pub(crate) const ALL: [Self; 6] = [Self::Custom, Self::Gauges, Self::Cores, Self::Pulse, Self::Network, Self::Dashboard];
     pub(crate) fn width(self, mask: u16) -> f32 {
         match self {
             Self::Custom => Self::columns(mask).map(|(_, _, w)| w).sum(),
             Self::Gauges => 146.,
             Self::Pulse => 78.,
+            Self::Cores => 104.,
             Self::Network => 88.,
             Self::Dashboard => 308.,
         }
@@ -75,47 +77,94 @@ impl BarStyle {
             Self::Network => "network",
             Self::Dashboard => "dashboard",
             Self::Custom => "custom",
+            Self::Cores => "cores",
         }
     }
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Gauges => "三联环",
-            Self::Pulse => "处理器脉冲",
+            Self::Pulse => "CPU 脉冲",
             Self::Network => "上下行",
             Self::Dashboard => "综合监测",
             Self::Custom => "自由搭配",
+            Self::Cores => "核心点阵",
+        }
+    }
+    /// 设置里样式卡片上的一句话概括。
+    pub(crate) fn summary(self) -> &'static str {
+        match self {
+            Self::Gauges => "CPU、显卡、内存",
+            Self::Pulse => "占用率与负载曲线",
+            Self::Network => "下载与上传速度",
+            Self::Dashboard => "负载、网速与磁盘",
+            Self::Custom => "勾选想看的指标",
+            Self::Cores => "每个逻辑处理器一列灯",
         }
     }
     pub(crate) fn parse(key: &str) -> Self {
         Self::ALL.into_iter().find(|v| v.key() == key).unwrap_or_default()
     }
 }
+/// 展开页：总览，以及五类硬件各自的详情页。
 #[derive(Default, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum View {
     #[default]
     Overview,
-    History,
-    Details,
+    Cpu,
+    Gpu,
+    Memory,
+    Disk,
+    Network,
 }
 impl View {
-    pub(crate) const ALL: [Self; 3] = [Self::Overview, Self::History, Self::Details];
+    pub(crate) const ALL: [Self; 6] = [Self::Overview, Self::Cpu, Self::Gpu, Self::Memory, Self::Disk, Self::Network];
+    /// 详情页（页签条里的五项）。
+    pub(crate) const DETAILS: [Self; 5] = [Self::Cpu, Self::Gpu, Self::Memory, Self::Disk, Self::Network];
     pub(crate) fn key(self) -> &'static str {
         match self {
             Self::Overview => "overview",
-            Self::History => "history",
-            Self::Details => "details",
+            Self::Cpu => "cpu",
+            Self::Gpu => "gpu",
+            Self::Memory => "memory",
+            Self::Disk => "disk",
+            Self::Network => "network",
         }
     }
     pub(crate) fn label(self) -> &'static str {
         match self {
-            Self::Overview => "仪表",
-            Self::History => "趋势",
-            Self::Details => "明细",
+            Self::Overview => "总览",
+            Self::Cpu => "CPU",
+            Self::Gpu => "显卡",
+            Self::Memory => "内存",
+            Self::Disk => "磁盘",
+            Self::Network => "网络",
         }
     }
+    /// 旧版的「趋势 / 明细」等未知取值都回到总览。
     pub(crate) fn parse(key: &str) -> Self {
         Self::ALL.into_iter().find(|v| v.key() == key).unwrap_or_default()
     }
+}
+
+/// 一个程序（同名进程合并）在最近一秒的处理器占用和私有内存。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct Process {
+    pub name: String,
+    pub cpu: f32,
+    pub memory: u64,
+    /// 最近一秒的读写字节数（文件、管道等全部读写，不只磁盘）。
+    pub io: f32,
+    /// 同名进程里内存最多的那个进程号，用来找程序文件取图标。
+    pub pid: usize,
+    /// 程序图标（32 px），取不到时为空，界面画首字母。
+    pub icon: Option<std::sync::Arc<eframe::egui::ColorImage>>,
+}
+/// 一个本地固定磁盘分区的容量。
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(crate) struct Volume {
+    pub letter: char,
+    pub used: u64,
+    pub total: u64,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -126,8 +175,30 @@ pub(crate) struct Reading {
     pub gpu_name: String,
     pub gpu_temp: Option<f32>,
     pub video_memory: Option<(u64, u64)>,
+    /// 共享显存（显卡借用的系统内存）的已用和上限；核显主要用它。
+    pub shared_memory: Option<(u64, u64)>,
+    /// 各类显卡引擎（3D、视频解码……）的占用率，同类取最忙的那个。
+    pub gpu_engines: Vec<(&'static str, f32)>,
     pub network: [Option<f32>; 2],
     pub disk: [Option<f32>; 2],
+    /// 处理器时间里内核态所占的百分比（相对全部逻辑处理器）。
+    pub cpu_kernel: Option<f32>,
+    /// 每个逻辑处理器的占用率。
+    pub cores: Vec<f32>,
+    pub cpu_mhz: Option<f32>,
+    /// 内存构成：系统缓存与内核常驻（非分页池）字节数。
+    pub memory_cache: Option<u64>,
+    pub memory_kernel: Option<u64>,
+    /// 磁盘活动时间百分比。
+    pub disk_active: Option<f32>,
+    /// 当前网卡的链路速率（比特每秒）与网卡启用以来的累计收发字节。
+    pub link_speed: Option<u64>,
+    pub net_total: Option<[u64; 2]>,
+    /// 展开页打开时才统计的程序排行。
+    pub by_cpu: Vec<Process>,
+    pub by_memory: Vec<Process>,
+    pub by_io: Vec<Process>,
+    pub volumes: Vec<Volume>,
 }
 impl Reading {
     pub fn ram(&self) -> Option<f32> {
@@ -141,7 +212,10 @@ impl Reading {
 pub(crate) struct Monitor {
     pub latest: Reading,
     pub history: VecDeque<(Instant, Reading)>,
-    pub chart: usize,
+    /// 岛内正在看的页面；收起后清空，下次展开回到设置里选的页面。
+    pub view: Option<View>,
+    /// 最近看过的详情页，退回总览的过渡里继续画它。
+    pub last_detail: View,
     #[cfg(windows)]
     worker: Option<Worker>,
 }
@@ -150,6 +224,7 @@ pub(crate) struct Monitor {
 struct Worker {
     stop: std::sync::mpsc::Sender<()>,
     visible: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    detail: std::sync::Arc<std::sync::atomic::AtomicBool>,
     samples: std::sync::Arc<std::sync::Mutex<VecDeque<(Instant, Reading)>>>,
 }
 #[cfg(windows)]
@@ -164,11 +239,13 @@ impl Worker {
         let output = Arc::clone(&samples);
         let visible = Arc::new(AtomicBool::new(visible));
         let repaint = Arc::clone(&visible);
+        let detail = Arc::new(AtomicBool::new(false));
+        let wants_detail = Arc::clone(&detail);
         std::thread::spawn(move || {
             let mut sampler = windows::Sampler::default();
             loop {
                 let at = Instant::now();
-                let reading = sampler.read(at);
+                let reading = sampler.read(at, wants_detail.load(Ordering::Relaxed));
                 {
                     let mut queue = output.lock().unwrap();
                     if queue.len() == 60 {
@@ -185,7 +262,7 @@ impl Worker {
                 }
             }
         });
-        Self { stop, visible, samples }
+        Self { stop, visible, detail, samples }
     }
 }
 #[cfg(windows)]
@@ -196,7 +273,8 @@ impl Drop for Worker {
 }
 
 impl Monitor {
-    pub fn tick(&mut self, enabled: bool, visible: bool, ctx: &egui::Context) {
+    /// `detail`：展开页正在显示，需要逐核、程序排行等较重的统计。
+    pub fn tick(&mut self, enabled: bool, visible: bool, detail: bool, ctx: &egui::Context) {
         #[cfg(windows)]
         {
             if !enabled {
@@ -208,6 +286,7 @@ impl Monitor {
             }
             let worker = self.worker.get_or_insert_with(|| Worker::start(ctx.clone(), visible));
             worker.visible.store(visible, std::sync::atomic::Ordering::Relaxed);
+            worker.detail.store(detail, std::sync::atomic::Ordering::Relaxed);
             let mut queue = worker.samples.lock().unwrap();
             if let Some((_, last)) = queue.back() {
                 self.latest = last.clone();
@@ -225,7 +304,7 @@ impl Monitor {
             }
         }
         #[cfg(not(windows))]
-        let _ = (enabled, visible, ctx);
+        let _ = (enabled, visible, detail, ctx);
     }
 }
 
@@ -249,13 +328,13 @@ mod tests {
     fn continuous_sampling_cost() {
         let ctx = egui::Context::default();
         let mut monitor = Monitor::default();
-        monitor.tick(true, false, &ctx);
+        monitor.tick(true, false, false, &ctx);
         std::thread::sleep(Duration::from_secs(3));
-        monitor.tick(true, false, &ctx);
+        monitor.tick(true, false, false, &ctx);
         let wall = Instant::now();
         let cpu = cpu_seconds();
         std::thread::sleep(Duration::from_secs(45));
-        monitor.tick(true, true, &ctx);
+        monitor.tick(true, true, true, &ctx);
         let elapsed = wall.elapsed().as_secs_f64();
         let used = cpu_seconds() - cpu;
         let count = monitor.history.iter().filter(|(t, _)| *t >= wall).count();
