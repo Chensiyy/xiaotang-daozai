@@ -186,10 +186,14 @@ impl Connect {
 impl Config {
     pub fn connect_api(&mut self,connected:&Connected,target:Option<&str>)->Result<String,String>{
         if let Some(id)=target {
-            let a=self.accounts.iter_mut().find(|a|a.id==id&&(a.provider==connected.provider||(a.provider.relay()&&connected.provider.relay()))).ok_or("原账号已移除，请重新添加")?;
-            if let Some(slot)=&a.slot{queue_cleanup(slot)?;}
-            a.provider=connected.provider;a.source=PathBuf::from(&connected.source);a.slot=Some(connected.slot.clone());a.alias=connected.alias.clone();a.enabled=true;
-            let id=a.id.clone();self.selected=id.clone();return Ok(id);
+            let a=self.accounts.iter_mut().find(|a|a.id==id&&(a.provider==connected.provider||(a.provider.relay()&&connected.provider.relay())||(a.provider==Provider::ZCode&&connected.provider==Provider::Glm))).ok_or("原账号已移除，请重新添加")?;
+            let legacy_zcode=a.provider==Provider::ZCode;
+            if a.provider.api_key(){
+                if let Some(slot)=&a.slot{queue_cleanup(slot)?;}
+            }
+            a.provider=connected.provider;a.source=PathBuf::from(&connected.source);a.slot=Some(connected.slot.clone());a.alias=connected.alias.clone();
+            if !legacy_zcode{a.enabled=true;self.selected=id.into();}
+            return Ok(id.into());
         }
         let id=format!("api-{}",connected.slot);self.selected=id.clone();
         self.accounts.push(Account{id:id.clone(),provider:connected.provider,alias:connected.alias.clone(),source:PathBuf::from(&connected.source),slot:Some(connected.slot.clone()),enabled:true,pinned:false});Ok(id)
@@ -202,6 +206,18 @@ impl Config {
         let mut config=Config::default();config.accounts.push(Account{id:"original-relay".into(),provider:Provider::NewApi,alias:"原账号".into(),source:"https://relay.example".into(),slot:None,enabled:true,pinned:true});config.colors.insert("original-relay".into(),super::super::Accent::Gold);
         let connected=Connected{provider:Provider::RelayGeneral,source:"https://relay.example".into(),alias:"我的中转站".into(),slot:"synthetic-ref".into(),snapshot:Snapshot::default()};
         assert_eq!(config.connect_api(&connected,Some("original-relay")).unwrap(),"original-relay");assert_eq!(config.accounts[0].provider,Provider::RelayGeneral);assert!(config.accounts[0].pinned);assert_eq!(config.colors["original-relay"],super::super::Accent::Gold);
+    }
+    #[test]
+    fn reconnect_zcode_with_glm_key_replaces_reference_and_retains_preferences(){
+        let mut config=Config::default();
+        config.accounts.push(Account{id:"legacy-zcode".into(),provider:Provider::ZCode,alias:"我的账号".into(),source:"synthetic/credentials.json".into(),slot:Some("legacy-account-id".into()),enabled:false,pinned:true});
+        config.selected="another-account".into();config.colors.insert("legacy-zcode".into(),super::super::Accent::Gold);
+        let connected=Connected{provider:Provider::Glm,source:"global".into(),alias:config.accounts[0].alias.clone(),slot:"synthetic-api-slot".into(),snapshot:Snapshot::default()};
+        assert_eq!(config.connect_api(&connected,Some("legacy-zcode")).unwrap(),"legacy-zcode");
+        let account=&config.accounts[0];
+        assert_eq!(account.provider,Provider::Glm);assert_eq!(account.source,PathBuf::from("global"));assert_eq!(account.slot.as_deref(),Some("synthetic-api-slot"));
+        assert_eq!(account.alias,"我的账号");assert!(account.pinned);assert!(!account.enabled);assert_eq!(config.colors["legacy-zcode"],super::super::Accent::Gold);
+        assert_eq!(config.selected,"another-account");
     }
     #[test]
     fn new_api_user_token_reads_account_balance_instead_of_unlimited_key_quota(){

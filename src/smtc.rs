@@ -29,7 +29,7 @@ mod player_seek;
 pub(crate) mod player_process;
 #[cfg(windows)]
 #[path="music_log.rs"]
-mod music_log;
+pub(crate) mod music_log;
 
 #[cfg(windows)]
 #[path="music_gaps.rs"]
@@ -634,6 +634,49 @@ struct MediaApartment(Option<windows::Win32::System::Com::CO_MTA_USAGE_COOKIE>);
 impl Drop for MediaApartment {fn drop(&mut self){if let Some(cookie)=self.0 {let _=unsafe{windows::Win32::System::Com::CoDecrementMTAUsage(cookie)};}}}
 #[cfg(windows)]
 fn init_winrt()->MediaApartment {MediaApartment(unsafe{windows::Win32::System::Com::CoIncrementMTAUsage().ok()})}
+
+#[cfg(windows)]
+pub(crate) fn diagnostic_sessions() -> Option<Vec<serde_json::Value>> {
+    use windows::Media::{
+        Control::{GlobalSystemMediaTransportControlsSessionManager as Manager,
+            GlobalSystemMediaTransportControlsSessionPlaybackStatus as Status},
+        MediaPlaybackType as Kind,
+    };
+    let _apartment = init_winrt();
+    let manager = media_result(Manager::RequestAsync)?;
+    let sessions = manager.GetSessions().ok()?;
+    Some(sessions.into_iter().map(|session| {
+        let source = session.SourceAppUserModelId().ok().map(|id| id.to_string());
+        let playback = session.GetPlaybackInfo().ok();
+        let status = playback.as_ref().and_then(|info| info.PlaybackStatus().ok())
+            .map(|status| match status {
+                Status::Closed => "Closed",
+                Status::Opened => "Opened",
+                Status::Changing => "Changing",
+                Status::Stopped => "Stopped",
+                Status::Playing => "Playing",
+                Status::Paused => "Paused",
+                _ => "Unknown",
+            });
+        let kind = playback.and_then(|info| info.PlaybackType().ok())
+            .and_then(|kind| kind.Value().ok()).map(|kind| match kind {
+                Kind::Music => "Music",
+                Kind::Video => "Video",
+                Kind::Image => "Image",
+                _ => "Unknown",
+            });
+        let duration = session.GetTimelineProperties().ok()
+            .and_then(|timeline| timeline.EndTime().ok()).is_some_and(|end| end.Duration > 0);
+        let properties = media_result(|| session.TryGetMediaPropertiesAsync());
+        serde_json::json!({
+            "Source": source, "Status": status, "Type": kind, "HasDuration": duration,
+            "HasTitle": properties.as_ref().and_then(|p| p.Title().ok()).is_some_and(|s| !s.is_empty()),
+            "HasArtist": properties.as_ref().and_then(|p| p.Artist().ok()).is_some_and(|s| !s.is_empty()),
+            "HasAlbum": properties.as_ref().and_then(|p| p.AlbumTitle().ok()).is_some_and(|s| !s.is_empty()),
+            "HasThumbnail": properties.is_some_and(|p| p.Thumbnail().is_ok()),
+        })
+    }).collect())
+}
 
 #[cfg(not(windows))]
 fn init_winrt() {}

@@ -14,8 +14,6 @@ mod claude;
 pub(crate) mod workbuddy;
 #[path="deepseek_quota.rs"]
 pub(crate) mod deepseek;
-#[path="zcode_quota.rs"]
-pub(crate) mod zcode;
 #[path="plan_quota.rs"]
 pub(crate) mod plans;
 #[path="relay_quota.rs"]
@@ -28,6 +26,7 @@ pub(crate) mod kiro;
 mod native_auth;
 
 pub struct Discovery {pub added:usize,pub notes:Vec<String>}
+pub(crate) const ZCODE_RECONNECT:&str="请用 GLM Coding Plan 套餐 Key 重新连接。ZCode 体验额度可在官方客户端查看。";
 impl Discovery {
     pub fn message(&self)->String{
         let mut text=if self.added>0{format!("新增 {} 个账号",self.added)}else{"未发现新的本机账号".into()};
@@ -80,7 +79,7 @@ impl Config {
     }
     pub fn add(&mut self,provider:Provider,alias:String,source:PathBuf)->Result<(),String>{
         if provider.api_key(){return Err("请使用 API Key 连接，无需登录 JSON".into());}
-        if provider==Provider::ZCode{return zcode::add(self,&source,&alias);}
+        if provider==Provider::ZCode{return Err(ZCODE_RECONNECT.into());}
         if provider==Provider::Kiro{return kiro::add(self,&source,&alias);}
         if provider==Provider::WorkBuddy{return Err("请使用浏览器连接 WorkBuddy".into());}
         if provider==Provider::DeepSeek{return Err("请使用 API Key 连接 DeepSeek".into());}
@@ -159,7 +158,6 @@ impl Config {
         candidates.extend(self.accounts.iter().filter(|a|matches!(a.provider,Provider::Codex|Provider::Kimi)||(a.provider==Provider::Claude&&a.slot.is_none())).map(|a|(a.provider,a.source.clone())));
         let before=self.accounts.len();
         let mut notes=self.discover_files(&candidates);
-        if let Some(path)=zcode::path().filter(|p|p.is_file()){if let Err(e)=zcode::add(self,&path,""){notes.push(e);}}
         if let (Some(roaming),Some(local))=(std::env::var_os("APPDATA"),std::env::var_os("LOCALAPPDATA")){
             for path in claude::paths(Path::new(&roaming),Path::new(&local)){
                 if claude::is_desktop(&path){if let Err(error)=self.import_claude(&path,""){notes.push(error);}}
@@ -232,10 +230,13 @@ impl Window {
 #[derive(serde::Serialize,serde::Deserialize)]
 pub struct Snapshot {#[serde(default)]pub kiro:Option<kiro::Details>,pub plan:String,pub windows:Vec<Window>,pub extra:Vec<Window>,pub at:i64,pub wallet:Option<deepseek::Wallet>,pub credits:Option<workbuddy::Credits>,#[serde(default)] pub relay:Option<relay::Quota>}
 impl Account {
+    pub(crate) fn can_refresh(&self)->bool{self.enabled&&self.provider!=Provider::ZCode}
+
     pub(crate) fn cache_identity_marker(&self)->Value {
         if claude::is_desktop(&self.source){json!(2)}else{json!(true)}
     }
     pub(crate) fn cached_snapshot(&self,cache:&Value)->Option<Snapshot>{
+        if self.provider==Provider::ZCode{return None;}
         let entry=&cache[&self.id];
         if entry["provider"].as_str()!=Some(self.provider.name()) || entry["slot"].as_str()!=self.slot.as_deref(){return None;}
         if self.provider.api_key() && entry["source"].as_str()!=self.source.to_str(){return None;}
@@ -336,7 +337,7 @@ impl Service {
     pub fn refresh(&mut self,accounts:Vec<Account>)->bool{self.refresh_with(accounts,fetch)}
     fn refresh_with(&mut self,accounts:Vec<Account>,run:impl Fn(&ureq::Agent,&Account)->Result<Snapshot,(String,u64)>+Clone+Send+'static)->bool{
         let mut groups:Vec<Vec<Account>>=(0..10).map(|_|Vec::new()).collect();
-        for account in accounts.into_iter().filter(|account|account.enabled){groups[service_group(account.provider)].push(account);}
+        for account in accounts.into_iter().filter(Account::can_refresh){groups[service_group(account.provider)].push(account);}
         for (group,accounts) in groups.into_iter().enumerate(){
             if let Some(worker)=self.workers.get(&group){
                 let Ok(mut pending)=worker.pending.lock()else{return false;};
@@ -417,7 +418,7 @@ fn http_agent_with_connect_timeout(timeout:Duration)->ureq::Agent{
 fn fetch(agent:&ureq::Agent,account:&Account)->Result<Snapshot,(String,u64)>{
     if account.provider.api_key(){return api::fetch(agent,account);}
     if account.provider==Provider::Claude{return claude::fetch(account).map_err(|e|(e,0));}
-    if account.provider==Provider::ZCode{return zcode::fetch(agent,account).map_err(|e|(e,60));}
+    if account.provider==Provider::ZCode{return Err((ZCODE_RECONNECT.into(),0));}
     if account.provider==Provider::WorkBuddy{return workbuddy::fetch(agent,account);}
     if account.provider==Provider::DeepSeek{return deepseek::fetch(agent,account);}
     if account.provider==Provider::GrokBot{return grok::fetch(agent,account);}
@@ -509,12 +510,22 @@ fn fetch(agent:&ureq::Agent,account:&Account)->Result<Snapshot,(String,u64)>{
         assert!(config.json().get("manual_resets").is_none(),"保存配置不应继续保留已撤回的手动时间");
         assert_eq!(Config::from_json(&config.json()),config);
     }
-    #[test] #[ignore="连接本机 ZCode 并只读核验套餐"]
-    fn zcode_connect_local(){
-        let mut config=Config::load();let path=zcode::path().unwrap();
-        zcode::add(&mut config,&path,"").unwrap();config.save();
-        let a=config.accounts.iter().find(|a|a.provider==Provider::ZCode).unwrap();
-        match zcode::fetch(&http_agent(),a){Ok(s)=>println!("ZCode 返回 {} 个周期",s.windows.len()),Err(msg)=>println!("ZCode 查询状态：{msg}")}
+    #[test]
+    fn legacy_zcode_config_stays_editable_without_reading_login_or_refreshing(){
+        let legacy=json!({"accounts":[{"id":"old","provider":"ZCode","alias":"个人","source":"synthetic/credentials.json","slot":"old-reference","enabled":true,"pinned":true}],"selected":"old","colors":{"old":"gold"}});
+        let mut config=Config::from_json(&legacy);
+        let original=config.clone();
+        let account=&original.accounts[0];
+        assert_eq!(Config::from_json(&config.json()),original);
+        let cache=json!({"old":{"provider":"ZCode","slot":"old-reference","snapshot":Snapshot{at:1900000000,..Default::default()}}});
+        assert!(account.cached_snapshot(&cache).is_none());
+        let mut service=Service::start();
+        assert!(service.refresh_with(original.accounts,|_,_|panic!("旧 ZCode 账号不应创建查询任务")));
+        assert!(service.workers.is_empty());
+        let agent=ureq::AgentBuilder::new().middleware(|_:ureq::Request,_:ureq::MiddlewareNext|panic!("旧 ZCode 账号不应发请求")).build();
+        assert_eq!(fetch(&agent,&config.accounts[0]).unwrap_err().0,ZCODE_RECONNECT);
+        assert_eq!(config.add(Provider::ZCode,String::new(),"synthetic/credentials.json".into()).unwrap_err(),ZCODE_RECONNECT);
+        assert_eq!(config,Config::from_json(&legacy));
     }
     #[test]
     #[ignore="只读验证本机开启的 AI 账号"]

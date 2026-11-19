@@ -58,6 +58,7 @@ rquickjs = "0.8"
 eframe = { version = "0.31", default-features = false, features = ["glow", "default_fonts", "x11"] }
 
 [target.'cfg(windows)'.dependencies]
+zip = { version = "9.7", default-features = false, features = ["deflate-flate2"] }
 ureq = { version = "2.12", default-features = false, features = ["native-tls"] }
 tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }
 clipboard-win = "5.4.3"
@@ -104,6 +105,7 @@ windows = { version = "0.58", features = [
   "Win32_Devices_Bluetooth",
   "Devices_Bluetooth", "Devices_Enumeration",
 ] }
+windows-sys = { version = "0.61", features = ["Win32_Security", "Win32_System_EventLog", "Win32_System_ProcessStatus"] }
 # v0.5.5 邮件：IMAP 走系统 TLS，凭据进 Windows 凭据管理器。
 imap = "2.4"
 imap-proto = "0.10.2"

@@ -142,8 +142,8 @@ impl Shell {
         app.render_compat_running=running_compat;
         #[cfg(feature="record")] let quota_demo=std::env::var("DAOZAI_QUOTA_DEMO").is_ok();
         #[cfg(not(feature="record"))] let quota_demo=false;
-        diagnostics::startup("初始化额度配置");
-        if !quota_demo{app.quota_initialize();app.migrate_merged_switches();}
+        diagnostics::startup("迁移配置");
+        if !quota_demo{app.migrate_merged_switches();}
         diagnostics::startup("启动剪贴板记录");
         if std::env::args().any(|arg|arg=="--settings"){app.open_settings();}
         if std::env::args().any(|arg|arg=="--calendar"){app.open_calendar(None);}

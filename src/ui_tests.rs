@@ -8912,16 +8912,22 @@ fn quota_acceptance_grouped_connections_preserve_saved_sources() {
     use crate::quota::{Provider,Account};
     let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     for provider in [Provider::ZCode,Provider::Glm,Provider::NewApi,Provider::OneApi,Provider::Sub2Api] {
-        let mut h=H::new();h.app.settings_open=true;h.app.quota.provider=provider;h.app.quota.connect_open=true;
+        let mut h=H::new();h.app.settings_open=true;h.app.quota.provider=if provider==Provider::ZCode{Provider::Glm}else{provider};h.app.quota.connect_open=true;
         let source=if provider.relay(){"https://relay.example/path"}else if provider==Provider::Glm{"global"}else{"fixture/credentials.json"};
         let account=Account{id:"existing".into(),provider,alias:"原账号".into(),source:source.into(),slot:Some("existing-reference".into()),enabled:true,pinned:false};
-        h.app.quota.config.accounts=vec![account.clone()];h.app.quota.config.selected=account.id.clone();h.app.quota.connect_target=Some(account.id.clone());h.app.quota.source=source.into();
+        h.app.quota.config.accounts=vec![account.clone()];h.app.quota.config.selected=account.id.clone();h.app.quota.connect_target=Some(account.id.clone());if provider!=Provider::ZCode{h.app.quota.source=source.into();}
         for _ in 0..3{
             let output=h.ctx.run(egui::RawInput{screen_rect:Some(Rect::from_min_size(Pos2::ZERO,egui::vec2(780.0,850.0))),..Default::default()},|ctx|{egui::CentralPanel::default().show(ctx,|ui|h.app.quota_settings(ui));});h.shapes=output.shapes;
         }
         let expected=if provider.relay(){"中转站"}else{"GLM / ZCode"};
         assert!(h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t)if t.galley.text()==expected)),"应显示统一入口：{expected}");
-        assert_eq!(h.app.quota.provider,provider);assert_eq!(h.app.quota.source,source);assert_eq!(h.app.quota.config.accounts,[account]);
+        if provider==Provider::ZCode{
+            assert_eq!(h.app.quota.provider,Provider::Glm);assert_eq!(h.app.quota.source,"cn");
+            assert!(h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t)if t.galley.text().contains("请填写 Coding Plan 套餐 Key"))));
+        }else{
+            assert_eq!(h.app.quota.provider,provider);assert_eq!(h.app.quota.source,source);
+        }
+        assert_eq!(h.app.quota.config.accounts,[account]);
         if provider.relay(){assert!(h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t)if t.galley.text()=="高级设置")));}
     }
 }
