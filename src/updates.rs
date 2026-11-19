@@ -10,6 +10,8 @@ const STARTUP_WINDOW: Duration = Duration::from_secs(10);
 const CHECK_INTERVAL: Duration = Duration::from_secs(24 * 3600);
 const RETRY_INTERVAL: Duration = Duration::from_secs(3600);
 const MANUAL_INTERVAL: Duration = Duration::from_secs(30);
+#[cfg(windows)]
+const INSTALL_PREPARE_TIMEOUT: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Debug)]
 struct Release { version: String, notes: String, page: String, package: Option<Package> }
@@ -453,14 +455,24 @@ fn launch_installer(work: &std::path::Path) -> Result<(), String> {
         .arg(work.join("apply.ps1")).arg("-WorkPath").arg(work).arg("-TargetExe").arg(target)
         .arg("-ParentProcessId").arg(std::process::id().to_string()))
         .map_err(|_| "无法启动更新程序，请通过浏览器下载安装")?;
-    // 脚本先确认缓存和安装目录可用，再允许主程序退出。
-    for _ in 0..100 {
-        if work.join("ready").exists() { return Ok(()); }
-        if child.try_wait().ok().flatten().is_some() { break; }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-    let _ = child.kill();
-    Err(std::fs::read_to_string(work.join("error.txt")).unwrap_or_else(|_| "无法准备安装，请通过浏览器下载后安装".into()))
+    // 脚本完成二次校验和解压后，才允许主程序退出。
+    let ready = work.join("ready");
+    let deadline = Instant::now() + INSTALL_PREPARE_TIMEOUT;
+    let failure = loop {
+        match child.try_wait() {
+            Ok(None) => {}
+            Ok(Some(status)) => break format!("更新程序在准备安装时退出（退出码 {}），请通过浏览器下载后安装。", status.code().unwrap_or(-1)),
+            Err(error) => break format!("无法读取更新程序状态（{error}），请通过浏览器下载后安装。"),
+        }
+        if ready.is_file() { return Ok(()); }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break "安装准备超时，请稍后重试或通过浏览器下载后安装。".into();
+        }
+        std::thread::sleep(remaining.min(Duration::from_millis(50)));
+    };
+    if child.kill().is_ok() { let _ = child.wait(); }
+    Err(std::fs::read_to_string(work.join("error.txt")).unwrap_or(failure))
 }
 #[cfg(not(windows))]
 fn launch_installer(_: &std::path::Path) -> Result<(), String> { Err("仅支持 Windows 应用内更新".into()) }
@@ -741,6 +753,22 @@ mod tests {
     #[test]
     #[ignore = "需要连接 GitHub"]
     fn live_update_check() { assert!(check().is_ok()); }
+
+    #[cfg(windows)]
+    #[test]
+    fn installer_accepts_ready_after_five_seconds() {
+        let work = std::env::temp_dir().join(format!("daozai-update-slow-{}", std::process::id()));
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::write(work.join("apply.ps1"), r#"
+param($WorkPath, $TargetExe, $ParentProcessId)
+Start-Sleep -Seconds 6
+[IO.File]::WriteAllText((Join-Path $WorkPath 'ready'), 'ok')
+$null = (Get-Process -Id $ParentProcessId).WaitForExit(2000)
+"#).unwrap();
+        let result = launch_installer(&work);
+        std::fs::remove_dir_all(work).unwrap();
+        assert_eq!(result, Ok(()));
+    }
 
     #[test]
     fn background_result_and_disconnect_clear_in_flight_state() {
