@@ -1140,6 +1140,15 @@ pub(crate) fn setting_row(ui:&mut egui::Ui,title:&str,description:&str,value:&mu
     ui.add_space(2.0);
 }
 
+/// 模块关闭时按关闭状态渲染，保留其常驻偏好。
+fn resident_setting_row(ui:&mut egui::Ui,title:&str,description:&str,module_on:bool,value:&mut bool){
+    let mut shown=module_on&&*value;
+    ui.add_enabled_ui(module_on,|ui|{
+        setting_row(ui,title,if module_on {description}else{"功能页已关闭"},&mut shown);
+    });
+    if module_on {*value=shown;}
+}
+
 /// 设置页统一的分段选择器（灰色底框 + 选中块）。返回值为是否发生了切换。
 pub(crate) fn settings_segmented<T:PartialEq+Copy>(ui:&mut egui::Ui,value:&mut T,options:&[(T,&str)],item_w:f32)->bool{
     let ctx=&ui.ctx().clone();
@@ -1591,7 +1600,7 @@ impl App {
                         ui.add_enabled_ui(on,|ui|{
                             settings_label(ui,"岛上常驻");
                             settings_card(ui,|ui|{
-                                setting_row(ui,"无线设备电量","收起时显示，最多两台",&mut self.settings.show_bluetooth);
+                                resident_setting_row(ui,"无线设备电量","收起时显示，最多两台",on,&mut self.settings.show_bluetooth);
                                 if self.settings.show_bluetooth {
                                     settings_separator(ui);
                                     self.wireless_resident_settings(ui);
@@ -1624,15 +1633,15 @@ impl App {
                             ui.separator();
                             setting_row(ui,"电量","无电池设备自动隐藏",&mut self.settings.show_battery);
                             ui.separator();
-                            setting_row(ui,"天气","天气图标和温度，点击打开天气页",&mut self.settings.show_weather);
+                            resident_setting_row(ui,"天气","天气图标和温度，点击打开天气页",
+                                self.module_on(crate::app::WEATHER_PAGE),&mut self.settings.show_weather);
                             ui.separator();
-                            let wireless_on=self.module_on(crate::app::BLUETOOTH_PAGE);
-                            ui.add_enabled_ui(wireless_on,|ui|{
-                                setting_row(ui,"无线设备电量",if wireless_on {"收起时显示，最多两台"}else{"无线设备功能页已关闭"},&mut self.settings.show_bluetooth);
-                            });
+                            resident_setting_row(ui,"无线设备电量","收起时显示，最多两台",
+                                self.module_on(crate::app::BLUETOOTH_PAGE),&mut self.settings.show_bluetooth);
                             ui.separator();
                             let before=self.quota.config.compact;
-                            setting_row(ui,"AI 额度","常驻账号；WorkBuddy 积分在前，DeepSeek 余额在最后",&mut self.quota.config.compact);
+                            resident_setting_row(ui,"AI 额度","常驻账号，WorkBuddy 积分在前，DeepSeek 余额在最后",
+                                self.module_on(crate::app::QUOTA_PAGE),&mut self.quota.config.compact);
                             if before!=self.quota.config.compact {self.quota.config.save();}
                         });
                         settings_label(ui,"功能页面");

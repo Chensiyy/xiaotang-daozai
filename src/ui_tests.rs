@@ -5915,35 +5915,119 @@ fn weather_resident_settings_preserve_old_orders_and_the_status_switch(){
     }
 }
 
+fn draw_page_management(h:&mut H,events:Vec<egui::Event>){
+    let output=std::sync::Arc::new(Mutex::new(None));let capture=output.clone();h.t+=0.02;let time=h.t;
+    egui::Context::set_immediate_viewport_renderer(move|ctx,mut viewport|{
+        let id=viewport.ids.this;
+        let raw=egui::RawInput{viewport_id:id,screen_rect:Some(Rect::from_min_size(Pos2::ZERO,egui::vec2(690.0,1320.0))),time:Some(time),events:events.clone(),viewports:std::iter::once((id,egui::ViewportInfo::default())).collect(),..Default::default()};
+        *capture.lock().unwrap()=Some(ctx.run(raw,|ctx|(viewport.viewport_ui_cb)(ctx)));
+    });
+    let _=h.ctx.run(Default::default(),|ctx|h.app.settings_ui(ctx,false));
+    h.shapes=output.lock().unwrap().take().unwrap().shapes;
+}
+
 #[test]
 fn weather_status_switch_controls_the_badge_and_keeps_the_page_available(){
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
-    fn draw(h:&mut H,events:Vec<egui::Event>){
-        let output=std::sync::Arc::new(Mutex::new(None));let capture=output.clone();h.t+=0.02;let time=h.t;
-        egui::Context::set_immediate_viewport_renderer(move|ctx,mut viewport|{
-            let id=viewport.ids.this;
-            let raw=egui::RawInput{viewport_id:id,screen_rect:Some(Rect::from_min_size(Pos2::ZERO,egui::vec2(690.0,1000.0))),time:Some(time),events:events.clone(),viewports:std::iter::once((id,egui::ViewportInfo::default())).collect(),..Default::default()};
-            *capture.lock().unwrap()=Some(ctx.run(raw,|ctx|(viewport.viewport_ui_cb)(ctx)));
-        });
-        let _=h.ctx.run(Default::default(),|ctx|h.app.settings_ui(ctx,false));
-        h.shapes=output.lock().unwrap().take().unwrap().shapes;
-    }
     for theme in [crate::settings_theme::SettingsTheme::Dark,crate::settings_theme::SettingsTheme::Light] {
         let mut h=H::new();h.app.settings.settings_theme=theme;h.app.settings_tab=10;h.app.open_settings();h.ctx.set_embed_viewports(false);
         h.app.weather.snapshot=Some(crate::weather::Snapshot{temp:9.0,..Default::default()});
-        for _ in 0..3 {draw(&mut h,vec![]);}
+        for _ in 0..3 {draw_page_management(&mut h,vec![]);}
         let text_rect=|h:&H,label:&str|h.shapes.iter().find_map(|s|match &s.shape{egui::Shape::Text(t) if t.galley.text()==label=>Some(t.visual_bounding_rect()),_=>None}).unwrap();
         let heading=text_rect(&h,"岛上显示");let bottom=text_rect(&h,"功能页面").top();
         let title=h.shapes.iter().find_map(|s|match &s.shape{egui::Shape::Text(t) if t.galley.text()=="天气"&&t.pos.x>=heading.left()&&t.pos.y>heading.bottom()&&t.pos.y<bottom=>Some(t.visual_bounding_rect()),_=>None}).expect("岛上显示应有独立的天气开关");
         let point=h.shapes.iter().find_map(|s|match &s.shape{egui::Shape::Rect(r) if (r.rect.width()-34.0).abs()<0.01&&(r.rect.height()-20.0).abs()<0.01&&r.rect.center().y>title.top()&&r.rect.center().y<title.bottom()+24.0=>Some(r.rect.center()),_=>None}).unwrap();
         for expected in [false,true] {
-            for pressed in [true,false] {draw(&mut h,vec![egui::Event::PointerMoved(point),egui::Event::PointerButton{pos:point,button:egui::PointerButton::Primary,pressed,modifiers:Default::default()}]);}
+            for pressed in [true,false] {draw_page_management(&mut h,vec![egui::Event::PointerMoved(point),egui::Event::PointerButton{pos:point,button:egui::PointerButton::Primary,pressed,modifiers:Default::default()}]);}
             assert_eq!(h.app.weather_pill().is_some(),expected);
             assert_eq!(h.app.side_items().contains(&crate::side_dock::SideItem::Weather),expected);
             assert!(h.app.module_on(8),"关闭状态组件后天气页仍可使用");
             h.app.settings=crate::model::Settings::load();assert_eq!(h.app.weather_pill().is_some(),expected,"天气开关应自动保存");
         }
     }
+}
+
+#[test]
+fn page_management_resident_switches_follow_their_modules(){
+    use crate::app::{BLUETOOTH_PAGE,PAGE_NAMES,QUOTA_PAGE,WEATHER_PAGE};
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=H::new();
+    h.app.settings_tab=10;h.app.open_settings();h.ctx.set_embed_viewports(false);
+    h.app.settings.show_clock=true;
+    h.app.settings.show_battery=true;
+    h.app.settings.show_weather=true;
+    h.app.settings.show_bluetooth=true;
+    h.app.quota.config.compact=true;
+    h.app.quota.config.save();
+    for _ in 0..3 {draw_page_management(&mut h,vec![]);}
+
+    fn text_rect(h:&H,label:&str,accept:impl Fn(Rect)->bool)->Rect{
+        h.shapes.iter().find_map(|s|match &s.shape{
+            egui::Shape::Text(t) if t.galley.text()==label=>{
+                let rect=t.visual_bounding_rect();
+                (s.clip_rect.contains(rect.center())&&accept(rect)).then_some(rect)
+            }
+            _=>None,
+        }).unwrap_or_else(||panic!("找不到 {label}"))
+    }
+    let switch=|h:&H,label:&str,module:bool|{
+        let heading=text_rect(h,"功能页面",|_|true);
+        let title=text_rect(h,label,|rect|{
+            rect.left()>=heading.left()-2.0 && (rect.center().y>heading.center().y)==module
+        });
+        h.shapes.iter().find_map(|s|match &s.shape{
+            egui::Shape::Rect(r) if r.rect.size()==egui::vec2(34.0,20.0)
+                && r.rect.center().y>title.top() && r.rect.center().y<title.bottom()+24.0
+                && s.clip_rect.contains(r.rect.center())=>Some((r.rect,r.fill)),
+            _=>None,
+        }).unwrap_or_else(||panic!("找不到 {label} 开关"))
+    };
+    let click=|h:&mut H,pos:Pos2|{
+        for pressed in [true,false] {
+            draw_page_management(h,vec![egui::Event::PointerMoved(pos),egui::Event::PointerButton{pos,button:egui::PointerButton::Primary,pressed,modifiers:Default::default()}]);
+        }
+    };
+    let selected=|h:&H,rect:Rect|{
+        h.shapes.iter().find_map(|s|match &s.shape{
+            egui::Shape::Circle(c) if c.radius==7.0&&c.center.y==rect.center().y&&rect.contains(c.center)
+                =>Some(c.center.x>rect.center().x),
+            _=>None,
+        }).expect("找不到开关圆点")
+    };
+
+    let residents=[(WEATHER_PAGE,"天气"),(BLUETOOTH_PAGE,"无线设备电量"),(QUOTA_PAGE,"AI 额度")];
+    for (page,_) in residents {
+        let point=switch(&h,PAGE_NAMES[page],true).0.center();
+        click(&mut h,point);
+        assert!(!h.app.module_on(page));
+    }
+    for (_,label) in residents {
+        let (rect,fill)=switch(&h,label,false);
+        assert!(!selected(&h,rect),"{label} 依赖的功能关闭后应显示为关");
+        let channels=[fill.r(),fill.g(),fill.b()];
+        assert!(channels.iter().max().unwrap()-channels.iter().min().unwrap()<16,"{label} 应显示为灰色");
+        click(&mut h,rect.center());
+    }
+    let saved=crate::model::Settings::load();
+    assert!(saved.show_weather && saved.show_bluetooth && crate::quota::Config::load().compact);
+    assert!(h.app.settings.show_weather && h.app.settings.show_bluetooth && h.app.quota.config.compact);
+    for label in ["时间","电量"] {
+        let rect=switch(&h,label,false).0;
+        click(&mut h,rect.center());
+    }
+    assert!(!h.app.settings.show_clock && !h.app.settings.show_battery,"系统组件应独立于功能页");
+
+    for (page,label) in residents {
+        let point=switch(&h,PAGE_NAMES[page],true).0.center();
+        click(&mut h,point);
+        assert!(h.app.module_on(page));
+        draw_page_management(&mut h,vec![]);
+        let rect=switch(&h,label,false).0;
+        assert!(selected(&h,rect),"{label} 重新开启功能后应恢复原有常驻偏好");
+        click(&mut h,rect.center());
+    }
+    let saved=crate::model::Settings::load();
+    assert!(!saved.show_weather && !saved.show_bluetooth && !crate::quota::Config::load().compact);
 }
 
 #[test]
