@@ -35,6 +35,7 @@ pub const QUOTA_PAGE: usize = 6;
 pub const CALENDAR_PAGE: usize = 7;
 pub const WEATHER_PAGE: usize = 8;
 pub const PERFORMANCE_PAGE: usize = 9;
+pub const BLUETOOTH_PAGE: usize = 10;
 pub(crate) const WEATHER_H: f32 = 232.0;
 pub(crate) const CALENDAR_H: f32 = 216.0;
 pub const BAR_W: f32 = 163.0; // 收起药丸宽
@@ -79,8 +80,8 @@ fn pill_shadow(painter:&egui::Painter,rect:Rect,radius:f32,strength:f32){
         painter.rect_filled(r,radius+grow*0.8,Color32::from_black_alpha((255.0*a*strength) as u8));
     }
 }
-pub(crate) const PAGE_NAMES: [&str; 10] = ["音乐", "专注", "健康", "置物架", "待办", "邮箱", "AI 额度", "日程", "天气", "系统性能"];
-pub(crate) const PAGE_SETTINGS_TABS: [usize; 10] = [1,2,3,5,4,7,11,8,12,15];
+pub(crate) const PAGE_NAMES: [&str; 11] = ["音乐", "专注", "健康", "置物架", "待办", "邮箱", "AI 额度", "日程", "天气", "系统性能", "无线设备"];
+pub(crate) const PAGE_SETTINGS_TABS: [usize; 11] = [1,2,3,5,4,7,11,8,12,15,crate::extras::SETTINGS_TAB_WIRELESS];
 
 // ---------- 动效参数 ----------
 /// 悬停意图缓冲：光标停留这么久才真正展开（期间药丸轻微胀大作为反馈），防误触。
@@ -137,10 +138,12 @@ pub struct Env {
     pub media: NowPlaying,
     /// 系统主音量（0..100, 是否静音）；v0.5.4 音量条与系统双向同步。
     pub volume: Option<(u32, bool)>,
-    /// 已连接的蓝牙音频设备（名称 + 可选电量）。
+    /// 蓝牙设备快照：连接状态、电量来源及本次会话的断开记录。
     pub bt: Vec<crate::bt::Device>,
     /// 蓝牙服务是否已经完成首次扫描。
     pub bt_ready: bool,
+    /// Windows 当前识别到的 2.4G USB 接收器。
+    pub receivers: Vec<crate::bt::Device>,
     /// 岛所在屏幕（与 `win` 同一坐标系，逻辑点）；用于让通知详情留在屏幕内。
     pub screen: Option<Rect>,
     /// 毛玻璃皮肤：岛体四周采样得到的背景色（sRGB 0..1）。
@@ -576,6 +579,7 @@ pub(crate) struct MailState {
     pub open_uid: Option<(String, u32)>,
     pub reading: Option<mail::Item>,
     pub reader_focus: bool,
+    pub bell_at: Option<f64>,
     /// 已经提醒过的会议，键是 `UID + DTSTART`（邮件和日历两条来源共用）。
     pub fired: std::collections::HashSet<String>,
 }
@@ -748,7 +752,7 @@ pub struct App {
     page_dir: f32,
     page_t0: f64,
     slide: Spring,
-    dots: [Spring; 10],
+    dots: [Spring; 11],
     wheel_delta: f32,
     wheel_at: f64,
     wheel_page_at: f64,
@@ -880,6 +884,15 @@ pub struct App {
     pub(crate) music_restart_at: Option<f64>,
     /// 上一次看到的蓝牙设备，用来只在连接/断开时提示一次。
     pub(crate) bt_shown: Vec<crate::bt::Device>,
+    pub(crate) wireless_devices: Vec<crate::bt::Device>,
+    pub(crate) wireless_offset: usize,
+    pub(crate) wireless_focus: Option<String>,
+    /// 展开电量页的时刻，用于入场动效；离开页面或收起后清空。
+    pub(crate) wireless_enter_at: Option<f64>,
+    pub(crate) wireless_fx: std::collections::HashMap<String,crate::bluetooth_ui::WirelessFx>,
+    pub(crate) wireless_alerted: std::collections::HashMap<(String,&'static str),f64>,
+    /// 每台已连接设备第一次出现的时刻；用来区分“正在读取电量”和“设备不提供电量”。
+    pub(crate) wireless_seen_at: std::collections::HashMap<String,f64>,
     bt_initialized: bool,
     /// v0.5.5：邮件账号、最近邮件与设置表单。
     pub(crate) mail: MailState,
@@ -1015,7 +1028,7 @@ impl App {
             music_seek_ui: None,
             music_seek_quiet_until: 0.0,
             music_restart_at: None,
-            bt_shown: Vec::new(),
+            bt_shown: Vec::new(), wireless_devices:Vec::new(),wireless_offset:0,wireless_focus:None,wireless_enter_at:None,wireless_fx:Default::default(),wireless_alerted:Default::default(),wireless_seen_at:Default::default(),
             bt_initialized: false,
             mail: MailState { accounts: mail::load_accounts(), ..Default::default() },
             mail_lines_cache: Vec::new(),
@@ -1081,6 +1094,7 @@ impl App {
 
     /// 收信服务推来的事件；历史邮件静默，新邮件进入通知队列。
     pub fn mail_event(&mut self, ev: mail::Event) {
+        if !self.module_on(MAIL_PAGE){return;}
         let watching=|email:&str|self.mail_active() && self.mail.accounts.iter().any(|a|a.enabled && a.email.eq_ignore_ascii_case(email));
         match ev {
             mail::Event::Managed(done)=>self.mail_managed(done),
@@ -1114,8 +1128,7 @@ impl App {
                     let body=format!("{} · {}",item.from,item.subject);
                     let body=item.code.as_ref().map(|code|crate::mail_privacy::mask(&body,code)).unwrap_or(body);
                     self.alert("新邮件",body,5,false);
-                    self.notification_bell_at = self.t;
-                    self.notification_bell_until = self.t + 6.0;
+                    self.mail.bell_at=Some(self.t);
                 }
             }
             mail::Event::Test { account, ok, note } => {
@@ -1146,6 +1159,7 @@ impl App {
 
     /// v0.5.6：日历服务推来的事件。失败不弹窗，只累计次数（连续两次才显示红字）。
     pub fn calendar_event(&mut self, ev: calendar::Event) {
+        if !self.module_on(CALENDAR_PAGE) {return;}
         match ev {
             calendar::Event::Test { ok, message, count, config } => {
                 self.calendar.testing = false;
@@ -1507,30 +1521,47 @@ impl App {
 
     /// v0.5.4：把系统音量与蓝牙设备状态同步进界面；只在连接/断开时提示一次。
     fn sync_device(&mut self, env: &Env) {
+        if !(self.open&&self.page==BLUETOOTH_PAGE) {self.wireless_enter_at=None;}
+        self.track_wireless_changes(&env.bt);
+        self.wireless_devices=env.bt.clone();
+        if self.module_on(BLUETOOTH_PAGE) {
+            self.wireless_devices.extend(env.receivers.iter().cloned());
+        }
+        if self.wireless_focus.as_ref().is_some_and(|id|!self.wireless_devices.iter().any(|d|&d.id==id)) {
+            self.wireless_focus=None;
+        }
         if self.t >= self.volume_quiet_until {
             if let Some(v) = env.volume {
                 self.volume_ui = Some(v);
             }
         }
-        if !self.settings.bluetooth_notifications {
+        let battery_enabled=self.settings.bluetooth_battery_notifications&&self.module_on(BLUETOOTH_PAGE);
+        let connection_enabled=self.settings.bluetooth_notifications;
+        if !battery_enabled||!connection_enabled {
+            let enabled=|a:&crate::extras::Alert| {
+                a.source!=crate::extras::AlertSource::Internal||a.title!="蓝牙设备"||
+                    if a.page==BLUETOOTH_PAGE {battery_enabled} else {connection_enabled}
+            };
+            self.alerts.retain(&enabled);
+            if self.notice.as_ref().is_some_and(|a|!enabled(a)) {self.notice=None;}
+        }
+        if !connection_enabled {
             self.bt_shown.clear();
             self.bt_initialized=false;
-            self.alerts.retain(|a|a.source!=crate::extras::AlertSource::Internal || a.title!="蓝牙设备");
-            if self.notice.as_ref().is_some_and(|a|a.source==crate::extras::AlertSource::Internal && a.title=="蓝牙设备") {self.notice=None;}
             return;
         }
         if !env.bt_ready { return; }
         // 只把首次完整扫描作为基线，之后的连接变化都应提示。
         if !self.bt_initialized {
             self.bt_initialized = true;
-            self.bt_shown = env.bt.clone();
+            self.bt_shown = env.bt.iter().filter(|d|d.connected).cloned().collect();
             return;
         }
-        let connected: Vec<_> = env.bt.iter().filter(|d| !self.bt_shown.iter().any(|old| old.id == d.id)).cloned().collect();
-        let disconnected: Vec<_> = self.bt_shown.iter().filter(|d| !env.bt.iter().any(|new| new.id == d.id)).cloned().collect();
+        let connected: Vec<_> = env.bt.iter().filter(|d| d.connected && !self.bt_shown.iter().any(|old| old.id == d.id)).cloned().collect();
+        let disconnected: Vec<_> = self.bt_shown.iter().filter(|d| !env.bt.iter().any(|new| new.connected && new.id == d.id)).cloned().collect();
         for device in &connected { self.bluetooth_alert(device, true); }
         for device in &disconnected { self.bluetooth_alert(device, false); }
-        self.bt_shown = env.bt.clone();
+        self.bt_shown = env.bt.iter().filter(|d|d.connected).cloned().collect();
     }
 
     /// 距离上次交互的秒数（小精灵出现的依据）。
@@ -1617,8 +1648,27 @@ impl App {
         if !visible && self.settings.visible_pages.iter().filter(|enabled|**enabled).count()==1
             && self.settings.visible_pages[page] { return; }
         self.settings.visible_pages[page]=visible;
-        // 关掉专注模块时一并停止正在进行的计时，避免页面不可见却到点弹提醒。
-        if !visible && page==FOCUS_PAGE {self.pomo.running=false;}
+        if page==SHELF_PAGE {self.clipboard.set_enabled(self.clipboard_active());}
+        if !visible {
+            match page {
+                FOCUS_PAGE=>self.pomo.running=false,
+                MAIL_PAGE=>self.close_mail_module(),
+                CALENDAR_PAGE=>{
+                    self.calendar.view.loading=false;
+                    for feed in &mut self.calendar.feeds {feed.month.loading=false;}
+                    self.calendar.testing=false;
+                    self.calendar.test_password.clear();
+                    self.calendar.form.open=false;
+                    self.pending.retain(|cmd|!matches!(cmd,Cmd::CalendarTest(..)|Cmd::CalendarSync|Cmd::CalendarMonth(_)|Cmd::CalendarForget|Cmd::CalendarImport));
+                }
+                BLUETOOTH_PAGE=>{
+                    self.wireless_focus=None;
+                    self.wireless_offset=0;
+                }
+                _=>{}
+            }
+            self.clear_module_reminders(page);
+        }
         if !self.settings.visible_pages[self.page] {
             if let Some(first)=self.settings.page_order.iter().copied().find(|page|self.settings.visible_pages[*page]) { self.go(first,1.0); }
         }
@@ -1777,17 +1827,23 @@ impl App {
     pub fn set_minimal(&mut self,enabled:bool) {
         self.settings.minimal=enabled;if enabled {self.settings.pet=false;}self.settings.save();
     }
+    pub(crate) fn notification_bell(&self)->Option<f64>{
+        let mail=self.mail.bell_at.filter(|at|self.module_on(MAIL_PAGE)&&self.t<at+6.0);
+        if self.t<self.notification_bell_until {
+            Some(mail.map_or(self.notification_bell_at,|at|self.notification_bell_at.max(at)))
+        }else{mail}
+    }
     fn base_size(&self) -> (f32, f32) {
         if !self.compact_notices()&&!self.open {
             if let Some(a)=&self.notice {let (width,height)=self.notice_size(a);return (width+self.pet_space(),height);}
         }
         if self.side() {
             // 左右停靠：竖向胶囊（通知仍是贴边滑出的横向卡片，见上）。
-            return self.side_base_size(self.effective_minimal()&&self.t>=self.notification_bell_until);
+            return self.side_base_size(self.effective_minimal()&&self.notification_bell().is_none());
         }
         if self.island_lyrics_active() {
             (self.lyric_bar_width(),BAR_H)
-        } else if self.effective_minimal()&&self.t>=self.notification_bell_until {
+        } else if self.effective_minimal()&&self.notification_bell().is_none() {
             (BAR_W_MIN, BAR_H_MIN)
         } else {
             (self.resident.target.width.min(self.resident_limit()), BAR_H)
@@ -1810,7 +1866,7 @@ impl App {
     }
 
     pub(crate) fn expanded_height(&self)->f32 {
-        if self.page==PERFORMANCE_PAGE {crate::performance_ui::PAGE_H}else if self.page==CALENDAR_PAGE {CALENDAR_H}else if self.page==WEATHER_PAGE {WEATHER_H}else if self.page==6{176.0}else if self.page==5&&self.mail.open_uid.is_some(){236.0}else{PH}
+        if self.page==PERFORMANCE_PAGE {crate::performance_ui::PAGE_H}else if self.page==BLUETOOTH_PAGE {194.0}else if self.page==CALENDAR_PAGE {CALENDAR_H}else if self.page==WEATHER_PAGE {WEATHER_H}else if self.page==6{176.0}else if self.page==5&&self.mail.open_uid.is_some(){236.0}else{PH}
     }
 
     // ---------------------------------------------------------------
@@ -1864,11 +1920,11 @@ impl App {
         if let Some(a)=&hud_active {self.hud_notice=Some(a.clone());}
         self.hud_alpha=anim::approach(self.hud_alpha,if hud_active.is_some(){1.0}else{0.0},if hud_active.is_some(){16.0}else{8.0},dt);
         if hud_active.is_none() && self.hud_alpha<0.003 {self.hud_notice=None;}
-        let notice_target=if !self.notice.as_ref().is_some_and(|a|a.messenger().is_some()) && self.compact_notices()&&(self.notice.is_some()||self.t<self.notification_bell_until) {44.0}else{0.0};
+        let notice_target=if !self.notice.as_ref().is_some_and(|a|a.messenger().is_some()) && self.compact_notices()&&(self.notice.is_some()||self.notification_bell().is_some()) {44.0}else{0.0};
         self.notice_width.target=notice_target;
         if self.compact_notices(){self.notice_width.step(dt);}else{self.notice_width.snap(0.0);self.notice_details=false;}
         self.update_media(env,&ctx);
-        let bell=self.t<self.notification_bell_until&&!self.compact_notices();
+        let bell=self.notification_bell().is_some()&&!self.compact_notices();
         self.resident_power=(env.battery,env.charging);
         let mut layout=Layout::new(self.settings.show_battery&&env.battery.is_some(),self.quota_bar_indices().len(),self.media.is_music()&&!bell,self.pomo.running,bell,self.pet_enabled(),self.weather_pill().is_some());
         let performance_bar=self.performance_on_bar();
@@ -1884,6 +1940,10 @@ impl App {
         if self.settings.clock_seconds { layout.widen_clock(24.0); }
         if let Some(extra)=self.weather_pill_extra(&ctx){ layout.widen(bar::WEATHER,extra); }
         if !self.settings.show_clock {layout.hide_clock();}
+        let wireless=self.wireless_resident();
+        // 放不下整组时不挤压其他常驻项，整组隐藏。
+        let wireless_w=self.wireless_bar_width();
+        if !wireless.is_empty()&&wireless_w<=WIN_W-32.0-layout.width-12.0 {layout.append_bluetooth(wireless_w);}
         if self.pet_enabled() {
             if let Some(a)=self.notice.as_ref().filter(|_|!self.compact_notices()&&!self.open){layout.x[bar::PET]=Some(22.0-(self.notice_size(a).0+self.pet_space())/2.0);}
             else if self.island_lyrics_active() {layout.x[bar::PET]=Some(60.0-self.lyric_bar_width()/2.0);}
@@ -2027,7 +2087,7 @@ impl App {
         let notice_shape=notice_rect.map(|r|Rect::from_min_max(Pos2::new(r.left()-36.0,r.top()),r.max));
         let body=messenger_rect.filter(|_|outside_badge.is_none()).map_or(panel,|badge|panel.union(badge));
         let body=notice_shape.map_or(body,|notice|body.union(notice));
-        let minimal_strip = self.effective_minimal() && !self.island_lyrics_active() && self.notice.is_none() && self.t>=self.notification_bell_until;
+        let minimal_strip = self.effective_minimal() && !self.island_lyrics_active() && self.notice.is_none() && self.notification_bell().is_none();
         let minimal_pill = minimal_strip && pc < 0.02;
         let flare = if minimal_pill || pill { 0.0 } else { lerp(5.0, FLARE, pc) };
         let k = (w / PW).clamp(0.3, 1.1);
@@ -2110,10 +2170,10 @@ impl App {
                 }else{crate::extras::notice_badge(&c,18.0,15.0,&a);}
                 let button=crate::quota_ui::bar_tooltip(c.hit(0.0,0.0,36.0,BAR_H,"notice-badge"),format!("{}\n{}",a.title,a.body));
                 if button.clicked(){if let Some(kind)=a.health(){self.confirm_health_reminder(kind);}else{self.notice_details=!self.notice_details;}}
-            }else if self.t<self.notification_bell_until {
-                paint::bell(&c.scaled(20.0,14.0,1.2),20.0,14.0,theme::WHITE,paint::bell_swing(self.t-self.notification_bell_at));
+            }else if let Some(at)=self.notification_bell(){
+                paint::bell(&c.scaled(20.0,14.0,1.2),20.0,14.0,theme::WHITE,paint::bell_swing(self.t-at));
                 c.circle(24.0,9.5,2.0,Color32::from_rgb(255,72,72));
-                if c.hit(6.0,0.0,28.0,30.0,"bell-mail").clicked(){self.show_page(5);}
+                if self.module_on(MAIL_PAGE)&&c.hit(6.0,0.0,28.0,30.0,"bell-mail").clicked(){self.show_page(MAIL_PAGE);}
             }
         }
         if let Some(rect)=messenger_rect {
@@ -2249,14 +2309,15 @@ impl App {
             || self.open && self.page==3 && self.shelf_x.values().any(|s| !s.settled(68.0))
             || self.open && self.page==2 && (!self.water_ring.settled(1.0) || !self.sit_view_t.settled(1.0) || !self.sit_t.settled(1.0))
             || self.toast.is_some()
-            || self.t < self.notification_bell_until && self.t-self.notification_bell_at < 0.95
+            || self.notification_bell().is_some_and(|at|self.t-at<0.95)
             || self.notice.as_ref().is_some_and(|a|a.source!=crate::extras::AlertSource::Internal&&self.t-a.at<0.95)
             || self.hud_alpha > 0.003 && self.hud_alpha < 0.997
             || !self.notice_width.settled(1.0);
         let pet_visible=self.pet_a>0.01 && !self.open && !minimal_pill;
         let ambient=self.settings.skin==model::Skin::Fluid && self.fluid.animating() || self.pomo.running && (self.open && self.page==1 || !self.open && !minimal_pill && self.notice.is_none() && bar::animations_enabled())
             || self.media.playing && (self.open && self.page==0 || !self.open && !minimal_pill && self.notice.is_none() && self.media.is_music())
-            || self.notice.as_ref().is_some_and(|notice|notice.meeting.is_some());
+            || self.notice.as_ref().is_some_and(|notice|notice.meeting.is_some())
+            || self.wireless_animating();
         let animating=transitioning || ambient || pet_visible && self.pet.state!=PetState::Sleeping;
         // 交互形变保持 60 帧，媒体 30 帧；小表情 20 帧，睡眠 10 帧，静态界面每秒核对提醒。
         let repaint_after=std::time::Duration::from_secs_f64(if transitioning{1.0/60.0}else if ambient{1.0/30.0}else if pet_visible{if self.pet.state==PetState::Sleeping{0.1}else{0.05}}else{1.0});
@@ -2961,7 +3022,7 @@ impl App {
         let pb=(local_cx+layout.x[bar::BATTERY].unwrap_or(0.0),15.0);
         let pcx=layout.x[bar::CLOCK].map_or(hc,|x|local_cx+x-paint::clock_width(base,&clock,size::PILL_CLOCK)/2.0);
 
-        if self.effective_minimal() && self.t>=self.notification_bell_until && p < 0.02 { return; }
+        if self.effective_minimal() && self.notification_bell().is_none() && p < 0.02 { return; }
         // 电池：位置/大小连续插值
         let bk = lerp(1.0, 0.8, m);
         let bpos = (lerp(pb.0, hb.0, m), lerp(pb.1, hb.1, m));
@@ -3017,21 +3078,22 @@ impl App {
             let y=lerp(15.0,18.0,m);
             paint::playback_bars(base,x,y,self.t,self.media.playing,theme::WHITE);
             if self.open && reveal>0.6 && base.hit(x-13.0,y-14.0,26.0,28.0,"header-music")
-                .on_hover_text(if self.settings.visible_pages[0]{"返回音乐播放页"}else{"打开音乐设置"})
+                .on_hover_text("返回音乐播放页")
                 .on_hover_cursor(egui::CursorIcon::PointingHand).clicked(){self.show_page(0);}
         }
         let compact_alpha=1.0-smoothstep(0.0,0.22,p);
-        if self.t<self.notification_bell_until&&!self.compact_notices()&&p<0.1 {
-            if let Some(x)=layout.x[bar::BELL]{
-                let x=local_cx+x;paint::bell(&base.scaled(x,14.0,1.2),x,14.0,theme::WHITE,paint::bell_swing(self.t-self.notification_bell_at));
+        if !self.compact_notices()&&p<0.1 {
+            if let (Some(at),Some(x))=(self.notification_bell(),layout.x[bar::BELL]){
+                let x=local_cx+x;paint::bell(&base.scaled(x,14.0,1.2),x,14.0,theme::WHITE,paint::bell_swing(self.t-at));
                 base.circle(x+4.0,9.5,2.0,Color32::from_rgb(255,72,72));
-                if base.hit(x-14.0,3.0,28.0,25.0,"bell-mail").clicked(){self.show_page(5);}
+                if self.module_on(MAIL_PAGE)&&base.hit(x-14.0,3.0,28.0,25.0,"bell-mail").clicked(){self.show_page(MAIL_PAGE);}
             }
         }
         if compact_alpha>0.004 {
             let c=base.faded(compact_alpha);let c=if compact_alpha<0.8{c.ghost()}else{c};
             self.draw_quota_bar(&c,local_cx,&layout);
             if let Some(x)=layout.x[bar::PERFORMANCE] {self.performance_bar(&c,local_cx+x);}
+            self.draw_wireless_bar(&c,local_cx,&layout);
             if let Some(x)=layout.x[bar::WEATHER] { self.draw_pill_weather(&c,local_cx+x,&layout); }
         }
         if self.pomo.running && compact_alpha>0.004 {
@@ -3044,7 +3106,7 @@ impl App {
     fn resident_header(&mut self, base: &Card, panel: Rect, cx: f32, p: f32, reveal: f32, env: &Env) {
         if !self.side() {self.shared_header(base,cx,p,reveal,env);return;}
         let bar_alpha=1.0-smoothstep(0.0,0.3,p);
-        let minimal=self.effective_minimal()&&self.t>=self.notification_bell_until;
+        let minimal=self.effective_minimal()&&self.notification_bell().is_none();
         if bar_alpha>0.004 && !minimal {
             let c=base.shifted(panel.min.x-base.origin.x,panel.min.y-base.origin.y).faded(bar_alpha);
             let c=if bar_alpha<0.8 {c.ghost()} else {c};
@@ -3107,7 +3169,7 @@ impl App {
             let old_a = 1.0 - smoothstep(0.0, 0.16, e);
             let new_a = smoothstep(0.03, 0.28, e);
             let old_dx = -self.page_dir * 18.0 * anim::ease_out_cubic(e / 0.3);
-            if old_a > 0.0 {
+            if old_a > 0.0 && self.module_on(self.page_from) {
                 let oc = c.faded(old_a).ghost();
                 self.page_title(self.page_from, &oc);
                 self.render_page(self.page_from, &oc.shifted(old_dx, 0.0), env, &mut Vec::new());
@@ -3141,6 +3203,9 @@ impl App {
             8 if self.weather.solar_open => ("日出", "日落", theme::YELLOW),
             PERFORMANCE_PAGE => ("系统", "性能", crate::performance_ui::CPU_COLOR),
             8 => ("当地", "天气", theme::CYAN),
+            // 详情页的标题带返回箭头，由页面自己画。
+            BLUETOOTH_PAGE if self.wireless_focus.is_some() && self.wireless_devices.len()>1 => return,
+            BLUETOOTH_PAGE => ("无线", "设备", theme::CYAN),
             _ => ("岛仔", "设置", theme::WHITE),
         };
         let wa = c.text(15.0, base, a, size::TITLE, W::Bold, theme::WHITE, H::Left);
@@ -3200,6 +3265,7 @@ impl App {
             6 => self.page_quota(c),
             PERFORMANCE_PAGE => self.page_performance(c),
             8 => self.page_weather(c,env,cmds),
+            BLUETOOTH_PAGE => self.page_wireless(c,env),
             CALENDAR_PAGE => self.page_calendar(c,env),
             _ => self.page_settings(c),
         }
@@ -3325,7 +3391,7 @@ impl App {
         self.remind_t.step(dt);
         self.sit_t.target = if self.settings.sit_remind { 1.0 } else { 0.0 };
         self.sit_t.step(dt);
-        // 剪贴板记录开关：关闭时同时清掉未固定的记录。
+        // 剪贴板记录同时受置物架模块和记录开关控制。
         if self.clipboard.is_enabled() != self.clipboard_active() {
             self.clipboard.set_enabled(self.clipboard_active());
         }
@@ -3341,7 +3407,9 @@ impl App {
     /// 媒体进度在两次 SMTC 刷新之间按时间外推，进度条才会连续走动。
     fn update_media(&mut self, env: &Env, ctx: &egui::Context) {
         let m = &env.media;
-        if !m.is_music() {
+        if !self.module_on(MUSIC_PAGE) || !m.is_music() {
+            self.music_seek_ui=None;
+            self.music_restart_at=None;
             self.music_volume_ui=None;
             self.music_volume_quiet_until=0.0;
             self.music_volume_open=false;

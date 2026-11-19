@@ -56,6 +56,24 @@ impl Alert {
     }
     pub(crate) fn is_hud(&self)->bool {self.source==AlertSource::Internal && matches!(self.title.as_str(),"系统音量"|"大写锁定"|"键盘输入语言"|"网络连接"|"电源已连接"|"已切换电池供电"|"蓝牙设备")}
 }
+
+fn reminder_module(title:&str)->Option<usize> {
+    use crate::app::*;
+    match title {
+        "岛仔已暂停音乐功能"=>Some(MUSIC_PAGE),
+        "专注计时"=>Some(FOCUS_PAGE),
+        "喝水时间到了"|SIT_TITLE|"今日饮水目标达成"=>Some(WATER_PAGE),
+        "待办到时间了"=>Some(TODO_PAGE),
+        "新邮件"=>Some(MAIL_PAGE),
+        "会议提醒"=>Some(CALENDAR_PAGE),
+        _=>None,
+    }
+}
+
+fn mail_invitation(title:&str,body:&str)->bool {
+    title=="会议提醒" && body.ends_with(" · 邮件邀请")
+}
+
 fn bluetooth_notice_content(body:&str)->(&str,&str,Option<u8>){
     if let Some(name)=body.strip_suffix(" · 已断开") {return (name,"已断开",None);}
     if body=="已断开连接" {return ("蓝牙设备","已断开",None);}
@@ -64,25 +82,61 @@ fn bluetooth_notice_content(body:&str)->(&str,&str,Option<u8>){
             return (name,"已连接",Some(level));
         }
     }
+    // 电量事件：「名称 · 开始充电 · 64%」。
+    if let Some((rest,level))=body.rsplit_once(" · ") {
+        if let (Some(level),Some((name,status)))=(level.strip_suffix('%').and_then(|s|s.parse::<u8>().ok()).filter(|v|*v<=100),rest.rsplit_once(" · ")) {
+            return (name,status,Some(level));
+        }
+    }
     (body,"已连接",None)
 }
 
+/// 每种设备一个图标；入耳、骨传导、耳夹等各有外形，AirPods 系列按带杆样式单独画。
+pub(crate) fn device_icon_source(kind: crate::bt::DeviceKind) -> egui::ImageSource<'static> {
+    use crate::bt::DeviceKind::*;
+    match kind {
+        Headphones=>egui::include_image!("../assets/device-icons/headphones-round-bold.svg"),
+        Earbuds=>egui::include_image!("../assets/device-icons/earbuds.svg"),
+        EarbudsStem=>egui::include_image!("../assets/device-icons/earbuds-stem.svg"),
+        EarbudsStemTips=>egui::include_image!("../assets/device-icons/earbuds-stem-tips.svg"),
+        OpenEar=>egui::include_image!("../assets/device-icons/open-ear.svg"),
+        Bone=>egui::include_image!("../assets/device-icons/bone.svg"),
+        HearingAid=>egui::include_image!("../assets/device-icons/hearing-aid.svg"),
+        Speaker=>egui::include_image!("../assets/device-icons/speaker-bold.svg"),
+        Mic=>egui::include_image!("../assets/device-icons/mic.svg"),
+        Keyboard=>egui::include_image!("../assets/device-icons/keyboard-bold.svg"),
+        Mouse=>egui::include_image!("../assets/device-icons/mouse-bold.svg"),
+        Trackpad=>egui::include_image!("../assets/device-icons/trackpad.svg"),
+        Pen=>egui::include_image!("../assets/device-icons/pen.svg"),
+        Presenter=>egui::include_image!("../assets/device-icons/presenter.svg"),
+        Remote=>egui::include_image!("../assets/device-icons/remote.svg"),
+        Gamepad=>egui::include_image!("../assets/device-icons/gamepad-bold.svg"),
+        JoyCon=>egui::include_image!("../assets/device-icons/joycon.svg"),
+        Phone=>egui::include_image!("../assets/device-icons/smartphone-bold.svg"),
+        Tablet=>egui::include_image!("../assets/device-icons/tablet.svg"),
+        Watch=>egui::include_image!("../assets/device-icons/watch.svg"),
+        Band=>egui::include_image!("../assets/device-icons/band.svg"),
+        Health=>egui::include_image!("../assets/device-icons/health.svg"),
+        Receiver24G=>egui::include_image!("../assets/device-icons/usb-receiver.svg"),
+        Other=>egui::include_image!("../assets/device-icons/bluetooth-linear.svg"),
+    }
+}
+pub(crate) const ALL_DEVICE_KINDS:[crate::bt::DeviceKind;24]={
+    use crate::bt::DeviceKind::*;
+    [Headphones,Earbuds,EarbudsStem,EarbudsStemTips,OpenEar,Bone,HearingAid,Speaker,Mic,Keyboard,Mouse,Trackpad,Pen,Presenter,Remote,Gamepad,JoyCon,Phone,Tablet,Watch,Band,Health,Receiver24G,Other]
+};
 pub(crate) fn device_icon(c: &Card, kind: crate::bt::DeviceKind, x: f32, y: f32, size: f32) {
-    let icon=match kind {
-        crate::bt::DeviceKind::Bone | crate::bt::DeviceKind::Earbuds | crate::bt::DeviceKind::Headphones=>egui::include_image!("../assets/device-icons/headphones-round-bold.svg"),
-        crate::bt::DeviceKind::Speaker=>egui::include_image!("../assets/device-icons/speaker-bold.svg"),
-        crate::bt::DeviceKind::Keyboard=>egui::include_image!("../assets/device-icons/keyboard-bold.svg"),
-        crate::bt::DeviceKind::Mouse=>egui::include_image!("../assets/device-icons/mouse-bold.svg"),
-        crate::bt::DeviceKind::Gamepad=>egui::include_image!("../assets/device-icons/gamepad-bold.svg"),
-        crate::bt::DeviceKind::Phone=>egui::include_image!("../assets/device-icons/smartphone-bold.svg"),
-        crate::bt::DeviceKind::Other=>egui::include_image!("../assets/device-icons/bluetooth-linear.svg"),
-    };
+    device_icon_tinted(c,kind,x,y,size,Color32::WHITE);
+}
+pub(crate) fn device_icon_tinted(c: &Card, kind: crate::bt::DeviceKind, x: f32, y: f32, size: f32, tint: Color32) {
+    let icon=device_icon_source(kind);
     let rect=c.rect(x,y,size,size);
     let egui::ImageSource::Bytes{uri,bytes}=icon else{return};
     let pixels=(rect.width()*c.ui.ctx().pixels_per_point()).ceil() as u32;
     let icon=egui::Image::from_bytes(format!("{uri}/{pixels}.svg"),bytes);
     if let Ok(egui::load::TexturePoll::Ready { texture })=icon.fit_to_exact_size(rect.size()).load_for_size(c.ui.ctx(),rect.size()) {
-        c.painter.image(texture.id,rect,Rect::from_min_max(egui::Pos2::ZERO,egui::pos2(1.0,1.0)),Color32::WHITE);
+        crate::skin_paint::mark_monochrome(texture.id);
+        c.painter.image(texture.id,rect,Rect::from_min_max(egui::Pos2::ZERO,egui::pos2(1.0,1.0)),tint);
     }
 }
 
@@ -237,11 +291,6 @@ impl App {
         system: bool,
     ) {
         let title = title.into();
-        if let Some(kind)=HealthReminder::ALL.into_iter().find(|kind|title==kind.title()) {
-            if self.health_pending[kind as usize]{return;}
-            self.health_pending[kind as usize]=true;
-            crate::model::save_health_pending(self.health_pending);
-        }
         let transient = matches!(
             title.as_str(),
             "系统音量" | "大写锁定" | "键盘输入语言" | "网络连接" | "电源已连接" | "已切换电池供电" | "蓝牙设备"
@@ -268,7 +317,7 @@ impl App {
     }
     pub(crate) fn bluetooth_alert(&mut self, device: &crate::bt::Device, connected: bool) {
         if !self.settings.bluetooth_notifications { return; }
-        if connected && matches!(device.kind,crate::bt::DeviceKind::Bone|crate::bt::DeviceKind::Earbuds|crate::bt::DeviceKind::Headphones|crate::bt::DeviceKind::Speaker) {
+        if connected && device.kind.is_audio() {
             self.alerts.retain(|a|a.title!="系统音量");
             if self.notice.as_ref().is_some_and(|a|a.title=="系统音量") {self.notice=None;}
         }
@@ -283,7 +332,15 @@ impl App {
         };
         self.enqueue_alert(a, false);
     }
-    fn enqueue_alert(&mut self, a: Alert, system: bool) {
+    pub(crate) fn enqueue_alert(&mut self, a: Alert, system: bool) {
+        if a.source==AlertSource::Internal &&
+            (reminder_module(&a.title).is_some_and(|page|!self.module_on(page))
+                || mail_invitation(&a.title,&a.body)&&!self.module_on(crate::app::MAIL_PAGE)) {return;}
+        if let Some(kind)=a.health() {
+            if self.health_pending[kind as usize]{return;}
+            self.health_pending[kind as usize]=true;
+            crate::model::save_health_pending(self.health_pending);
+        }
         // 通知仅保存在本次运行的内存中。
         if a.source==AlertSource::Internal {self.history.push_front(a.clone());}
         self.history.truncate(50);
@@ -309,6 +366,16 @@ impl App {
                 self.alerts.pop_front();
             }
         }
+    }
+    /// 清除模块尚在显示、排队或等待交给系统的提醒。跳转页码可能与其他提醒共用。
+    pub(crate) fn clear_module_reminders(&mut self,page:usize) {
+        let belongs=|title:&str,body:&str|reminder_module(title)==Some(page)
+            || page==crate::app::MAIL_PAGE&&mail_invitation(title,body);
+        let matches=|a:&Alert|a.source==AlertSource::Internal&&belongs(&a.title,&a.body);
+        self.alerts.retain(|a|!matches(a));
+        if self.notice.as_ref().is_some_and(matches){self.notice=None;}
+        if self.hud_notice.as_ref().is_some_and(matches){self.hud_notice=None;}
+        self.pending.retain(|cmd|!matches!(cmd,Cmd::Notify(title,body,_) if belongs(title,body)));
     }
     /// 该来源的所有账号都已查看。
     pub fn viewed_messenger(&mut self,source:crate::app::Messenger){
@@ -500,7 +567,8 @@ impl App {
         if a.is_hud(){
             if a.title=="蓝牙设备" {
                 let (name,status,battery)=bluetooth_notice_content(&a.body);
-                nc.circle(26.0,24.0,14.0,if status=="已连接"{Color32::from_rgb(10,132,255)}else{Color32::from_gray(95)});
+                let badge=if status=="已连接"{Color32::from_rgb(10,132,255)}else if let Some(level)=battery.filter(|_|status!="已断开"){crate::bluetooth_ui::level_color(level)}else{Color32::from_gray(95)};
+                nc.circle(26.0,24.0,14.0,badge);
                 let kind=a.bluetooth.map(|(kind,_)|kind).unwrap_or(crate::bt::DeviceKind::Other);
                 device_icon(&nc,kind,17.0,15.0,18.0);
                 let right=HUD_W-14.0;
@@ -511,7 +579,7 @@ impl App {
                     nc.stroke(x,20.0,15.0,8.0,2.0,1.0,Color32::from_gray(175));
                     nc.fill(x+15.5,22.5,2.0,3.0,0.8,Color32::from_gray(175));
                     let fill=11.0*level as f32/100.0;
-                    if fill>0.0 {nc.fill(x+2.0,22.0,fill,4.0,1.0,if level<=20{theme::RED}else{theme::GREEN});}
+                    if fill>0.0 {nc.fill(x+2.0,22.0,fill,4.0,1.0,crate::bluetooth_ui::level_color(level));}
                     nc.centered_text(right,24.0,&pct,10.5,W::Semibold,theme::WHITE,H::Right);
                     x-8.0
                 } else {right};
@@ -736,7 +804,7 @@ mod tests {
 
     #[test]
     fn settings_groups_keep_every_page_reachable() {
-        let groups = ["通用", "音乐", "专注与健康", "专注与健康", "待办与置物", "待办与置物", "消息提醒", "邮箱", "日程", "关于", "页面管理", "AI 额度", "天气", "外观", "位置", "系统性能"];
+        let groups = ["通用", "音乐", "专注与健康", "专注与健康", "待办与置物", "待办与置物", "消息提醒", "邮箱", "日程", "关于", "页面管理", "AI 额度", "天气", "外观", "位置", "系统性能", "无线设备"];
         for (tab, expected) in groups.iter().enumerate() {
             let matches: Vec<_> = SETTINGS_GROUPS.iter().filter(|(_,start,end,_)| (*start..=*end).contains(&tab)).collect();
             assert_eq!(matches.len(), 1, "页面 {tab} 必须且只能属于一个分组");
@@ -755,19 +823,27 @@ mod tests {
 
     #[test]
     fn device_icons_render_as_visible_svg() {
-        let icons: &[&[u8]] = &[
-            include_bytes!("../assets/device-icons/headphones-round-bold.svg"),
-            include_bytes!("../assets/device-icons/speaker-bold.svg"),
-            include_bytes!("../assets/device-icons/keyboard-bold.svg"),
-            include_bytes!("../assets/device-icons/mouse-bold.svg"),
-            include_bytes!("../assets/device-icons/gamepad-bold.svg"),
-            include_bytes!("../assets/device-icons/smartphone-bold.svg"),
-            include_bytes!("../assets/device-icons/bluetooth-linear.svg"),
-        ];
-        for bytes in icons {
-            let image=egui_extras::image::load_svg_bytes(bytes).unwrap();
-            assert!(image.pixels.iter().any(|p|p.a()>0));
+        for kind in ALL_DEVICE_KINDS {
+            let egui::ImageSource::Bytes{bytes,..}=device_icon_source(kind) else {panic!("{kind:?}")};
+            let image=egui_extras::image::load_svg_bytes(&bytes).unwrap();
+            assert!(image.pixels.iter().any(|p|p.a()>0),"{kind:?}");
         }
+    }
+
+    /// 图标要在圆环里视觉居中：按 96px 渲染后，不透明部分的外框中心偏离不超过 0.25 个图标单位。
+    #[test]
+    fn device_icons_are_visually_centered() {
+        let mut off=vec![];
+        for kind in ALL_DEVICE_KINDS {
+            let egui::ImageSource::Bytes{uri,bytes}=device_icon_source(kind) else {panic!()};
+            let image=egui_extras::image::load_svg_bytes_with_size(&bytes,Some(egui::load::SizeHint::Size(96,96))).unwrap();
+            let [w,h]=image.size;let (mut x0,mut y0,mut x1,mut y1)=(w,h,0,0);
+            for y in 0..h {for x in 0..w {if image.pixels[y*w+x].a()>40 {x0=x0.min(x);y0=y0.min(y);x1=x1.max(x);y1=y1.max(y);}}}
+            let dx=(w as f32/2.0-(x0+x1+1) as f32/2.0)*24.0/w as f32;let dy=(h as f32/2.0-(y0+y1+1) as f32/2.0)*24.0/h as f32;
+            println!("ICON-OFFSET {uri} {dx:.2} {dy:.2}");
+            if dx.abs()>0.25||dy.abs()>0.25 {off.push(format!("{kind:?} 偏移 ({dx:.2},{dy:.2})"));}
+        }
+        assert!(off.is_empty(),"图标没有居中：{off:?}");
     }
 
     #[test]
@@ -1102,6 +1178,13 @@ pub(crate) fn setting_row(ui:&mut egui::Ui,title:&str,description:&str,value:&mu
     ui.add_space(2.0);
 }
 
+/// 模块关闭时禁用常驻开关，圆点仍反映保存的偏好。
+fn resident_setting_row(ui:&mut egui::Ui,title:&str,description:&str,module_on:bool,value:&mut bool){
+    ui.add_enabled_ui(module_on,|ui|{
+        setting_row(ui,title,if module_on {description}else{"功能页已关闭"},value);
+    });
+}
+
 /// 设置页统一的分段选择器（灰色底框 + 选中块）。返回值为是否发生了切换。
 pub(crate) fn settings_segmented<T:PartialEq+Copy>(ui:&mut egui::Ui,value:&mut T,options:&[(T,&str)],item_w:f32)->bool{
     let ctx=&ui.ctx().clone();
@@ -1262,16 +1345,22 @@ fn settings_page_icon(page:usize)->egui::ImageSource<'static>{
         QUOTA_PAGE=>("quota",include_bytes!("../assets/settings-icons/system/quota.svg")),
         CALENDAR_PAGE=>("calendar",include_bytes!("../assets/settings-icons/system/calendar.svg")),
         PERFORMANCE_PAGE=>("performance",include_bytes!("../assets/settings-icons/system/performance.svg")),
+        BLUETOOTH_PAGE=>("wireless",include_bytes!("../assets/device-icons/bluetooth-linear.svg")),
         _=>("weather",include_bytes!("../assets/settings-icons/system/weather.svg")),
     };
     egui::ImageSource::Bytes{uri:format!("bytes://settings-header-{name}.svg").into(),bytes:bytes.into()}
+}
+
+fn paint_wireless_settings_icon(ui:&egui::Ui,rect:egui::Rect,icon:egui::ImageSource<'static>){
+    ui.painter().rect_filled(rect,rect.width()*0.25,Color32::from_rgb(57,118,211));
+    egui::Image::new(icon).paint_at(ui,rect.shrink(rect.width()*0.15));
 }
 
 /// 设置分页对应的功能模块（页面序号）；通用、外观、位置、消息提醒、关于、页面管理不属于任何模块。
 #[cfg_attr(not(test),allow(dead_code))]
 pub(crate) fn settings_tab_module(tab:usize)->Option<usize>{
     use crate::app::*;
-    match tab {1=>Some(MUSIC_PAGE),2=>Some(FOCUS_PAGE),3=>Some(WATER_PAGE),4=>Some(TODO_PAGE),5=>Some(SHELF_PAGE),7=>Some(MAIL_PAGE),8=>Some(CALENDAR_PAGE),11=>Some(QUOTA_PAGE),12=>Some(WEATHER_PAGE),15=>Some(PERFORMANCE_PAGE),_=>None}
+    match tab {1=>Some(MUSIC_PAGE),2=>Some(FOCUS_PAGE),3=>Some(WATER_PAGE),4=>Some(TODO_PAGE),5=>Some(SHELF_PAGE),7=>Some(MAIL_PAGE),8=>Some(CALENDAR_PAGE),11=>Some(QUOTA_PAGE),12=>Some(WEATHER_PAGE),15=>Some(PERFORMANCE_PAGE),SETTINGS_TAB_WIRELESS=>Some(BLUETOOTH_PAGE),_=>None}
 }
 
 pub(crate) fn settings_label(ui:&mut egui::Ui,text:&str){
@@ -1415,14 +1504,15 @@ fn setting_choices(ui:&mut egui::Ui,title:&str,value:&mut u32,values:[u32;3],uni
     let options:Vec<(u32,&str)>=values.iter().zip(labels.iter()).map(|(v,l)|(*v,l.as_str())).collect();
     settings_control_row_right(ui,title,|ui|{settings_segmented(ui,value,&options,62.0);});
 }
-/// 设置页分页序号。旧序号保持不变（岛上入口、测试都按序号跳转），新增外观与位置两页。
+/// 设置页分页序号。岛上入口和测试按序号跳转。
 pub(crate) const SETTINGS_TAB_APPEARANCE: usize = 13;
 pub(crate) const SETTINGS_TAB_POSITION: usize = 14;
+pub(crate) const SETTINGS_TAB_WIRELESS: usize = 16;
 /// 侧栏：一项就是一页，不再有页内子标签。专注与健康（2、3）、待办与置物（4、5）各合成一页；关于固定左下角。
 /// 第四列是这一项之前的分组标题。
-const SETTINGS_GROUPS: [(&str,usize,usize,&str);14] = [
+const SETTINGS_GROUPS: [(&str,usize,usize,&str);15] = [
     ("通用",0,0,"岛仔"), ("外观",SETTINGS_TAB_APPEARANCE,SETTINGS_TAB_APPEARANCE,""), ("位置",SETTINGS_TAB_POSITION,SETTINGS_TAB_POSITION,""), ("页面管理",10,10,""),
-    ("音乐",1,1,"功能"), ("专注与健康",2,3,""), ("待办与置物",4,5,""), ("消息提醒",6,6,""), ("邮箱",7,7,""), ("日程",8,8,""), ("AI 额度",11,11,""), ("天气",12,12,""), ("系统性能",15,15,""),
+    ("音乐",1,1,"功能"), ("专注与健康",2,3,""), ("待办与置物",4,5,""), ("消息提醒",6,6,""), ("邮箱",7,7,""), ("日程",8,8,""), ("AI 额度",11,11,""), ("天气",12,12,""), ("系统性能",15,15,""), ("无线设备",SETTINGS_TAB_WIRELESS,SETTINGS_TAB_WIRELESS,""),
     ("关于",9,9,""),
 ];
 /// 分页标题；合并页（3→2、5→4）显示合并后的名字。
@@ -1441,7 +1531,13 @@ impl App {
         let (mut enable,mut open)=(false,false);
         settings_card(ui,|ui|{
             ui.horizontal(|ui|{
-                ui.add(egui::Image::new(settings_page_icon(page)).fit_to_exact_size(egui::vec2(36.0,36.0)));
+                let icon=settings_page_icon(page);
+                if page==crate::app::BLUETOOTH_PAGE {
+                    let (rect,_)=ui.allocate_exact_size(egui::vec2(36.0,36.0),egui::Sense::hover());
+                    paint_wireless_settings_icon(ui,rect,icon);
+                }else{
+                    ui.add(egui::Image::new(icon).fit_to_exact_size(egui::vec2(36.0,36.0)));
+                }
                 ui.add_space(4.0);
                 ui.vertical(|ui|{
                     ui.spacing_mut().item_spacing.y=2.0;
@@ -1467,6 +1563,10 @@ impl App {
         self.module_on(page)
     }
     pub fn settings_ui(&mut self,ctx:&egui::Context,autostart:bool){
+        // 设置弹窗独立于页面的灰显区域。模块关掉后撤下弹窗，避免继续操作。
+        if !self.module_on(crate::app::MAIL_PAGE) {self.mail.form.open=false;}
+        if !self.module_on(crate::app::CALENDAR_PAGE) {self.calendar.form.open=false;}
+        if !self.module_on(crate::app::QUOTA_PAGE)&&self.quota.connect_open {self.quota_close_connection();}
         if !self.settings_open{self.window_layout().close();release_support_codes(ctx);self.weather_source.close();}
         self.updates.poll(ctx);
         self.updates.dialog_ui(ctx);
@@ -1499,7 +1599,7 @@ impl App {
             let before=format!("{:?}",self.settings);
             egui::SidePanel::left("settings-sidebar").resizable(false).exact_width(180.0).frame(egui::Frame::new().fill(settings_color(ctx,Color32::from_rgb(29,29,32),Color32::from_rgb(237,239,243))).stroke(egui::Stroke::NONE).inner_margin(egui::Margin::symmetric(10,12))).show(ctx,|ui|{
                 ui.add_space(2.0);
-                // 13 项加两个分组标题：窗口拉到最矮时按可用高度压缩行高，「关于」始终留在底部可见。
+                // 窗口拉到最矮时按可用高度压缩行高，「关于」始终留在底部可见。
                 // 每项占 行高 + 控件间距(3) + 行后空隙；两个分组标题和「关于」上方预留约 80。
                 let per=(ui.available_height()-80.0)/SETTINGS_GROUPS.len() as f32;
                 let row_h=(per-6.0).clamp(20.0,32.0);
@@ -1518,6 +1618,7 @@ impl App {
                         ui.painter().rect_filled(rect,7.0,if selected{settings_color(ctx,Color32::from_rgb(43,43,46),Color32::from_rgb(214,221,232))}else{settings_color(ctx,Color32::from_rgb(30,30,33),Color32::from_rgb(225,230,238))});
                     }
                     let icon=match start {
+                        SETTINGS_TAB_WIRELESS=>egui::include_image!("../assets/device-icons/bluetooth-linear.svg"),
                         0=>egui::include_image!("../assets/settings-icons/system/general.svg"),
                         11=>egui::include_image!("../assets/settings-icons/system/quota.svg"),
                         10=>egui::include_image!("../assets/settings-icons/system/pages.svg"),
@@ -1534,7 +1635,8 @@ impl App {
                         _=>egui::include_image!("../assets/settings-icons/system/about.svg"),
                     };
                     let icon_bg=egui::Rect::from_center_size(egui::pos2(rect.left()+21.0,rect.center().y),egui::vec2(23.0,23.0));
-                    egui::Image::new(icon).paint_at(ui,icon_bg);
+                    if start==SETTINGS_TAB_WIRELESS {paint_wireless_settings_icon(ui,icon_bg,icon);}
+                    else {egui::Image::new(icon).paint_at(ui,icon_bg);}
                     ui.painter().text(egui::pos2(rect.left()+40.0,rect.center().y),egui::Align2::LEFT_CENTER,name,egui::FontId::proportional(13.0),if selected{settings_color(ctx,Color32::WHITE,Color32::from_rgb(30,34,41))}else{settings_color(ctx,Color32::from_gray(225),Color32::from_gray(55))});
                     ui.add_space(row_gap);
                 }
@@ -1552,6 +1654,23 @@ impl App {
                     15=>{
                         let on=self.settings_feature_header(ui,crate::app::PERFORMANCE_PAGE,"查看硬件负载和实时吞吐量",|_,_|{});
                         ui.add_enabled_ui(on,|ui|self.performance_settings(ui));
+                    }
+                    SETTINGS_TAB_WIRELESS=>{
+                        let on=self.settings_feature_header(ui,crate::app::BLUETOOTH_PAGE,"查看蓝牙电量和 2.4G 接收器状态",|_,_|{});
+                        ui.add_enabled_ui(on,|ui|{
+                            settings_label(ui,"岛上常驻");
+                            settings_card(ui,|ui|{
+                                resident_setting_row(ui,"无线设备电量","收起时显示，最多两台",on,&mut self.settings.show_bluetooth);
+                                if self.settings.show_bluetooth {
+                                    settings_separator(ui);
+                                    self.wireless_resident_settings(ui);
+                                }
+                            });
+                            settings_label(ui,"电量提醒");
+                            settings_card(ui,|ui|{
+                                setting_row(ui,"岛上提示","接上电源、充满或电量偏低时提醒",&mut self.settings.bluetooth_battery_notifications);
+                            });
+                        });
                     }
                     12=>{
                         let on=self.settings_feature_header(ui,crate::app::WEATHER_PAGE,"当地天气与七日预报",|_,_|{});
@@ -1574,17 +1693,22 @@ impl App {
                             ui.separator();
                             setting_row(ui,"电量","无电池设备自动隐藏",&mut self.settings.show_battery);
                             ui.separator();
-                            setting_row(ui,"天气","天气图标和温度，点击打开天气页",&mut self.settings.show_weather);
+                            resident_setting_row(ui,"天气","天气图标和温度，点击打开天气页",
+                                self.module_on(crate::app::WEATHER_PAGE),&mut self.settings.show_weather);
+                            ui.separator();
+                            resident_setting_row(ui,"无线设备电量","收起时显示，最多两台",
+                                self.module_on(crate::app::BLUETOOTH_PAGE),&mut self.settings.show_bluetooth);
                             ui.separator();
                             ui.add_enabled_ui(self.module_on(crate::app::PERFORMANCE_PAGE),|ui|setting_row(ui,"系统性能","点击常驻指标打开性能页",&mut self.settings.show_performance));
                             ui.separator();
                             let before=self.quota.config.compact;
-                            setting_row(ui,"AI 额度","常驻账号；WorkBuddy 积分在前，DeepSeek 余额在最后",&mut self.quota.config.compact);
+                            resident_setting_row(ui,"AI 额度","常驻账号，WorkBuddy 积分在前，DeepSeek 余额在最后",
+                                self.module_on(crate::app::QUOTA_PAGE),&mut self.quota.config.compact);
                             if before!=self.quota.config.compact {self.quota.config.save();}
                         });
                         settings_label(ui,"功能页面");
                         settings_card(ui,|ui|{
-                            let descriptions=["播放控制与同步歌词","番茄钟与休息计时","喝水与久坐提醒","临时收纳文件位置","任务清单与到期提醒","邮件摘要与验证码","Agent 剩余额度和账号切换","月历、邮件邀请与工作日程","当地天气与七日预报","处理器、显卡、内存、网络与磁盘"];
+                            let descriptions=["播放控制与同步歌词","番茄钟与休息计时","喝水与久坐提醒","临时收纳文件位置","任务清单与到期提醒","邮件摘要与验证码","Agent 剩余额度和账号切换","月历、邮件邀请与工作日程","当地天气与七日预报","处理器、显卡、内存、网络与磁盘","蓝牙设备连接状态与多来源电量"];
                             ui.label(egui::RichText::new("拖动左侧手柄调整顺序；关闭的功能不在后台运行，不同步也不提醒，已有数据保留。").size(11.5).color(settings_color(ctx,Color32::from_gray(180),Color32::from_gray(75))));
                             #[derive(Clone)]
                             struct PageDrag(usize);
@@ -1882,7 +2006,7 @@ impl App {
                         settings_card(ui,|ui|{
                             setting_row(ui,"系统状态","音量、充电、网络和键盘状态",&mut self.settings.system_hud);
                             ui.separator();
-                            setting_row(ui,"蓝牙设备","连接与断开时提醒；关闭后停止蓝牙监听",&mut self.settings.bluetooth_notifications);
+                            setting_row(ui,"蓝牙设备连接","连接与断开时提醒",&mut self.settings.bluetooth_notifications);
                         });
                         // 聊天软件：一个软件一行、一个开关；附属选项缩进跟在所属软件下面。
                         let master=self.settings.notifications;
@@ -2339,7 +2463,9 @@ impl App {
             if before!=format!("{:?}",self.settings){self.settings.save();}
             ctx.set_style(original_style);
         });
-        if !self.settings_open{self.window_layout().close();self.weather_source.close();}else{self.weather_tutorial_ui(ctx);}
+        if !self.settings_open {self.window_layout().close();}
+        if self.settings_open&&self.module_on(crate::app::WEATHER_PAGE) {self.weather_tutorial_ui(ctx);}
+        else {self.weather_source.close();}
     }
 }
 

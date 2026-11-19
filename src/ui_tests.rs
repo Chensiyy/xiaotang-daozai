@@ -84,7 +84,7 @@ fn weather_content_tap_switches_both_ways_with_a_short_transition(){
 #[test]
 fn weather_content_tap_keeps_other_controls_independent(){
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
-    for (x,y,target) in [(375.0,crate::app::WEATHER_H-7.0,8),(394.0,18.0,8),(367.0,18.0,0),(398.0,88.0,0),(20.0,88.0,7)] {
+    for (x,y,target) in [(375.0,crate::app::WEATHER_H-7.0,8),(394.0,18.0,8),(367.0,18.0,0),(398.0,88.0,crate::app::BLUETOOTH_PAGE),(20.0,88.0,7)] {
         let mut h=H::new();h.app.settings.pet=false;
         h.media=crate::smtc::NowPlaying{source:"cloudmusic.exe".into(),title:"歌曲".into(),artist:"歌手".into(),playing:true,..Default::default()};
         h.app.weather.snapshot=Some(crate::weather::Snapshot{place:"杭州".into(),temp:19.0,..Default::default()});
@@ -749,8 +749,8 @@ fn v0649_settings_and_mail_accounts_survive_upgrade(){
         crate::model::Settings::load().save();
         let saved=std::fs::read_to_string(directory.join("settings.txt")).unwrap();
         for line in legacy.lines().filter(|line|!line.starts_with("visible_pages=")&&!line.starts_with("page_order=")){assert!(saved.lines().any(|value|value==line),"升级保存不能改变旧设置：{line}");}
-        assert!(saved.lines().any(|value|value=="visible_pages=1011111110"),"旧页面开关应保留，并默认开启天气页");
-        assert!(saved.lines().any(|value|value=="page_order=5,2,0,1,3,4,6,7,8,9"),"旧顺序应保留，并把天气页接在最后");
+        assert!(saved.lines().any(|value|value=="visible_pages=10111111101"),"旧页面开关应保留，并默认开启天气页");
+        assert!(saved.lines().any(|value|value=="page_order=5,2,0,1,3,4,6,7,8,9,10"),"旧顺序应保留，并把天气页接在最后");
     }
     std::fs::write(directory.join("mail-accounts.json"),br#"[{"email":"OldUser@qq.com","provider":"qq","enabled":true},{"email":"old@icloud.com","provider":"icloud","enabled":false}]"#).unwrap();
     let accounts=crate::mail::load_accounts();
@@ -1190,6 +1190,7 @@ struct H {
     page_transition:bool,
     shapes:Vec<egui::epaint::ClippedShape>,
     bt: Vec<crate::bt::Device>,
+    receivers: Vec<crate::bt::Device>,
     media: crate::smtc::NowPlaying,
     power: (Option<u8>, bool),
     network: Option<bool>,
@@ -1208,7 +1209,7 @@ impl H {
         std::env::set_var("DAOZAI_DATA_DIR", &dir);
         let ctx = egui::Context::default();
         let app = App::new(&ctx, Options { fetch_lyrics: false, pet_idle: 1e9 });
-        Self { ctx, app, t: 0.0, cursor: None,cmds:vec![],region:Rect::NOTHING,hit:Rect::NOTHING,animating:false,page_transition:false,shapes:Vec::new(), bt:Vec::new(),media:Default::default(),power:(None,false),network:None,system_idle:None,screen_locked:false,fullscreen:false,browser_at_top:None,file_drop_zone:None,hovered_files:vec![],dropped_files:vec![] }
+        Self { ctx, app, t: 0.0, cursor: None,cmds:vec![],region:Rect::NOTHING,hit:Rect::NOTHING,animating:false,page_transition:false,shapes:Vec::new(), bt:Vec::new(),receivers:Vec::new(),media:Default::default(),power:(None,false),network:None,system_idle:None,screen_locked:false,fullscreen:false,browser_at_top:None,file_drop_zone:None,hovered_files:vec![],dropped_files:vec![] }
     }
     fn frame(&mut self, events: Vec<egui::Event>) {
         self.t += 1.0 / 60.0;
@@ -1229,6 +1230,7 @@ impl H {
             cursor: self.cursor,
             bt: self.bt.clone(),
             bt_ready: true,
+            receivers: self.receivers.clone(),
             media:self.media.clone(),
             battery:self.power.0,
             charging:self.power.1,
@@ -2533,7 +2535,7 @@ fn minimal_hover_does_not_catch_tabs_during_collapse() {
 fn music_header_shortcut_returns_from_every_page_without_controlling_playback() {
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     for playing in [true,false] {
-        let mut h=H::new();h.app.settings.page_order=[5,2,0,1,3,4,6,7,8,9];
+        let mut h=H::new();h.app.settings.page_order=[5,2,0,1,3,4,6,7,8,9,10];
         h.media=crate::smtc::NowPlaying{source:"cloudmusic.exe".into(),title:"Track".into(),artist:"Artist".into(),playing,duration:120.0,..Default::default()};
         h.app.set_page_visible(crate::app::PERFORMANCE_PAGE,true);
         for page in 1..crate::app::PAGE_NAMES.len() {
@@ -2547,13 +2549,21 @@ fn music_header_shortcut_returns_from_every_page_without_controlling_playback() 
 }
 
 #[test]
-fn music_header_shortcut_keeps_hidden_music_page_disabled() {
+fn music_header_shortcut_disappears_when_module_is_disabled() {
+    use crate::app::MUSIC_PAGE;
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();
     h.media=crate::smtc::NowPlaying{title:"Track".into(),artist:"Artist".into(),playing:true,duration:120.0,..Default::default()};
-    h.app.set_page_visible(0,false);h.app.show_page(4);h.hover(H::local(300.0,60.0),0.8);
+    h.app.show_page(4);h.hover(H::local(300.0,60.0),0.8);
+    let shortcut=egui::Id::new(("card",true,"header-music"));
+    assert!(h.ctx.read_response(shortcut).is_some());
+    h.app.set_page_visible(MUSIC_PAGE,false);h.hover(H::local(300.0,60.0),0.8);
+    assert!(h.ctx.read_response(shortcut).is_none(),"关闭后应隐藏音乐快捷入口");
+    assert!(!h.app.side_items().contains(&crate::side_dock::SideItem::Music));
     h.click(H::local(367.0,18.0));
-    assert_eq!(h.app.page,4);assert!(!h.app.settings.visible_pages[0]);
-    assert!(h.app.settings_open);assert_eq!(h.app.settings_tab,1);
+    assert_eq!(h.app.page,4);assert!(!h.app.settings_open);
+    h.app.set_page_visible(MUSIC_PAGE,true);h.hover(H::local(300.0,60.0),0.8);
+    h.click(H::local(367.0,18.0));
+    assert_eq!(h.app.page,MUSIC_PAGE);
 }
 
 #[test]
@@ -2589,7 +2599,7 @@ fn wheel_navigation_reaches_every_page_in_both_directions(){
     h.app.shelf.items.clear();h.app.todos.items.clear();
     h.hover(Pos2::new(WIN_W/2.0,12.0),1.0);
     h.hover(H::local(210.0,18.0),0.3);
-    for (delta,pages) in [(-40.0,[1,2,3,4,5,6,7,8,0]),(40.0,[8,7,6,5,4,3,2,1,0])] {
+    for (delta,pages) in [(-40.0,[1,2,3,4,5,6,7,8,10,0]),(40.0,[10,8,7,6,5,4,3,2,1,0])] {
         for page in pages {
             h.wheel(delta);
             assert_eq!(h.app.page,page,"滚轮翻页不能被空的置物架或待办卡住");
@@ -2778,10 +2788,10 @@ fn wheel_handles_small_deltas_without_skipping_pages_on_bursts(){
 }
 
 #[test]
-fn navigation_wraps_between_nine_pages_and_notification_settings_remain_accessible() {
+fn navigation_wraps_between_ten_pages_and_notification_settings_remain_accessible() {
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();
-    h.hover(Pos2::new(WIN_W/2.0,12.0),1.0);h.click(H::local(21.0,68.0));assert_eq!(h.app.page,8);
-    h.hover(H::local(300.0,60.0),0.8);h.click(H::local(398.0,88.0));assert_eq!(h.app.page,0);
+    h.hover(Pos2::new(WIN_W/2.0,12.0),1.0);h.click(H::local(21.0,68.0));assert_eq!(h.app.page,crate::app::BLUETOOTH_PAGE);
+    h.hover(H::local(300.0,60.0),0.8);h.click(H::local(398.0,68.0));assert_eq!(h.app.page,0);
     h.app.open_settings_category(3);assert!(h.app.settings_open);assert_eq!(h.app.settings_tab,6);
 }
 
@@ -3280,7 +3290,7 @@ fn quota_accounts_switch_independently_and_hide_with_the_page() {
 fn page_visibility_is_saved_and_sets_the_starting_page() {
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     let mut h=H::new();
-    assert_eq!(h.app.settings.visible_pages,[true,true,true,true,true,true,true,true,true,false]);
+    assert_eq!(h.app.settings.visible_pages,[true,true,true,true,true,true,true,true,true,false,true]);
     assert!(h.app.settings.show_battery);
     h.app.settings.show_battery=false;
     h.app.set_page_visible(0,false);
@@ -3288,17 +3298,17 @@ fn page_visibility_is_saved_and_sets_the_starting_page() {
     h.app.settings.save();
     let settings=crate::model::Settings::load();
     assert!(!settings.show_battery);
-    assert_eq!(settings.visible_pages,[false,true,true,false,true,true,true,true,true,false]);
+    assert_eq!(settings.visible_pages,[false,true,true,false,true,true,true,true,true,false,true]);
     let restarted=App::new(&h.ctx,Options{fetch_lyrics:false,pet_idle:1e9});
     assert_eq!(restarted.page(),1);
     assert_eq!(restarted.settings.visible_pages,settings.visible_pages);
     assert!(!restarted.settings.show_battery);
     std::fs::write(crate::model::config_dir().join("settings.txt"),"visible_pages=000000\n").unwrap();
-    assert_eq!(crate::model::Settings::load().visible_pages,[true,false,false,false,false,false,false,false,false,false]);
+    assert_eq!(crate::model::Settings::load().visible_pages,[false,false,false,false,false,false,false,false,false,false,true],"旧版存档全关时，新增的无线设备页按默认开启，已有页面可见");
     std::fs::write(crate::model::config_dir().join("settings.txt"),"visible_pages=1000000\n").unwrap();
-    assert_eq!(crate::model::Settings::load().visible_pages,[true,false,false,false,false,false,false,true,true,false],"旧版页面开关应保留，并开启新增的日程页与天气页");
+    assert_eq!(crate::model::Settings::load().visible_pages,[true,false,false,false,false,false,false,true,true,false,true],"旧版页面开关应保留，并开启新增的日程页与天气页");
     std::fs::write(crate::model::config_dir().join("settings.txt"),"visible_pages=invalid\n").unwrap();
-    assert_eq!(crate::model::Settings::load().visible_pages,[true,true,true,true,true,true,true,true,true,false]);
+    assert_eq!(crate::model::Settings::load().visible_pages,[true,true,true,true,true,true,true,true,true,false,true]);
 }
 
 #[test]
@@ -3338,7 +3348,7 @@ fn battery_module_can_disable_only_the_power_warning() {
 fn page_visibility_skips_hidden_pages_in_every_navigation_control() {
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     let mut h=H::new();
-    for page in [1,3,4,6,7,8] {h.app.set_page_visible(page,false);}
+    for page in [1,3,4,6,7,8,9,10] {h.app.set_page_visible(page,false);}
     h.hover(Pos2::new(WIN_W/2.0,12.0),1.0);
     for expected in [2,5,0] {
         h.click(H::local(398.0,68.0));
@@ -3367,7 +3377,7 @@ fn page_visibility_moves_away_from_hidden_page_and_keeps_one_page() {
     h.app.set_page_visible(4,false);
     assert_eq!(h.app.page,0);
     assert!(!h.app.is_editing());
-    for page in [0,1,3,5,6,7,8] {h.app.set_page_visible(page,false);}
+    for page in [0,1,3,5,6,7,8,9,10] {h.app.set_page_visible(page,false);}
     assert_eq!(h.app.page,2);
     h.app.set_page_visible(2,false);
     assert!(h.app.settings.visible_pages[2],"不能关闭最后一个页面");
@@ -3397,6 +3407,60 @@ fn page_visibility_does_not_reopen_hidden_pages_through_shortcuts_or_drops() {
     h.app.on_drop(vec![file]);
     assert_eq!(h.app.page,0);
     assert!(h.app.shelf.items.is_empty());
+}
+
+#[test]
+fn wireless_module_hides_resident_shortcuts_and_exits_detail() {
+    use crate::{app::BLUETOOTH_PAGE,bt::Device,model::Dock};
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let frame=|h:&mut H,cursor,events|{
+        if h.app.side() {side_frame_events(h,cursor,events);}
+        else {h.cursor=cursor;h.frame(events);}
+    };
+    let click=|h:&mut H,pos|{
+        frame(h,Some(pos),vec![egui::Event::PointerMoved(pos)]);
+        for pressed in [true,false] {
+            frame(h,Some(pos),vec![egui::Event::PointerButton{pos,button:egui::PointerButton::Primary,pressed,modifiers:Default::default()}]);
+        }
+    };
+    for dock in [Dock::Top,Dock::Left,Dock::Right] {
+        let mut h=H::new();
+        h.app.settings.dock=dock;
+        h.app.settings.pet=false;
+        h.app.settings.notifications=false;
+        h.bt.push(Device{id:"keyboard".into(),name:"键盘".into(),battery:Some(93),..Default::default()});
+        let id=if dock==Dock::Top {
+            egui::Id::new(("card",true,("wireless-resident","keyboard")))
+        } else {
+            egui::Id::new(("card",true,"wireless-side"))
+        };
+        for _ in 0..60 {frame(&mut h,None,vec![]);}
+        let shortcut=h.ctx.read_response(id).expect("启用时应有常驻入口").rect.center();
+        click(&mut h,shortcut);
+        assert_eq!(h.app.page(),BLUETOOTH_PAGE,"{dock:?} 常驻入口应打开详情");
+        assert_eq!(h.app.wireless_focus.as_deref(),Some("keyboard"));
+
+        h.app.set_page_visible(BLUETOOTH_PAGE,false);
+        assert_ne!(h.app.page(),BLUETOOTH_PAGE);
+        assert!(h.app.wireless_focus.is_none());
+        h.t+=5.0;
+        for _ in 0..60 {frame(&mut h,None,vec![egui::Event::PointerGone]);}
+        assert!(h.ctx.read_response(id).is_none(),"关闭后应移除原有热点：{dock:?}");
+        click(&mut h,shortcut);
+        assert_ne!(h.app.page(),BLUETOOTH_PAGE);
+        assert!(!h.app.settings_open);
+    }
+}
+
+#[test]
+fn wireless_page_gear_opens_its_settings() {
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=H::new();
+    h.app.show_page(crate::app::BLUETOOTH_PAGE);
+    h.hover(H::local(300.0,60.0),1.0);
+    h.click(H::local(394.0,18.0));
+    assert!(h.app.settings_open);
+    assert_eq!(h.app.settings_tab,crate::extras::SETTINGS_TAB_WIRELESS);
 }
 
 #[test]
@@ -3471,13 +3535,13 @@ fn mail_code_only_notifications_filter_new_mail_across_accounts() {
             html: String::new().into(), summary: String::new().into(), links: vec![], meeting: None,
         };
         let alerts = h.app.alerts.len();
-        let bell_until = h.app.notification_bell_until;
+        let bell_at = h.app.mail.bell_at;
         h.app.t += 10.0;
         h.app.mail_event(Event::Mail { item, new });
         assert_eq!(h.app.mail.recent.len(), index + 1);
         assert_eq!(h.app.mail.recent[0].subject, subject);
         assert_eq!(h.app.alerts.len() - alerts, usize::from(should_alert), "{subject}");
-        assert_eq!(h.app.notification_bell_until > bell_until, should_alert, "{subject}");
+        assert_eq!(h.app.mail.bell_at != bell_at, should_alert, "{subject}");
     }
     h.app.settings.save();
     assert!(crate::model::Settings::load().mail_code_only_notifications);
@@ -3506,7 +3570,7 @@ fn mail_page_shows_code_and_copies_on_click() {
         },
         new: true,
     });
-    assert!(h.app.notification_bell_until > 0.0, "新邮件应点亮铃铛");
+    assert!(h.app.notification_bell().is_some(), "新邮件应点亮铃铛");
     assert!(h.app.alerts.iter().any(|a|a.title=="新邮件"&&a.page==5),"新邮件应进入通知队列，不能只有收起时才可见的铃铛");
     h.app.show_page(5);
     h.hover(Pos2::new(WIN_W / 2.0, 12.0), 0.6);
@@ -4605,12 +4669,36 @@ fn volume_hud_drag_maps_pointer_to_percentage(){
 }
 
 #[test]
+fn wireless_receiver_presence_updates_without_bluetooth_notices(){
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=H::new();
+    h.app.settings.visible_pages[crate::app::BLUETOOTH_PAGE]=true;
+    h.app.settings.bluetooth_notifications=true;
+    h.frame(vec![]);
+    let receiver=crate::bt::Device{id:"usb:receiver".into(),name:"USB 接收器".into(),kind:crate::bt::DeviceKind::Receiver24G,..Default::default()};
+    h.receivers.push(receiver.clone());
+    h.frame(vec![]);
+    assert_eq!(h.app.wireless_devices,[receiver.clone()]);
+    assert!(h.app.notice.is_none()&&h.app.alerts.is_empty());
+
+    h.receivers.clear();
+    h.frame(vec![]);
+    assert!(h.app.wireless_devices.is_empty());
+    assert!(h.app.notice.is_none()&&h.app.alerts.is_empty());
+
+    h.app.settings.visible_pages[crate::app::BLUETOOTH_PAGE]=false;
+    h.receivers.push(receiver);
+    h.frame(vec![]);
+    assert!(h.app.wireless_devices.is_empty());
+}
+
+#[test]
 fn bluetooth_connection_soon_after_initial_scan_is_not_suppressed(){
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     let mut h=H::new();
     h.frame(vec![]);
     h.t=2.0;
-    h.bt=vec![crate::bt::Device{id:"shokz".into(),name:"Shokz".into(),battery:Some(100),kind:crate::bt::DeviceKind::Bone}];
+    h.bt=vec![crate::bt::Device{id:"shokz".into(),name:"Shokz".into(),battery:Some(100),kind:crate::bt::DeviceKind::Bone,..Default::default()}];
     h.frame(vec![]);
     assert_eq!(h.app.notice.as_ref().map(|a|a.title.as_str()),Some("蓝牙设备"));
 }
@@ -4622,7 +4710,7 @@ fn bluetooth_audio_connection_takes_precedence_over_volume_notice(){
         let mut h=H::new();h.frame(vec![]);
         h.app.alert("系统音量","音量 80%",5,false);
         if volume_already_visible {h.frame(vec![]);}
-        h.bt=vec![crate::bt::Device{id:"audio".into(),name:"Shokz".into(),battery:Some(80),kind:crate::bt::DeviceKind::Bone}];
+        h.bt=vec![crate::bt::Device{id:"audio".into(),name:"Shokz".into(),battery:Some(80),kind:crate::bt::DeviceKind::Bone,..Default::default()}];
         h.frame(vec![]);
         assert_eq!(h.app.notice.as_ref().map(|a|a.title.as_str()),Some("蓝牙设备"),"耳机连接应优先于音量提示");
         assert!(!h.app.alerts.iter().any(|a|a.title=="系统音量"),"切换耳机产生的音量提示不应延后补弹");
@@ -4637,7 +4725,7 @@ fn bluetooth_keyboard_connection_keeps_unrelated_volume_notice(){
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     let mut h=H::new();h.frame(vec![]);
     h.app.alert("系统音量","音量 60%",5,false);h.frame(vec![]);
-    h.bt=vec![crate::bt::Device{id:"keyboard".into(),name:"Keyboard".into(),battery:None,kind:crate::bt::DeviceKind::Keyboard}];h.frame(vec![]);
+    h.bt=vec![crate::bt::Device{id:"keyboard".into(),name:"Keyboard".into(),battery:None,kind:crate::bt::DeviceKind::Keyboard,..Default::default()}];h.frame(vec![]);
     assert_eq!(h.app.notice.as_ref().map(|a|a.title.as_str()),Some("系统音量"));
     assert!(h.app.alerts.iter().any(|a|a.title=="蓝牙设备"));
 }
@@ -4646,8 +4734,8 @@ fn bluetooth_keyboard_connection_keeps_unrelated_volume_notice(){
 fn bluetooth_notices_track_multiple_devices_independently(){
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     let mut h=H::new();
-    let audio=crate::bt::Device{id:"audio".into(),name:"Shokz".into(),battery:None,kind:crate::bt::DeviceKind::Bone};
-    let keyboard=crate::bt::Device{id:"keyboard".into(),name:"QingLong 87".into(),battery:None,kind:crate::bt::DeviceKind::Keyboard};
+    let audio=crate::bt::Device{id:"audio".into(),name:"Shokz".into(),battery:None,kind:crate::bt::DeviceKind::Bone,..Default::default()};
+    let keyboard=crate::bt::Device{id:"keyboard".into(),name:"QingLong 87".into(),battery:None,kind:crate::bt::DeviceKind::Keyboard,..Default::default()};
     h.bt=vec![audio.clone()];h.frame(vec![]);
     h.bt.push(keyboard.clone());h.t=3.0;h.frame(vec![]);
     let notice=h.app.notice.as_ref().unwrap();
@@ -5029,14 +5117,14 @@ fn hud_shrinks_smoothly_after_expiration(){
 fn bluetooth_badge_follows_connect_and_disconnect(){
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();
     // 首次扫描已连接的设备，记录但不作为新连接提醒。
-    h.bt=vec![crate::bt::Device{id:"buds".into(),name:"Buds".into(),battery:Some(80),kind:crate::bt::DeviceKind::Earbuds}];h.frame(vec![]);
+    h.bt=vec![crate::bt::Device{id:"buds".into(),name:"Buds".into(),battery:Some(80),kind:crate::bt::DeviceKind::Earbuds,..Default::default()}];h.frame(vec![]);
     assert!(h.app.notice.is_none());
     assert_eq!(h.app.bt_shown.first().map(|d|d.name.as_str()),Some("Buds"));
     // 之后断开、再连上，各弹一条 HUD 通知。
     h.t=20.0;h.bt.clear();h.frame(vec![]);
     assert_eq!(h.app.notice.as_ref().map(|a|a.body.as_str()),Some("Buds · 已断开"));
     assert!(h.app.bt_shown.is_empty());
-    h.t=30.0;h.bt=vec![crate::bt::Device{id:"buds".into(),name:"Buds".into(),battery:Some(80),kind:crate::bt::DeviceKind::Earbuds}];h.frame(vec![]);
+    h.t=30.0;h.bt=vec![crate::bt::Device{id:"buds".into(),name:"Buds".into(),battery:Some(80),kind:crate::bt::DeviceKind::Earbuds,..Default::default()}];h.frame(vec![]);
     assert_eq!(h.app.notice.as_ref().map(|a|a.body.as_str()),Some("Buds · 电量 80%"));
     // 没有设备时不留残留状态。
     h.t=40.0;h.bt.clear();h.frame(vec![]);
@@ -5934,7 +6022,7 @@ fn ui_alignment_layout_gallery(){
         if name=="focus-running"{h.app.show_page(1);h.app.pomo.running=true;h.app.pomo.remaining=1283.0;}
         if let Some(kind)=name.strip_prefix("bt-"){
             let kind=match kind{"headphones"=>crate::bt::DeviceKind::Headphones,"keyboard"=>crate::bt::DeviceKind::Keyboard,"mouse"=>crate::bt::DeviceKind::Mouse,"gamepad"=>crate::bt::DeviceKind::Gamepad,"phone"=>crate::bt::DeviceKind::Phone,"speaker"=>crate::bt::DeviceKind::Speaker,_=>crate::bt::DeviceKind::Other};
-            h.app.bluetooth_alert(&crate::bt::Device{id:"preview".into(),name:"我的蓝牙设备 · 超长设备名称与连接状态".into(),battery:Some(100),kind},true);
+            h.app.bluetooth_alert(&crate::bt::Device{id:"preview".into(),name:"我的蓝牙设备 · 超长设备名称与连接状态".into(),battery:Some(100),kind,..Default::default()},true);
         }
         match name{"volume"=>{h.app.volume_ui=Some((64,false));h.app.alert("系统音量","64%",0,false);},"caps"=>h.app.alert("大写锁定","已开启",0,false),"language"=>h.app.alert("键盘输入语言","中文（简体，中国）",0,false),"network"=>h.app.alert("网络连接","Wi-Fi · 网络已连接",0,false),"power"=>h.app.alert("电源已连接","当前电量 76%",0,false),"meeting"=>h.app.meeting_alert(crate::mail::Meeting{ all_day:false,title:"产品方案评审与下阶段开发排期确认".into(),start:chrono::Local::now().timestamp()+600,end:None,at:"11-01 10:00".into(),uid:"preview".into()},"邮件 · product-and-design-team@company-example.com".into(),5),_=>{}}
         if name=="meeting-dingtalk" || name=="meeting-wecom" {
@@ -6104,35 +6192,139 @@ fn weather_resident_settings_preserve_old_orders_and_the_status_switch(){
     }
 }
 
+fn draw_page_management(h:&mut H,events:Vec<egui::Event>){
+    let output=std::sync::Arc::new(Mutex::new(None));let capture=output.clone();h.t+=0.02;let time=h.t;
+    egui::Context::set_immediate_viewport_renderer(move|ctx,mut viewport|{
+        let id=viewport.ids.this;
+        let raw=egui::RawInput{viewport_id:id,screen_rect:Some(Rect::from_min_size(Pos2::ZERO,egui::vec2(690.0,1500.0))),time:Some(time),events:events.clone(),viewports:std::iter::once((id,egui::ViewportInfo::default())).collect(),..Default::default()};
+        *capture.lock().unwrap()=Some(ctx.run(raw,|ctx|(viewport.viewport_ui_cb)(ctx)));
+    });
+    let _=h.ctx.run(Default::default(),|ctx|h.app.settings_ui(ctx,false));
+    h.shapes=output.lock().unwrap().take().unwrap().shapes;
+}
+
 #[test]
 fn weather_status_switch_controls_the_badge_and_keeps_the_page_available(){
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
-    fn draw(h:&mut H,events:Vec<egui::Event>){
-        let output=std::sync::Arc::new(Mutex::new(None));let capture=output.clone();h.t+=0.02;let time=h.t;
-        egui::Context::set_immediate_viewport_renderer(move|ctx,mut viewport|{
-            let id=viewport.ids.this;
-            let raw=egui::RawInput{viewport_id:id,screen_rect:Some(Rect::from_min_size(Pos2::ZERO,egui::vec2(690.0,1000.0))),time:Some(time),events:events.clone(),viewports:std::iter::once((id,egui::ViewportInfo::default())).collect(),..Default::default()};
-            *capture.lock().unwrap()=Some(ctx.run(raw,|ctx|(viewport.viewport_ui_cb)(ctx)));
-        });
-        let _=h.ctx.run(Default::default(),|ctx|h.app.settings_ui(ctx,false));
-        h.shapes=output.lock().unwrap().take().unwrap().shapes;
-    }
     for theme in [crate::settings_theme::SettingsTheme::Dark,crate::settings_theme::SettingsTheme::Light] {
         let mut h=H::new();h.app.settings.settings_theme=theme;h.app.settings_tab=10;h.app.open_settings();h.ctx.set_embed_viewports(false);
         h.app.weather.snapshot=Some(crate::weather::Snapshot{temp:9.0,..Default::default()});
-        for _ in 0..3 {draw(&mut h,vec![]);}
+        for _ in 0..3 {draw_page_management(&mut h,vec![]);}
         let text_rect=|h:&H,label:&str|h.shapes.iter().find_map(|s|match &s.shape{egui::Shape::Text(t) if t.galley.text()==label=>Some(t.visual_bounding_rect()),_=>None}).unwrap();
         let heading=text_rect(&h,"岛上显示");let bottom=text_rect(&h,"功能页面").top();
         let title=h.shapes.iter().find_map(|s|match &s.shape{egui::Shape::Text(t) if t.galley.text()=="天气"&&t.pos.x>=heading.left()&&t.pos.y>heading.bottom()&&t.pos.y<bottom=>Some(t.visual_bounding_rect()),_=>None}).expect("岛上显示应有独立的天气开关");
         let point=h.shapes.iter().find_map(|s|match &s.shape{egui::Shape::Rect(r) if (r.rect.width()-34.0).abs()<0.01&&(r.rect.height()-20.0).abs()<0.01&&r.rect.center().y>title.top()&&r.rect.center().y<title.bottom()+24.0=>Some(r.rect.center()),_=>None}).unwrap();
         for expected in [false,true] {
-            for pressed in [true,false] {draw(&mut h,vec![egui::Event::PointerMoved(point),egui::Event::PointerButton{pos:point,button:egui::PointerButton::Primary,pressed,modifiers:Default::default()}]);}
+            for pressed in [true,false] {draw_page_management(&mut h,vec![egui::Event::PointerMoved(point),egui::Event::PointerButton{pos:point,button:egui::PointerButton::Primary,pressed,modifiers:Default::default()}]);}
             assert_eq!(h.app.weather_pill().is_some(),expected);
             assert_eq!(h.app.side_items().contains(&crate::side_dock::SideItem::Weather),expected);
             assert!(h.app.module_on(8),"关闭状态组件后天气页仍可使用");
             h.app.settings=crate::model::Settings::load();assert_eq!(h.app.weather_pill().is_some(),expected,"天气开关应自动保存");
         }
     }
+}
+
+#[test]
+fn page_management_resident_switches_follow_their_modules(){
+    use crate::app::{BLUETOOTH_PAGE,PAGE_NAMES,QUOTA_PAGE,WEATHER_PAGE};
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=H::new();
+    h.app.settings.settings_theme=crate::settings_theme::SettingsTheme::Dark;
+    h.app.settings_tab=10;h.app.open_settings();h.ctx.set_embed_viewports(false);
+    h.app.settings.show_clock=true;
+    h.app.settings.show_battery=true;
+    h.app.settings.show_weather=true;
+    h.app.settings.visible_pages=[true;11];
+    h.app.settings.show_bluetooth=false;
+    h.app.quota.config.compact=true;
+    h.app.quota.config.save();
+    for _ in 0..3 {draw_page_management(&mut h,vec![]);}
+
+    fn text_rect(h:&H,label:&str,accept:impl Fn(Rect)->bool)->Rect{
+        h.shapes.iter().find_map(|s|match &s.shape{
+            egui::Shape::Text(t) if t.galley.text()==label=>{
+                let rect=t.visual_bounding_rect();
+                (s.clip_rect.contains(rect.center())&&accept(rect)).then_some(rect)
+            }
+            _=>None,
+        }).unwrap_or_else(||panic!("找不到 {label}"))
+    }
+    let switch=|h:&H,label:&str,module:bool|{
+        let heading=text_rect(h,"功能页面",|_|true);
+        let title=text_rect(h,label,|rect|{
+            rect.left()>=heading.left()-2.0 && (rect.center().y>heading.center().y)==module
+        });
+        h.shapes.iter().find_map(|s|match &s.shape{
+            egui::Shape::Rect(r) if r.rect.size()==egui::vec2(34.0,20.0)
+                && r.rect.center().y>title.top() && r.rect.center().y<title.bottom()+24.0
+                && s.clip_rect.contains(r.rect.center())=>Some((r.rect,r.fill)),
+            _=>None,
+        }).unwrap_or_else(||panic!("找不到 {label} 开关"))
+    };
+    let click=|h:&mut H,pos:Pos2|{
+        for pressed in [true,false] {
+            draw_page_management(h,vec![egui::Event::PointerMoved(pos),egui::Event::PointerButton{pos,button:egui::PointerButton::Primary,pressed,modifiers:Default::default()}]);
+        }
+    };
+    let selected=|h:&H,rect:Rect|{
+        h.shapes.iter().find_map(|s|match &s.shape{
+            egui::Shape::Circle(c) if c.radius==7.0&&c.center.y==rect.center().y&&rect.contains(c.center)
+                =>Some(c.center.x>rect.center().x),
+            _=>None,
+        }).expect("找不到开关圆点")
+    };
+
+    // 逐项使用页面管理的开关，检查退出当前页面、保存以及重新进入。
+    for (page,name) in PAGE_NAMES.iter().enumerate() {
+        h.app.show_page(page);
+        draw_page_management(&mut h,vec![]);
+        let point=switch(&h,name,true).0.center();
+        click(&mut h,point);
+        assert!(!h.app.module_on(page),"{name} 应可关闭");
+        assert_ne!(h.app.page(),page,"关闭 {name} 时应退出当前页");
+        assert!(!crate::model::Settings::load().visible_pages[page]);
+        click(&mut h,point);
+        assert!(h.app.module_on(page),"{name} 应可重新开启");
+        assert!(crate::model::Settings::load().visible_pages[page]);
+        h.app.show_page(page);
+        assert_eq!(h.app.page(),page,"重新开启后应能进入 {name}");
+    }
+
+    let residents=[(WEATHER_PAGE,"天气",true),(BLUETOOTH_PAGE,"无线设备电量",false),(QUOTA_PAGE,"AI 额度",true)];
+    draw_page_management(&mut h,vec![]);
+    let active_fills=residents.map(|(_,label,_)|switch(&h,label,false).1);
+    for (page,_,_) in residents {
+        let point=switch(&h,PAGE_NAMES[page],true).0.center();
+        click(&mut h,point);
+        assert!(!h.app.module_on(page));
+    }
+    for ((_,label,preferred),active_fill) in residents.into_iter().zip(active_fills) {
+        let (rect,fill)=switch(&h,label,false);
+        assert_eq!(selected(&h,rect),preferred,"{label} 功能关闭后应保留开关圆点位置");
+        assert_eq!(fill,egui::Visuals::dark().gray_out(active_fill),"{label} 应按原轨道颜色淡化");
+        click(&mut h,rect.center());
+        assert_eq!(selected(&h,switch(&h,label,false).0),preferred,"{label} 置灰后应无法切换");
+    }
+    let saved=crate::model::Settings::load();
+    assert!(saved.show_weather && !saved.show_bluetooth && crate::quota::Config::load().compact);
+    assert!(h.app.settings.show_weather && !h.app.settings.show_bluetooth && h.app.quota.config.compact);
+    for label in ["时间","电量"] {
+        let rect=switch(&h,label,false).0;
+        click(&mut h,rect.center());
+    }
+    assert!(!h.app.settings.show_clock && !h.app.settings.show_battery,"系统组件应独立于功能页");
+
+    for (page,label,preferred) in residents {
+        let point=switch(&h,PAGE_NAMES[page],true).0.center();
+        click(&mut h,point);
+        assert!(h.app.module_on(page));
+        draw_page_management(&mut h,vec![]);
+        let rect=switch(&h,label,false).0;
+        assert_eq!(selected(&h,rect),preferred,"{label} 重新开启功能后应恢复原有常驻偏好");
+        click(&mut h,rect.center());
+    }
+    let saved=crate::model::Settings::load();
+    assert!(!saved.show_weather && saved.show_bluetooth && !crate::quota::Config::load().compact);
 }
 
 #[test]
@@ -6304,13 +6496,13 @@ fn calendar_sync_result_does_not_enqueue_another_sync() {
 fn page_order_persists_and_controls_navigation() {
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     let mut h=H::new();
-    h.app.settings.page_order=[5,2,0,1,3,4,6,7,8,9];
+    h.app.settings.page_order=[5,2,0,1,3,4,6,7,8,9,10];
     h.app.settings.save();
     let settings=crate::model::Settings::load();
-    assert_eq!(settings.page_order,[5,2,0,1,3,4,6,7,8,9]);
+    assert_eq!(settings.page_order,[5,2,0,1,3,4,6,7,8,9,10]);
     let restarted=App::new(&h.ctx,Options{fetch_lyrics:false,pet_idle:1e9});
     assert_eq!(restarted.page(),5);
-    for page in [1,3,4,6,7,8] {h.app.set_page_visible(page,false);}
+    for page in [1,3,4,6,7,8,9,10] {h.app.set_page_visible(page,false);}
     h.hover(Pos2::new(WIN_W/2.0,12.0),1.0);
     for expected in [5,2,0] {
         h.click(H::local(398.0,68.0));
@@ -6323,7 +6515,7 @@ fn page_order_persists_and_controls_navigation() {
     assert_eq!(h.app.page,5);
     for invalid in ["0,0,1,2,3,4,5,6","8,1,2,3,4,5,6,7","0,1","invalid"] {
         std::fs::write(crate::model::config_dir().join("settings.txt"),format!("page_order={invalid}\n")).unwrap();
-        assert_eq!(crate::model::Settings::load().page_order,[0,1,2,3,4,5,6,7,8,9]);
+        assert_eq!(crate::model::Settings::load().page_order,[0,1,2,3,4,5,6,7,8,9,10]);
     }
 }
 
@@ -6350,9 +6542,9 @@ fn page_order_drag_applies_on_release_and_saves() {
     draw(&mut h,vec![egui::Event::PointerMoved(from),button(from,true)]);
     draw(&mut h,vec![egui::Event::PointerMoved(from+egui::vec2(0.0,10.0))]);
     draw(&mut h,vec![egui::Event::PointerMoved(to)]);
-    assert_eq!(h.app.settings.page_order,[0,1,2,3,4,5,6,7,8,9]);
+    assert_eq!(h.app.settings.page_order,[0,1,2,3,4,5,6,7,8,9,10]);
     draw(&mut h,vec![button(to,false)]);
-    assert_eq!(h.app.settings.page_order,[1,2,0,3,4,5,6,7,8,9]);
+    assert_eq!(h.app.settings.page_order,[1,2,0,3,4,5,6,7,8,9,10]);
     assert_eq!(crate::model::Settings::load().page_order,h.app.settings.page_order);
 }
 
@@ -7215,7 +7407,7 @@ fn mailbox_compact_third_row_stays_visible_below_the_toolbar(){
 fn bluetooth_switch_clears_notices_and_restarts_with_fresh_baseline(){
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();
     h.hover(Pos2::new(WIN_W/2.0,12.0),1.0);
-    let device=crate::bt::Device{id:"keyboard".into(),name:"Keyboard".into(),battery:None,kind:crate::bt::DeviceKind::Keyboard};
+    let device=crate::bt::Device{id:"keyboard".into(),name:"Keyboard".into(),battery:None,kind:crate::bt::DeviceKind::Keyboard,..Default::default()};
     h.app.bluetooth_alert(&device,true);h.frame(vec![]);
     h.app.bluetooth_alert(&device,false);
     h.app.settings.bluetooth_notifications=false;h.frame(vec![]);
@@ -7699,7 +7891,7 @@ fn side_dock_stacks_ai_quota_and_opens_the_account(){
     let total=h.app.side_bar_len()-14.0;
     let mut y=top+(h.app.h.pos-total)/2.0;
     for item in h.app.side_items() {
-        let height=match item {crate::side_dock::SideItem::Quota(i,hh) if h.app.quota.config.accounts[i].id==wb=>{y+=hh/2.0;break;},crate::side_dock::SideItem::Quota(_,hh)=>hh,crate::side_dock::SideItem::Clock=>32.0,crate::side_dock::SideItem::Weather=>40.0,crate::side_dock::SideItem::Battery=>20.0,crate::side_dock::SideItem::Performance(hh)=>hh,crate::side_dock::SideItem::Music=>18.0,crate::side_dock::SideItem::Focus|crate::side_dock::SideItem::Bell=>22.0};
+        let height=match item {crate::side_dock::SideItem::Quota(i,hh) if h.app.quota.config.accounts[i].id==wb=>{y+=hh/2.0;break;},crate::side_dock::SideItem::Quota(_,hh)=>hh,crate::side_dock::SideItem::Clock=>32.0,crate::side_dock::SideItem::Weather=>40.0,crate::side_dock::SideItem::Wireless=>37.0,crate::side_dock::SideItem::Battery=>20.0,crate::side_dock::SideItem::Performance(hh)=>hh,crate::side_dock::SideItem::Music=>18.0,crate::side_dock::SideItem::Focus|crate::side_dock::SideItem::Bell=>22.0};
         y+=height;
     }
     let click=Pos2::new(18.0,y);
@@ -7811,7 +8003,7 @@ fn side_frame(h:&mut H,cursor:Option<Pos2>)->crate::app::FrameOut{
 fn side_frame_events(h:&mut H,cursor:Option<Pos2>,events:Vec<egui::Event>)->crate::app::FrameOut{
     let (w,hgt)=(crate::side_dock::SIDE_W,crate::side_dock::SIDE_H);
     h.t+=1.0/60.0;
-    let env=Env{t:h.t,clock:"09:41:00".into(),today:"2026-11-04".into(),date:"11月4日 周三".into(),cursor,bt_ready:true,battery:Some(76),..Default::default()};
+    let env=Env{t:h.t,clock:"09:41:00".into(),today:"2026-11-04".into(),date:"11月4日 周三".into(),cursor,bt:h.bt.clone(),bt_ready:true,battery:Some(76),..Default::default()};
     let raw=egui::RawInput{screen_rect:Some(Rect::from_min_size(Pos2::ZERO,Vec2::new(w,hgt))),time:Some(h.t),focused:true,
         events,..Default::default()};
     let app=&mut h.app;let mut out=None;
@@ -8044,7 +8236,7 @@ fn messenger_notice_status_gallery(){
                 7=>{h.app.show_page(4);h.app.messenger_unavailable("QQ 账号已退出");},
                 8=>h.app.alert("大写锁定","已开启",5,false),
                 9=>h.app.alert("系统音量","音量 60%",5,false),
-                10=>h.app.bluetooth_alert(&crate::bt::Device{id:"preview".into(),name:"耳机".into(),battery:Some(80),kind:crate::bt::DeviceKind::Headphones},true),
+                10=>h.app.bluetooth_alert(&crate::bt::Device{id:"preview".into(),name:"耳机".into(),battery:Some(80),kind:crate::bt::DeviceKind::Headphones,..Default::default()},true),
                 11=>h.app.alert("电量偏低","剩余 15% · 请连接电源",5,false),
                 12=>{
                     let start=chrono::Local::now()+chrono::Duration::minutes(10);
@@ -9353,21 +9545,22 @@ fn background_services_follow_the_module_switch(){
     assert!(h.app.mail_active() && h.app.clipboard_active() && h.app.quota_active());
     for page in [MAIL_PAGE,QUOTA_PAGE,SHELF_PAGE] {h.app.set_page_visible(page,false);}
     assert!(!h.app.mail_active() && !h.app.clipboard_active() && !h.app.quota_active(),"页面开关就是模块总开关");
-    h.frame(vec![]);
-    assert!(!h.app.clipboard.is_enabled(),"置物架关闭后不再记录剪贴板");
+    assert!(!h.app.clipboard.is_enabled(),"置物架关闭后立即停止记录剪贴板");
     for page in [MAIL_PAGE,QUOTA_PAGE,SHELF_PAGE] {h.app.set_page_visible(page,true);}
+    assert!(h.app.clipboard.is_enabled(),"重开时恢复原来的剪贴板记录偏好");
     h.app.settings.mail_enabled=false;h.app.settings.clipboard_history=false;h.app.quota.config.enabled=false;
     assert!(!h.app.mail_active() && !h.app.clipboard_active() && !h.app.quota_active(),"模块内的开关仍然有效");
 }
 
 #[test]
 fn every_module_settings_tab_maps_to_its_page(){
-    let titles=["通用","音乐","专注","健康","待办","置物","消息提醒","邮箱","日程","关于","页面管理","AI 额度","天气","外观","位置","系统性能"];
+    let titles=["通用","音乐","专注","健康","待办","置物","消息提醒","邮箱","日程","关于","页面管理","AI 额度","天气","外观","位置","系统性能","无线设备"];
     let mut pages:Vec<_>=(0..titles.len()).filter_map(crate::extras::settings_tab_module).collect();
     for tab in 0..titles.len() {
         if let Some(page)=crate::extras::settings_tab_module(tab) {assert!(crate::app::PAGE_NAMES[page].chars().next()==titles[tab].chars().next(),"{} ↔ {}",titles[tab],crate::app::PAGE_NAMES[page]);}
     }
     pages.sort();assert_eq!(pages,(0..crate::app::PAGE_NAMES.len()).collect::<Vec<_>>(),"每个功能页面各有一个设置分页");
+    assert_eq!(crate::app::PAGE_SETTINGS_TABS[crate::app::BLUETOOTH_PAGE],crate::extras::SETTINGS_TAB_WIRELESS);
 }
 
 
@@ -9519,3 +9712,12 @@ fn performance_custom_selection_controls_both_docks_and_persists() {
         assert_eq!((loaded.performance_bar,loaded.performance_metrics),(BarStyle::Custom,mask));
     }
 }
+#[path="bluetooth_ui_tests.rs"]
+mod bluetooth_ui_tests;
+
+#[path="module_settings_tests.rs"]
+mod module_settings_tests;
+#[path="module_mail_tests.rs"]
+mod module_mail_tests;
+#[path="module_reminder_tests.rs"]
+mod module_reminder_tests;

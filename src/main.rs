@@ -77,6 +77,9 @@ struct Shell {
     bt_rx: Option<daozai::bt::Service>,
     bt: Vec<daozai::bt::Device>,
     bt_ready: bool,
+    #[cfg(windows)]
+    receiver_rx: Option<daozai::bt::Service>,
+    receivers: Vec<daozai::bt::Device>,
     volume_quiet: PollClock,
     /// v0.5.5：邮件收信服务（工作线程），以及上次同步给它的账号/开关快照。
     /// 邮箱模块开启时才存在；关闭后收信与整理线程随之退出。
@@ -223,6 +226,9 @@ impl Shell {
             bt_rx: None,
             bt: Vec::new(),
             bt_ready: false,
+            #[cfg(windows)]
+            receiver_rx: None,
+            receivers: Vec::new(),
             volume_quiet: PollClock::default(),
             mail: None,
             mail_sig: None,
@@ -332,6 +338,7 @@ impl Shell {
             volume: self.system_state.volume,
             bt: self.bt.clone(),
             bt_ready: self.bt_ready,
+            receivers: self.receivers.clone(),
             screen,
             backdrop,
             glass_blur,
@@ -358,13 +365,19 @@ impl eframe::App for Shell {
             daozai::resources::GALLEYS.store(ctx.fonts(|fonts|fonts.num_galleys_in_cache()),std::sync::atomic::Ordering::Relaxed);
             self.resource_at=PollClock::now();
         }
+        let music_on=self.app.module_on(app::MUSIC_PAGE);
         let guarded=daozai::resources::GUARD.tripped();
-        if guarded && !self.guard_notified {
+        if music_on && guarded && !self.guard_notified {
             // 资源保护熔断：停止音乐会话轮询（含封面、网易云日志）与歌词查询，保住用户电脑，重启后恢复。
             self.guard_notified=true;self.app.opts.fetch_lyrics=false;
             self.app.alert("岛仔已暂停音乐功能","检测到资源占用异常，已暂停读取音乐信息和歌词。重启岛仔即可恢复；诊断记录在数据目录的 diagnostics 文件夹。",0,false);
         }
-        self.media_enabled.store(self.app.settings.visible_pages[0] && !guarded,std::sync::atomic::Ordering::Relaxed);
+        self.media_enabled.store(music_on && !guarded,std::sync::atomic::Ordering::Relaxed);
+        if !music_on {
+            self.seek_rx=None;
+            self.music_volume_rx=None;
+            self.media_fast_until=None;
+        }
         if self.media_fast_until.is_some_and(|until|Instant::now()>=until){self.media_fast_until=None;}
         self.media_enabled.set_interval(if self.media_fast_until.is_some(){smtc::POLL_FAST}else{self.app.media_poll_interval()});
         // 设置里改了岛体大小：下一帧起主窗口按新倍率栅格化，定位逻辑随像素比变化同步调整画布。
@@ -458,7 +471,8 @@ impl eframe::App for Shell {
             } else {
                 self.backdrop=None;
             }
-            if self.app.settings.bluetooth_notifications {
+            let wireless_on=self.app.module_on(app::BLUETOOTH_PAGE);
+            if self.app.settings.bluetooth_notifications || wireless_on {
                 if self.bt_rx.is_none() {self.bt_rx=Some(daozai::bt::spawn());}
             } else {
                 self.bt_rx=None;
@@ -467,6 +481,16 @@ impl eframe::App for Shell {
             }
             if let Some(service)=&self.bt_rx {
                 while let Ok(found)=service.rx.try_recv(){ self.bt=found; self.bt_ready=true; }
+            }
+            if wireless_on {
+                let service=self.receiver_rx.get_or_insert_with(||{
+                    let ctx=ctx.clone();
+                    daozai::bt::spawn_receivers(move||ctx.request_repaint())
+                });
+                while let Ok(found)=service.rx.try_recv(){self.receivers=found;}
+            } else {
+                self.receiver_rx=None;
+                self.receivers.clear();
             }
             let previous_pending=self.app.pending_messengers.clone();
             for event in self.messengers.poll_taskbar(ctx,&self.app.settings){match event{
@@ -669,6 +693,7 @@ impl eframe::App for Shell {
         for cmd in out.cmds {
             match cmd {
                 Cmd::Media(t) => {
+                    if !self.app.module_on(app::MUSIC_PAGE) {continue;}
                     self.media_fast_until=Some(Instant::now()+Duration::from_secs(3));self.media_enabled.set_interval(smtc::POLL_FAST);
                     let source=self.media.lock().map(|media|media.source.clone()).unwrap_or_default();
                     let message=if source.eq_ignore_ascii_case("cloudmusic.exe"){"网易云暂未适配进度跳转，请在客户端调整"}
@@ -681,6 +706,7 @@ impl eframe::App for Shell {
                     }
                 }
                 Cmd::MusicVolume(command,source)=>{
+                    if !self.app.module_on(app::MUSIC_PAGE) {continue;}
                     self.media_fast_until=Some(Instant::now()+Duration::from_secs(3));self.media_enabled.set_interval(smtc::POLL_FAST);
                     if self.media_control.is_none(){self.media_control=smtc::ControlWorker::start(ctx.clone());}
                     match self.media_control.as_ref().ok_or(()).and_then(|worker|worker.submit(command,source.clone())){

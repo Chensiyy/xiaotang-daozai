@@ -16,7 +16,8 @@ pub(crate) const PET: usize = 9;
 /// 天气徽标的基础槽宽；温度文字更长时由 `widen` 补足。
 pub(crate) const WEATHER_WIDTH: f32 = 38.0;
 pub(crate) const PERFORMANCE: usize = 10;
-const WIDTHS: [f32; 11] = [44.0,20.0,27.0,27.0,27.0,WEATHER_WIDTH,14.0,crate::focus_bar::WIDTH,20.0,32.0,0.0];
+pub(crate) const BLUETOOTH:usize=11;
+const WIDTHS: [f32; 12] = [44.0,20.0,27.0,27.0,27.0,WEATHER_WIDTH,14.0,crate::focus_bar::WIDTH,20.0,32.0,0.0,0.0];
 
 pub(crate) const DEFAULT_ORDER: [usize;8]=[BATTERY,PET,CLOCK,WEATHER,QUOTA,MUSIC,FOCUS,PERFORMANCE];
 pub(crate) fn valid_order(order:&[usize])->bool {
@@ -80,6 +81,10 @@ impl Layout {
         self.width+=extra;
         self.widths[PERFORMANCE]=width;
         self.x[PERFORMANCE]=Some(self.width/2.0-16.0-width/2.0);
+    }
+    pub fn append_bluetooth(&mut self,width:f32){
+        let extra=width+12.0;for x in self.x.iter_mut().flatten(){*x-=extra/2.0;}
+        self.width+=extra;self.widths[BLUETOOTH]=width;self.x[BLUETOOTH]=Some(self.width/2.0-16.0-width/2.0);
     }
     pub fn quota_slots(&self)->impl Iterator<Item=usize> { (0..self.quotas).map(quota_slot) }
     /// 把某个槽加宽 extra：其余槽对称让位并记入总宽。点数文字、时段时钟、天气温度共用。
@@ -162,6 +167,18 @@ impl Motion {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn bluetooth_slot_keeps_quotas_and_device_chips_separate(){
+        for quotas in 0..=8 {
+            let mut layout=Layout::new(true,quotas,true,false,false,true,true);
+            layout.append_bluetooth(102.0);
+            let mut boxes:Vec<_>=layout.x.iter().enumerate().filter_map(|(i,x)|x.map(|x|(x-layout.widths[i]/2.0,x+layout.widths[i]/2.0))).collect();
+            boxes.sort_by(|a,b|a.0.total_cmp(&b.0));
+            assert!(boxes.windows(2).all(|pair|pair[1].0-pair[0].1>=6.9));
+            assert_eq!(layout.quota_slots().count(),quotas);
+            assert!(boxes.last().unwrap().1<=layout.width/2.0-15.9);
+        }
+    }
     use super::*;
     #[test]
     fn reordered_clock_stays_centered_at_minimum_width(){
