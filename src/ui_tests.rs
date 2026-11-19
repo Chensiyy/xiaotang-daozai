@@ -5964,7 +5964,7 @@ fn page_management_resident_switches_follow_their_modules(){
     h.app.settings.show_clock=true;
     h.app.settings.show_battery=true;
     h.app.settings.show_weather=true;
-    h.app.settings.show_bluetooth=true;
+    h.app.settings.show_bluetooth=false;
     h.app.quota.config.compact=true;
     h.app.quota.config.save();
     for _ in 0..3 {draw_page_management(&mut h,vec![]);}
@@ -6019,39 +6019,40 @@ fn page_management_resident_switches_follow_their_modules(){
         assert_eq!(h.app.page(),page,"重新开启后应能进入 {name}");
     }
 
-    let residents=[(WEATHER_PAGE,"天气"),(BLUETOOTH_PAGE,"无线设备电量"),(QUOTA_PAGE,"AI 额度")];
-    for (page,_) in residents {
+    let residents=[(WEATHER_PAGE,"天气",true),(BLUETOOTH_PAGE,"无线设备电量",false),(QUOTA_PAGE,"AI 额度",true)];
+    for (page,_,_) in residents {
         let point=switch(&h,PAGE_NAMES[page],true).0.center();
         click(&mut h,point);
         assert!(!h.app.module_on(page));
     }
-    for (_,label) in residents {
+    for (_,label,preferred) in residents {
         let (rect,fill)=switch(&h,label,false);
-        assert!(!selected(&h,rect),"{label} 依赖的功能关闭后应显示为关");
+        assert_eq!(selected(&h,rect),preferred,"{label} 功能关闭后应保留开关圆点位置");
         let channels=[fill.r(),fill.g(),fill.b()];
         assert!(channels.iter().max().unwrap()-channels.iter().min().unwrap()<16,"{label} 应显示为灰色");
         click(&mut h,rect.center());
+        assert_eq!(selected(&h,switch(&h,label,false).0),preferred,"{label} 置灰后应无法切换");
     }
     let saved=crate::model::Settings::load();
-    assert!(saved.show_weather && saved.show_bluetooth && crate::quota::Config::load().compact);
-    assert!(h.app.settings.show_weather && h.app.settings.show_bluetooth && h.app.quota.config.compact);
+    assert!(saved.show_weather && !saved.show_bluetooth && crate::quota::Config::load().compact);
+    assert!(h.app.settings.show_weather && !h.app.settings.show_bluetooth && h.app.quota.config.compact);
     for label in ["时间","电量"] {
         let rect=switch(&h,label,false).0;
         click(&mut h,rect.center());
     }
     assert!(!h.app.settings.show_clock && !h.app.settings.show_battery,"系统组件应独立于功能页");
 
-    for (page,label) in residents {
+    for (page,label,preferred) in residents {
         let point=switch(&h,PAGE_NAMES[page],true).0.center();
         click(&mut h,point);
         assert!(h.app.module_on(page));
         draw_page_management(&mut h,vec![]);
         let rect=switch(&h,label,false).0;
-        assert!(selected(&h,rect),"{label} 重新开启功能后应恢复原有常驻偏好");
+        assert_eq!(selected(&h,rect),preferred,"{label} 重新开启功能后应恢复原有常驻偏好");
         click(&mut h,rect.center());
     }
     let saved=crate::model::Settings::load();
-    assert!(!saved.show_weather && !saved.show_bluetooth && !crate::quota::Config::load().compact);
+    assert!(!saved.show_weather && saved.show_bluetooth && !crate::quota::Config::load().compact);
 }
 
 #[test]

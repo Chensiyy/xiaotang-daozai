@@ -1139,13 +1139,15 @@ impl App {
 
 fn switch(ui:&mut egui::Ui,value:&mut bool)->bool {
     let (rect,response)=ui.allocate_exact_size(egui::vec2(34.0,20.0),egui::Sense::click());
-    if response.clicked(){*value=!*value;}
-    let fill=if *value{Color32::from_rgb(48,184,92)}else{settings_color(&ui.ctx().clone(),Color32::from_rgb(82,82,87),Color32::from_rgb(203,207,214))};
+    let enabled=response.enabled();
+    let changed=enabled&&response.clicked();
+    if changed {*value=!*value;}
+    let fill=if enabled&&*value{Color32::from_rgb(48,184,92)}else{settings_color(&ui.ctx().clone(),Color32::from_rgb(82,82,87),Color32::from_rgb(203,207,214))};
     ui.painter().rect_filled(rect,10.0,fill);
     let x=if *value{rect.right()-10.0}else{rect.left()+10.0};
     ui.painter().circle_filled(egui::pos2(x,rect.center().y+0.5),7.5,Color32::from_black_alpha(35));
     ui.painter().circle_filled(egui::pos2(x,rect.center().y),7.0,Color32::WHITE);
-    response.clicked()
+    changed
 }
 /// 设置页版式：标签列宽、开关尺寸、控件与卡片右边缘之间的固定留白。
 pub(crate) const SETTINGS_LABEL_W: f32 = 80.0;
@@ -1171,13 +1173,11 @@ pub(crate) fn setting_row(ui:&mut egui::Ui,title:&str,description:&str,value:&mu
     ui.add_space(2.0);
 }
 
-/// 模块关闭时按关闭状态渲染，保留其常驻偏好。
+/// 模块关闭时禁用常驻开关，圆点仍反映保存的偏好。
 fn resident_setting_row(ui:&mut egui::Ui,title:&str,description:&str,module_on:bool,value:&mut bool){
-    let mut shown=module_on&&*value;
     ui.add_enabled_ui(module_on,|ui|{
-        setting_row(ui,title,if module_on {description}else{"功能页已关闭"},&mut shown);
+        setting_row(ui,title,if module_on {description}else{"功能页已关闭"},value);
     });
-    if module_on {*value=shown;}
 }
 
 /// 设置页统一的分段选择器（灰色底框 + 选中块）。返回值为是否发生了切换。
