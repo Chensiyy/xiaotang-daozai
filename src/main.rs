@@ -72,6 +72,14 @@ struct Shell {
     native: Option<daozai::native::Window>,
     #[cfg(all(windows, feature = "sdk-material"))]
     material: Option<daozai::material::Runtime>,
+    #[cfg(all(windows, feature = "sdk-js", feature = "sdk-material"))]
+    material_debug: bool,
+    #[cfg(all(windows, feature = "sdk-js", feature = "sdk-material"))]
+    material_requested_id: Option<String>,
+    #[cfg(all(windows, feature = "sdk-js", feature = "sdk-material"))]
+    material_source: Option<String>,
+    #[cfg(all(windows, feature = "sdk-js", feature = "sdk-material"))]
+    material_failed: bool,
     #[cfg(windows)]
     tray: Option<daozai::tray::Tray>,
     #[cfg(windows)]
@@ -138,6 +146,11 @@ impl Shell {
 
     #[cfg(windows)]
     fn sync_capture_exclusion(app: &mut App, window: Option<&mut daozai::native::Window>) -> bool {
+        #[cfg(feature = "sdk-material")]
+        if app.material_capture_forced {
+            app.capture_exclusion_request = None;
+            return false;
+        }
         let was_enabled = app.settings.exclude_from_capture;
         let requested = app.capture_exclusion_request.take();
         let desired = requested.unwrap_or(was_enabled);
@@ -165,17 +178,78 @@ impl Shell {
         requested.is_some() || failed
     }
 
+    #[cfg(all(windows, feature = "sdk-material"))]
+    fn restore_capture_preference(app: &mut App, window: Option<&mut daozai::native::Window>) {
+        app.material_capture_forced = false;
+        if let Some(window) = window {
+            window.restore_capture_exclusion(app.settings.exclude_from_capture);
+            app.capture_exclusion_error = window.take_capture_exclusion_error();
+        }
+    }
+
+    #[cfg(all(windows, feature = "sdk-js", feature = "sdk-material"))]
+    fn reconcile_material(&mut self, ctx: &egui::Context, state: Option<&eframe::egui_wgpu::RenderState>) {
+        use daozai::material::{Options, Runtime};
+
+        if self.material_debug { return; }
+        let spec = self.app.material_spec();
+        let id = spec.as_ref().map(|spec| spec.id);
+        let changed = id != self.material_requested_id.as_deref();
+        if changed {
+            self.material_requested_id = id.map(str::to_owned);
+            self.material_failed = false;
+        }
+        // 通用设置的兼容渲染开关在重启时切换后端，期间沿用当前已加载的材质。
+        let Some(spec) = spec.filter(|spec| self.app.settings.render_compat
+            || self.app.material_active_id.as_deref() == Some(spec.id)) else {
+            if self.material.take().is_some() {
+                self.app.material_active_id = None;
+                self.material_source = None;
+                Self::restore_capture_preference(&mut self.app, self.native.as_mut());
+                request_material_restart(&mut self.app, ctx, false);
+            }
+            return;
+        };
+        if self.material_failed { return; }
+        let options = Options::from(&spec);
+        if self.app.material_active_id.as_deref() == Some(spec.id)
+            && self.material_source.as_deref() == Some(spec.source)
+        {
+            if let Some(material) = &mut self.material {
+                material.set_options(options);
+                return;
+            }
+        }
+        let Some((_, state)) = self.native.as_ref().filter(|w| w.material_window().is_some()).zip(state) else {
+            if changed {
+                request_material_restart(&mut self.app, ctx, false);
+            }
+            return;
+        };
+        match Runtime::load(state, spec.source, options) {
+            Ok(runtime) => {
+                self.material_source = Some(spec.source.to_owned());
+                self.app.material_active_id = Some(spec.id.to_owned());
+                self.material = Some(runtime);
+            }
+            Err(error) => {
+                self.material = None;
+                self.app.material_active_id = None;
+                self.material_source = None;
+                self.material_failed = true;
+                Self::restore_capture_preference(&mut self.app, self.native.as_mut());
+                disable_material(&mut self.app, ctx, error, true);
+            }
+        }
+    }
+
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         diagnostics::graphics(cc);
         let running_compat=cc.wgpu_render_state.is_some();
         diagnostics::startup("加载本地配置");
         let mut app = App::new(&cc.egui_ctx, Options::default());
         #[cfg(all(windows, feature = "sdk-material"))]
-        if let Some(error) = daozai::material::take_startup_failure() {
-            app.alert("材质加载失败", error, 0, false);
-        } else if daozai::material::falling_back() {
-            app.say("材质加载失败，已恢复普通绘制");
-        }
+        let material_debug = daozai::material::debug_requested();
         app.render_compat_running=running_compat;
         #[cfg(feature="record")] let quota_demo=std::env::var("DAOZAI_QUOTA_DEMO").is_ok();
         #[cfg(not(feature="record"))] let quota_demo=false;
@@ -215,24 +289,55 @@ impl Shell {
         #[cfg(windows)]
         let native = {
             let mut window = daozai::native::Window::new(cc);
-            if app.settings.exclude_from_capture {
-                app.capture_exclusion_request = Some(true);
+            #[cfg(feature = "sdk-material")]
+            let material_window = window.as_ref().and_then(daozai::native::Window::material_window).is_some();
+            #[cfg(not(feature = "sdk-material"))]
+            let material_window = false;
+            if !material_window {
+                if app.settings.exclude_from_capture {
+                    app.capture_exclusion_request = Some(true);
+                }
+                Self::sync_capture_exclusion(&mut app, window.as_mut());
             }
-            Self::sync_capture_exclusion(&mut app, window.as_mut());
             window
         };
         #[cfg(all(windows, feature = "sdk-material"))]
-        let material = if daozai::material::debug_requested()
-            && native.as_ref().and_then(daozai::native::Window::material_window).is_some()
-        {
-            cc.wgpu_render_state.as_ref().and_then(|state| match daozai::material::Runtime::debug(state) {
-                Ok(material) => Some(material),
-                Err(error) => {
-                    disable_material(&mut app, &cc.egui_ctx, error);
-                    None
+        if let Some(error) = daozai::material::take_startup_failure() {
+            #[cfg(feature = "sdk-js")]
+            if !material_debug {
+                persist_material_failure(&mut app);
+            }
+            app.alert("材质加载失败", error, 0, false);
+        } else if daozai::material::falling_back() {
+            app.say("材质加载失败，已恢复普通绘制");
+        } else {
+            #[cfg(feature = "sdk-js")]
+            if !material_debug
+                && app.settings.render_compat
+                && app.material_spec().is_some()
+                && native.as_ref().and_then(daozai::native::Window::material_window).is_none()
+            {
+                let error = "无法使用 Direct3D 12 透明交换链，已恢复普通绘制";
+                daozai::material::Runtime::report_failure(error);
+                persist_material_failure(&mut app);
+                app.alert("材质加载失败", error, 0, false);
+            }
+        }
+        #[cfg(all(windows, feature = "sdk-material"))]
+        let material = native.as_ref()
+            .filter(|window| material_debug && window.material_window().is_some())
+            .zip(cc.wgpu_render_state.as_ref())
+            .and_then(|(_, state)| {
+                match daozai::material::Runtime::debug(state) {
+                    Ok(runtime) => Some(runtime),
+                    Err(error) => {
+                        disable_material(&mut app, &cc.egui_ctx, error, false);
+                        None
+                    }
                 }
-            })
-        } else { None };
+            });
+        #[cfg(all(windows, feature = "sdk-js", feature = "sdk-material"))]
+        let material_requested_id = app.material_spec().map(|spec| spec.id.to_owned());
         Self {
             app,
             t0: Instant::now(),
@@ -277,6 +382,14 @@ impl Shell {
             native,
             #[cfg(all(windows, feature = "sdk-material"))]
             material,
+            #[cfg(all(windows, feature = "sdk-js", feature = "sdk-material"))]
+            material_debug,
+            #[cfg(all(windows, feature = "sdk-js", feature = "sdk-material"))]
+            material_requested_id,
+            #[cfg(all(windows, feature = "sdk-js", feature = "sdk-material"))]
+            material_source: None,
+            #[cfg(all(windows, feature = "sdk-js", feature = "sdk-material"))]
+            material_failed: false,
             #[cfg(windows)]
             tray,
             #[cfg(windows)]
@@ -431,6 +544,8 @@ impl eframe::App for Shell {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        #[cfg(all(windows, feature = "sdk-js", feature = "sdk-material"))]
+        self.reconcile_material(ctx, _frame.wgpu_render_state());
         daozai::resources::FRAMES.fetch_add(1,std::sync::atomic::Ordering::Relaxed);
         let frame_start=Instant::now();
         if self.resource_at.ready(Duration::from_secs(30)){
@@ -782,16 +897,23 @@ impl eframe::App for Shell {
             }
         }
         #[cfg(all(windows, feature = "sdk-material"))]
-        if let Some((material, hwnd)) = self.material.as_mut().zip(
-            self.native.as_ref().and_then(daozai::native::Window::material_window)
-        ) {
+        if let Some((material, window)) = self.material.as_mut().zip(self.native.as_mut()) {
             // 原生定位、裁剪及样式更新完毕后，再确认截图排除和采样位置。
-            match material.finish(ctx, hwnd, &mut out, env.t, env.desktop_cursor) {
-                Ok(Some(delay)) => schedule_repaint(ctx, delay),
-                Ok(None) => {}
+            match material.finish(ctx, window, &mut out, env.t, env.desktop_cursor) {
+                Ok(delay) => {
+                    self.app.material_capture_forced |= material.capture_ready();
+                    if let Some(delay) = delay { schedule_repaint(ctx, delay); }
+                }
                 Err(error) => {
                     self.material = None;
-                    disable_material(&mut self.app, ctx, error);
+                    let installed = self.app.material_active_id.take().is_some();
+                    #[cfg(feature = "sdk-js")]
+                    if installed {
+                        self.material_source = None;
+                        self.material_failed = true;
+                    }
+                    Self::restore_capture_preference(&mut self.app, self.native.as_mut());
+                    disable_material(&mut self.app, ctx, error, installed);
                 }
             }
         }
@@ -1232,24 +1354,45 @@ fn profiling_island()->bool {
 }
 
 #[cfg(all(windows, feature = "sdk-material"))]
-fn replace_material_window() -> bool {
-    let args: &[&str] = if profiling_island() {
-        &[daozai::material::FALLBACK_ARG, "--sdk-profile-island"]
-    } else {
-        &[daozai::material::FALLBACK_ARG]
+fn replace_material_window(fallback: bool) -> bool {
+    let args: &[&str] = match (fallback, profiling_island()) {
+        (true, true) => &[daozai::material::FALLBACK_ARG, "--sdk-profile-island"],
+        (true, false) => &[daozai::material::FALLBACK_ARG],
+        (false, true) => &["--sdk-profile-island"],
+        (false, false) => &[],
     };
     diagnostics::spawn_replacement_with_args(args)
 }
 
 #[cfg(all(windows, feature = "sdk-material"))]
-fn disable_material(app: &mut App, ctx: &egui::Context, error: String) {
-    daozai::material::Runtime::report_failure(&error);
-    if replace_material_window() {
+fn request_material_restart(app: &mut App, ctx: &egui::Context, fallback: bool) -> bool {
+    if replace_material_window(fallback) {
         app.save_window_before_exit();
         ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        true
     } else {
-        app.alert("材质加载失败", error, 0, false);
+        app.say("无法重新启动岛仔，请从托盘退出后手动打开");
         ctx.request_repaint();
+        false
+    }
+}
+
+#[cfg(all(windows, feature = "sdk-js", feature = "sdk-material"))]
+fn persist_material_failure(app: &mut App) {
+    if let Err(error) = app.deactivate_material() {
+        daozai::material::Runtime::report_failure(&format!("无法保存材质停用状态：{error}"));
+    }
+}
+
+#[cfg(all(windows, feature = "sdk-material"))]
+fn disable_material(app: &mut App, ctx: &egui::Context, error: String, _installed: bool) {
+    daozai::material::Runtime::report_failure(&error);
+    #[cfg(feature = "sdk-js")]
+    if _installed {
+        persist_material_failure(app);
+    }
+    if !request_material_restart(app, ctx, true) {
+        app.alert("材质加载失败", error, 0, false);
     }
 }
 
@@ -1281,10 +1424,16 @@ fn run() -> eframe::Result<()> {
     graphics::run(opts,|opts|{
         let result=eframe::run_native("岛仔",opts,Box::new(|cc|Ok(Box::new(Shell::new(cc)))));
         #[cfg(all(windows, feature = "sdk-material"))]
-        if daozai::material::report_run_failure(&result)
-            && replace_material_window()
-        {
-            return Ok(());
+        if daozai::material::report_run_failure(&result) {
+            #[cfg(feature = "sdk-js")]
+            if !daozai::material::debug_requested() {
+                use daozai::sdk_spike::LocalPlugins;
+                let mut plugins = LocalPlugins::open(daozai::model::config_dir().join("local-plugins"));
+                if let Err(error) = plugins.activate_material(None, false) {
+                    daozai::material::Runtime::report_failure(&format!("无法保存材质停用状态：{error}"));
+                }
+            }
+            if replace_material_window(true) { return Ok(()); }
         }
         result
     })

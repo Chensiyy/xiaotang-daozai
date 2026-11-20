@@ -1553,7 +1553,12 @@ impl App {
                     if tab==4 {crate::sdk_spike::live_settings(ui);}
                     match tab {
                     #[cfg(feature="sdk-js")]
-                    SETTINGS_TAB_PLUGINS=>{let on=self.module_on(crate::app::TODO_PAGE);if self.plugins.manage(ui,on){self.settings_tab=4;}}
+                    SETTINGS_TAB_PLUGINS=>{
+                        let on=self.module_on(crate::app::TODO_PAGE);
+                        if let Some(tab)=self.plugins.manage(ui,on,
+                            #[cfg(all(windows,feature="sdk-material"))] self.material_active_id.as_deref().filter(|_| self.material_capture_forced),
+                        ){self.settings_tab=tab;}
+                    }
                     12=>{
                         let on=self.settings_feature_header(ui,crate::app::WEATHER_PAGE,"当地天气与七日预报",|_,_|{});
                         ui.add_space(4.0);
@@ -1659,11 +1664,17 @@ impl App {
                             let supported = crate::native::Window::capture_exclusion_supported();
                             #[cfg(not(windows))]
                             let supported = false;
-                            let mut enabled = self.settings.exclude_from_capture;
-                            ui.add_enabled_ui(supported, |ui| {
+                            #[cfg(all(windows,feature="sdk-material"))]
+                            let material_forced = self.material_capture_forced;
+                            #[cfg(not(all(windows,feature="sdk-material")))]
+                            let material_forced = false;
+                            let mut enabled = self.settings.exclude_from_capture || material_forced;
+                            ui.add_enabled_ui(supported && !material_forced, |ui| {
                                 setting_row(ui, "在截图和录屏中隐藏岛仔", "桌面上照常显示，支持的截图和录屏工具会略过岛仔。", &mut enabled);
                             });
-                            if enabled != self.settings.exclude_from_capture {
+                            if material_forced {
+                                settings_hint(ui,"材质生效时需隐藏岛仔自身，才能读取它背后的画面。停用材质后恢复原设置。");
+                            } else if enabled != self.settings.exclude_from_capture {
                                 self.capture_exclusion_request = Some(enabled);
                                 self.capture_exclusion_error = None;
                             }
@@ -1704,6 +1715,17 @@ impl App {
                                 let mut blur=self.settings.glass_blur;
                                 setting_row(ui,"背景模糊","需开启系统“透明效果”；关闭后改为烟熏半透明",&mut blur);
                                 self.settings.glass_blur=blur;
+                            }
+                            #[cfg(all(windows,feature="sdk-js",feature="sdk-material"))]
+                            {
+                                ui.separator();
+                                let active=self.material_active_id.as_deref().filter(|_| self.material_capture_forced);
+                                if self.plugins.material_settings(ui,active,self.settings.render_compat) {
+                                    self.settings.render_compat=true;
+                                    self.settings.render_compat_reason.clear();
+                                    self.pending.push(Cmd::RestartApp);
+                                    ctx.request_repaint_of(egui::ViewportId::ROOT);
+                                }
                             }
                             ui.separator();
                             let shapes:Vec<(model::IslandShape,&str)>=model::IslandShape::ALL.iter().map(|s|(*s,s.label())).collect();

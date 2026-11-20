@@ -22,7 +22,8 @@ function refresh({ settings, today }) {
 | 能力与进度 | 作者怎么写 | 用户在哪里用 |
 | --- | --- | --- |
 | 文本、日期设置 · 已实现 | 清单的 settings 列出字段，在上例读取 settings.title 和 settings.target | 待办与置物的插件设置 |
-| 开关、分段、数字 · 待宿主实现 | 清单字段示意 `{key:"minutes",type:"number",min:5,max:180,default:45,label:"提醒间隔"}`。开关用 switch，选项用 segment 和 choices。函数读取 settings.minutes | 唯一归属设置页 |
+| 材质数字参数 · 已实现 | 清单声明 `type: "number"`、`min`、`max`、`step` 和字符串形式的 `default`。着色器按清单顺序用 `param(index)` 取值，最多 32 项 | 「设置 → 外观 → 材质」，拖动滑块实时应用 |
+| 脚本插件的开关、分段、数字 · 待宿主实现 | 清单字段示意 `{key:"minutes",type:"number",min:5,max:180,default:45,label:"提醒间隔"}`。开关用 switch，选项用 segment 和 choices。函数读取 settings.minutes | 唯一归属设置页 |
 | 文字卡、私有存储 · 已实现 | 上例返回 card 和 storage。首次的 storage 为 null，之后可用 `storage?.lastDays` 读回天数 | 展开待办页，重启后接着用 |
 | 周期刷新 · 已实现 | 两个样例在清单声明 `"refreshSeconds":60` 和 timer 能力。到期由岛仔调用 refresh | 卡片按期更新 |
 | 常驻、固定、临时卡 · 待宿主实现 | `function refresh(i){return {cards:[{id:"job",mode:"temporary",text:i.settings.title,ttlMs:5000}]}}` | 常驻栏、临时位置，用户自行选择固定 |
@@ -33,6 +34,7 @@ function refresh({ settings, today }) {
 | 专注事件和提醒 · 待宿主实现 | 在清单的 permissions 中声明 `{"events":["focus.finished"],"notifications":true}`，能力列出 event、notification 和 storage。示意 `function event(i){return {notice:"专注已完成",storage:{count:(i.storage?.count ?? 0)+1}}}` | 专注设置选择是否自动记录，岛上显示提醒 |
 | 受控网络、只读文件 · 待宿主实现 | 清单声明数据来源和权限。宿主先取数，再作为 source 交给函数。示意 `function refresh(i){return {card:i.source.status}}` | 用户确认域名或选择文件后查看结果 |
 | 皮肤、表情、图标 · 待宿主实现 | 无代码包清单片段 `{"runtime":"assets","capabilities":["appearance.skin"],"assets":["theme.json"]}`。表情与图标分别声明 appearance.pet、appearance.icon | 原外观选择器，可切回内置素材 |
+| GPU 材质 · 已实现 | 清单用 `runtime: "material"`、`owner: "appearance"`、`appearance.material` 能力和 `screen.backdrop` 权限。WGSL 入口实现 `material()`，沿用[材质接口](gpu-material.md) | 「设置 → 外观 → 材质」，同一时间选用一个材质，需开启 Direct3D 12 兼容渲染 |
 
 拟议的 action 接收按钮 ID、表单值，event 接收事件名及内容，二者和 refresh 都返回一次调用的展示结果和要保存的数据。表中标为待实现的字段用于讨论。宿主需要支持对应的清单字段和输入输出后，作者才可以试装这些示例。
 
@@ -64,7 +66,9 @@ function refresh({ settings, today }) {
 
 权限说明用户允许岛仔替这个插件做哪些事。安装前看作者、归属和权限摘要，首次启用确认具体用途，更新时新增的权限单独确认。撤权后岛仔停止取数并丢弃旧请求的结果。
 
-本地试用版只接受空权限。正式版拟允许清单列出 HTTPS 网站的完整域名、订阅事件、用户选择的只读文件。岛仔按插件身份检查每个请求，只连接允许的域名和端口，跳转时重新检查，拒绝本机和内网地址，限制大小与等待时间。文件由系统选择器返回，岛仔检查实际文件位置和读取资格，插件只取得批准的数据。凭据由岛仔保存在 Windows 凭据管理器，日志去掉路径、密钥和用户正文。正式版还要核对域名实际连接到的地址，以及用户选定的文件最终指向的位置，防止改用另一个地址或文件。授权只对用户选中的插件有效。拓竹所需的本机软件读取权限另见第 13 节。
+本地 JS 卡片插件只接受空权限。材质插件首次启用时单独确认 `screen.backdrop` 权限，岛背后的像素只在本机用于材质绘制，着色器可采样底片纹理，像素不保存、不上传。
+
+正式版拟允许清单列出 HTTPS 网站的完整域名、订阅事件、用户选择的只读文件。岛仔按插件身份检查每个请求，只连接允许的域名和端口，跳转时重新检查，拒绝本机和内网地址，限制大小与等待时间。文件由系统选择器返回，岛仔检查实际文件位置和读取资格，插件只取得批准的数据。凭据由岛仔保存在 Windows 凭据管理器，日志去掉路径、密钥和用户正文。正式版还要核对域名实际连接到的地址，以及用户选定的文件最终指向的位置，防止改用另一个地址或文件。授权只对用户选中的插件有效。拓竹所需的本机软件读取权限另见第 13 节。
 
 ## 6. 数据能留多久
 
@@ -87,6 +91,8 @@ QuickJS 每次计算限时 30 毫秒，脚本可分配的内存上限为 4 MiB�
 version 是插件版本，api 是需要的接口主版本，dataVersion 是存储格式版本。owner 决定设置归属，capabilities 列出使用的能力，permissions 列出授权事项。字段类型和可选值见[清单格式检查表](sdk-v1.schema.json)。该表也描述设计中的能力，本地试用目前接受的组合见[本地安装说明](local-install.md)。
 
 宿主安装时检查字段、ID、默认值、版本、入口位置与大小，并拒绝越出包目录的脚本。重启时重新检查安装快照，出现无效记录提示重新安装。分发压缩包时还需在临时目录检查路径、链接、文件数与大小，再安装。无代码资源包只装允许的本地素材，缺少表情帧时回到内置表情。声明独立模块要同时填写 self 和 module。发布前还需检查授权与能力是否匹配、数字和选项默认值是否有效，确认包中没有可执行的外部程序。
+
+材质包包含 `plugin.json`、一个大小不超过 64 KiB 的 `.wgsl` 入口，以及可选的文本说明文件。默认值必须是范围内的有限数字，步长为正且不大于范围宽度。控件弹簧刚度范围为 0.2 至 3，阻尼范围为 0.1 至 1。
 
 ## 9. 岛仔升级后还能用吗
 

@@ -29,15 +29,7 @@ pub(super) struct Frame {
     pub params: [[f32; 4]; 8],
 }
 
-#[repr(C)]
-#[derive(Clone, Copy, Pod, Zeroable)]
-struct Uniforms {
-    frame: Frame,
-    dock: [u32; 4],
-}
-
 const FRAME_SIZE: u64 = size_of::<Frame>() as u64;
-const HOST_SIZE: u64 = size_of::<[u32; 4]>() as u64;
 
 pub(super) struct Pipeline {
     device: wgpu::Device,
@@ -65,20 +57,19 @@ impl Pipeline {
                 label: Some("material shader"),
                 source: wgpu::ShaderSource::Wgsl(source.into()),
             });
-            let uniform_entry = |binding, size| wgpu::BindGroupLayoutEntry {
-                binding,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: wgpu::BufferSize::new(size),
-                },
-                count: None,
-            };
             let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 label: Some("material binds"),
                 entries: &[
-                    uniform_entry(0, FRAME_SIZE),
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: wgpu::BufferSize::new(FRAME_SIZE),
+                        },
+                        count: None,
+                    },
                     wgpu::BindGroupLayoutEntry {
                         binding: 1,
                         visibility: wgpu::ShaderStages::FRAGMENT,
@@ -95,7 +86,6 @@ impl Pipeline {
                         ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                         count: None,
                     },
-                    uniform_entry(3, HOST_SIZE),
                 ],
             });
             let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -139,7 +129,7 @@ impl Pipeline {
             });
             let uniform = device.create_buffer(&wgpu::BufferDescriptor {
                 label: Some("material uniforms"),
-                size: size_of::<Uniforms>() as u64,
+                size: FRAME_SIZE,
                 usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
                 mapped_at_creation: false,
             });
@@ -204,10 +194,7 @@ impl Pipeline {
         let backdrop = self.backdrop.as_mut().unwrap();
         let [w, h] = [width as f32, height as f32];
         frame.tex = [w, h, w, h];
-        let uniform = Uniforms {
-            frame,
-            dock: [dock_code(dock), 0, 0, 0],
-        };
+        frame.count[1] = dock_code(dock);
         with_error_scopes(&self.device, || {
             if backdrop.revision != Some(plate.revision) {
                 self.queue.write_texture(
@@ -222,7 +209,7 @@ impl Pipeline {
                 );
             }
             self.queue
-                .write_buffer(&self.uniform, 0, bytemuck::bytes_of(&uniform));
+                .write_buffer(&self.uniform, 0, bytemuck::bytes_of(&frame));
         })?;
         backdrop.revision = Some(plate.revision);
         Ok(egui::Shape::Callback(Callback::new_paint_callback(
@@ -246,19 +233,14 @@ impl Pipeline {
             view_formats: &[],
         });
         let view = texture.create_view(&Default::default());
-        let buffer_entry = |binding, offset, size| wgpu::BindGroupEntry {
-            binding,
-            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                buffer: &self.uniform,
-                offset,
-                size: wgpu::BufferSize::new(size),
-            }),
-        };
         let bind = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("material bind group"),
             layout: &self.layout,
             entries: &[
-                buffer_entry(0, 0, FRAME_SIZE),
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.uniform.as_entire_binding(),
+                },
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: wgpu::BindingResource::TextureView(&view),
@@ -267,7 +249,6 @@ impl Pipeline {
                     binding: 2,
                     resource: wgpu::BindingResource::Sampler(&self.sampler),
                 },
-                buffer_entry(3, FRAME_SIZE, HOST_SIZE),
             ],
         });
         BackdropTexture {
@@ -290,6 +271,20 @@ fn validate_shader(source: &str) -> Result<wgpu::naga::Module, String> {
     use wgpu::naga::{front::wgsl, valid};
 
     let module = wgsl::parse_str(source).map_err(|error| error.emit_to_string(source))?;
+    // 检查所有声明，未被入口使用的资源也必须符合材质接口。
+    for (_, variable) in module.global_variables.iter() {
+        if let Some(binding) = &variable.binding {
+            if !matches!(
+                (binding.group, binding.binding, variable.name.as_deref()),
+                (0, 0, Some("frame")) | (0, 1, Some("backdrop")) | (0, 2, Some("backdrop_sampler"))
+            ) {
+                return Err(format!(
+                    "材质声明了接口以外的 @group({}) @binding({})",
+                    binding.group, binding.binding
+                ));
+            }
+        }
+    }
     valid::Validator::new(valid::ValidationFlags::all(), valid::Capabilities::empty())
         .validate(&module)
         .map_err(|error| error.emit_to_string(source))?;
@@ -371,7 +366,6 @@ mod tests {
         assert_eq!(align_of::<Frame>(), 16);
         assert_eq!(size_of::<Frame>(), 1024);
         assert_eq!(*span as usize, size_of::<Frame>());
-        assert_eq!(offset_of!(Uniforms, dock) as u64, FRAME_SIZE);
         assert_eq!(members.len(), rust.len());
         for (member, (name, offset)) in members.iter().zip(rust) {
             assert_eq!(member.name.as_deref(), Some(name));
@@ -391,6 +385,18 @@ mod tests {
     }
 
     #[test]
+    fn material_rejects_binding_outside_the_interface_even_when_unused() {
+        for result in ["extra", "vec4<f32>(0.0)"] {
+            let source = format!(
+                "{PRELUDE}\n@group(0) @binding(3) var<uniform> extra : vec4<f32>;\n\
+                fn material(i : MaterialIn) -> vec4<f32> {{ return {result}; }}"
+            );
+            let error = validate_shader(&source).expect_err("接口外的资源声明应被拒绝");
+            assert!(error.contains("@group(0) @binding(3)"), "{error}");
+        }
+    }
+
+    #[test]
     #[ignore = "需要本机 Direct3D 12，显式运行离屏像素检查"]
     fn dx12_material_pixels_and_shader_error_scope() {
         const SIDE: u32 = 64;
@@ -405,13 +411,13 @@ mod tests {
         ))
         .unwrap();
 
-        // WGSL 本身合法，实际建立管线时因布局不匹配被错误作用域收集。
-        let bad_binding = "
-            @group(1) @binding(0) var<uniform> other : vec4<f32>;
-            fn material(i : MaterialIn) -> vec4<f32> { return other; }
+        // WGSL 本身合法，实际建立管线时缺失常量值的错误由作用域收集。
+        let missing_constant = "
+            override required_value : f32;
+            fn material(i : MaterialIn) -> vec4<f32> { return vec4<f32>(required_value); }
         ";
-        assert!(validate_shader(&format!("{PRELUDE}\n{bad_binding}")).is_ok());
-        assert!(Pipeline::new(&state, bad_binding).is_err());
+        assert!(validate_shader(&format!("{PRELUDE}\n{missing_constant}")).is_ok());
+        assert!(Pipeline::new(&state, missing_constant).is_err());
         let mut pipeline = Pipeline::new(&state, DEBUG_SHADER).unwrap();
 
         let rect = |x, y, w, h| egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(w, h));

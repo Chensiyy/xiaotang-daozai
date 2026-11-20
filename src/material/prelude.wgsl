@@ -16,12 +16,6 @@ struct Frame {
 @group(0) @binding(1) var backdrop : texture_2d<f32>;
 @group(0) @binding(2) var backdrop_sampler : sampler;
 
-// 供宿主的轮廓换算使用，Frame 及其保留字段遵循插件接口。
-struct DaozaiHost {
-    dock : vec4<u32>,
-};
-@group(0) @binding(3) var<uniform> daozai_host : DaozaiHost;
-
 struct MaterialIn { px : vec2<f32>, uv : vec2<f32> };
 
 fn param(i : u32) -> f32 {
@@ -53,10 +47,10 @@ fn body_sdf(p : vec2<f32>) -> f32 {
     let radius = max(min(frame.shape.x - inset, min(half_size.x, half_size.y)), 0.0);
     if (frame.notch.z > 0.5) {
         // 侧边刘海先按 shape::EdgeMap 的逆变换换成贴顶轮廓。
-        if (daozai_host.dock.x == 1u) {
+        if (frame.count.y == 1u) {
             local = local.yx;
             half_size = half_size.yx;
-        } else if (daozai_host.dock.x == 2u) {
+        } else if (frame.count.y == 2u) {
             local = vec2<f32>(local.y, -local.x);
             half_size = half_size.yx;
         }

@@ -137,7 +137,9 @@ fn delayed_result_discarded_after_disable_uninstall_and_restart_validation() -> 
     settle(&mut host, "2026-11-19");
     assert!(host.cards.is_empty());
     assert!(host.records[id].storage.is_null());
-    assert!(LocalPlugins::open(dir.clone()).records[id].storage.is_null());
+    assert!(LocalPlugins::open(dir.clone()).records[id]
+        .storage
+        .is_null());
     let mut broken = host.records[id].clone();
     broken.enabled = true;
     broken.package.as_mut().unwrap().manifest.entry = "../other.js".into();
@@ -180,4 +182,194 @@ fn design_card_example_runs_with_both_installed_manifests() -> Result<()> {
         assert!(doc_example.card.contains(&values["title"]));
     }
     Ok(())
+}
+
+#[cfg(feature = "sdk-material")]
+mod material_tests {
+    use super::*;
+
+    const SHADER: &str = "fn material(i: MaterialIn) -> vec4<f32> { return vec4<f32>(0.0); }";
+
+    fn root() -> PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("daozai-material-{}-{nonce}", std::process::id()))
+    }
+
+    fn manifest(id: &str) -> Value {
+        json!({
+            "id": id, "name": "测试材质", "author": "测试", "version": "1.0.0", "api": 1,
+            "runtime": "material", "entry": "shaders/material.wgsl", "owner": "appearance",
+            "capabilities": ["appearance.material", "settings"], "dataVersion": 1,
+            "permissions": {"screen.backdrop": true},
+            "material": {"controls": true, "spring": {"stiffness": 1.0, "damping": 0.5}},
+            "settings": [
+                {"key": "strength", "label": "强度", "type": "number", "min": 0, "max": 120, "step": 1, "default": "48"},
+                {"key": "blur", "label": "模糊", "type": "number", "min": 0, "max": 10, "step": 0.5, "default": "1.5"}
+            ]
+        })
+    }
+
+    fn package(dir: &Path, id: &str) -> Result<PathBuf> {
+        let shader_dir = dir.join("shaders");
+        fs::create_dir_all(&shader_dir)?;
+        fs::write(shader_dir.join("material.wgsl"), SHADER)?;
+        fs::create_dir_all(dir.join("docs"))?;
+        fs::write(dir.join("docs/README.md"), "材质说明")?;
+        let path = dir.join("plugin.json");
+        fs::write(&path, serde_json::to_vec(&manifest(id))?)?;
+        Ok(path)
+    }
+
+    #[test]
+    fn material_manifest_rejects_invalid_settings_and_capabilities() -> Result<()> {
+        let valid = manifest("example.material");
+        serde_json::from_value::<Manifest>(valid.clone())?.validate()?;
+
+        for key in ["permissions", "material", "settings"] {
+            let mut missing = valid.clone();
+            missing.as_object_mut().unwrap().remove(key);
+            assert!(
+                serde_json::from_value::<Manifest>(missing)
+                    .ok()
+                    .is_none_or(|manifest| manifest.validate().is_err()),
+                "{key}"
+            );
+        }
+        for key in ["min", "max", "step"] {
+            let mut missing = valid.clone();
+            missing["settings"][0].as_object_mut().unwrap().remove(key);
+            assert!(
+                serde_json::from_value::<Manifest>(missing)?
+                    .validate()
+                    .is_err(),
+                "{key}"
+            );
+        }
+        for (pointer, replacement) in [
+            ("/permissions/screen.backdrop", json!(false)),
+            ("/material/spring/stiffness", json!(3.1)),
+            ("/material/spring/damping", json!(0.0)),
+            ("/owner", json!("tasks")),
+            ("/capabilities", json!(["card", "settings"])),
+            ("/capabilities", json!(["appearance.material", "network"])),
+            (
+                "/capabilities",
+                json!(["appearance.material", "appearance.material"]),
+            ),
+            ("/capabilities", json!(["appearance.material"])),
+            ("/settings/0/type", json!("text")),
+            ("/settings/0/min", json!(150)),
+            ("/settings/0/step", json!(0)),
+            ("/settings/0/step", json!(150)),
+            ("/settings/0/default", json!("128")),
+            ("/settings/0/default", json!("NaN")),
+            ("/entry", json!("../material.wgsl")),
+            ("/entry", json!("material.js")),
+        ] {
+            let mut invalid = valid.clone();
+            *invalid.pointer_mut(pointer).unwrap() = replacement;
+            assert!(
+                serde_json::from_value::<Manifest>(invalid)?
+                    .validate()
+                    .is_err(),
+                "{pointer}"
+            );
+        }
+        let mut too_many = valid;
+        too_many["settings"] = Value::Array((0..33).map(|index| {
+            json!({"key":format!("param{index}"),"label":"参数","type":"number","min":0,"max":1,"step":0.1,"default":"0"})
+        }).collect());
+        assert!(serde_json::from_value::<Manifest>(too_many.clone())?
+            .validate()
+            .is_err());
+        too_many["settings"].as_array_mut().unwrap().pop();
+        serde_json::from_value::<Manifest>(too_many)?.validate()?;
+        Ok(())
+    }
+
+    #[test]
+    fn material_package_allows_only_the_manifest_shader_and_documentation() -> Result<()> {
+        let root = root();
+        let path = package(&root, "example.material")?;
+        assert_eq!(Package::read(&path)?.source, SHADER);
+        for name in [
+            "main.js",
+            "extra.wgsl",
+            "helper.exe",
+            "docs/asset.bin",
+            "docs/plugin.json",
+        ] {
+            let extra = root.join(name);
+            fs::write(&extra, "多余文件")?;
+            assert!(Package::read(&path).is_err(), "{name}");
+            fs::remove_file(extra)?;
+        }
+        let shader = root.join("shaders/material.wgsl");
+        fs::write(&shader, "a".repeat(MATERIAL_SOURCE_LIMIT as usize))?;
+        assert_eq!(
+            Package::read(&path)?.source.len() as u64,
+            MATERIAL_SOURCE_LIMIT
+        );
+        fs::write(&shader, "a".repeat(MATERIAL_SOURCE_LIMIT as usize + 1))?;
+        assert!(Package::read(&path).is_err());
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn an_authorized_material_is_selected_exclusively_and_reloaded_with_its_parameters(
+    ) -> Result<()> {
+        let root = root();
+        let storage = root.join("installed");
+        let (a, b) = ("example.first", "example.second");
+        let path_a = package(&root.join("a"), a)?;
+        let path_b = package(&root.join("b"), b)?;
+        let mut host = LocalPlugins::open(storage.clone());
+        host.install(&path_a)?;
+        host.install(&path_b)?;
+        assert!(!LocalPlugins::startup_material(&storage));
+        assert!(host.enable(a, true).is_err());
+        fs::write(
+            storage.join("active-material.json"),
+            serde_json::to_vec(&a)?,
+        )?;
+        assert!(!LocalPlugins::startup_material(&storage));
+        assert!(LocalPlugins::open(storage.clone())
+            .active_material()
+            .is_none());
+
+        host.activate_material(Some(a), true)?;
+        assert!(LocalPlugins::startup_material(&storage));
+        assert_eq!(host.active_material().unwrap().params[..2], [48.0, 1.5]);
+        assert!(host.activate_material(Some(b), false).is_err());
+        assert_eq!(host.selected_material_id(), Some(a));
+        host.activate_material(Some(b), true)?;
+        assert_eq!(host.active_material().unwrap().id, b);
+        assert!(host.material_permission_granted(a));
+        host.enable(a, false)?;
+        assert_eq!(host.selected_material_id(), Some(b));
+        assert!(host.set_material_parameter(b, "strength", 121.0).is_err());
+        host.set_material_parameter(b, "blur", 2.5)?;
+        assert_eq!(host.active_material().unwrap().params[..2], [48.0, 2.5]);
+        host.tick(true, "2026-11-21");
+        assert!(host.jobs.is_empty());
+
+        let mut host = LocalPlugins::open(storage.clone());
+        assert_eq!(host.active_material().unwrap().params[..2], [48.0, 2.5]);
+        host.activate_material(None, false)?;
+        assert!(!LocalPlugins::startup_material(&storage));
+        host.activate_material(Some(b), false)?;
+        host.uninstall(b, true)?;
+        assert!(host.active_material().is_none());
+        host.install(&path_b)?;
+        assert!(host.activate_material(Some(b), false).is_err());
+        host.activate_material(Some(b), true)?;
+        assert_eq!(host.active_material().unwrap().params[1], 2.5);
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
 }
