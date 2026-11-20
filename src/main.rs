@@ -543,20 +543,24 @@ impl eframe::App for Shell {
                     }
                 }}
             }
-            if self.app.pending_messengers!=previous_pending || self.unread_at.ready(Duration::from_secs(1)){
+            let unread_changed=self.app.pending_messengers!=previous_pending;
+            let unread_poll_due=self.unread_at.ready(Duration::from_secs(1));
+            if unread_changed || unread_poll_due{
                 self.clear_exited_messengers(ctx);
             }
             if !self.app.pending_messengers.is_empty(){ctx.request_repaint_after(Duration::from_secs(1));}
-            if foreground_changed || self.app.pending_messengers!=previous_pending {
-                // 在微信 / QQ 里打开了某个账号的窗口：清掉这个账号的未读。
-                let mut sources:Vec<app::Messenger>=self.app.pending_messengers.iter().map(|u|u.source).collect();sources.dedup();
+            let sources=messenger_foreground_sources(&self.app.pending_messengers,
+                foreground_changed || self.app.pending_messengers!=previous_pending,unread_poll_due);
+            if !sources.is_empty(){
                 match self.messengers.foreground(&sources){
                     Some((source,pid))=>{
-                        if self.app.pending_messengers.iter().any(|u|u.source==source){messenger::windows::trace(format!("岛上清除 {} 账号 {pid}（前台切换={foreground_changed}）",source.name()));}
-                        self.messengers.viewed_client(source,pid);
-                        self.app.viewed_client(source,pid);
+                        if self.app.pending_messengers.iter().any(|u|u.viewed_by(source,pid)){
+                            messenger::windows::trace(format!("岛上清除 {} 账号 {pid}（前台切换={foreground_changed}）",source.name()));
+                            self.messengers.viewed_client(source,pid);
+                            self.app.viewed_client(source,pid);
+                        }
                     }
-                    None=>if foreground_changed && !sources.is_empty(){messenger::windows::trace(format!("前台切换但不是消息客户端主窗口：{}；岛上未读 {:?}",messenger::windows::describe_foreground(),self.app.pending_messengers.iter().map(|u|(u.source.name(),u.pid)).collect::<Vec<_>>()));},
+                    None=>if foreground_changed{messenger::windows::trace(format!("前台切换但不是消息客户端主窗口：{}；岛上未读 {:?}",messenger::windows::describe_foreground(),self.app.pending_messengers.iter().map(|u|(u.source.name(),u.pid)).collect::<Vec<_>>()));},
                 }
             }
             if self.tray_opening.as_ref().is_some_and(|(unread,_)|!self.app.pending_messengers.contains(unread)){
@@ -908,6 +912,37 @@ fn quota_sig_matches(known:&(bool,Vec<daozai::quota::Account>),enabled:bool,conf
         let daozai::quota::Account{id,provider,alias:_,source,slot,enabled,pinned:_}=current;
         known.id==*id && known.provider==*provider && known.source==*source && known.slot==*slot && known.enabled==*enabled
     })
+}
+
+#[cfg(windows)]
+fn messenger_foreground_sources(pending:&[app::Unread],changed:bool,poll_due:bool)->Vec<app::Messenger>{
+    let mut sources=Vec::new();
+    if changed || poll_due{
+        for unread in pending{
+            // 办公窗口的前台事件可能早于最小化状态的恢复，同一窗口恢复后无需再次换前台。
+            if !changed && (unread.pid==0 || !app::Messenger::OFFICE.contains(&unread.source)){continue;}
+            if !sources.contains(&unread.source){sources.push(unread.source);}
+        }
+    }
+    sources
+}
+
+#[cfg(all(test,windows))]
+mod messenger_foreground_tests {
+    use super::*;
+    use app::{Messenger,Unread};
+
+    #[test]
+    fn a_restored_office_window_gets_rechecked_without_another_foreground_event(){
+        let pending=[
+            Unread{source:Messenger::Feishu,pid:21,window:42},
+            Unread::of(Messenger::DingTalk),
+            Unread{source:Messenger::Wechat,pid:22,window:43},
+        ];
+        assert_eq!(messenger_foreground_sources(&pending,true,false),[Messenger::Feishu,Messenger::DingTalk,Messenger::Wechat]);
+        assert!(messenger_foreground_sources(&pending,false,false).is_empty());
+        assert_eq!(messenger_foreground_sources(&pending,false,true),[Messenger::Feishu]);
+    }
 }
 
 #[cfg(test)]
