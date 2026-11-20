@@ -982,7 +982,8 @@ mod quota_sig_tests {
 
     #[test]
     fn matching_without_copy_agrees_with_the_copied_signature(){
-        let config=Config{accounts:vec![account("a"),account("b")],..Default::default()};
+        let mut config=Config::default();
+        config.accounts=vec![account("a"),account("b")];
         let known=quota_sig(true,&config);
         assert!(quota_sig_matches(&known,true,&config));
         let mut display_only=config.clone();display_only.accounts[0].alias="改名".into();display_only.accounts[1].pinned=true;
