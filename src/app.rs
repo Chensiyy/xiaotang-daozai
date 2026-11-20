@@ -2513,9 +2513,10 @@ impl App {
             let inset=self.unread_top_inset();
             let height=self.unread_capsule_height(full.height()-inset);
             let left=self.dock()==model::Dock::Right || self.dock()==model::Dock::Top && full.right()+UNREAD_GAP+UNREAD_W>bounds.right();
-            let width=UNREAD_W*appear;
-            let x=if left {panel.left()-UNREAD_GAP*appear-width}else{panel.right()+UNREAD_GAP*appear};
-            return Some(Rect::from_min_size(Pos2::new(x,panel.top()+inset),Vec2::new(width,height*appear)));
+            // 胶囊在展开后的中心原地显现，避免跟着岛体边缘越过终点再弹回来。
+            let cx=if left {full.left()-UNREAD_GAP-UNREAD_W/2.0}else{full.right()+UNREAD_GAP+UNREAD_W/2.0};
+            let center=Pos2::new(cx,full.top()+inset+height/2.0);
+            return Some(Rect::from_center_size(center,Vec2::new(UNREAD_W,height)*appear));
         }
         // 极简刘海：横幅照常弹出，收起后只留细线，未读不常挂在线条上；展开岛体时在面板旁出现。
         if self.effective_minimal(){return None;}
