@@ -8462,6 +8462,39 @@ fn messenger_notifications_keep_separate_badges_until_the_client_is_viewed(){
 }
 
 #[test]
+fn unread_capsule_center_stays_put_as_the_island_springs_open() {
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    for dock in crate::model::Dock::ALL {
+        let mut h=H::new();
+        h.app.settings.dock=dock;
+        h.app.settings.wechat_notifications=true;
+        h.app.receive_wechat_reminder();
+        h.app.alerts.clear();
+        h.app.notice=None;
+        let win=Rect::from_min_size(Pos2::ZERO,Vec2::new(WIN_W,WIN_H));
+        h.cursor=Some(match dock {
+            crate::model::Dock::Top=>win.center_top()+Vec2::new(0.0,12.0),
+            crate::model::Dock::Left=>win.left_center()+Vec2::new(8.0,0.0),
+            crate::model::Dock::Right=>win.right_center()-Vec2::new(8.0,0.0),
+        });
+        let id=egui::Id::new(("card",true,"微信"));
+        let mut centers=Vec::new();
+        for _ in 0..90 {
+            h.frame(vec![]);
+            if let Some(button)=h.ctx.read_response(id) {
+                if h.app.open && button.rect.width()>crate::app::UNREAD_W-0.1 {
+                    centers.push(button.rect.center());
+                }
+            }
+        }
+        assert!(centers.len()>30,"{dock:?} 应采集到完整展开后的按钮");
+        let end=*centers.last().unwrap();
+        let drift=centers.iter().map(|p|p.distance(end)).fold(0.0_f32,f32::max);
+        assert!(drift<0.1,"{dock:?} 未读图标展开后又移动了 {drift:.2} 个逻辑像素");
+    }
+}
+
+#[test]
 fn messenger_capsule_grows_during_opening(){
     let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     let mut h=H::new();
