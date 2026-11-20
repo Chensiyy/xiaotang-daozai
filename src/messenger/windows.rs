@@ -122,7 +122,10 @@ pub(crate) fn window_pid(hwnd:HWND)->u32{
 }
 
 pub(crate) unsafe fn foreground_main_pid(source:Messenger,paths:&[String])->Option<u32>{
-    let hwnd=GetForegroundWindow();
+    main_pid_at_window(GetForegroundWindow(),source,paths)
+}
+
+unsafe fn main_pid_at_window(hwnd:HWND,source:Messenger,paths:&[String])->Option<u32>{
     if IsIconic(hwnd).as_bool() || !visible_main_frame(hwnd,source) || !matches(hwnd,paths){return None;}
     if Messenger::OFFICE.contains(&source) && !super::desktop::main_window(hwnd,source){return None;}
     let pid=window_pid(hwnd);
@@ -165,10 +168,6 @@ pub(crate) fn ancestors(pid:u32,parents:&std::collections::HashMap<u32,u32>)->Ve
         match parents.get(&current){Some(&parent) if parent!=0 && parent!=current && parent!=pid && !chain.contains(&parent)=>{chain.push(parent);current=parent;},_=>break}
     }
     chain
-}
-
-pub(crate) fn foreground_client(sources:&[Messenger])->Option<(Messenger,u32)>{
-    sources.iter().find_map(|&source|unsafe{foreground_main_pid(source,&client_paths(source))}.map(|pid|(source,pid)))
 }
 
 pub(crate) fn class_name(hwnd:HWND)->String{
@@ -284,15 +283,24 @@ impl Default for Runtime {
 }
 impl Runtime {
     pub fn foreground(&self,sources:&[Messenger])->Option<(Messenger,u32)>{
-        let (client,pid)=foreground_client(sources)?;
+        let window=unsafe{GetForegroundWindow()};
+        let account=sources.iter().find_map(|&client|{
+            self.foreground_at(window,client,&client_paths(client)).map(|pid|(client,pid))
+        })?;
+        (unsafe{GetForegroundWindow()}==window).then_some(account)
+    }
+    fn foreground_at(&self,window:HWND,client:Messenger,paths:&[String])->Option<u32>{
+        let pid=unsafe{main_pid_at_window(window,client,paths)}?;
         let pid=if client==Messenger::Qq{
-            let accounts=(client.adapter().native.accounts?)(&client_paths(client))?;
+            let accounts=(client.adapter().native.accounts?)(paths)?;
             self.qq_account_pid(pid,&accounts,&parent_processes())?
         }else{pid};
-        if client.adapter().keep_unidentified && !self.targets.values().any(|target|target.unread.source==client && target.unread.pid==pid){return None;}
-        if self.targets.values().filter(|target|target.unread.source==client && target.unread.pid==pid)
-            .any(|target|!(client.adapter().native.ready)(*target)){return None;}
-        Some((client,pid))
+        let mut targets=self.targets.values().copied().filter(|target|target.unread.source==client && target.unread.pid==pid).peekable();
+        if client.adapter().keep_unidentified && targets.peek().is_none(){return None;}
+        let ready=targets.all(|target|if Messenger::OFFICE.contains(&client){
+            super::desktop::matches_foreground(target,window,paths)
+        }else{(client.adapter().native.ready)(target)});
+        ready.then_some(pid)
     }
     fn qq_account_pid(&self,pid:u32,accounts:&[Target],parents:&HashMap<u32,u32>)->Option<u32>{
         let mut pids:Vec<_>=accounts.iter().filter(|target|target.unread.source==Messenger::Qq).map(|target|target.unread.pid).collect();
@@ -598,6 +606,54 @@ mod tests {
         assert_eq!(runtime.targets.get(&target.unread),None);
         assert_eq!(runtime.targets.get(&replacement.unread),Some(&replacement));
         DestroyWindow(window).unwrap();
+    }}
+    #[test]
+    fn manual_foreground_accepts_only_the_original_office_accounts_rebuilt_main_window(){unsafe{
+        use windows::Win32::System::{LibraryLoader::GetModuleHandleW,Threading::GetCurrentProcess};
+        unsafe extern "system" fn proc(h:HWND,m:u32,w:WPARAM,l:LPARAM)->LRESULT{DefWindowProcW(h,m,w,l)}
+        let instance=GetModuleHandleW(None).unwrap().into();
+        let pid=std::process::id();
+        let started=process_started(GetCurrentProcess()).unwrap();
+        let paths=[normalized(&std::env::current_exe().unwrap().to_string_lossy())];
+        for (client,class,title) in [
+            (Messenger::Feishu,w!("Chrome_WidgetWin_1"),w!("飞书")),
+            (Messenger::DingTalk,w!("StandardFrame_DingTalk"),w!("钉钉")),
+            (Messenger::WeCom,w!("WeWorkWindow"),w!("企业微信")),
+        ]{
+            RegisterClassW(&WNDCLASSW{lpfnWndProc:Some(proc),hInstance:instance,lpszClassName:class,..Default::default()});
+            let create=||{
+                let window=CreateWindowExW(WINDOW_EX_STYLE(0),class,title,WS_OVERLAPPEDWINDOW,-10000,-10000,800,600,None,None,instance,None).unwrap();
+                let _=ShowWindow(window,SW_SHOWNOACTIVATE);
+                window
+            };
+            let old=create();
+            let original=Target{unread:Unread{source:client,pid,window:old.0 as isize},started};
+            let mut runtime=Runtime::default();
+            assert_eq!(runtime.foreground_at(old,client,&paths),None,"没有原账号登记时不得认领前台窗口");
+            assert_eq!(runtime.register_taskbar(original.unread,Some(original)),Some(original.unread));
+            assert_eq!(runtime.foreground_at(old,client,&paths),Some(pid));
+            let rebuilt=create();
+            assert_eq!(runtime.foreground_at(rebuilt,client,&paths),None,"原窗口仍在时不得把另一个主窗当成重建");
+            DestroyWindow(old).unwrap();
+            let extra=create();
+            assert_eq!(runtime.foreground_at(rebuilt,client,&paths),None,"同进程多个合格候选时保留提醒");
+            DestroyWindow(extra).unwrap();
+            let popup=CreateWindowExW(WS_EX_TOOLWINDOW,class,title,WS_VISIBLE|WS_POPUP,-10000,-10000,800,600,None,None,instance,None).unwrap();
+            assert_eq!(runtime.foreground_at(popup,client,&paths),None,"同进程的辅助窗不能触发清理");
+            DestroyWindow(popup).unwrap();
+            let _=ShowWindow(rebuilt,SW_SHOWMINNOACTIVE);
+            assert_eq!(runtime.foreground_at(rebuilt,client,&paths),None,"新窗口仍最小化时保留提醒");
+            let _=ShowWindow(rebuilt,SW_SHOWNOACTIVATE);
+            assert_eq!(runtime.foreground_at(rebuilt,client,&paths),Some(pid),"原账号唯一的新主窗可确认查看");
+            assert_eq!(runtime.request(original.unread,&Settings::default()).target,Some(original),"确认查看不应改写已登记的原提醒");
+            let other=Target{unread:Unread{pid:pid+1,..original.unread},..original};
+            runtime.targets.remove(&original.unread);
+            runtime.targets.insert(other.unread,other);
+            assert_eq!(runtime.foreground_at(rebuilt,client,&paths),None,"前台的新窗口不能清另一个账号");
+            runtime.targets.insert(original.unread,Target{started:started+1,..original});
+            assert_eq!(runtime.foreground_at(rebuilt,client,&paths),None,"相同 PID 的新进程不能清旧提醒");
+            DestroyWindow(rebuilt).unwrap();
+        }
     }}
     fn open_qq_target(target:Target)->Result<(),String>{
         OpenRequest{unread:target.unread,target:Some(target),allow_tray:true}.run().map(|_|()).map_err(|error|error.message(target.unread.source))
