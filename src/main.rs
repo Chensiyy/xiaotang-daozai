@@ -137,6 +137,35 @@ impl Shell {
         self.unread_at=PollClock::now();
     }
 
+    #[cfg(windows)]
+    fn sync_capture_exclusion(app: &mut App, window: Option<&mut daozai::native::Window>) -> bool {
+        let was_enabled = app.settings.exclude_from_capture;
+        let requested = app.capture_exclusion_request.take();
+        let desired = requested.unwrap_or(was_enabled);
+        let error = match window {
+            Some(window) => window.take_capture_exclusion_error().or_else(|| {
+                requested.and_then(|enabled| {
+                    window.set_capture_exclusion(enabled);
+                    window.take_capture_exclusion_error()
+                })
+            }),
+            None => desired.then(|| "当前窗口无法应用截图和录屏隐藏。".into()),
+        };
+        let applied = desired && error.is_none();
+        if was_enabled != applied {
+            app.settings.exclude_from_capture = applied;
+            app.settings.save();
+        }
+        let failed = error.is_some();
+        if failed {
+            if was_enabled && !app.settings_open {
+                app.say("截图和录屏隐藏未生效");
+            }
+            app.capture_exclusion_error = error;
+        }
+        requested.is_some() || failed
+    }
+
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         diagnostics::graphics(cc);
         let running_compat=cc.wgpu_render_state.is_some();
@@ -178,6 +207,15 @@ impl Shell {
         #[cfg(windows)] let system_rx=daozai::system::observe(cc.egui_ctx.clone(),system_state.clone(),initial_input);
         // 岛体大小只作用于主窗口，在首帧之前生效，避免启动时先按 100% 闪一下。
         #[cfg(windows)] eframe::set_root_viewport_scale(app.settings.island_scale());
+        #[cfg(windows)]
+        let native = {
+            let mut window = daozai::native::Window::new(cc);
+            if app.settings.exclude_from_capture {
+                app.capture_exclusion_request = Some(true);
+            }
+            Self::sync_capture_exclusion(&mut app, window.as_mut());
+            window
+        };
         Self {
             app,
             t0: Instant::now(),
@@ -217,7 +255,7 @@ impl Shell {
             #[cfg(windows)] hidden:false,
             #[cfg(windows)] backdrop:None,
             #[cfg(windows)]
-            native: daozai::native::Window::new(cc),
+            native,
             #[cfg(windows)]
             tray,
             #[cfg(windows)]
@@ -293,7 +331,8 @@ impl Shell {
         let origin = ctx.input(|i| i.viewport().outer_rect).map(|r| r.min).unwrap_or(Pos2::new(self.win_x, 0.0));
         #[cfg(windows)]
         let origin=self.native.as_ref().and_then(|w|w.logical_origin(ppp)).unwrap_or(origin);
-        let cursor = cursor_logical(ppp).map(|(x, y)| Pos2::new(x - origin.x, y - origin.y));
+        let desktop_cursor=desktop_cursor();
+        let cursor=desktop_cursor.map(|(x,y)|Pos2::new(x as f32/ppp-origin.x,y as f32/ppp-origin.y));
         #[cfg(windows)]
         let cursor=cursor.filter(|_|!self.native.as_ref().is_some_and(|w|w.holding_through_strip()));
         // 所在屏幕换算到窗口逻辑坐标，供通知详情等浮层避开屏幕边缘。
@@ -318,6 +357,22 @@ impl Shell {
             charging: self.sys.1,
             network: Some(self.system_state.network),
             cursor,
+            desktop_cursor,
+            primary_down:{
+                #[cfg(windows)] {self.app.dragging_position().then(||unsafe {
+                    use windows::Win32::UI::{Input::KeyboardAndMouse::{GetAsyncKeyState,VK_LBUTTON,VK_RBUTTON},WindowsAndMessaging::{GetSystemMetrics,SM_SWAPBUTTON}};
+                    let key=if GetSystemMetrics(SM_SWAPBUTTON)!=0 {VK_RBUTTON}else{VK_LBUTTON};
+                    GetAsyncKeyState(key.0 as i32)<0
+                })}
+                #[cfg(not(windows))] {None}
+            },
+            cancel_position_drag:{
+                #[cfg(windows)] {self.app.dragging_position() && unsafe {
+                    use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState,VK_ESCAPE};
+                    GetAsyncKeyState(VK_ESCAPE.0 as i32)<0
+                }}
+                #[cfg(not(windows))] {false}
+            },
             idle_seconds: {
                 #[cfg(windows)] {Some(daozai::system::idle_seconds())}
                 #[cfg(not(windows))] {None}
@@ -406,6 +461,8 @@ impl eframe::App for Shell {
         let shift=self.oled_shift;
         // 拖动时位置不取整，按万分之一比例比较，窗口逐帧平滑跟随。
         #[cfg(windows)]
+        if self.native.as_ref().is_some_and(|w|w.take_display_change()) {self.placement_at=PollClock::default();}
+        #[cfg(windows)]
         let placement_key=(self.app.settings.display_id.clone(),(offset*10000.0).round() as i32,self.app.settings.dock,self.app.settings.avoids_top_bar(),shift);
         #[cfg(windows)]
         if !self.placed || self.placement_scale!=ctx.pixels_per_point() || self.placement_key!=placement_key || self.placement_at.ready(Duration::from_secs(1)) {
@@ -417,9 +474,11 @@ impl eframe::App for Shell {
                 self.app.displays=daozai::display_layout::connected();
             }
             self.placement_scale=ctx.pixels_per_point();
+            let moving_display=self.placed && (self.app.dragging_position() || self.placement_key.0!=placement_key.0);
             self.placement_key=placement_key;
             let display=daozai::display_layout::selected(&self.app.displays,&self.app.settings.display_id);
-            if display.is_some_and(|d|self.native.as_ref().is_some_and(|w|w.place_on_display(self.placement_scale,daozai::display_layout::placement_bounds(d,self.app.settings.avoids_top_bar()),offset,self.app.settings.dock,shift))) {
+            let scale=display.filter(|_|moving_display).map_or(self.placement_scale,|d|d.scale(self.app.settings.island_scale()*ctx.zoom_factor()));
+            if display.is_some_and(|d|self.native.as_ref().is_some_and(|w|w.place_on_display(scale,daozai::display_layout::placement_bounds(d,self.app.settings.avoids_top_bar()),offset,self.app.settings.dock,shift))) {
                 if !self.placed {diagnostics::startup("目标屏幕物理坐标定位完成，已请求显示");}
                 self.placed=true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
@@ -459,7 +518,7 @@ impl eframe::App for Shell {
                 self.system_ready=true;
                 self.fullscreen=observation.fullscreen;
             }
-            self.hidden=daozai::display_layout::hide_for_fullscreen(self.app.settings.hide_fullscreen,self.fullscreen,daozai::display_layout::selected(&self.app.displays,&self.app.settings.display_id).map(|d|d.bounds));
+            self.hidden=!self.app.dragging_position() && daozai::display_layout::hide_for_fullscreen(self.app.settings.hide_fullscreen,self.fullscreen,daozai::display_layout::selected(&self.app.displays,&self.app.settings.display_id).map(|d|d.bounds));
             // 毛玻璃：在岛体左右两侧和画布底边（都在窗口区域之外）取样，估计岛背后的明暗。
             if self.app.settings.skin.is_glass() && !self.hidden {
                 let sampler=self.backdrop.get_or_insert_with(daozai::backdrop::Sampler::start);
@@ -835,6 +894,10 @@ impl eframe::App for Shell {
         #[cfg(windows)] let autostart = self.autostart;
         #[cfg(not(windows))] let autostart = false;
         self.app.settings_ui(ctx, autostart);
+        #[cfg(windows)]
+        if Self::sync_capture_exclusion(&mut self.app, self.native.as_mut()) {
+            ctx.request_repaint();
+        }
         self.app.mail_reader_ui(ctx);
         // 交互切换以帧起点为准，扣掉本帧已经花费的时间。
         #[cfg(windows)] let repaint_after=if self.hidden {Duration::from_secs(1)}
@@ -980,16 +1043,16 @@ fn read_power() -> (Option<u8>, bool) {
 }
 
 #[cfg(windows)]
-fn cursor_logical(ppp: f32) -> Option<(f32, f32)> {
+fn desktop_cursor() -> Option<(i32,i32)> {
     use windows::Win32::Foundation::POINT;
     use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
     let mut p = POINT::default();
     unsafe { GetCursorPos(&mut p) }.ok()?;
-    Some((p.x as f32 / ppp, p.y as f32 / ppp))
+    Some((p.x,p.y))
 }
 
 #[cfg(not(windows))]
-fn cursor_logical(_ppp: f32) -> Option<(f32, f32)> {
+fn desktop_cursor() -> Option<(i32,i32)> {
     None
 }
 

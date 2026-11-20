@@ -919,8 +919,8 @@ impl App {
         paint_temp(c, left + PILL_ICON + PILL_GAP, base, &text, theme::size::PILL_CLOCK, W::Bold, if stale { theme::GRAY } else { theme::WHITE }, H::Left);
     }
 
-    pub(crate) fn page_weather(&mut self, c: &Card, env: &Env, cmds: &mut Vec<Cmd>) {
-        self.page_weather_body(c,env,cmds);
+    pub(crate) fn page_weather(&mut self, c: &Card, header: &Card, env: &Env, cmds: &mut Vec<Cmd>) {
+        self.page_weather_body(c,header,env,cmds);
         if self.weather.solar_open {self.weather.picker_open=false;return;}
         // 地点行「📍 地名 ▾」是城市切换入口：在内容点击区之后注册，优先于「轻点切换日照」；
         // 面板最后注册，命中优先级最高。
@@ -936,11 +936,11 @@ impl App {
         if c.live && open>0.0 && open<1.0 {ctx.request_repaint();}
     }
 
-    fn page_weather_body(&mut self, c: &Card, env: &Env, cmds: &mut Vec<Cmd>) {
+    fn page_weather_body(&mut self, c: &Card, header: &Card, env: &Env, cmds: &mut Vec<Cmd>) {
         let loading = self.weather.loading;
         let ready=self.weather_can_refresh();
-        c.text(326.0, 23.0, if loading { "更新中" } else if ready { "刷新" } else { "稍后刷新" }, 10.5, W::Regular, if ready { theme::GRAY } else { theme::DIM }, H::Center);
-        if c.hit(304.0, 8.0, 44.0, 21.0, "weather-refresh").on_hover_text("重新获取天气；自动模式会重新定位。请求间隔至少 30 秒，失败后至少 2 分钟").clicked() && ready {
+        header.text(326.0, 23.0, if loading { "更新中" } else if ready { "刷新" } else { "稍后刷新" }, 10.5, W::Regular, if ready { theme::GRAY } else { theme::DIM }, H::Center);
+        if header.hit(304.0, 8.0, 44.0, 21.0, "weather-refresh").on_hover_text("重新获取天气；自动模式会重新定位。请求间隔至少 30 秒，失败后至少 2 分钟").clicked() && ready {
             self.weather_refresh();
         }
         let footer=WEATHER_H-4.0;

@@ -128,6 +128,11 @@ pub struct Env {
     pub network: Option<bool>,
     /// 光标位置（与 `frame` 传入的 `win` 同一坐标系）；不在窗口附近时为 None。
     pub cursor: Option<Pos2>,
+    /// Windows 虚拟桌面中的鼠标物理坐标，跨屏时独立于岛体窗口。
+    pub desktop_cursor: Option<(i32,i32)>,
+    pub cancel_position_drag: bool,
+    /// 窗口移开后也能在原生桌面上识别松手。
+    pub primary_down: Option<bool>,
     pub idle_seconds: Option<f64>,
     /// 当前会话是否处于锁屏（Win + L、自动锁屏、唤醒后的登录界面）。
     pub screen_locked: bool,
@@ -680,8 +685,9 @@ impl CalendarState {
 
 }
 
-#[derive(Clone, Copy)]
 struct PositionDrag {
+    original_display:String,
+    original_monitor:Option<String>,
     start: Vec2,
     /// 本段拖动的起始偏移（未取整，换边后重置），单位与 `island_offset` 相同。
     offset: f32,
@@ -715,6 +721,10 @@ const CENTER_TINT: (f32, f32, f32) = (88.0, 222.0, 140.0);
 pub struct App {
     pub opts: Options,
     pub settings: model::Settings,
+    /// 由主程序应用原生截图保护后再保存。
+    pub capture_exclusion_request: Option<bool>,
+    /// 截图和录屏隐藏未能生效时，在设置中显示原因。
+    pub capture_exclusion_error: Option<String>,
     /// 本次运行实际使用兼容渲染（Direct3D 12）；设置里的开关与它不同时提示重启。
     pub render_compat_running: bool,
     pub(crate) todos: model::TodoList,
@@ -724,7 +734,12 @@ pub struct App {
     // 形变
     pub(crate) w: Spring,
     pub(crate) h: Spring,
+    /// 完全展开时的版面高度。切页时与外壳同步变化，开合进度不会因目标页变高而倒退。
+    pub(crate) page_height: Spring,
     pub(crate) open: bool,
+    hold_open: bool,
+    /// 顶栏为图钉让位的动画进度。
+    pub(crate) hold_slot: f32,
     hover_since: Option<f64>,
     leave_since: Option<f64>,
     /// 前台切换导致的强制收起：光标离开前不再自动展开。
@@ -735,6 +750,8 @@ pub struct App {
     drag_glide: Option<anim::Spring>,
     /// 拿起程度 0..1（可略过冲）与速度拉伸量，只影响岛体外形，不影响展开进度。
     drag_lift: anim::Spring,
+    seam_guide:f32,
+    crossed_at:f64,
     drag_stretch: anim::Spring,
     /// 拖动时是否吸在居中；进入吸附的时刻用于触发扫光和「咔嗒」。
     pub(crate) center_locked: bool,
@@ -934,18 +951,24 @@ impl App {
             opts,
             render_compat_running: settings.render_compat,
             settings,
+            capture_exclusion_request: None,
+            capture_exclusion_error: None,
             todos: model::TodoList::load(),
             water: model::Water::default(),
             shelf: model::Shelf::load(),
             w: Spring::new(bw, CLOSE.0, CLOSE.1),
             h: Spring::new(bh, CLOSE.0, CLOSE.1),
+            page_height: Spring::new(PH, OPEN_H.0, OPEN_H.1),
             open: false,
             hover_since: None,
             leave_since: None,
             hover_lock: false,
+            hold_open: false,
+            hold_slot: 0.0,
             reveal: 0.0,
             position_drag: None,
             drag_glide: None,
+            seam_guide:0.0, crossed_at:f64::NEG_INFINITY,
             drag_lift: anim::Spring::new(0.0, LIFT_K.0, LIFT_K.1),
             drag_stretch: anim::Spring::new(0.0, 260.0, 0.6),
             center_locked: false,
@@ -1706,7 +1729,7 @@ impl App {
 
     pub fn foreground_changed(&mut self,ctx:&egui::Context) {
         if ctx.viewport(|viewport|viewport.ime_owns_keys) {return;}
-        self.hover_lock=true;
+        self.hover_lock=!self.hold_open;
         if self.adding && self.buf.trim().is_empty(){self.cancel_edit();}
     }
 
@@ -1858,7 +1881,7 @@ impl App {
         let (bw, bh) = self.base_size();
         // 左右停靠时面板沿水平方向从边缘滑出，用宽度衡量展开程度。
         if self.side() {return (self.w.pos - bw) / (PW - bw).max(1.0);}
-        (self.h.pos - bh) / (self.expanded_height() - bh)
+        (self.h.pos - bh) / (self.page_height.pos - bh).max(1.0)
     }
 
     pub fn cancel_page_scroll(&mut self) {
@@ -1894,7 +1917,7 @@ impl App {
             self.glass_tint=if self.glass_tint<=0.0 {target}else{anim::approach(self.glass_tint,target,3.0,dt)};
         }
         let browser_minimal=self.settings.browser_minimal && self.browser_at_top;
-        if browser_minimal && !self.browser_minimal_active {
+        if browser_minimal && !self.browser_minimal_active && !self.hold_open {
             self.open=false;
             self.hover_lock=true;
             self.hover_since=None;
@@ -1904,6 +1927,7 @@ impl App {
         self.browser_minimal_active=browser_minimal;
         if !self.started {
             self.started = true;
+            self.page_height.snap(self.expanded_height());
             self.last_input = env.t;
             self.last_reminder = env.t;
             self.sit_start = env.t;
@@ -1990,7 +2014,7 @@ impl App {
         let p_prev = self.progress();
         let (offset,badge,notice)=self.bar_parts(win,self.island_rect(win,self.w.pos,self.h.pos));
         let cx=win.center().x+offset.x;
-        let hit = if side {self.side_hit_rect(win,p_prev).translate(offset)} else {self.hit_rect(cx, top, p_prev)};
+        let hit = if side {self.side_hit_rect(win,p_prev,self.page_height.pos).translate(offset)} else {self.hit_rect(cx, top, p_prev)};
         let page_before=self.page;
         let previous_menu=self.shelf_menu_rect.take();
         let inside = env.cursor.is_some_and(|c| hit.contains(c) || previous_menu.is_some_and(|r|r.contains(c)));
@@ -2025,7 +2049,7 @@ impl App {
                 let mail_reading=inside && self.page==5 && self.mail.open_uid.is_some();
                 let mail_list=self.page==5 && !self.mail.accounts.is_empty() && self.mail.open_uid.is_none() && self.mail_list_bounds().contains(cursor);
                 let music_volume=self.page==0 && (Rect::from_min_max(Pos2::new(354.0,106.0),Pos2::new(380.0,130.0)).contains(cursor)
-                    || self.music_volume_open && crate::pages::MUSIC_VOLUME_RECT.contains(cursor));
+                    || self.music_volume_open && self.music_volume_bounds().contains(cursor));
                 if mail_reading || mail_list || music_volume {self.wheel_delta=0.0;}
                 else {
                     // 累积高精度滚轮的小幅输入；停顿或反向时丢弃上一段余量。
@@ -2065,8 +2089,9 @@ impl App {
             }
         } else {self.wheel_delta=0.0;}
         let volume_dragging=self.music_volume_open && ctx.is_being_dragged(egui::Id::new(("card-drag",true,"m-volume-track")));
-        let want = (page_hover && !self.hover_lock && (self.compact_notices()||self.notice.is_none()||self.open)) || self.open && on_notice || (self.open && self.t<self.forced_open_until) || self.drag_hot || volume_dragging || (self.is_editing() && self.open);
+        let want = self.hold_open || (page_hover && !self.hover_lock && (self.compact_notices()||self.notice.is_none()||self.open)) || self.open && on_notice || (self.open && self.t<self.forced_open_until) || self.drag_hot || volume_dragging || (self.is_editing() && self.open);
         self.morph(want, inside, env.t, dt);
+        self.hold_slot=ctx.animate_bool_with_time(egui::Id::new("hold-open-slot"),self.shows_hold_open(),0.18);
 
         // ---------- 绘制 ----------
         let p = self.progress();
@@ -2129,6 +2154,17 @@ impl App {
         }
         self.paint_body(&painter, body, flare, flare_h, radius, feather);
         if lifted > 0.01 {self.paint_lift_halo(&painter, body, flare, flare_h, radius, lifted.min(1.0));}
+        let arrival=1.0-smoothstep(0.0,0.12,(self.t-self.crossed_at) as f32);
+        if self.seam_guide>0.01 || arrival>0.0 {
+            let (center,along)=match dock {
+                model::Dock::Left=>(body.left_center()+Vec2::X*2.0,Vec2::Y),
+                model::Dock::Right=>(body.right_center()-Vec2::X*2.0,Vec2::Y),
+                model::Dock::Top=>(body.center_top()+Vec2::Y*2.0,Vec2::X),
+            };
+            let strength=self.seam_guide.max(arrival);
+            let length=lerp(6.0,20.0,strength)*(1.0-0.45*arrival);
+            painter.line_segment([center-along*length,center+along*length],egui::Stroke::new(2.5,Color32::from_white_alpha((210.0*strength) as u8)));
+        }
         let center_guide=self.paint_center_rim(&painter, body, panel, flare, flare_h, radius, env.screen);
         let content_from=crate::skin_paint::shape_count(&ctx,layer);
 
@@ -2214,6 +2250,7 @@ impl App {
             let c = base.shifted(0.0, (1.0 - reveal) * -5.0).faded(reveal);
             let c = if reveal < 0.6 { c.ghost() } else { c };
             if self.calendar.draft.is_some(){self.draw_calendar_editor(&c);}else if self.task_dialog.is_some(){self.draw_task_editor(&c);}else{page_transition=self.panel_body(&c, env, &mut cmds);}
+            self.draw_hold_open(&c);
             if !self.toast_below {self.toast_layer(&c,106.0);}
         }
         // 岛下的确认提示使用独立裁剪区域，收起时跟随岛体下沿。
@@ -2295,7 +2332,7 @@ impl App {
         let water_view_transition = self.open && self.page == WATER_PAGE && self.subpage.is_none() && !self.sit_mode
             // 点击在本帧推进弹簧之后处理，先识别尚未同步的目标。
             && (self.water_view_t.target != self.water_view as f32 || !self.water_view_t.settled(1.0));
-        let transitioning = water_view_transition || self.position_drag.is_some() || self.drag_glide.is_some() || !self.drag_lift.settled(1.0) || !self.drag_stretch.settled(1.0) || !self.w.settled(PW)
+        let transitioning = (self.hold_slot>0.0 && self.hold_slot<1.0) || water_view_transition || self.position_drag.is_some() || self.drag_glide.is_some() || !self.drag_lift.settled(1.0) || !self.drag_stretch.settled(1.0) || !self.w.settled(PW)
             || self.center_guide>0.002 || self.center_lock_a>0.002 || self.t-self.center_lock_at<CENTER_SWEEP
             || !self.h.settled(self.expanded_height())
             || self.page_e() < 0.7
@@ -2322,9 +2359,11 @@ impl App {
         // 交互形变保持 60 帧，媒体 30 帧；小表情 20 帧，睡眠 10 帧，静态界面每秒核对提醒。
         let repaint_after=std::time::Duration::from_secs_f64(if transitioning{1.0/60.0}else if ambient{1.0/30.0}else if pet_visible{if self.pet.state==PetState::Sleeping{0.1}else{0.05}}else{1.0});
         cmds.append(&mut self.pending);
-        let next_hit=if side {self.side_hit_rect(win,self.progress()).translate(offset)} else {self.hit_rect(cx,top,self.progress())};
+        let next_hit=if side {self.side_hit_rect(win,self.progress(),self.page_height.pos).translate(offset)} else {self.hit_rect(cx,top,self.progress())};
         if page_before!=self.page && self.open {
             let previous=self.page_scroll_area.map_or(hit,|area|hit.union(area));
+            // 滚轮续翻的空白带按最终页边界计算，点击区域则跟随当前画面。
+            let next_hit=if side {self.side_hit_rect(win,self.progress(),self.expanded_height()).translate(offset)}else{next_hit};
             // 保留缩短一侧原有的整段宽度。和新页重叠一点，避免在边缘来回挪动时误收起。
             self.page_scroll_area=env.cursor.filter(|&c|previous.contains(c)).and_then(|c|{
                 let mut band=previous;
@@ -2454,7 +2493,7 @@ impl App {
         let appear=self.messenger_appear();
         if appear>0.02 {
             // 展开：贴在面板外侧、顶端对齐的竖向胶囊；顶部停靠和左停靠在右边，右停靠在左边。
-            let full=self.island_rect(win,PW,self.expanded_height());
+            let full=self.island_rect(win,PW,self.page_height.pos);
             // 顶部停靠时面板贴着屏幕上沿，胶囊往下让一点，圆顶不会被屏幕边切掉。
             let inset=self.unread_top_inset();
             let height=self.unread_capsule_height(full.height()-inset);
@@ -2698,12 +2737,47 @@ impl App {
 
     fn update_position_drag(&mut self,ctx:&egui::Context,env:&Env,dt:f32) {
         let limit=model::ISLAND_OFFSET_MAX as f32;
-        if let Some(mut drag)=self.position_drag {
+        let mut seam_strength=0.0;
+        if let Some(mut drag)=self.position_drag.take() {
+            let current_id=&self.settings.display_id;
+            let monitor=if *current_id==drag.original_display {drag.original_monitor.as_ref()}else{Some(current_id)};
+            let disconnected=monitor.is_some_and(|id|!self.displays.iter().any(|d|d.id==*id));
+            if disconnected || env.cancel_position_drag || ctx.input(|i|i.key_pressed(egui::Key::Escape)) {
+                self.settings.display_id=drag.original_display;
+                (self.settings.dock,self.settings.island_offset)=drag.original;
+                self.drag_glide=None;
+                self.drag_stretch.target=0.0;
+                self.hover_lock=true;
+                self.center_locked=false;
+                self.center_guide=0.0;
+                self.crossed_at=f64::NEG_INFINITY;
+                self.seam_guide=0.0;
+                return;
+            }
             let mut speed=0.0;
-            if let (Some(cursor),Some(screen))=(env.cursor,env.screen) {
-                // 使用屏幕内坐标，窗口移动或横竖画布切换不会累积位移。
-                let cursor=cursor-screen.min;
-                let edges=[(model::Dock::Top,cursor.y.max(0.0)),(model::Dock::Left,cursor.x.max(0.0)),(model::Dock::Right,(screen.width()-cursor.x).max(0.0))];
+            let mut geometry=env.cursor.zip(env.screen).map(|(p,r)|(p-r.min,r.size()));
+            let mut crossed=false;
+            let mut seam=None;
+            if let (Some(point),Some(active))=(env.desktop_cursor.filter(|_|self.displays.len()>1),crate::display_layout::selected(&self.displays,current_id)) {
+                let zoom=self.settings.island_scale()*ctx.zoom_factor();
+                let target=crate::display_layout::drag_target(&self.displays,active,point,zoom);
+                crossed=target.id!=active.id;
+                let scale=target.scale(zoom);
+                let b=crate::display_layout::placement_bounds(target,self.settings.avoids_top_bar());
+                geometry=Some((Vec2::new((point.0-b.left) as f32,(point.1-b.top) as f32)/scale,
+                    Vec2::new((b.right-b.left) as f32,(b.bottom-b.top) as f32)/scale));
+                seam=self.displays.iter().filter(|d|d.id!=target.id)
+                    .filter_map(|d|crate::display_layout::shared_edge(target.bounds,d.bounds,point))
+                    .filter_map(|(depth,edge)|edge.map(|dock|(depth as f32/scale,dock)))
+                    .min_by(|a,b|a.0.abs().total_cmp(&b.0.abs()));
+                if crossed {
+                    self.settings.display_id=if Some(&target.id)==drag.original_monitor.as_ref() {drag.original_display.clone()}else{target.id.clone()};
+                    self.crossed_at=self.t;
+                    self.center_locked=false;
+                }
+            }
+            if let Some((cursor,size))=geometry {
+                let edges=[(model::Dock::Top,cursor.y.max(0.0)),(model::Dock::Left,cursor.x.max(0.0)),(model::Dock::Right,(size.x-cursor.x).max(0.0))];
                 let &(nearest,distance)=edges.iter().min_by(|a,b|a.1.total_cmp(&b.1)).unwrap();
                 let current=edges.iter().find(|(dock,_)|*dock==self.dock()).unwrap().1;
                 // 靠近新边缘才换边；角落保留缓冲，防止横竖形态来回跳变。
@@ -2711,12 +2785,16 @@ impl App {
                 // 左右对侧：过了中线、明显更靠近另一侧就换过去，不必甩到屏幕尽头；中线附近留缓冲不来回跳。
                 if target.is_none() && self.side() {
                     let (opposite,far)=if self.dock()==model::Dock::Left {(model::Dock::Right,edges[2].1)}else{(model::Dock::Left,edges[1].1)};
-                    if far+screen.width()*0.07<current {target=Some(opposite);}
+                    if far+size.x*0.07<current {target=Some(opposite);}
                 }
+                if crossed {target=Some(seam.filter(|(depth,_)|depth.abs()<=64.0).map_or(nearest,|(_,dock)|dock));}
                 let switch=target.is_some();
                 if let Some(dock)=target {self.settings.dock=dock;}
-                let (position,length,extent,start)=if self.side() {(cursor.y,screen.height(),crate::side_dock::SIDE_HALF_EXTENT,drag.start.y)}
-                    else {(cursor.x,screen.width(),crate::display_layout::ISLAND_HALF_EXTENT,drag.start.x)};
+                if let Some((depth,_))=seam.filter(|(_,dock)|*dock==self.dock()) {
+                    seam_strength=(1.0-smoothstep(16.0,72.0,depth))*smoothstep(-16.0,0.0,depth);
+                }
+                let (position,length,extent,start)=if self.side() {(cursor.y,size.y,crate::side_dock::SIDE_HALF_EXTENT,drag.start.y)}
+                    else {(cursor.x,size.x,crate::display_layout::ISLAND_HALF_EXTENT,drag.start.x)};
                 let travel=(length/2.0-extent).max(0.0);
                 let raw=if travel<=0.0 {0.0}else if switch {(position-length/2.0)/travel*limit}
                     else {drag.offset+(position-start)/travel*limit};
@@ -2729,7 +2807,7 @@ impl App {
                     self.drag_lift.vel-=2.8;
                 }
                 self.center_locked=centered;
-                let original=Some(drag.original.1 as f32).filter(|_|self.dock()==drag.original.0);
+                let original=Some(drag.original.1 as f32).filter(|_|self.dock()==drag.original.0 && self.settings.display_id==drag.original_display);
                 let target=if centered {0.0}else{original.filter(|p|(raw-p).abs()<=DRAG_MAGNET).unwrap_or(raw)};
                 self.settings.island_offset=target.round() as i32;
                 let glide=self.drag_glide.get_or_insert_with(||anim::Spring::new(drag.offset,GLIDE_FOLLOW.0,GLIDE_FOLLOW.1));
@@ -2745,7 +2823,7 @@ impl App {
                 if travel>0.0 {speed=self.drag_glide.map_or(0.0,|g|g.vel.abs()/limit*travel);}
             }
             self.drag_stretch.target=(speed/STRETCH_SPEED).min(1.0)*STRETCH_MAX;
-            if !ctx.input(|i|i.pointer.primary_down()) {
+            if !env.primary_down.unwrap_or_else(||ctx.input(|i|i.pointer.primary_down())) {
                 self.position_drag=None;
                 self.hover_lock=true;
                 self.drag_stretch.target=0.0;
@@ -2753,11 +2831,12 @@ impl App {
                     glide.tune(GLIDE_SETTLE.0,GLIDE_SETTLE.1);
                     glide.target=self.settings.island_offset as f32;
                 }
-                if (self.dock(),self.settings.island_offset)!=drag.original {self.settings.save();}
+                if self.settings.display_id!=drag.original_display || (self.dock(),self.settings.island_offset)!=drag.original {self.settings.save();}
             }else{
                 self.position_drag=Some(drag);
             }
         }
+        self.seam_guide=anim::approach(self.seam_guide,seam_strength,24.0,dt);
         self.drag_lift.target=if self.position_drag.is_some() {1.0}else{0.0};
         self.drag_lift.step(dt);
         self.drag_stretch.step(dt);
@@ -2855,6 +2934,8 @@ impl App {
         Some(bounds)
     }
 
+    pub fn dragging_position(&self)->bool {self.position_drag.is_some()}
+
     /// 拖动中和落位期间窗口使用的位置（-1 … 1，不取整）；其余时候就是保存的位置。
     pub fn placement_offset(&self)->f32 {
         let limit=model::ISLAND_OFFSET_MAX as f32;
@@ -2865,13 +2946,15 @@ impl App {
     fn drag_scale(&self)->(f32,f32) {
         let lift=self.drag_lift.pos.max(0.0);let stretch=self.drag_stretch.pos.max(0.0);
         let along=1.0+LIFT_SCALE.0*lift+stretch;
-        let across=1.0+LIFT_SCALE.1*lift-stretch*0.5;
+        let arrival=1.0-smoothstep(0.0,0.12,(self.t-self.crossed_at) as f32);
+        let across=(1.0+LIFT_SCALE.1*lift-stretch*0.5)*(1.0-0.22*arrival);
         if self.side() {(across,along)}else{(along,across)}
     }
 
     fn start_position_drag(&mut self,start:Pos2,screen:Rect) {
         let offset=self.settings.island_offset;
-        self.position_drag=Some(PositionDrag{start:start-screen.min,offset:offset as f32,original:(self.dock(),offset)});
+        let original_monitor=crate::display_layout::selected(&self.displays,&self.settings.display_id).map(|d|d.id.clone());
+        self.position_drag=Some(PositionDrag{original_display:self.settings.display_id.clone(),original_monitor,start:start-screen.min,offset:offset as f32,original:(self.dock(),offset)});
         let mut glide=anim::Spring::new(offset as f32,GLIDE_FOLLOW.0,GLIDE_FOLLOW.1);
         if let Some(g)=self.drag_glide {glide.pos=g.pos;glide.vel=g.vel;}
         self.drag_glide=Some(glide);
@@ -2942,7 +3025,9 @@ impl App {
             }
         }
         let _ = inside;
-        if self.open {self.h.target=self.expanded_height();}
+        self.page_height.target=self.expanded_height();
+        if self.open {self.h.target=self.page_height.target;}
+        self.page_height.step(dt);
         let (prev_w,prev_h)=(self.w.pos,self.h.pos);
         self.w.step(dt);
         self.h.step(dt);
@@ -3010,12 +3095,23 @@ impl App {
         let clock_w = paint::clock_width(base,&clock,size::CLOCK);
         let battery_space=if show_battery {24.0}else{0.0};
         let group = battery_space + date_w + 8.0 + clock_w;
-        let gx = local_cx - group / 2.0 + if show_battery {6.0}else{0.0};
-        // 日程页左侧还有新增按钮，顶栏从操作区右侧开始，避免较长的日期和时段文字挤到按钮上。
-        let gx = if self.page==CALENDAR_PAGE {gx.max(155.0)}else{gx};
-        let hb = (gx + 8.5, 18.6);
-        let hd = gx + battery_space;
-        let hc = hd + date_w + 8.0;
+        // 分栏、日期时间和右侧操作各占一区。带秒钟和时段的长时间只在空间不足时缩小。
+        let shift=self.header_music_shift();
+        let (left,right)=match self.page {
+            SHELF_PAGE=>(124.0,308.0-shift),
+            CALENDAR_PAGE=>(155.0,352.0-shift),
+            WEATHER_PAGE|QUOTA_PAGE=>(85.0,300.0-shift),
+            _=>(0.0,PW),
+        };
+        // 直接过渡时钟实际需要移动的距离，避免先等边界追上，再在最后几帧挤动文字。
+        let ctx=base.ui.ctx();
+        let target_fit=((right-left)/group).min(1.0);
+        let target_x=(local_cx-group*target_fit/2.0+if show_battery {6.0}else{0.0}).min(right-group*target_fit).max(left);
+        let fit=ctx.animate_value_with_time(egui::Id::new("header-clock-fit"),target_fit,0.18);
+        let gx=ctx.animate_value_with_time(egui::Id::new("header-clock-x"),target_x,0.18);
+        let hb = (gx + 8.5*fit, 18.6);
+        let hd = gx + battery_space*fit;
+        let hc = hd + (date_w + 8.0)*fit;
         // 药丸起点布局
         let has_music=self.media.is_music();
         let layout=self.resident.current();
@@ -3024,7 +3120,7 @@ impl App {
 
         if self.effective_minimal() && self.notification_bell().is_none() && p < 0.02 { return; }
         // 电池：位置/大小连续插值
-        let bk = lerp(1.0, 0.8, m);
+        let bk = lerp(1.0, 0.8*fit, m);
         let bpos = (lerp(pb.0, hb.0, m), lerp(pb.1, hb.1, m));
         if show_battery {paint::battery(&base.faded(lerp(layout.clearance(bar::BATTERY),1.0,m)), bpos.0, bpos.1, env.battery, env.charging, bk);}
 
@@ -3036,27 +3132,27 @@ impl App {
             paint::clock(&base.faded(a_pill),cpos.0,cpos.1,&clock,size::PILL_CLOCK);
         }
         if a_head > 0.0 {
-            paint::clock(&base.faded(a_head),cpos.0,cpos.1-0.5,&clock,size::CLOCK);
+            paint::clock(&base.faded(a_head),cpos.0,cpos.1-0.5,&clock,size::CLOCK*fit);
         }
         // 日期随内容淡入，从药丸方向轻轻滑出
         if reveal > 0.0 {
-            base.faded(reveal).text(hd + (1.0 - reveal) * 10.0, 22.5, &env.date, size::DATE, W::Regular, Color32::from_rgb(210, 210, 214), H::Left);
+            base.faded(reveal).text(hd + (1.0 - reveal) * 10.0, 22.5, &env.date, size::DATE*fit, W::Regular, Color32::from_rgb(210, 210, 214), H::Left);
         }
         if self.open && reveal>0.95 && p>0.98 && !self.is_editing() && !self.drag_hot {
             if let Some(screen)=env.screen {
                 // 中间的日期时间区不占用两侧的新增、刷新和设置按钮。
-                let left=hd.max(150.0);let right=(hc+clock_w).min(303.0);
+                let left=(hd-12.0).max(140.0).max(left);let right=(hc+clock_w*fit+12.0).min(303.0).min(right);
                 if right>left {
                     // Windows 没有「抓手」光标，Grab 会变成四向箭头；保持普通箭头，改用岛体内的把手提示。
                     let response=base.hit_drag(left,4.0,right-left,26.0,"island-position").on_hover_text("按住拖动位置");
                     let (_,press)=base.hover_t(&response);
-                    // 停留才显现：划过（< 0.3 s）什么都不出现；先露出把手，再慢慢浮起底色；按下立即到位，移开快速淡出。
+                    // 展开时保留淡把手；悬停后加亮，按下立即反馈。
                     let dwell=(if response.hovered() {self.t-*self.grip_hover_since.get_or_insert(self.t)}else{self.grip_hover_since=None;0.0}) as f32;
                     if response.hovered() && dwell<1.2 {base.ui.ctx().request_repaint();}
                     let ctx=base.ui.ctx();
                     let grip_in=ctx.animate_value_with_time(response.id.with("grip"),smoothstep(0.30,0.65,dwell),0.12);
                     let fill_in=ctx.animate_value_with_time(response.id.with("grip-fill"),smoothstep(0.50,1.00,dwell),0.12);
-                    let (grip_in,fill_in)=(grip_in.max(press),fill_in.max(press));
+                    let (grip_in,fill_in)=(grip_in.max(press).max(0.40),fill_in.max(press));
                     if grip_in>0.003 {
                         let pad=6.0;
                         let (x,w)=(left-pad,right-left+pad*2.0);
@@ -3074,7 +3170,7 @@ impl App {
             }
         }
         if has_music && (p>0.1 || layout.x[bar::MUSIC].is_some()) {
-            let x=lerp(local_cx+layout.x[bar::MUSIC].unwrap_or(0.0),367.0,m);
+            let x=lerp(local_cx+layout.x[bar::MUSIC].unwrap_or(0.0),367.0-self.header_music_shift(),m);
             let y=lerp(15.0,18.0,m);
             paint::playback_bars(base,x,y,self.t,self.media.playing,theme::WHITE);
             if self.open && reveal>0.6 && base.hit(x-13.0,y-14.0,26.0,28.0,"header-music")
@@ -3141,6 +3237,39 @@ impl App {
     // ---------------------------------------------------------------
     // 面板主体：页标题 + 页面（带切页过渡）+ 翻页箭头 + 页码豆
     // ---------------------------------------------------------------
+    fn shows_hold_open(&self)->bool {
+        self.hold_open || self.page==SHELF_PAGE && self.calendar.draft.is_none() && self.task_dialog.is_none()
+    }
+
+    pub(crate) fn header_music_shift(&self)->f32 {
+        if self.media.is_music() {28.0*smoothstep(0.0,0.65,self.hold_slot)}else{0.0}
+    }
+
+    fn draw_hold_open(&mut self,c:&Card) {
+        // 声波先让出位置，再显示图钉；收回时按相反顺序。
+        let alpha=smoothstep(if self.media.is_music(){0.65}else{0.0},1.0,self.hold_slot);
+        if alpha<=0.001 {return;}
+        let Some(button)=c.edge_control(354.0,5.0,25.0,26.0) else{return;};
+        let visible=self.shows_hold_open();
+        let button=button.faded(alpha);
+        let button=if visible && alpha>0.8 {button}else{button.ghost()};
+        let response=button.hit(354.0,5.0,25.0,26.0,"hold-open")
+            .on_hover_text(if self.hold_open {"取消保持展开"}else{"保持展开"})
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
+        if response.clicked() {
+            self.hold_open=!self.hold_open;
+            self.hover_lock=false;
+            self.leave_since=None;
+            self.forced_open_until=0.0;
+        }
+        let (hover,press)=button.hover_t(&response);
+        let active=button.ui.ctx().animate_bool_with_time(egui::Id::new("hold-open-active"),self.hold_open,0.12);
+        let bg=paint::mix(Color32::from_white_alpha((hover*30.0) as u8),Color32::from_rgb(35,77,65),active);
+        let fg=paint::mix(paint::mix(theme::GRAY,theme::WHITE,hover),Color32::from_rgb(181,244,220),active);
+        button.circle(367.0,18.0,10.5,bg);
+        paint::hold_pin(&button.scaled(367.0,18.0,1.0-press*0.1),367.0,18.0,active,fg);
+    }
+
     fn panel_body(&mut self, c: &Card, env: &Env, cmds: &mut Vec<Cmd>) -> bool {
         let settings_card=if self.side() {c.edge_control(380.0,4.0,28.0,28.0)} else {Some(c.clone())};
         if let Some(c)=settings_card {
@@ -3171,17 +3300,20 @@ impl App {
             let old_dx = -self.page_dir * 18.0 * anim::ease_out_cubic(e / 0.3);
             if old_a > 0.0 && self.module_on(self.page_from) {
                 let oc = c.faded(old_a).ghost();
-                self.page_title(self.page_from, &oc);
-                self.render_page(self.page_from, &oc.shifted(old_dx, 0.0), env, &mut Vec::new());
+                let old_header=c.faded(1.0-smoothstep(0.0,0.10,e)).ghost();
+                self.page_title(self.page_from, &old_header);
+                self.render_page(self.page_from, &oc.shifted(old_dx, 0.0), &old_header, env, &mut Vec::new());
             }
             let nc = c.faded(new_a);
-            self.page_title(self.page, &nc);
-            let nc = nc.shifted(self.slide.pos, 0.0);
             let nc = if e < 0.12 { nc.ghost() } else { nc };
-            self.render_page(self.page, &nc, env, cmds);
+            // 同一位置的标题先退后进，避免两个页面的汉字在中间帧叠成重影。
+            let header=c.faded(smoothstep(0.10,0.23,e));
+            let header=if e<0.12 {header.ghost()}else{header};
+            self.page_title(self.page, &header);
+            self.render_page(self.page, &nc.shifted(self.slide.pos,0.0), &header, env, cmds);
         } else {
             self.page_title(self.page, c);
-            self.render_page(self.page, c, env, cmds);
+            self.render_page(self.page, c, c, env, cmds);
         }
         self.nav(c);
         if self.page==0 && c.live {self.draw_music_volume(c,cmds);}
@@ -3228,7 +3360,7 @@ impl App {
         }
         // 页码豆：宽度由弹簧驱动，整行实时居中；当前页是白色长条
         let gap = 4.0;
-        let dot_y=self.expanded_height()-7.2;
+        let dot_y=self.page_height.pos-7.2;
         let total: f32 = pages.iter().map(|page| self.dots[*page].pos).sum::<f32>() + gap * (pages.len()-1) as f32;
         let mut x = PW / 2.0 - total / 2.0;
         let mut clicked = None;
@@ -3254,19 +3386,21 @@ impl App {
         }
     }
 
-    fn render_page(&mut self, page: usize, c: &Card, env: &Env, cmds: &mut Vec<Cmd>) {
+    fn render_page(&mut self, page: usize, c: &Card, header: &Card, env: &Env, cmds: &mut Vec<Cmd>) {
+        // 页面内容横向滑动，右侧操作只随切页淡入淡出，避免滑过图钉。
+        let actions=header.shifted(-self.header_music_shift(),0.0);
         match page {
             0 => self.page_music(c, env, cmds),
-            1 => self.page_focus(c, env),
-            2 => self.page_water(c, env),
-            3 => self.page_shelf(c, env, cmds),
+            1 => self.page_focus(c, header, env),
+            2 => self.page_water(c, header, env),
+            3 => self.page_shelf(c, header, env, cmds),
             4 => self.page_todo(c, env, cmds),
             5 => self.page_mail(c, env, cmds),
-            6 => self.page_quota(c),
+            6 => self.page_quota(c,&actions),
             PERFORMANCE_PAGE => self.page_performance(c),
-            8 => self.page_weather(c,env,cmds),
+            8 => self.page_weather(c,&actions,env,cmds),
             BLUETOOTH_PAGE => self.page_wireless(c,env),
-            CALENDAR_PAGE => self.page_calendar(c,env),
+            CALENDAR_PAGE => self.page_calendar(c,header,env),
             _ => self.page_settings(c),
         }
     }

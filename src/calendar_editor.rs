@@ -89,7 +89,13 @@ impl App {
         let Some(d)=self.calendar.draft.as_mut() else{return;};
         let accent=Color32::from_rgb(82,162,255);
         c.centered_text(43.0,20.0,if d.uid.is_some(){"编辑日程"}else{"新建日程"},13.0,W::Semibold,theme::WHITE,H::Left);
-        c.centered_text(370.0,20.0,"仅保存在本机",9.0,W::Regular,theme::GRAY,H::Right);
+        // 图钉占用右侧时，将说明放到表单末行，给时间和图钉留出空间。
+        if self.hold_slot<1.0 {
+            c.faded(1.0-self.hold_slot).centered_text(370.0,20.0,"仅保存在本机",9.0,W::Regular,theme::GRAY,H::Right);
+        }
+        if self.hold_slot>0.0 {
+            c.faded(self.hold_slot).centered_text(370.0,172.0,"仅保存在本机",9.0,W::Regular,theme::GRAY,H::Right);
+        }
         for (label,y) in [("名称",49.0),("开始",82.0),("结束",114.0),("提醒",147.0)]{c.centered_text(43.0,y,label,10.0,W::Regular,theme::GRAY,H::Left);}
         for (x,y,w) in [(86.0,38.0,284.0),(86.0,71.0,120.0),(86.0,103.0,120.0)]{c.fill(x,y,w,23.0,6.0,theme::CARD);}
         if !d.all_day {for y in [71.0,103.0]{c.fill(214.0,y,66.0,23.0,6.0,theme::CARD);}}
@@ -106,7 +112,7 @@ impl App {
             if r.clicked(){d.reminder=value;}
         }
         let message=if d.error.is_empty(){"日期 年-月-日 · 时间 时:分"}else{&d.error};
-        c.centered_text(86.0,172.0,&c.fit(message,9.0,W::Regular,284.0),9.0,W::Regular,if d.error.is_empty(){theme::GRAY}else{theme::RED},H::Left);
+        c.centered_text(86.0,172.0,&c.fit(message,9.0,W::Regular,284.0-68.0*self.hold_slot),9.0,W::Regular,if d.error.is_empty(){theme::GRAY}else{theme::RED},H::Left);
         let mut delete=false;
         if d.uid.is_some(){
             let (r,b)=paint::capsule(c,43.0,188.0,82.0,22.0,"calendar-editor-delete",theme::BTN,theme::BTN_HOVER);

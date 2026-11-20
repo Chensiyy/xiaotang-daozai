@@ -675,7 +675,7 @@ fn top_bar_modes_preserve_legacy_settings_and_save_the_selected_display_mode(){
     use crate::model::Settings;
     let path=crate::model::config_dir().join("settings.txt");std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     let bounds=crate::display_layout::Bounds{left:-1920,top:-400,right:0,bottom:680};
-    let display=crate::display_layout::Display{id:"test".into(),label:"测试屏".into(),bounds,work_top:-368,primary:true};
+    let display=crate::display_layout::Display{id:"test".into(),label:"测试屏".into(),bounds,work_top:-368,primary:true,dpi:96};
     for enabled in [false,true] {
         std::fs::write(&path,format!("avoid_top_bar={}\n",enabled as u8)).unwrap();
         let mut settings=Settings::load();
@@ -1338,7 +1338,7 @@ fn island_drag_frame(h:&mut H,bounds:crate::display_layout::Bounds,ppp:f32,point
     let mut events=cursor.map(|p|vec![egui::Event::PointerMoved(p)]).unwrap_or_default();
     if let (Some(pos),Some(pressed))=(cursor,pressed){events.push(egui::Event::PointerButton{pos,button:egui::PointerButton::Primary,pressed,modifiers:Default::default()});}
     h.t+=1.0/60.0;
-    let env=Env{t:h.t,clock:"09:41:00".into(),today:"2026-10-28".into(),date:"10月28日 周三".into(),cursor,screen:Some(screen),bt_ready:true,..Default::default()};
+    let env=Env{t:h.t,clock:"09:41:00".into(),today:"2026-10-28".into(),date:"10月28日 周三".into(),cursor,desktop_cursor:pointer.map(|p|(bounds.left+(p.x*ppp).round() as i32,bounds.top+(p.y*ppp).round() as i32)),screen:Some(screen),bt_ready:true,..Default::default()};
     let raw=egui::RawInput{screen_rect:Some(Rect::from_min_size(Pos2::ZERO,Vec2::new(crate::app::CANVAS_W.max(width),height))),time:Some(h.t),events,focused:true,
         viewports:std::iter::once((egui::ViewportId::ROOT,egui::ViewportInfo{native_pixels_per_point:Some(ppp),..Default::default()})).collect(),..Default::default()};
     let output=h.ctx.run(raw,|ctx|{egui::CentralPanel::default().frame(egui::Frame::new()).show(ctx,|ui|{
@@ -1355,6 +1355,56 @@ fn island_drag_header(h:&mut H,bounds:crate::display_layout::Bounds,ppp:f32)->Po
     h.shapes.iter().find_map(|shape|match &shape.shape{
         egui::Shape::Text(text) if text.galley.text()=="10月28日 周三"=>Some(text.visual_bounding_rect().center()-screen.min.to_vec2()),_=>None,
     }).expect("展开后的日期应可见")
+}
+
+#[test]
+fn island_position_drag_crosses_shared_edge_and_persists_target(){
+    use crate::{display_layout::{Bounds,Display},model::{Dock,Settings}};
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let a=Bounds{left:-1920,top:0,right:0,bottom:1080};
+    let b=Bounds{left:0,top:-240,right:2560,bottom:1200};
+    let mut h=H::new();
+    h.app.displays=vec![
+        Display{id:"A".into(),label:"左屏".into(),bounds:a,work_top:0,primary:true,dpi:96},
+        Display{id:"B".into(),label:"右屏".into(),bounds:b,work_top:-240,primary:false,dpi:144},
+    ];
+    h.app.settings.display_id="A".into();
+    h.app.settings.save();
+    let start=island_drag_header(&mut h,a,1.0);
+    island_drag_frame(&mut h,a,1.0,Some(start),Some(true));
+    island_drag_frame(&mut h,a,1.0,Some(Pos2::new(1918.0,700.0)),None);
+    island_drag_frame(&mut h,a,1.0,Some(Pos2::new(1924.0,700.0)),None);
+    assert_eq!((h.app.settings.display_id.as_str(),h.app.settings.dock),("A",Dock::Right));
+    island_drag_frame(&mut h,a,1.0,Some(Pos2::new(1960.0,700.0)),None);
+    assert_eq!((h.app.settings.display_id.as_str(),h.app.settings.dock),("B",Dock::Left));
+    assert_eq!(Settings::load().display_id,"A");
+    let offset=h.app.settings.island_offset;
+    let travel=(1440.0/1.5/2.0)-crate::side_dock::SIDE_HALF_EXTENT;
+    assert_eq!(offset,((940.0_f32/1.5-480.0)/travel*100.0).round() as i32,"使用右屏的 DPI 和虚拟桌面原点");
+    let on_b=Pos2::new(40.0/1.5,940.0/1.5);
+    island_drag_frame(&mut h,b,1.5,Some(on_b),None);
+    assert!(h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::LineSegment{points,stroke}
+        if stroke.width==2.5 && points[0].x==points[1].x && points[0].x<24.0 && stroke.color.a()>0)),
+        "交接后在右屏左边缘画出短亮线");
+    island_drag_frame(&mut h,b,1.5,Some(on_b),Some(false));
+    let saved=Settings::load();
+    assert_eq!((saved.display_id.as_str(),saved.dock,saved.island_offset),("B",Dock::Left,offset));
+    for disconnect in [false,true] {
+        let start=island_drag_header(&mut h,b,1.5);
+        island_drag_frame(&mut h,b,1.5,Some(start),Some(true));
+        island_drag_frame(&mut h,b,1.5,Some(Pos2::new(-4.0,600.0)),None);
+        assert_eq!(h.app.settings.display_id,"B","反向轻微越界仍可贴右屏左侧");
+        island_drag_frame(&mut h,b,1.5,Some(Pos2::new(-80.0,600.0)),None);
+        assert_eq!((h.app.settings.display_id.as_str(),h.app.settings.dock),("A",Dock::Right));
+        if disconnect {
+            h.app.displays.retain(|d|d.id!="A");
+            island_drag_frame(&mut h,b,1.5,Some(on_b),Some(false));
+        }else{
+            h.frame(vec![egui::Event::Key{key:egui::Key::Escape,physical_key:None,pressed:true,repeat:false,modifiers:Default::default()}]);
+            island_drag_frame(&mut h,b,1.5,Some(on_b),Some(false));
+        }
+        assert_eq!((h.app.settings.display_id.as_str(),h.app.settings.dock,h.app.settings.island_offset),("B",Dock::Left,offset),"取消或拔屏应恢复整组原始位置");
+    }
 }
 
 #[test]
@@ -1414,7 +1464,7 @@ fn island_position_drag_below_a_top_bar_switches_edges_like_the_bare_screen(){
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     use crate::model::{Dock,Settings};
     let monitor=crate::display_layout::Bounds{left:0,top:0,right:1920,bottom:1080};
-    let display=crate::display_layout::Display{id:"d".into(),label:"d".into(),bounds:monitor,work_top:28,primary:true};
+    let display=crate::display_layout::Display{id:"d".into(),label:"d".into(),bounds:monitor,work_top:28,primary:true,dpi:96};
     let bounds=crate::display_layout::placement_bounds(&display,true);
     for to in [Dock::Left,Dock::Right] {
         let mut h=H::new();h.app.settings.save();
@@ -2532,6 +2582,92 @@ fn minimal_hover_does_not_catch_tabs_during_collapse() {
 }
 
 #[test]
+fn hold_open_shelf_tabs_and_all_page_exit() {
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    for tab in [0,1] {
+        let mut h=H::new();
+        let pin_id=egui::Id::new(("card",true,"hold-open"));
+        h.app.settings.visible_pages.fill(true);
+        h.app.go(3,1.0);
+        h.hover(Pos2::new(WIN_W/2.0,12.0),1.0);
+        h.app.shelf_tab=tab;
+        h.frame(vec![]);
+        let pin=h.ctx.read_response(pin_id).expect("置物架和剪贴板都应提供图钉").rect.center();
+        h.click(pin);
+        let away=Pos2::new(2.0,WIN_H-2.0);
+        h.app.foreground_changed(&h.ctx);
+        h.browser_at_top=Some(true);
+        h.app.settings.browser_minimal=true;
+        h.hover(away,1.0);
+        assert!(h.app.open,"切到浏览器后应保持展开");
+        for page in [0,1,2,4,5,6,7,8] {
+            h.app.go(page,1.0);
+            h.hover(away,0.7);
+            assert!(h.app.open);
+            assert!(h.ctx.read_response(pin_id).is_some(),"第 {page} 页应能取消固定");
+        }
+        h.click(h.ctx.read_response(pin_id).unwrap().rect.center());
+        h.hover(pin,0.5);
+        assert!(h.app.open,"取消固定时鼠标仍在岛上");
+        assert!(h.ctx.read_response(pin_id).is_none(),"其他页面淡出后不能留下图钉热区");
+        h.hover(away,1.0);
+        assert!(!h.app.open,"取消后恢复自动收起");
+    }
+}
+
+#[test]
+fn hold_open_header_controls_do_not_overlap_during_page_transitions() {
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=H::new();
+    h.media=crate::smtc::NowPlaying{title:"歌曲".into(),artist:"歌手".into(),playing:true,..Default::default()};
+    h.app.settings.visible_pages.fill(true);
+    h.app.settings.clock_seconds=true;
+    h.app.settings.clock_12h=true;
+    h.app.settings.clock_period=2;
+    h.power=(Some(100),false);
+    h.app.clipboard.lock().push("第一条","09:41");
+    h.app.shelf_tab=1;
+    h.app.show_page(1);
+    h.hover(H::local(200.0,50.0),0.8);
+    let rect=|h:&H,name|h.ctx.read_response(egui::Id::new(("card",true,name))).map(|r|r.rect);
+    for (page,action) in [(3,"clip-clear"),(6,"quota-refresh"),(8,"weather-refresh"),(0,"m-play")] {
+        h.app.go(page,1.0);
+        for _ in 0..40 {
+            h.frame(vec![]);
+            if let Some(pin)=rect(&h,"hold-open") {
+                let music=rect(&h,"header-music").unwrap();
+                let gear=rect(&h,"page-settings").unwrap();
+                assert!(!pin.intersects(music) && !pin.intersects(gear));
+                if let Some(action)=rect(&h,action) {
+                    assert!(!action.intersects(music) && !action.intersects(pin));
+                }
+            }
+        }
+        assert!(rect(&h,action).is_some());
+        if page==3 {
+            let tabs=h.ctx.read_response(egui::Id::new(("card",true,("shelf-tab",1usize)))).unwrap().rect;
+            let date=h.shapes.iter().find_map(|s|match &s.shape{
+                egui::Shape::Text(text) if text.galley.text()=="10月28日 周三"=>Some(text.visual_bounding_rect()),
+                _=>None,
+            }).unwrap();
+            assert!(date.left()-24.0>=tabs.right(),"电池和日期不能覆盖分栏：{date:?} {tabs:?}");
+            h.click(rect(&h,"hold-open").unwrap().center());
+            h.app.shelf_tab=0;h.frame(vec![]);
+            assert!(!rect(&h,"shelf-add").unwrap().intersects(rect(&h,"header-music").unwrap()));
+        }
+    }
+    h.media.volume=Some((50,false));
+    h.frame(vec![]);
+    h.click(H::local(367.0,118.0));
+    h.hover(H::local(367.0,18.0),0.4);
+    assert!(!rect(&h,"m-volume-surface").unwrap().intersects(rect(&h,"hold-open").unwrap()));
+    h.click(rect(&h,"hold-open").unwrap().center());
+    h.hover(H::local(367.0,18.0),0.5);
+    assert!(rect(&h,"hold-open").is_none());
+    assert!((rect(&h,"header-music").unwrap().center().x-H::local(367.0,18.0).x).abs()<1.0);
+}
+
+#[test]
 fn music_header_shortcut_returns_from_every_page_without_controlling_playback() {
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     for playing in [true,false] {
@@ -2540,7 +2676,7 @@ fn music_header_shortcut_returns_from_every_page_without_controlling_playback() 
         h.app.set_page_visible(crate::app::PERFORMANCE_PAGE,true);
         for page in 1..crate::app::PAGE_NAMES.len() {
             h.app.show_page(page);h.hover(H::local(300.0,60.0),0.8);h.cmds.clear();
-            h.click(H::local(367.0,18.0));
+            h.click(H::local(if page==3 {339.0}else{367.0},18.0));
             assert_eq!(h.app.page,0,"播放状态 {playing} 时应从页面 {page} 直达音乐页");
             assert!(h.app.open);assert!(!h.app.settings_open);assert_eq!(h.app.media.playing,playing);
             assert!(h.cmds.iter().all(|cmd|!matches!(cmd,crate::app::Cmd::Media(_)|crate::app::Cmd::MusicVolume(..))),"返回音乐页不能改变播放或音量");
@@ -4752,8 +4888,8 @@ fn display_choice_saves_and_keeps_disconnected_selection(){
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();h.app.settings_open=true;h.app.settings_tab=crate::extras::SETTINGS_TAB_POSITION;h.ctx.set_embed_viewports(false);
     let bounds=crate::display_layout::Bounds{left:0,top:0,right:1920,bottom:1080};
     h.app.displays=vec![
-        crate::display_layout::Display{id:"internal".into(),label:"显示器 1 · 主屏".into(),bounds,work_top:0,primary:true},
-        crate::display_layout::Display{id:r"\\?\DISPLAY#external".into(),label:"显示器 2 · 外接屏".into(),bounds,work_top:0,primary:false},
+        crate::display_layout::Display{id:"internal".into(),label:"显示器 1 · 主屏".into(),bounds,work_top:0,primary:true,dpi:96},
+        crate::display_layout::Display{id:r"\\?\DISPLAY#external".into(),label:"显示器 2 · 外接屏".into(),bounds,work_top:0,primary:false,dpi:96},
     ];
     let mut raster=crate::preview_raster::Raster::new(690,560);
     fn frame(h:&mut H,raster:&mut crate::preview_raster::Raster,events:Vec<egui::Event>){
@@ -5449,6 +5585,89 @@ fn frame_control_draw(h:&mut H,cursor:Option<Pos2>,events:Vec<egui::Event>) {
         h.app.frame(ui,win,&env);
     });});
     h.shapes=output.shapes;
+}
+
+#[test]
+fn page_resize_clock_and_calendar_controls_move_without_a_first_frame_jump() {
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=H::new();
+    h.app.settings.clock_period=2;
+    h.app.settings.clock_seconds=true;
+    h.power=(Some(95),false);
+    h.app.show_page(1);h.hover(H::local(200.0,60.0),1.0);
+    let date_x=|h:&H|h.shapes.iter().find_map(|s|match &s.shape {
+        egui::Shape::Text(text) if text.galley.text()=="10月28日 周三"=>Some(text.pos.x),
+        _=>None,
+    }).expect("切页时顶栏日期应持续可见");
+    let mut previous=date_x(&h);
+    h.app.go(crate::app::CALENDAR_PAGE,1.0);
+    for _ in 0..40 {
+        h.frame(vec![]);
+        let x=date_x(&h);
+        assert!((x-previous).abs()<8.0,"日期单帧跳动：{previous} → {x}");
+        previous=x;
+        if let Some(button)=h.ctx.read_response(egui::Id::new(("card",true,"calendar-add-local"))) {
+            assert!((button.rect.center().x-H::local(124.0,18.0).x).abs()<1.0,"标题栏不能随正文横移");
+        }
+    }
+}
+
+#[test]
+fn page_resize_keeps_the_expanded_header_attached_to_the_panel() {
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    for dock in crate::model::Dock::ALL {
+        let mut h=H::new();
+        h.app.settings.dock=dock;
+        h.app.settings.visible_pages.fill(true);
+        h.app.show_page(1);
+        for _ in 0..110 {frame_control_draw(&mut h,None,vec![]);}
+        let size=if dock.is_side(){Vec2::new(crate::side_dock::SIDE_W,crate::side_dock::SIDE_H)}else{Vec2::new(WIN_W,WIN_H)};
+        let win=Rect::from_min_size(Pos2::ZERO,size);
+        for (page,frames) in [(8,48),(3,5),(7,7),(6,5),(1,45)] {
+            h.app.go(page,1.0);
+            for frame in 0..frames {
+                frame_control_draw(&mut h,None,vec![]);
+                assert!(h.app.reveal>0.99,"{dock:?} 切到第 {page} 页第 {frame} 帧误触发展开动画：{}",h.app.reveal);
+                let shell=h.app.island_rect(win,h.app.w.pos,h.app.h.pos);
+                // egui 在帧末交换命中缓存，逐帧位置应直接从本帧绘制的齿轮路径读取。
+                let gear=h.shapes.iter().find_map(|shape|match &shape.shape {
+                    egui::Shape::Path(path) if path.closed && path.points.len()==64=>{
+                        let bounds=shape.shape.visual_bounding_rect();
+                        ((bounds.center().x-shell.left()-394.0).abs()<1.0).then_some(bounds.center())
+                    },
+                    _=>None,
+                }).expect("切页过程中设置图标应持续绘制");
+                assert!((gear.y-shell.top()-18.0).abs()<1.0,"{dock:?} 页 {page} 帧 {frame}，齿轮 {gear:?}，面板 {shell:?}");
+            }
+        }
+    }
+}
+
+#[test]
+fn hold_open_side_docks_only_expose_complete_hit_targets() {
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    for dock in [crate::model::Dock::Left,crate::model::Dock::Right] {
+        let mut h=H::new();
+        h.app.settings.dock=dock;
+        h.app.settings.island_size=105;
+        h.app.show_page(3);
+        let id=egui::Id::new(("card",true,"hold-open"));
+        for _ in 0..100 {
+            frame_control_draw(&mut h,None,vec![]);
+            if let Some(button)=h.ctx.read_response(id) {
+                assert!((button.rect.width()-25.0).abs()<0.01 && (button.rect.height()-26.0).abs()<0.01);
+            }
+        }
+        let pin=h.ctx.read_response(id).unwrap().rect.center();
+        frame_control_draw(&mut h,Some(pin),vec![egui::Event::PointerMoved(pin)]);
+        for pressed in [true,false] {
+            let event=egui::Event::PointerButton{pos:pin,button:egui::PointerButton::Primary,pressed,modifiers:Default::default()};
+            frame_control_draw(&mut h,Some(pin),vec![event]);
+        }
+        h.app.go(4,1.0);
+        for _ in 0..100 {frame_control_draw(&mut h,None,vec![]);}
+        assert!(h.ctx.read_response(id).is_some());
+    }
 }
 
 #[test]
@@ -9419,7 +9638,7 @@ fn quota_acceptance_period_colors_match_the_drawn_rings() {
         ],extra:vec![Window{label:"工具".into(),seconds:None,remaining:80.0,reset:None,amount:None}],..Default::default()}));
         let output=h.ctx.run(egui::RawInput{screen_rect:Some(Rect::from_min_size(Pos2::ZERO,egui::vec2(400.0,200.0))),..Default::default()},|ctx|{
             egui::CentralPanel::default().frame(egui::Frame::new()).show(ctx,|ui|{
-                let c=crate::paint::Card::new(ui,Pos2::ZERO,ui.max_rect());h.app.page_quota(&c);
+                let c=crate::paint::Card::new(ui,Pos2::ZERO,ui.max_rect());h.app.page_quota(&c,&c);
             });
         });
         let expected=if seconds[0].is_none(){[inner,outer,crate::theme::GRAY]}else{[outer,inner,crate::theme::GRAY]};

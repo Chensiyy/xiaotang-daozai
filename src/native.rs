@@ -22,6 +22,9 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState,VK_LBUTTON,VK
 use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::*;
 
+#[path = "native_capture.rs"]
+mod capture;
+
 const SUBCLASS_ID: usize = 0x4E55_5341; // "DAOZAI"
 #[allow(dead_code)]
 const WS_EX_NOREDIRECTIONBITMAP: isize = 0x0020_0000;
@@ -30,6 +33,7 @@ const WS_EX_NOREDIRECTIONBITMAP: isize = 0x0020_0000;
 static HIT: OnceLock<Mutex<Vec<(i32, i32, i32, i32)>>> = OnceLock::new();
 /// 前台窗口切到别的进程时置位，由主线程消费。
 static FG_CHANGED: AtomicBool = AtomicBool::new(false);
+static DISPLAY_CHANGED: AtomicBool = AtomicBool::new(false);
 // 前台事件在安装钩子的 UI 线程上派发。
 thread_local! {
     static FG_CONTEXT: std::cell::RefCell<Option<eframe::egui::Context>> = const { std::cell::RefCell::new(None) };
@@ -257,6 +261,7 @@ unsafe extern "system" fn subclass(
     _id: usize,
     _data: usize,
 ) -> LRESULT {
+    if msg==WM_DISPLAYCHANGE {DISPLAY_CHANGED.store(true,Ordering::Relaxed);}
     if matches!(msg,WM_DWMCOMPOSITIONCHANGED|WM_DISPLAYCHANGE|WM_DWMCOLORIZATIONCOLORCHANGED)
         || (msg==WM_SHOWWINDOW && wp.0!=0) {
         // 隐藏创建到首次显示、隐藏后恢复时也要恢复透明；等框架处理完窗口状态再应用。
@@ -421,6 +426,7 @@ fn outline_test()->Option<bool> {
 
 pub struct Window {
     hwnd: HWND,
+    capture_exclusion: capture::Exclusion,
     layering: Layering,
     region: (i32, i32, i32, i32),
     expanded: bool,
@@ -470,6 +476,35 @@ impl ShapeAlpha {
 
 impl Window {
     pub fn hwnd(&self)->HWND {self.hwnd}
+
+    pub fn capture_exclusion_supported() -> bool { capture::supported() }
+
+    pub fn set_capture_exclusion(&mut self, desired: bool) {
+        let targets = self.capture_targets();
+        self.capture_exclusion.set(desired, targets);
+    }
+
+    pub fn take_capture_exclusion_error(&mut self) -> Option<String> {
+        self.capture_exclusion.take_error()
+    }
+
+    fn capture_targets(&self) -> capture::Targets {
+        use capture::Target;
+        [
+            Some(Target { hwnd: self.hwnd, name: "岛仔主窗口" }),
+            match &self.layering {
+                Layering::Active(layered) => Some(Target { hwnd: layered.display(), name: "岛仔分层显示窗口" }),
+                _ => None,
+            },
+            None,
+            self.backdrop.as_ref().map(|backdrop| Target { hwnd: backdrop.hwnd(), name: "岛仔毛玻璃底板" }),
+        ]
+    }
+
+    fn apply_capture_to_new_window(&mut self, hwnd: HWND, name: &'static str) {
+        let existing = self.capture_targets();
+        self.capture_exclusion.add(capture::Target { hwnd, name }, existing);
+    }
 
     pub fn page_scroll_cancelled(&self)->bool {
         self.page_wheel_hook.is_some() && PAGE_WHEEL_TARGET.get().is_none()
@@ -540,7 +575,7 @@ impl Window {
         if opaque_surface{glass_diagnostic(&format!("渲染兼容：{vendor} {renderer} {backend:?}，不直接信任系统透明合成，首帧前先按轮廓裁剪"));}
         watch_drag(hwnd,cc.egui_ctx.clone());
         let layering=if backend==Some(eframe::wgpu::Backend::Dx12) {Layering::Starting(None)} else {Layering::Pending};
-        Some(Self { hwnd, layering, region: (i32::MIN, 0, 0, 0), expanded: false, hook, page_wheel_hook:None, browser_state:(None,PollClock::default()), drag_capture:DragCapture::default(), glass:None, backdrop:None, blur:false, blur_unavailable:false, opaque_surface, outline:ShapeAlpha::default() })
+        Some(Self { hwnd, capture_exclusion: capture::Exclusion::default(), layering, region: (i32::MIN, 0, 0, 0), expanded: false, hook, page_wheel_hook:None, browser_state:(None,PollClock::default()), drag_capture:DragCapture::default(), glass:None, backdrop:None, blur:false, blur_unavailable:false, opaque_surface, outline:ShapeAlpha::default() })
     }
 
     /// 使用目标屏幕的物理坐标定位，并在缩放、岛体大小、水平位置或屏幕连接变化后重新校正。
@@ -593,8 +628,12 @@ impl Window {
             if real && !rgba.chunks_exact(4).any(|pixel|pixel[3]!=0) {return false;}
             match crate::layered::Layered::new() {
                 Ok(mut layered)=>{
+                    let target = capture::Target { hwnd: layered.display(), name: "岛仔分层显示窗口" };
+                    self.apply_capture_to_new_window(target.hwnd, target.name);
+                    let targets = self.capture_targets();
+                    let hwnd = self.hwnd;
                     let frame=if real {rgba} else {self.outline.apply(size,rgba)};
-                    match layered.present(self.hwnd,size,frame) {
+                    match self.capture_exclusion.render(targets, Some(target), || layered.present(hwnd, size, frame)) {
                         Ok(true)=>{
                             self.outline.active=!real;
                             glass_diagnostic(if real {"渲染兼容：已切换为分层窗口逐像素透明（边缘抗锯齿）"}
@@ -617,9 +656,11 @@ impl Window {
                 }
             }
         }
+        let targets = self.capture_targets();
+        let hwnd = self.hwnd;
         let Layering::Active(layered)=&mut self.layering else {return false};
         let frame=if self.outline.active {self.outline.apply(size,rgba)} else {rgba};
-        match layered.present(self.hwnd,size,frame) {
+        match self.capture_exclusion.render(targets, None, || layered.present(hwnd, size, frame)) {
             // 切到分层窗口后，下一次 update 换回矩形区域（岛仔窗口本身已几乎不可见，只负责命中）。
             Ok(changed)=>changed,
             Err(error)=>{
@@ -637,6 +678,8 @@ impl Window {
         unsafe { GetWindowRect(self.hwnd,&mut r).ok()?; }
         Some(eframe::egui::pos2(r.left as f32/scale,r.top as f32/scale))
     }
+
+    pub fn take_display_change(&self)->bool {DISPLAY_CHANGED.swap(false,Ordering::Relaxed)}
 
     pub fn take_foreground_change(&mut self)->bool {
         let changed=FG_CHANGED.swap(false,Ordering::Relaxed);
@@ -701,6 +744,7 @@ impl Window {
                 if self.backdrop.is_none() {
                     match crate::composition::Backdrop::new() {
                         Ok(backdrop) => {
+                            self.apply_capture_to_new_window(backdrop.hwnd(), "岛仔毛玻璃底板");
                             glass_diagnostic("合成引擎模糊底板已创建");
                             self.backdrop = Some(backdrop);
                         }
@@ -710,8 +754,11 @@ impl Window {
                         }
                     }
                 }
+                let targets = self.capture_targets();
+                let hwnd = self.hwnd;
                 if let Some(backdrop) = &mut self.backdrop {
-                    match backdrop.show(self.hwnd, &crate::app::blur_pieces(shapes, ppp)) {
+                    let pieces = crate::app::blur_pieces(shapes, ppp);
+                    match self.capture_exclusion.render(targets, None, || backdrop.show(hwnd, &pieces)) {
                         Ok(()) => self.blur = true,
                         Err(error) => {
                             glass_diagnostic(&format!("模糊层更新失败：{error:?}"));
@@ -843,7 +890,7 @@ mod tests {
             let hwnd=CreateWindowExW(WS_EX_TOOLWINDOW,windows::core::w!("STATIC"),windows::core::w!(""),WS_POPUP,-10000,-10000,px(400.0),px(200.0),None,None,None,None).unwrap();
             let saved=hit().lock().unwrap_or_else(|e|e.into_inner()).clone();
             {
-                let mut native=Window{hwnd,layering:Layering::Pending,region:(0,0,0,0),expanded:false,hook:HWINEVENTHOOK::default(),page_wheel_hook:None,browser_state:(None,PollClock::now()),drag_capture:DragCapture::default(),glass:None,backdrop:None,blur:false,blur_unavailable,opaque_surface:surface_needs_outline_clip(backend,vendor,renderer),outline:ShapeAlpha::default()};
+                let mut native=Window{hwnd,capture_exclusion:Default::default(),layering:Layering::Pending,region:(0,0,0,0),expanded:false,hook:HWINEVENTHOOK::default(),page_wheel_hook:None,browser_state:(None,PollClock::now()),drag_capture:DragCapture::default(),glass:None,backdrop:None,blur:false,blur_unavailable,opaque_surface:surface_needs_outline_clip(backend,vendor,renderer),outline:ShapeAlpha::default()};
                 let shapes=[crate::app::GlassShape::Round(eframe::egui::Rect::from_min_max(eframe::egui::pos2(80.0,60.0),eframe::egui::pos2(320.0,160.0)),25.0)];
                 native.update((0.0,0.0,400.0,200.0),(80.0,60.0,240.0,100.0),None,None,Some(&shapes),ppp,false,false);
                 let region=CreateRectRgn(0,0,0,0);
@@ -875,7 +922,7 @@ mod tests {
             let hwnd=CreateWindowExW(WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE,windows::core::w!("BUTTON"),windows::core::w!(""),WS_POPUP|WS_VISIBLE,-10000,-10000,w as i32,h as i32,None,None,None,None).unwrap();
             let saved=hit().lock().unwrap_or_else(|e|e.into_inner()).clone();
             {
-                let mut native=Window{hwnd,layering:Layering::Pending,region:(0,0,0,0),expanded:false,hook:HWINEVENTHOOK::default(),page_wheel_hook:None,browser_state:(None,PollClock::now()),drag_capture:DragCapture::default(),glass:None,backdrop:None,blur:false,blur_unavailable:false,opaque_surface:true,outline:ShapeAlpha::default()};
+                let mut native=Window{hwnd,capture_exclusion:Default::default(),layering:Layering::Pending,region:(0,0,0,0),expanded:false,hook:HWINEVENTHOOK::default(),page_wheel_hook:None,browser_state:(None,PollClock::now()),drag_capture:DragCapture::default(),glass:None,backdrop:None,blur:false,blur_unavailable:false,opaque_surface:true,outline:ShapeAlpha::default()};
                 let island=crate::shape::outline(Rect::from_min_max(pos2(80.0,0.0),pos2(320.0,60.0)),12.0,10.0,20.0);
                 let shapes=[GlassShape::Outline(island)];
                 // 读回的画面：岛体黑色、画布也是黑色，alpha 全部 255——和 AMD OpenGL 读回的一样。
@@ -914,7 +961,7 @@ mod tests {
             let hwnd=CreateWindowExW(WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE,windows::core::w!("STATIC"),windows::core::w!(""),WS_POPUP|WS_VISIBLE,-10000,-10000,32,16,None,None,None,None).unwrap();
             let saved=hit().lock().unwrap_or_else(|e|e.into_inner()).clone();
             {
-                let mut native=Window{hwnd,layering:Layering::Starting(None),region:(i32::MIN,0,0,0),expanded:false,hook:HWINEVENTHOOK::default(),page_wheel_hook:None,browser_state:(None,PollClock::now()),drag_capture:DragCapture::default(),glass:None,backdrop:None,blur:false,blur_unavailable:true,opaque_surface:true,outline:ShapeAlpha::default()};
+                let mut native=Window{hwnd,capture_exclusion:Default::default(),layering:Layering::Starting(None),region:(i32::MIN,0,0,0),expanded:false,hook:HWINEVENTHOOK::default(),page_wheel_hook:None,browser_state:(None,PollClock::now()),drag_capture:DragCapture::default(),glass:None,backdrop:None,blur:false,blur_unavailable:true,opaque_surface:true,outline:ShapeAlpha::default()};
                 let shapes=[GlassShape::Round(Rect::from_min_max(pos2(3.0,1.0),pos2(28.0,14.0)),4.0)];
                 let update=|window:&mut Window| window.update((0.0,0.0,32.0,16.0),(3.0,1.0,25.0,13.0),None,None,Some(&shapes),1.0,false,false);
                 let mut frame=[0u8;32*16*4];
@@ -1026,7 +1073,7 @@ mod tests {
             let create=||TestWindow(CreateWindowExW(WS_EX_NOACTIVATE|WS_EX_TOOLWINDOW|WS_EX_TOPMOST,windows::core::w!("STATIC"),windows::core::w!(""),WS_POPUP|WS_VISIBLE,-10000,-10000,416,140,None,None,None,None).unwrap());
             for layered in [false,true] {
                 let island=create();let cover=create();
-                let mut native=Window{hwnd:island.0,layering:Layering::Pending,region:(0,0,0,0),expanded:false,hook:HWINEVENTHOOK::default(),page_wheel_hook:None,browser_state:(None,PollClock::now()),drag_capture:DragCapture::default(),glass:None,backdrop:None,blur:false,blur_unavailable:false,opaque_surface:false,outline:ShapeAlpha::default()};
+                let mut native=Window{hwnd:island.0,capture_exclusion:Default::default(),layering:Layering::Pending,region:(0,0,0,0),expanded:false,hook:HWINEVENTHOOK::default(),page_wheel_hook:None,browser_state:(None,PollClock::now()),drag_capture:DragCapture::default(),glass:None,backdrop:None,blur:false,blur_unavailable:false,opaque_surface:false,outline:ShapeAlpha::default()};
                 if layered {
                     let mut display=crate::layered::Layered::new().unwrap();
                     display.present(island.0,[416,140],&vec![0;416*140*4]).unwrap();
@@ -1075,7 +1122,7 @@ mod tests {
             assert!(above(cover.0,island.0),"先复现其他窗口盖住岛体");
             let foreground=GetForegroundWindow();
             let saved=hit().lock().unwrap_or_else(|e|e.into_inner()).clone();
-            let mut native=Window{hwnd:island.0,layering:Layering::Pending,region:(0,0,0,0),expanded:false,hook:HWINEVENTHOOK::default(),page_wheel_hook:None,browser_state:(None,PollClock::now()),drag_capture:DragCapture::default(),glass:None,backdrop:None,blur:false,blur_unavailable:false,opaque_surface:false,outline:ShapeAlpha::default()};
+            let mut native=Window{hwnd:island.0,capture_exclusion:Default::default(),layering:Layering::Pending,region:(0,0,0,0),expanded:false,hook:HWINEVENTHOOK::default(),page_wheel_hook:None,browser_state:(None,PollClock::now()),drag_capture:DragCapture::default(),glass:None,backdrop:None,blur:false,blur_unavailable:false,opaque_surface:false,outline:ShapeAlpha::default()};
             let update=|native:&mut Window,expanded|native.update((0.0,0.0,416.0,140.0),(0.0,0.0,416.0,140.0),None,None,None,1.0,false,expanded);
             update(&mut native,true);
             assert!(above(island.0,cover.0),"展开时必须重新抬高实际窗口层级，不能只检查置顶标记");
@@ -1131,7 +1178,7 @@ mod tests {
             let create=||CreateWindowExW(WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE|WS_EX_TOPMOST,windows::core::w!("BUTTON"),windows::core::w!(""),WS_POPUP|WS_VISIBLE,80,80,80,32,None,None,None,None).unwrap();
             let tab=create();
             let island=create();
-            let mut native=Window{hwnd:island,layering:Layering::Pending,region:(0,0,0,0),expanded:false,hook:HWINEVENTHOOK::default(),page_wheel_hook:None,browser_state:(None,PollClock::now()),drag_capture:DragCapture::default(),glass:None,backdrop:None,blur:false,blur_unavailable:false,opaque_surface:false,outline:ShapeAlpha::default()};
+            let mut native=Window{hwnd:island,capture_exclusion:Default::default(),layering:Layering::Pending,region:(0,0,0,0),expanded:false,hook:HWINEVENTHOOK::default(),page_wheel_hook:None,browser_state:(None,PollClock::now()),drag_capture:DragCapture::default(),glass:None,backdrop:None,blur:false,blur_unavailable:false,opaque_surface:false,outline:ShapeAlpha::default()};
             let saved=hit().lock().unwrap_or_else(|e|e.into_inner()).clone();
             let find=|x,y|std::thread::spawn(move||WindowFromPoint(POINT{x,y}).0 as usize).join().unwrap();
             let region=(0.0,0.0,80.0,32.0);

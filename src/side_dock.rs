@@ -78,13 +78,13 @@ impl App {
 
     /// 展开面板（页面内容）的左上角。
     pub(crate) fn content_origin(&self, win: Rect) -> Pos2 {
-        self.island_rect(win, PW, self.expanded_height()).min
+        self.island_rect(win, PW, self.page_height.pos).min
     }
 
     /// 侧边停靠的命中区域：收起时是胶囊外扩几点并一直延伸到屏幕边缘，展开时是整个面板。
-    pub(crate) fn side_hit_rect(&self, win: Rect, p: f32) -> Rect {
+    pub(crate) fn side_hit_rect(&self, win: Rect, p: f32, page_height: f32) -> Rect {
         let rect = if p > 0.04 || self.open {
-            self.island_rect(win, PW, self.expanded_height()).expand2(Vec2::new(4.0, 2.0))
+            self.island_rect(win, PW, page_height).expand2(Vec2::new(4.0, 2.0))
         } else {
             let (w, h) = (self.w.pos, self.h.pos);
             self.island_rect(win, w, h).expand2(Vec2::new(4.0, 6.0))
