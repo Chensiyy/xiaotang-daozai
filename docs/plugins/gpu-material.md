@@ -1,6 +1,6 @@
 # GPU 材质能力设计稿
 
-状态：设计稿，待实现。分支 `feat/gpu-material`，工作树 `01-专项工程/GPU材质`。分阶段任务见 [gpu-material-tasks.md](gpu-material-tasks.md)。
+状态：实验接口，第 1 至 3 阶段已实现。液态玻璃跑通并定下插件技术规范后再改为稳定接口；此前不对外发布，不开放给其他作者。分支 `feat/gpu-material`，工作树 `01-专项工程/GPU材质`。分阶段任务见 [gpu-material-tasks.md](gpu-material-tasks.md)。
 
 ## 目标
 
@@ -91,7 +91,7 @@ fn body_sdf(p : vec2<f32>) -> f32 { ... }                             // 当前�
 fn sample_backdrop(px : vec2<f32>) -> vec3<f32> { ... }               // 按抓取矩形内像素坐标采样底片
 ```
 
-- 布局一经发布即为 `api: 1` 的稳定接口，只能在末尾追加字段。PR #235 里液态玻璃专用的 uniform（ior、dispersion、look、morph 等）全部改为插件参数，从 `params` 读取。
+- 布局目前是实验接口，定稿后成为 `api: 1` 的稳定接口，此后只能在末尾追加字段。PR #235 里液态玻璃专用的 uniform（ior、dispersion、look、morph 等）全部改为插件参数，从 `params` 读取。
 - 控件上限 16 块，超过时按面积从大到小保留。
 - `rr_sdf`、`notch_sdf` 和 `sample_backdrop` 取自 PR #235 的实现，保证液态玻璃搬过来后计算一致。
 
