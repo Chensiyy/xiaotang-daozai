@@ -1,7 +1,7 @@
 //! Windows 的非激活窗口、形状区域与命中测试。
 //!
 //! 对齐原版实测（`BUILD-ORDER-v1.md` §1/§5）：
-//! - `WS_POPUP` + `WS_EX_TOPMOST|TOOLWINDOW|NOREDIRECTIONBITMAP|NOACTIVATE`；
+//! - `WS_POPUP` + `WS_EX_TOPMOST|TOOLWINDOW|NOACTIVATE`，透明交换链窗口另有 `WS_EX_NOREDIRECTIONBITMAP`；
 //! - `SetWindowRgn` 用三种矩形：收起 179×34@(230,0)、展开 512×186@(64,0)、
 //!   极简收起 112×14@(264,0)，坐标是 640×190 逻辑点；
 //! - 命中区与 region 分开：收起 143×22@(253,5)、展开 416×132@(110,5)，
@@ -146,6 +146,8 @@ fn watch_drag(hwnd:HWND,ctx:eframe::egui::Context){
 
 // 图形上下文和原生样式就绪后重新启用逐像素合成；不能只依赖创建 HWND 时的请求。
 fn enable_alpha_composition(hwnd:HWND)->windows::core::Result<()> {
+    #[cfg(feature = "sdk-material")]
+    if eframe::egui_wgpu::winit::direct_composition_active(hwnd.0 as isize) {return Ok(());}
     use windows::Win32::Graphics::Dwm::{DwmEnableBlurBehindWindow,DWM_BLURBEHIND,DWM_BB_ENABLE,DWM_BB_BLURREGION};
     unsafe {
         let region=CreateRectRgn(0,0,-1,-1);
@@ -330,12 +332,8 @@ unsafe fn apply_style(hwnd: HWND, editing: bool, raise: bool) {
         frame_changed = true;
     }
     let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-    // 冻结单要求 0x08200088（含 WS_EX_NOREDIRECTIONBITMAP）。该位只能在
-    // CreateWindowEx 时设置，运行时 SetWindowLongPtrW 会回 ERROR_INVALID_PARAMETER；
-    // 而给 GL/窗口渲染的 HWND 加上它之后画面完全不被合成（实测可见像素为 0）。
-    // 因此这里只保留可用的 TOPMOST|TOOLWINDOW|NOACTIVATE，去掉会露在任务栏的
-    // APPWINDOW；ACCEPTFILES（winit 默认）也去掉，拖放走的是 OLE RegisterDragDrop，
-    // 不依赖 WM_DROPFILES，这样 ex style 就是 0x08000088。
+    // 透明交换链的 WS_EX_NOREDIRECTIONBITMAP 在创建窗口时设置，这里保留已有的位。
+    // 去掉会露在任务栏的 APPWINDOW；拖放由 OLE RegisterDragDrop 处理，也去掉 ACCEPTFILES。
     // 置顶由 SetWindowPos 管理，避免样式标记与实际窗口层级脱节。
     let mut want_ex = (ex | WS_EX_TOOLWINDOW.0 as isize)
         & !(WS_EX_APPWINDOW.0 as isize)
@@ -548,6 +546,10 @@ impl Window {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Option<Self> {
         let RawWindowHandle::Win32(handle) = cc.window_handle().ok()?.as_raw() else { return None };
         let hwnd = HWND(handle.hwnd.get() as *mut _);
+        #[cfg(feature = "sdk-material")]
+        let direct_composition=eframe::egui_wgpu::winit::direct_composition_active(handle.hwnd.get());
+        #[cfg(not(feature = "sdk-material"))]
+        let direct_composition=false;
         let hook = unsafe {
             apply_style(hwnd, false, false);
             let _=enable_alpha_composition(hwnd);
@@ -571,10 +573,11 @@ impl Window {
             unsafe{(gl.get_parameter_string(eframe::glow::VENDOR),gl.get_parameter_string(eframe::glow::RENDERER))}
         }).unwrap_or_default();
         // 本机验证用：DAOZAI_OUTLINE_TEST=alpha 按 AMD 等路径处理；=opaque 再假装读回的画面没有透明通道。
-        let opaque_surface=surface_needs_outline_clip(backend,&vendor,&renderer) || outline_test().is_some();
+        let opaque_surface=!direct_composition && (surface_needs_outline_clip(backend,&vendor,&renderer) || outline_test().is_some());
         if opaque_surface{glass_diagnostic(&format!("渲染兼容：{vendor} {renderer} {backend:?}，不直接信任系统透明合成，首帧前先按轮廓裁剪"));}
         watch_drag(hwnd,cc.egui_ctx.clone());
-        let layering=if backend==Some(eframe::wgpu::Backend::Dx12) {Layering::Starting(None)} else {Layering::Pending};
+        let layering=if direct_composition {Layering::Unavailable}
+            else if backend==Some(eframe::wgpu::Backend::Dx12) {Layering::Starting(None)} else {Layering::Pending};
         Some(Self { hwnd, capture_exclusion: capture::Exclusion::default(), layering, region: (i32::MIN, 0, 0, 0), expanded: false, hook, page_wheel_hook:None, browser_state:(None,PollClock::default()), drag_capture:DragCapture::default(), glass:None, backdrop:None, blur:false, blur_unavailable:false, opaque_surface, outline:ShapeAlpha::default() })
     }
 
@@ -610,6 +613,11 @@ impl Window {
     /// 系统背景模糊是否正在生效（毛玻璃皮肤据此选择着色深浅）。
     pub fn blur_active(&self)->bool {self.blur}
     pub fn opaque_surface(&self)->bool {self.opaque_surface}
+
+    #[cfg(feature = "sdk-material")]
+    pub fn material_window(&self) -> Option<HWND> {
+        eframe::egui_wgpu::winit::direct_composition_active(self.hwnd.0 as isize).then_some(self.hwnd)
+    }
 
     /// 是否需要每帧读回画面交给分层窗口（兼容后端，且分层窗口仍可用）。
     pub fn wants_frames(&self)->bool {self.opaque_surface && !matches!(self.layering,Layering::Unavailable)}

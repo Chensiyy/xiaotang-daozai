@@ -70,6 +70,8 @@ struct Shell {
     backdrop: Option<daozai::backdrop::Sampler>,
     #[cfg(windows)]
     native: Option<daozai::native::Window>,
+    #[cfg(all(windows, feature = "sdk-material"))]
+    material: Option<daozai::material::Runtime>,
     #[cfg(windows)]
     tray: Option<daozai::tray::Tray>,
     #[cfg(windows)]
@@ -171,6 +173,12 @@ impl Shell {
         let running_compat=cc.wgpu_render_state.is_some();
         diagnostics::startup("加载本地配置");
         let mut app = App::new(&cc.egui_ctx, Options::default());
+        #[cfg(all(windows, feature = "sdk-material"))]
+        if let Some(error) = daozai::material::take_startup_failure() {
+            app.alert("材质加载失败", error, 0, false);
+        } else if daozai::material::falling_back() {
+            app.say("材质加载失败，已恢复普通绘制");
+        }
         app.render_compat_running=running_compat;
         #[cfg(feature="record")] let quota_demo=std::env::var("DAOZAI_QUOTA_DEMO").is_ok();
         #[cfg(not(feature="record"))] let quota_demo=false;
@@ -216,6 +224,18 @@ impl Shell {
             Self::sync_capture_exclusion(&mut app, window.as_mut());
             window
         };
+        #[cfg(all(windows, feature = "sdk-material"))]
+        let material = if daozai::material::debug_requested()
+            && native.as_ref().and_then(daozai::native::Window::material_window).is_some()
+        {
+            cc.wgpu_render_state.as_ref().and_then(|state| match daozai::material::Runtime::debug(state) {
+                Ok(material) => Some(material),
+                Err(error) => {
+                    disable_material(&mut app, &cc.egui_ctx, error);
+                    None
+                }
+            })
+        } else { None };
         Self {
             app,
             t0: Instant::now(),
@@ -258,6 +278,8 @@ impl Shell {
             #[cfg(windows)] backdrop:None,
             #[cfg(windows)]
             native,
+            #[cfg(all(windows, feature = "sdk-material"))]
+            material,
             #[cfg(windows)]
             tray,
             #[cfg(windows)]
@@ -350,6 +372,10 @@ impl Shell {
         let (backdrop,glass_blur)=(self.backdrop.as_ref().and_then(|b|b.color()),self.native.as_ref().is_some_and(|w|w.blur_active()));
         #[cfg(not(windows))]
         let (backdrop,glass_blur)=(None,false);
+        #[cfg(windows)]
+        let screen_locked=daozai::system::screen_locked();
+        #[cfg(not(windows))]
+        let screen_locked=false;
         Env {
             t: self.t0.elapsed().as_secs_f64(),
             clock,
@@ -379,10 +405,7 @@ impl Shell {
                 #[cfg(windows)] {Some(daozai::system::idle_seconds())}
                 #[cfg(not(windows))] {None}
             },
-            screen_locked: {
-                #[cfg(windows)] {daozai::system::screen_locked()}
-                #[cfg(not(windows))] {false}
-            },
+            screen_locked,
             fullscreen_hidden: {
                 #[cfg(windows)] {self.hidden}
                 #[cfg(not(windows))] {false}
@@ -403,6 +426,8 @@ impl Shell {
                 #[cfg(windows)] {self.native.as_ref().is_some_and(|w|w.opaque_surface())}
                 #[cfg(not(windows))] {false}
             },
+            #[cfg(all(windows, feature = "sdk-material"))]
+            material_active: self.material.is_some() && self.placed && !self.hidden && !screen_locked,
         }
     }
 }
@@ -685,15 +710,27 @@ impl eframe::App for Shell {
             while let Some(ev)=self.quota.try_recv(self.app.quota_config()){self.app.quota_event(ev);}
         }
         let mut out = None;
+        #[cfg(all(windows, feature = "sdk-material"))]
+        if !env.material_active {
+            if let Some(material) = &mut self.material { material.suspend(); }
+        }
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(Color32::TRANSPARENT))
             .show(ctx, |ui| {
                 // 左右停靠时画布是竖向的 SIDE_W × SIDE_H。
                 let size=if self.app.settings.dock.is_side() {egui::vec2(daozai::side_dock::SIDE_W,daozai::side_dock::SIDE_H)} else {egui::vec2(app::WIN_W,app::WIN_H)};
                 let win = egui::Rect::from_min_size(ui.max_rect().min,size);
-                out = Some(self.app.frame(ui, win, &env));
+                let mut draw = || self.app.frame(ui, win, &env);
+                #[cfg(all(windows, feature = "sdk-material"))]
+                if let Some(material) = self.material.as_mut().filter(|_| env.material_active) {
+                    out = Some(material.draw(draw));
+                    return;
+                }
+                out = Some(draw());
             });
         let Some(out) = out else { return };
+        #[cfg(all(windows, feature = "sdk-material"))]
+        let mut out = out;
         #[cfg(windows)]
         let interactive_transition = !self.hidden && out.interactive_transition;
         #[cfg(windows)]
@@ -758,10 +795,27 @@ impl eframe::App for Shell {
             let region=if self.hidden {(0.0,0.0,0.0,0.0)} else {r(out.region)};
             let hit=if self.hidden || out.click_through && out.notice_hit.is_none() {(0.0,0.0,0.0,0.0)} else {r(out.hit)};
             native.set_page_scroll_area(out.page_scroll_area.filter(|_|!self.hidden && out.expanded),ctx.pixels_per_point());
-            native.update(region, hit, if self.hidden{None}else{out.notice_hit.map(r)},if self.hidden{None}else{out.file_drop_zone.map(r)},if self.hidden{None}else{out.glass.as_deref()},ctx.pixels_per_point(), out.editing, !self.hidden && out.expanded);
+            let glass=if self.hidden{None}else{out.glass.as_deref()};
+            #[cfg(all(windows, feature = "sdk-material"))]
+            let glass=glass.filter(|_| self.material.is_none());
+            native.update(region, hit, if self.hidden{None}else{out.notice_hit.map(r)},if self.hidden{None}else{out.file_drop_zone.map(r)},glass,ctx.pixels_per_point(), out.editing, !self.hidden && out.expanded);
             if !self.hidden && self.app.settings.avoids_top_bar() && self.app.settings.top_bar_on_top && !self.app.settings.dock.is_side() {
                 if let Some(display)=daozai::display_layout::selected(&self.app.displays,&self.app.settings.display_id) {
                     native.keep_above_top_bar(display.bounds);
+                }
+            }
+        }
+        #[cfg(all(windows, feature = "sdk-material"))]
+        if let Some((material, hwnd)) = self.material.as_mut().zip(
+            self.native.as_ref().and_then(daozai::native::Window::material_window)
+        ) {
+            // 原生定位、裁剪及样式更新完毕后，再确认截图排除和采样位置。
+            match material.finish(ctx, hwnd, &mut out, env.t, env.desktop_cursor) {
+                Ok(Some(delay)) => schedule_repaint(ctx, delay),
+                Ok(None) => {}
+                Err(error) => {
+                    self.material = None;
+                    disable_material(&mut self.app, ctx, error);
                 }
             }
         }
@@ -1204,6 +1258,28 @@ fn profiling_island()->bool {
     cfg!(feature="sdk-js") && std::env::var_os("DAOZAI_DATA_DIR").is_some() && std::env::args().any(|a|a=="--sdk-profile-island")
 }
 
+#[cfg(all(windows, feature = "sdk-material"))]
+fn replace_material_window() -> bool {
+    let args: &[&str] = if profiling_island() {
+        &[daozai::material::FALLBACK_ARG, "--sdk-profile-island"]
+    } else {
+        &[daozai::material::FALLBACK_ARG]
+    };
+    diagnostics::spawn_replacement_with_args(args)
+}
+
+#[cfg(all(windows, feature = "sdk-material"))]
+fn disable_material(app: &mut App, ctx: &egui::Context, error: String) {
+    daozai::material::Runtime::report_failure(&error);
+    if replace_material_window() {
+        app.save_window_before_exit();
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    } else {
+        app.alert("材质加载失败", error, 0, false);
+        ctx.request_repaint();
+    }
+}
+
 fn run() -> eframe::Result<()> {
     // 自动重启或「立即重启」拉起的新进程：先等旧进程退出，再做单实例检查。
     diagnostics::wait_for_previous_instance();
@@ -1229,5 +1305,14 @@ fn run() -> eframe::Result<()> {
         .with_always_on_top()
         .with_visible(false);
     let opts = eframe::NativeOptions { viewport, vsync: !cfg!(windows), ..Default::default() };
-    graphics::run(opts,|opts|eframe::run_native("岛仔", opts, Box::new(|cc| Ok(Box::new(Shell::new(cc))))))
+    graphics::run(opts,|opts|{
+        let result=eframe::run_native("岛仔",opts,Box::new(|cc|Ok(Box::new(Shell::new(cc)))));
+        #[cfg(all(windows, feature = "sdk-material"))]
+        if daozai::material::report_run_failure(&result)
+            && replace_material_window()
+        {
+            return Ok(());
+        }
+        result
+    })
 }

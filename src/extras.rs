@@ -1508,6 +1508,7 @@ fn setting_choices(ui:&mut egui::Ui,title:&str,value:&mut u32,values:[u32;3],uni
 pub(crate) const SETTINGS_TAB_APPEARANCE: usize = 13;
 pub(crate) const SETTINGS_TAB_POSITION: usize = 14;
 pub(crate) const SETTINGS_TAB_WIRELESS: usize = 16;
+#[cfg(feature="sdk-js")]
 pub(crate) const SETTINGS_TAB_PLUGINS: usize = 17;
 /// 侧栏：一项就是一页，不再有页内子标签。专注与健康（2、3）、待办与置物（4、5）各合成一页；关于固定左下角。
 /// 第四列是这一项之前的分组标题。

@@ -157,6 +157,8 @@ pub struct Env {
     pub glass_blur: bool,
     /// 不支持逐像素透明的兼容后端需要按内容轮廓裁剪窗口。
     pub opaque_surface: bool,
+    #[cfg(all(windows, feature = "sdk-material"))]
+    pub material_active: bool,
 }
 
 impl Env {
@@ -434,6 +436,8 @@ pub struct FrameOut {
     pub region: Rect,
     /// 毛玻璃 + 系统模糊时，替代 `region` 的贴合轮廓；其余情况为 None。
     pub glass: Option<Vec<GlassShape>>,
+    #[cfg(all(windows, feature = "sdk-material"))]
+    pub(crate) material_layer: Option<crate::material::Layer>,
     /// 鼠标命中区（相对 `win` 左上角），区域外点击穿透到下层窗口。
     pub hit: Rect,
     /// 切到较矮页面时，原页边缘临时保留的续滚范围，不参与绘制或点击命中。
@@ -2181,6 +2185,12 @@ impl App {
             self.fluid.advance(env.t,dt);
         }
         self.paint_body(&painter, body, flare, flare_h, radius, feather);
+        #[cfg(all(windows, feature = "sdk-material"))]
+        let material_layer = env.material_active.then(|| {
+            let radius=if pill {radius.min(body.width().min(body.height())*0.5)} else {radius};
+            let notch=(!pill).then_some((flare,flare_h,dock));
+            crate::material::Layer::reserve(&painter, ui.max_rect(), body, radius, pc, notch, self.music_artwork.as_ref())
+        });
         if lifted > 0.01 {self.paint_lift_halo(&painter, body, flare, flare_h, radius, lifted.min(1.0));}
         let arrival=1.0-smoothstep(0.0,0.12,(self.t-self.crossed_at) as f32);
         if self.seam_guide>0.01 || arrival>0.0 {
@@ -2415,6 +2425,8 @@ impl App {
         FrameOut {
             region: rel(floating_toast.into_iter().chain(self.shelf_menu_rect.map(|r|r.union(r + ctx.style().visuals.popup_shadow.margin()).expand(1.0 / ctx.pixels_per_point()))).fold(region,Rect::union).intersect(ui.max_rect())),
             glass: glass_region,
+            #[cfg(all(windows, feature = "sdk-material"))]
+            material_layer,
             hit: rel(next_hit),
             page_scroll_area:self.page_scroll_area.map(rel),
             click_through: minimal_strip && !self.open && self.position_drag.is_none(),
@@ -3306,6 +3318,7 @@ impl App {
         if let Some(c)=settings_card {
             let settings=c.hit(380.0,4.0,28.0,28.0,"page-settings").on_hover_text(format!("打开{}设置窗口",PAGE_NAMES[self.page]));
             let (hover,press)=c.hover_t(&settings);
+            c.material_circle(&settings,394.0,18.0,13.0);
             c.circle(394.0,18.0,13.0,Color32::from_white_alpha((hover*24.0) as u8));
             paint::gear(&c.scaled(394.0,18.0,0.8*(1.0-press*0.08)),394.0,18.0,paint::mix(theme::GRAY,theme::WHITE,hover));
             if settings.clicked(){self.settings_tab=PAGE_SETTINGS_TABS[self.page];self.open_settings();}
@@ -3386,6 +3399,7 @@ impl App {
             let Some(arrow_card)=arrow_card else {continue};
             let button=arrow_card.hit(x-13.0,arrow_y-13.0,26.0,26.0,id);
             let (hover,press)=arrow_card.hover_t(&button);
+            arrow_card.material_circle(&button,x,arrow_y,9.0*(1.0-0.08*press));
             paint::chevron(&arrow_card,x,arrow_y,direction,hover,press);
             if button.clicked() {self.navigate_page(direction>0.0);}
         }
