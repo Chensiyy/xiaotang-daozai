@@ -1,6 +1,7 @@
 //! 系统性能：展开页、常驻徽标、侧边停靠与设置。
 //!
 //! 展开页先是总览：处理器、显卡、内存三张「玻璃液位」卡，磁盘和网络两张霓虹曲线卡；点哪张进哪类硬件的详情。
+//! 底部程序区左右两栏并排「CPU 最高」和「内存最多」，只看不点。
 //! 详情页是五个孪生版式：顶部带迷你曲线的页签条，左侧大环与三行读数，右上主视图，右下三行列表。
 //! 质感取自玻璃格：染色的暗底、霓虹描边、底边发亮，格子里的细颗粒随负载闪烁。
 use crate::{
@@ -217,23 +218,23 @@ fn hash(a: u32, b: u32) -> f32 {
     (x & 0xFFFF) as f32 / 65535.
 }
 
-/// 环形占用：从正上方顺时针走，两端圆头；`glow` 时下面先垫一层宽而淡的光，末端再点一团光晕。
+/// 环形占用：从正上方顺时针走，两端圆头，进度弧始终落在轨道里；
+/// `glow` 时弧中间再走一道细亮芯，末端一颗亮点，光都收在轨道宽度以内，不往外溢。
 fn gauge(c: &Card, x: f32, y: f32, r: f32, width: f32, value: Option<f32>, color: Color32, glow: bool) {
     c.ring(x, y, r, width, alpha(color, 0.12));
     let Some(v) = value.map(|v| v.clamp(0., 100.) / 100.).filter(|v| *v > 0.004) else {
         return;
     };
     let (a0, a1) = (-FRAC_PI_2, -FRAC_PI_2 + TAU * v);
-    if glow {
-        c.arc(x, y, r, a0, a1, width * 2.6, alpha(color, 0.10));
-    }
     c.arc(x, y, r, a0, a1, width, color);
     for a in [a0, a1] {
         c.circle(x + r * a.cos(), y + r * a.sin(), width / 2., color);
     }
     if glow {
-        c.glow(x + r * a1.cos(), y + r * a1.sin(), width * 2.4, alpha(color, 0.45));
-        c.circle(x + r * a1.cos(), y + r * a1.sin(), width * 0.22, mix(color, Color32::WHITE, 0.7));
+        c.arc(x, y, r, a0, a1, width * 0.3, alpha(mix(color, Color32::WHITE, 0.45), 0.55));
+        let (ex, ey) = (x + r * a1.cos(), y + r * a1.sin());
+        c.glow(ex, ey, width * 0.75, alpha(mix(color, Color32::WHITE, 0.4), 0.6));
+        c.circle(ex, ey, width * 0.2, mix(color, Color32::WHITE, 0.75));
     }
 }
 
@@ -420,18 +421,17 @@ fn glass_span(c: &Card, rect: [f32; 4], from: f32, to: f32, color: Color32, ener
 }
 
 /// 鼠标落在右列哪一行程序上（行从 `y + 20` 起、行距 `ROW`）。
+/// 整个列表区连成一片按最近的行算，行与行之间没有空隙，快速扫过时不会短暂落空。
 fn row_hover(c: &Card, y: f32, count: usize) -> Option<usize> {
-    if !c.live {
+    if !c.live || count == 0 {
         return None;
     }
     let p = c.ui.ctx().pointer_hover_pos().map(|p| c.to_local(p))?;
-    if !(COL_X - 5.0..RIGHT + 5.).contains(&p.x) {
+    let top = y + 20. - 13.5;
+    if !(COL_X - 5.0..RIGHT + 5.).contains(&p.x) || !(top..top + count as f32 * ROW).contains(&p.y) {
         return None;
     }
-    (0..count).find(|i| {
-        let base = y + 20. + *i as f32 * ROW;
-        (base - 13.0..base + 4.).contains(&p.y)
-    })
+    Some((((p.y - top) / ROW) as usize).min(count - 1))
 }
 
 /// 程序图标：有系统图标就画图标，没有就画一个带首字母的小方块。
@@ -579,6 +579,22 @@ impl App {
         let slot = w / cols.len() as f32;
         let bar = (slot * 0.62).max(1.5);
         let ctx = c.ui.ctx().clone();
+        // 每根柱最近 10 秒的峰值，画成柱里的一道短横线，看得出刚才冲到过多高。
+        let peaks: Vec<f32> = if rich.is_some() {
+            let now = Instant::now();
+            let mut peaks = vec![0f32; cols.len()];
+            for (at, sample) in &self.performance.history {
+                if now.saturating_duration_since(*at).as_secs_f32() > 10. || sample.cores.len() != loads.len() {
+                    continue;
+                }
+                for (i, g) in sample.cores.chunks(group).enumerate().take(peaks.len()) {
+                    peaks[i] = peaks[i].max(g.iter().sum::<f32>() / g.len() as f32);
+                }
+            }
+            peaks
+        } else {
+            Vec::new()
+        };
         for (i, load) in cols.iter().enumerate() {
             let bx = x + slot * i as f32 + (slot - bar) / 2.;
             match rich {
@@ -586,6 +602,11 @@ impl App {
                     let shown = if c.live { ctx.animate_value_with_time(egui::Id::new(("performance-core", i)), *load, 0.4) } else { *load };
                     let color = if shown >= 85. { mix(CPU_COLOR, HOT, ((shown - 85.) / 15.).clamp(0., 1.)) } else { CPU_COLOR };
                     tank(c, [bx, y, bar, h], Some(shown), color, t, 11 + i as u32 * 7);
+                    let peak = peaks.get(i).copied().unwrap_or(0.).max(shown);
+                    if peak - shown > 3. && h > 12. {
+                        let py = y + h - (h * peak / 100.).clamp(1.5, h - 1.5);
+                        c.seg((bx + 1.2, py), (bx + bar - 1.2, py), 1.2, alpha(mix(color, Color32::WHITE, 0.5), 0.75));
+                    }
                 }
                 None => {
                     let f = (load / 100.).clamp(0., 1.);
@@ -682,6 +703,8 @@ impl App {
         if crate::quota_ui::bar_tooltip(c.hit(x - width / 2., 0., width, 30., "performance-open"), "打开系统性能".into())
             .clicked()
         {
+            // 点常驻指标是重新打开：从设置里的起始页开始。
+            self.performance.view = None;
             self.show_page(PERFORMANCE_PAGE);
         }
     }
@@ -733,6 +756,8 @@ impl App {
         if crate::quota_ui::bar_tooltip(c.hit(x - 16., y - height / 2., 32., height, "side-performance"), "打开系统性能".into())
             .clicked()
         {
+            // 点常驻指标是重新打开：从设置里的起始页开始。
+            self.performance.view = None;
             self.show_page(PERFORMANCE_PAGE);
         }
     }
@@ -748,7 +773,8 @@ impl App {
         }
         let view = self.performance_view();
         // 总览 ↔ 详情切换时整页交叉淡入，并有一点缩放，像推进去 / 退出来。
-        let depth = ctx.animate_bool_with_time(egui::Id::new(("performance-depth", c.live)), view != View::Overview, 0.26);
+        // 动画状态不区分可交互与否：展开到一半（只画不交互）和展开完成共用一份，重新展开时不会从旧值再跳一次。
+        let depth = ctx.animate_bool_with_time(egui::Id::new("performance-depth"), view != View::Overview, 0.26);
         let r = self.performance.latest.clone();
         if depth < 1. {
             let k = 1. - depth;
@@ -792,7 +818,7 @@ impl App {
             let [x, y, w, _] = top_card(i);
             let color = COLORS[i];
             let value = metric(r, i);
-            let hover = self.overview_card_frame(c, overview_card(view), None, view, view.key(), color);
+            let hover = self.overview_card_frame(c, overview_card(view), view, view.key(), color);
             c.circle(x + 12., y + 15., 2.4, color);
             c.centered_text(x + 19., y + 15., view.label(), 10., W::Regular, mix(MUTED, INK, hover), H::Left);
             if let Some(p) = self.peak(|s| metric(s, i), 60.) {
@@ -830,7 +856,7 @@ impl App {
         for (j, view) in [View::Disk, View::Network].into_iter().enumerate() {
             let [x, y, w, h] = io_card(j);
             let color = view_color(view);
-            let hover = self.overview_card_frame(c, overview_card(view), None, view, view.key(), color);
+            let hover = self.overview_card_frame(c, overview_card(view), view, view.key(), color);
             let read = move |s: &Reading| if j == 0 { s.disk } else { s.network };
             let (labels, note, floor) = if j == 0 {
                 (["读", "写"], r.disk_active.map(|a| format!("活动 {a:.0}%")), 1e6)
@@ -853,81 +879,55 @@ impl App {
                 c.text(left + lw + 5., y + 36., &speed(values[k]), 11., W::Bold, if values[k].is_some() { INK } else { FAINT }, H::Left);
             }
         }
-        // ---- 程序：像任务管理器，图标、名称、CPU 和内存两列；点列名换排序，点表格进对应详情 ----
+        // ---- 程序：左右两栏，一栏看谁最占 CPU、一栏看谁最占内存，各自只有一个读数 ----
         self.programs_table(c, r);
     }
 
-    /// 总览底部的程序表。
-    fn programs_table(&mut self, c: &Card, r: &Reading) {
-        let ctx = c.ui.ctx().clone();
+    /// 总览底部的程序区：「CPU 最高」和「内存最多」并排，每栏前四名。
+    /// 每行背后一条淡淡的液位条，长度是它占本栏第一名的比例；不需要排序，也不跳转。
+    fn programs_table(&self, c: &Card, r: &Reading) {
         let [x, y, w, h] = APP_CARD;
-        let sort_id = egui::Id::new("performance-sort-memory");
-        let by_memory = ctx.data(|d| d.get_temp::<bool>(sort_id)).unwrap_or(false);
-        let view = if by_memory { View::Memory } else { View::Cpu };
-        let body = [x, y + 22., w, h - 22.];
-        // 底板是整张卡，点击只认表体，表头留给排序。
-        self.overview_card_frame(c, APP_CARD, Some(body), view, "programs", view_color(view));
-        let cpu_right = x + w - 104.;
-        let mem_right = x + w - 11.;
-        c.text(x + 11., y + 16., "程序", 8.5, W::Regular, MUTED, H::Left);
-        for (k, (label, right, color)) in [("CPU", cpu_right, CPU_COLOR), ("内存", mem_right, RAM)].into_iter().enumerate() {
-            let on = (k == 1) == by_memory;
-            let tw = c.text_w(label, 8.5, W::Semibold);
-            let response = c.hit(right - 70., y + 2., 74., 20., ("performance-sort", k)).on_hover_cursor(egui::CursorIcon::PointingHand);
-            let (hot, _) = c.hover_t(&response);
-            // 像任务管理器：列名一直可点，悬停有底色；当前排序的列名旁边一个向下的小三角。
-            if hot > 0. {
-                c.fill(right - tw - 15., y + 5., tw + 19., 15., 4., alpha(RAISED, hot));
+        c.fill(x, y, w, h, 11., SURFACE);
+        c.stroke(x + 0.5, y + 0.5, w - 1., h - 1., 10.5, 1., alpha(INK, 0.06));
+        let half = (w - 1.) / 2.;
+        c.seg((x + half + 0.5, y + 12.), (x + half + 0.5, y + h - 12.), 0.8, GRID);
+        let columns: [(&str, View, &[Process], Box<dyn Fn(&Process) -> (f32, String)>); 2] = [
+            ("CPU 最高", View::Cpu, &r.by_cpu, Box::new(|p: &Process| (p.cpu, format!("{:.1}%", p.cpu)))),
+            ("内存最多", View::Memory, &r.by_memory, Box::new(|p: &Process| (p.memory as f32, bytes(p.memory)))),
+        ];
+        for (k, (title, view, list, value)) in columns.into_iter().enumerate() {
+            let color = view_color(view);
+            let left = x + k as f32 * (half + 1.) + 10.;
+            let right = left + half - 20.;
+            c.circle(left + 2.5, y + 13., 2.4, color);
+            c.centered_text(left + 9., y + 13., title, 9., W::Regular, MUTED, H::Left);
+            if list.is_empty() {
+                c.text(left, y + 44., "正在统计…", 9.5, W::Regular, FAINT, H::Left);
+                continue;
             }
-            let ink = if on { INK } else { mix(MUTED, INK, hot) };
-            c.text(right, y + 16., label, 8.5, W::Semibold, ink, H::Right);
-            if on {
-                let (ax, ay) = (right - tw - 7., y + 12.5);
-                c.poly(&[(ax - 3., ay - 1.8), (ax + 3., ay - 1.8), (ax, ay + 2.2)], color);
-            }
-            if response.clicked() {
-                ctx.data_mut(|d| d.insert_temp(sort_id, k == 1));
-            }
-        }
-        c.seg((x + 10., y + 22.), (x + w - 10., y + 22.), 0.8, GRID);
-        let list = if by_memory || r.by_cpu.is_empty() { &r.by_memory } else { &r.by_cpu };
-        if list.is_empty() {
-            c.text(x + 11., y + 42., "正在统计…", 9.5, W::Regular, FAINT, H::Left);
-            return;
-        }
-        let top_cpu = list.iter().map(|p| p.cpu).fold(0.1, f32::max);
-        let top_mem = list.iter().map(|p| p.memory).max().unwrap_or(1).max(1) as f32;
-        for (i, program) in list.iter().take(5).enumerate() {
-            let base = y + 37. + i as f32 * 17.5;
-            program_icon(c, x + 11., base - 10.5, 13., program, view_color(view));
-            c.text(x + 30., base, &c.fit(&program.name, 9.5, W::Regular, cpu_right - 92. - x - 30.), 9.5, W::Regular, INK, H::Left);
-            for (k, (right, color, share, text)) in [
-                (cpu_right, CPU_COLOR, program.cpu / top_cpu, format!("{:.1}%", program.cpu)),
-                (mem_right, RAM, program.memory as f32 / top_mem, bytes(program.memory)),
-            ]
-            .into_iter()
-            .enumerate()
-            {
-                let on = (k == 1) == by_memory;
-                let bar_w = 30.;
-                let bar_x = right - 84.;
-                let len = (bar_w * share).clamp(2., bar_w);
-                let tint = if on { color } else { alpha(color, 0.45) };
-                c.fill(bar_x, base - 4.5, bar_w, 3., 1.5, alpha(color, 0.10));
-                c.fill(bar_x, base - 4.5, len, 3., 1.5, tint);
-                if on {
-                    c.circle(bar_x + len - 1.5, base - 3., 1.3, mix(color, Color32::WHITE, 0.5));
-                }
+            let top = value(&list[0]).0.max(0.001);
+            for (i, program) in list.iter().take(4).enumerate() {
+                let row_y = y + 24. + i as f32 * 21.;
+                let (amount, text) = value(program);
+                let share = (amount / top).clamp(0.04, 1.);
+                // 液位条：从左边长出来，越靠后的名次越淡。
+                let k = 1. - i as f32 * 0.16;
+                let lw = (right - left + 6.) * share;
+                c.hgrad(left - 3., row_y, lw, 18., 5., alpha(color, 0.05 * k), alpha(color, 0.20 * k));
+                c.seg((left - 3. + lw - 0.7, row_y + 4.), (left - 3. + lw - 0.7, row_y + 14.), 1.2, alpha(mix(color, Color32::WHITE, 0.4), 0.8 * k));
+                let base = row_y + 13.;
+                program_icon(c, left, base - 10.5, 13., program, color);
+                let tw = c.text_w(&text, 9.5, W::Bold);
+                c.text(left + 18., base, &c.fit(&program.name, 9.5, W::Regular, right - left - 24. - tw), 9.5, W::Regular, INK, H::Left);
                 c.text(right, base, &text, 9.5, W::Bold, INK, H::Right);
             }
         }
     }
 
     /// 总览卡片的底板与交互：悬停时浮起、描上主色并在底边亮起一道光；点击进入对应详情。返回悬停程度。
-    fn overview_card_frame(&mut self, c: &Card, rect: [f32; 4], hit: Option<[f32; 4]>, view: View, key: &str, color: Color32) -> f32 {
+    fn overview_card_frame(&mut self, c: &Card, rect: [f32; 4], view: View, key: &str, color: Color32) -> f32 {
         let [x, y, w, h] = rect;
-        let [hx, hy, hw, hh] = hit.unwrap_or(rect);
-        let response = c.hit(hx, hy, hw, hh, ("performance-card", key)).on_hover_cursor(egui::CursorIcon::PointingHand);
+        let response = c.hit(x, y, w, h, ("performance-card", key)).on_hover_cursor(egui::CursorIcon::PointingHand);
         let (hover, press) = c.hover_t(&response);
         c.fill(x, y, w, h, 11., mix(SURFACE, RAISED, hover * 0.8));
         c.vgrad(x, y, w, h, 11., alpha(color, 0.), alpha(color, 0.035 + 0.03 * hover));
@@ -980,7 +980,7 @@ impl App {
     fn performance_tabs(&mut self, c: &Card, view: View) -> f32 {
         let ctx = c.ui.ctx().clone();
         let current = View::DETAILS.iter().position(|v| *v == view).unwrap_or(0);
-        let slide = ctx.animate_value_with_time(egui::Id::new(("performance-tab-slide", c.live)), current as f32, 0.22);
+        let slide = ctx.animate_value_with_time(egui::Id::new("performance-tab-slide"), current as f32, 0.22);
         let r = self.performance.latest.clone();
         let w = tab_w();
         let sx = LEFT + slide * (w + TAB_GAP);
@@ -1164,14 +1164,11 @@ impl App {
         let legend_y = VIZ_Y + 44.;
         let legend_w = COL_W / 2.;
         let legend = |i: usize| (COL_X + (i % 2) as f32 * legend_w, legend_y + (i / 2) as f32 * 16.);
-        // 悬停构成条或图例时突出对应的一段，其余压暗，标题右侧换成这一段的大小。
+        // 只有悬停构成条本身时突出对应的一段，其余压暗，标题右侧换成这一段的大小；图例只跟着变暗，自己不响应。
         let pointer = c.ui.ctx().pointer_hover_pos().map(|p| c.to_local(p));
         let mut focus = None;
         if let Some(p) = pointer.filter(|_| c.live) {
-            if (legend_y - 11.0..legend_y + 20.).contains(&p.y) && (COL_X..RIGHT).contains(&p.x) {
-                let i = ((p.x - COL_X) / legend_w) as usize + if p.y > legend_y + 4. { 2 } else { 0 };
-                focus = Some(i).filter(|i| *i < 3);
-            } else if (bar[1]..bar[1] + bar[3]).contains(&p.y) && (bar[0]..bar[0] + bar[2]).contains(&p.x) {
+            if (bar[1]..bar[1] + bar[3]).contains(&p.y) && (bar[0]..bar[0] + bar[2]).contains(&p.x) {
                 let at = (p.x - bar[0]) / bar[2];
                 let mut acc = 0.;
                 focus = parts.iter().position(|(_, n, _)| {
@@ -1181,13 +1178,20 @@ impl App {
             }
         }
         // 悬停下面的某个程序：整条压暗，只点亮「程序」段里属于它的那一小截（按排行顺序从左往右排）。
+        // 在列表里上下移动时亮块滑到下一个程序，不会先全亮再亮起。
         let programs = &r.by_memory;
         let hovered = row_hover(c, LIST_Y, programs.len().min(5));
+        let ctx = c.ui.ctx().clone();
+        // 刚移进列表时亮块直接出现在当前行，之后在行间移动才滑过去。
+        let was = ctx.data_mut(|d| std::mem::replace(d.get_temp_mut_or_default::<bool>(egui::Id::new("performance-memory-span-on")), hovered.is_some()));
+        let glide = if was { 0.14 } else { 0. };
         let span = hovered.map(|i| {
             let limit = parts[0].1 as f32 / whole;
             let before: u64 = programs[..i].iter().map(|p| p.memory).sum();
             let from = (before as f32 / whole).min(limit);
-            (from, (from + programs[i].memory as f32 / whole).min(limit))
+            let to = (from + programs[i].memory as f32 / whole).min(limit);
+            let ease = |id: &str, v: f32| ctx.animate_value_with_time(egui::Id::new(("performance-memory-span", id)), v, glide);
+            (ease("from", from), ease("to", to))
         });
         let note = match (hovered, focus) {
             (Some(i), _) => format!("{} {}", programs[i].name, bytes(programs[i].memory)),
@@ -1370,7 +1374,7 @@ impl App {
         settings_label(ui, "展开页");
         settings_card(ui, |ui| {
             settings_segmented(ui, &mut self.settings.performance_view, &View::ALL.map(|v| (v, v.label())), 44.);
-            crate::extras::settings_hint(ui, "展开时先显示的页面。总览里点卡片进入详情，标题旁的返回键回到总览；收起后下次仍从这里开始。硬件未提供的读数显示为 —。");
+            crate::extras::settings_hint(ui, "展开时先显示的页面。总览里点卡片进入详情，标题旁的返回键回到总览；移开鼠标收起后再展开，仍停在刚才的页面，点常驻指标或切到其它页面后从这里开始。硬件未提供的读数显示为 —。");
             crate::extras::settings_hint(ui, "程序排行和分区容量只在展开页打开时统计，收起后停止。");
         });
     }

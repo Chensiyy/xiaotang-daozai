@@ -235,6 +235,22 @@ impl<'a> Card<'a> {
             }
         }
     }
+    /// 圆角水平渐变（左 → 右），同样沿用 egui 的边缘抗锯齿。
+    pub fn hgrad(&self, x: f32, y: f32, w: f32, h: f32, radius:f32, left: Color32, right: Color32) {
+        if w <= 0.0 {return;}
+        let r = self.rect(x, y, w, h);
+        let shapes=vec![egui::epaint::ClippedShape{clip_rect:self.painter.clip_rect(),shape:egui::Shape::rect_filled(r,radius*self.s,Color32::WHITE)}];
+        for primitive in self.ui.ctx().tessellate(shapes,self.ui.ctx().pixels_per_point()) {
+            if let egui::epaint::Primitive::Mesh(mut mesh)=primitive.primitive {
+                mesh.texture_id=egui::TextureId::default();
+                for vertex in &mut mesh.vertices {
+                    let t=((vertex.pos.x-r.left())/r.width()).clamp(0.0,1.0);
+                    vertex.color=alpha(mix(left,right,t),vertex.color.a() as f32/255.0);
+                }
+                self.painter.add(egui::Shape::mesh(mesh));
+            }
+        }
+    }
     /// 虚线圆角框；`phase` 让虚线沿边「流动」。
     pub fn dashed(&self, x: f32, y: f32, w: f32, h: f32, r: f32, width: f32, color: Color32, phase: f32) {
         let mut pts = Vec::new();

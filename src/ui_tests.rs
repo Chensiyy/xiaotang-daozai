@@ -9116,6 +9116,9 @@ fn performance_badge_opens_overview_and_drills_into_details() {
     assert_eq!(h.app.performance.view,Some(View::Overview),"返回键回到总览");
     assert_eq!(h.app.settings.performance_view,View::Overview,"岛内浏览不改设置");
     h.app.performance.view=Some(View::Memory);
+    h.hover(Pos2::new(5.0,WIN_H-5.0),2.0);
+    assert!(!h.app.open,"移开鼠标后岛收起");
+    assert_eq!(h.app.performance.view,Some(View::Memory),"收起后再展开仍停在刚才的详情");
     h.app.set_page_visible(PERFORMANCE_PAGE,false);
     h.frame(vec![]);
     assert!(h.app.resident.current().x[PERFORMANCE].is_none());
@@ -9240,5 +9243,48 @@ fn performance_custom_selection_controls_both_docks_and_persists() {
         h.app.settings.save();
         let loaded=crate::model::Settings::load();
         assert_eq!((loaded.performance_bar,loaded.performance_metrics),(BarStyle::Custom,mask));
+    }
+}
+
+#[cfg(windows)]
+#[test]
+#[ignore="导出综合监测常驻下展开、收起的逐帧画面"]
+fn performance_morph_film() {
+    let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let dir=std::path::PathBuf::from(std::env::var_os("DAOZAI_PERFORMANCE_PREVIEW_DIR").unwrap());
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut h=H::new();
+    h.app.set_page_visible(crate::app::PERFORMANCE_PAGE,true);
+    h.app.settings.performance_bar=crate::performance::BarStyle::Dashboard;
+    h.app.page=crate::app::PERFORMANCE_PAGE;
+    let mut raster=feature_raster();
+    let ppp=2.0;let (w,hgt)=(crate::app::CANVAS_W,WIN_H);
+    let today=chrono::Local::now().date_naive().to_string();
+    let mut film:Vec<image::RgbaImage>=Vec::new();
+    let away=Pos2::new(5.0,WIN_H-5.0);let inside=Pos2::new(WIN_W/2.0,15.0);
+    for f in 0..300 {
+        let cursor=if f<30 {away} else if f<140 {inside} else {away};
+        h.t+=1.0/60.0;
+        let env=Env{t:h.t,clock:"09:41:00".into(),today:today.clone(),date:"11月4日 周三".into(),cursor:Some(cursor),bt_ready:true,..Default::default()};
+        let raw=egui::RawInput{screen_rect:Some(Rect::from_min_size(Pos2::ZERO,Vec2::new(w,hgt))),time:Some(h.t),focused:true,
+            events:vec![egui::Event::PointerMoved(cursor)],
+            viewports:std::iter::once((egui::ViewportId::ROOT,egui::ViewportInfo{native_pixels_per_point:Some(ppp),..Default::default()})).collect(),..Default::default()};
+        let app=&mut h.app;
+        let output=h.ctx.run(raw,|ctx|{egui::CentralPanel::default().frame(egui::Frame::new()).show(ctx,|ui|{let win=Rect::from_min_size(ui.max_rect().min,Vec2::new(WIN_W,WIN_H));app.frame(ui,win,&env);});});
+        raster.update_textures(&output.textures_delta);
+        let primitives=h.ctx.tessellate(output.shapes,output.pixels_per_point);
+        if f>=30&&f%4==0&&film.len()<64 {
+            raster.buf.fill([0.20,0.24,0.32,1.0]);
+            raster.draw(&primitives,output.pixels_per_point);
+            let mut rgba=Vec::new();raster.to_rgba8(&mut rgba);
+            let image=image::RgbaImage::from_raw((w*ppp) as u32,(hgt*ppp) as u32,rgba).unwrap();
+            film.push(image::imageops::crop_imm(&image,(WIN_W*ppp/2.0) as u32-600,0,1200,200).to_image());
+        }
+        raster.free_textures(&output.textures_delta);
+    }
+    for (n,chunk) in film.chunks(9).enumerate() {
+        let mut sheet=image::RgbaImage::new(1200,200*chunk.len() as u32);
+        for (i,frame) in chunk.iter().enumerate(){image::imageops::replace(&mut sheet,frame,0,200*i as i64);}
+        sheet.save(dir.join(format!("morph-{n}.png"))).unwrap();
     }
 }
