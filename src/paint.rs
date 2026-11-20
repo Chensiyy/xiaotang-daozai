@@ -209,6 +209,17 @@ impl<'a> Card<'a> {
         let v: Vec<Pos2> = pts.iter().map(|&(x, y)| self.pos(x, y)).collect();
         self.painter.add(egui::Shape::convex_polygon(v, color, Stroke::NONE));
     }
+    /// 整圈描边，线宽以半径为中线向内外各占一半，和 [`Self::arc`] 的弧线完全重合。
+    /// （`ring` 用的 `circle_stroke` 把线宽整个画在半径外侧，做进度环的轨道会和弧错开半个线宽。）
+    pub fn track(&self, cx: f32, cy: f32, r: f32, width: f32, color: Color32) {
+        let pts: Vec<Pos2> = (0..96)
+            .map(|i| {
+                let a = i as f32 / 96.0 * TAU;
+                self.pos(cx + r * a.cos(), cy + r * a.sin())
+            })
+            .collect();
+        self.painter.add(egui::Shape::closed_line(pts, Stroke::new(width * self.s, color)));
+    }
     /// 圆弧描边（角度单位弧度，0 = 正右，顺时针为正）。
     pub fn arc(&self, cx: f32, cy: f32, r: f32, a0: f32, a1: f32, width: f32, color: Color32) {
         let n = (((a1 - a0).abs() / TAU) * 96.0).ceil().max(2.0) as usize;

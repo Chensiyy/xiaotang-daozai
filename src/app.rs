@@ -96,10 +96,7 @@ const OPEN_W: (f32, f32) = (330.0, 0.70);
 const OPEN_H: (f32, f32) = (290.0, 0.74);
 // 收起：临界阻尼，约 0.18 s 干净收回，无回弹。
 const CLOSE: (f32, f32) = (620.0, 1.0);
-const SWELL_K: (f32, f32) = (420.0, 0.8);
-// 宽常驻条展开时先收窄：临界阻尼、比收起略快，收到面板宽后高度才开始往下长。
-const WIDE_NARROW: (f32, f32) = (900.0, 1.0);
-const PAGE_SLIDE: f32 = 46.0;
+const SWELL_K: (f32, f32) = (420.0, 0.8);const PAGE_SLIDE: f32 = 46.0;
 
 pub struct Options {
     /// 是否联网查歌词（录制/测试时关掉）。
@@ -3101,19 +3098,24 @@ impl App {
         self.page_height.target=self.expanded_height();
         if self.open {self.h.target=self.page_height.target;}
         self.page_height.step(dt);
-        // 常驻条比展开面板还宽时（比如开了综合监测），展开是「由宽变窄」。宽高同时变会有几帧又宽又高的空黑框，像两侧被切掉。
-        // 改成分两步：展开先收窄到面板宽再往下长；收起先缩回条高，再往两边伸回常驻宽度。
-        if !self.side() && self.position_drag.is_none() && bw > PW + 1.0 {
-            if self.open {
-                self.w.tune(WIDE_NARROW.0, WIDE_NARROW.1);
-                if self.w.pos > PW + 6.0 {self.h.target=self.h.pos.min(bh*SWELL.1).max(bh);}
-            } else if self.h.pos > bh + 3.0 {
-                self.w.target=self.w.pos.clamp(PW,bw);
-            }
-        }
         let (prev_w,prev_h)=(self.w.pos,self.h.pos);
         self.w.step(dt);
         self.h.step(dt);
+        // 常驻条比展开面板还宽时（比如开了综合监测），展开是「由宽变窄」。宽高各走各的弹簧会出现又宽又高的空黑框。
+        // 这时宽度不再单独弹，直接跟着高度的进度走：同一个动作里一边往下长一边收窄，收起时反过来，和短岛一样一气呵成。
+        if !self.side() && self.position_drag.is_none() && bw > PW + 1.0 {
+            let full = self.expanded_height();
+            // 从悬停微胀的形态起步；收起时回到微胀高度就交还给弹簧，悬停微胀照旧。
+            let start = bh * SWELL.1;
+            let from = if self.open {bw * SWELL.0} else {bw};
+            if self.open || self.h.pos > start + 0.5 {
+                let k = ((self.h.pos - start) / (full - start).max(1.0)).clamp(0.0, 1.0);
+                let ease = 1.0 - (1.0 - k) * (1.0 - k);
+                self.w.pos = lerp(from, PW, ease);
+                self.w.vel = 0.0;
+                self.w.target = if self.open {PW} else {bw};
+            }
+        }
         // 仅在从外侧越过目标时收住，扩展提示条时不强制跳到目标宽度。
         if !self.open {
             if prev_w>=bw && self.w.pos<bw {self.w.snap(bw);}
