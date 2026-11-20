@@ -10286,6 +10286,7 @@ fn local_plugin_island_card_shares_todo_page_and_obeys_module_switch(){
     h.app.set_page_visible(crate::app::TODO_PAGE,true);
     let until=std::time::Instant::now()+std::time::Duration::from_secs(3);
     while !h.app.plugins.has_card(){assert!(std::time::Instant::now()<until);h.frame(vec![]);std::thread::yield_now();}
+}
 
 #[cfg(windows)]
 #[test]
