@@ -7964,8 +7964,9 @@ fn relay_icon_accounts(h:&mut H) {
         account.alias=alias.into();
         let id=account.id.clone();
         h.app.quota_event(quota::Event{id,result:Ok(Snapshot{
-            relay:Some(quota::relay::Quota{source:"账户余额".into(),expires_at:None,amounts:vec![
-                quota::relay::Amount{scope:quota::relay::Scope::Account,label:"账户余额".into(),unit:"¥".into(),
+            at:chrono::Local::now().timestamp(),
+            relay:Some(quota::relay::Quota{source:"通用余额".into(),expires_at:None,amounts:vec![
+                quota::relay::Amount{scope:quota::relay::Scope::Account,label:"账户余额".into(),unit:"元".into(),
                     remaining:Some(remaining),limit:None,used:None,unlimited:false}
             ]}),
             ..Default::default()
@@ -8043,7 +8044,7 @@ fn relay_icon_picker_saves_only_the_edited_account() {
             let pos=label_position(&h.shapes,label);
             frame(h,vec![egui::Event::PointerMoved(pos),pointer_button(pos,true)],None);
             frame(h,vec![pointer_button(pos,false)],None);
-            frame(h,vec![],None);
+            for _ in 0..12{frame(h,vec![],None);}
             frame(h,vec![],shot);
         };
         click(&mut h,"默认钥匙",Some("options"));
@@ -8069,11 +8070,18 @@ fn relay_icon_picker_saves_only_the_edited_account() {
         h.app.settings.skin=crate::model::Skin::Cream;
         shoot_feature(&mut h,&mut raster,&destination,"island-light",30,None,"2026-11-20");
         h.app.show_page(6);
-        shoot_feature(&mut h,&mut raster,&destination,"island-expanded",90,Some(H::local(200.0,60.0)),"2026-11-20");
+        shoot_feature(&mut h,&mut raster,&destination,"island-expanded",90,Some(H::local(156.0,120.0)),"2026-11-20");
+        let mut side=H::new();
+        relay_icon_accounts(&mut side);
+        side.app.quota.config.set_relay_icon(&accounts[0],RelayIcon::Layers);
+        side.app.quota.config.set_relay_icon(&accounts[1],RelayIcon::Arrows);
+        side.app.settings.pet=false;
+        side.app.settings.skin=crate::model::Skin::Cream;
+        side.app.settings.island_shape=crate::model::IslandShape::Pill;
+        side.app.settings.dock=crate::model::Dock::Left;
         let (w,height)=(crate::side_dock::SIDE_W,crate::side_dock::SIDE_H);
-        h.app.settings.dock=crate::model::Dock::Left;
         let mut raster=feature_raster_sized(w,height);
-        shoot_side(&mut h,&mut raster,&destination,"island-side",80,None);
+        shoot_side_with_bounds(&mut side,&mut raster,&destination,"island-side",80,None,false);
     }
 }
 
@@ -8165,6 +8173,9 @@ fn feature_gallery(){
 static SIDE_MUSIC:std::sync::atomic::AtomicBool=std::sync::atomic::AtomicBool::new(false);
 /// 侧边停靠的画面：画布为 SIDE_W × SIDE_H。
 fn shoot_side(h:&mut H,raster:&mut crate::preview_raster::Raster,dest:&std::path::Path,name:&str,frames:usize,cursor:Option<Pos2>){
+    shoot_side_with_bounds(h,raster,dest,name,frames,cursor,true);
+}
+fn shoot_side_with_bounds(h:&mut H,raster:&mut crate::preview_raster::Raster,dest:&std::path::Path,name:&str,frames:usize,cursor:Option<Pos2>,draw_bounds:bool){
     let ppp=2.0;let (w,hgt)=(crate::side_dock::SIDE_W,crate::side_dock::SIDE_H);
     for f in 0..frames {
         h.t+=1.0/60.0;
@@ -8182,11 +8193,18 @@ fn shoot_side(h:&mut H,raster:&mut crate::preview_raster::Raster,dest:&std::path
             let mut rgba=Vec::new();raster.to_rgba8(&mut rgba);
             let mut image=image::RgbaImage::from_raw((w*ppp) as u32,(hgt*ppp) as u32,rgba).unwrap();
             // 画出窗口区域（红）与命中区域（绿）的边框，方便检查。
-            if let Some(out)=out {
+            if let Some(out)=out.as_ref().filter(|_|draw_bounds) {
                 for (r,color) in [(out.region,image::Rgba([255,80,80,255])),(out.hit,image::Rgba([80,255,120,255]))] {
                     let (x0,y0,x1,y1)=((r.left()*ppp).max(0.0) as u32,(r.top()*ppp).max(0.0) as u32,((r.right()*ppp) as u32).min(image.width()-1),((r.bottom()*ppp) as u32).min(image.height()-1));
                     for x in x0..=x1 {image.put_pixel(x,y0,color);image.put_pixel(x,y1,color);}
                     for y in y0..=y1 {image.put_pixel(x0,y,color);image.put_pixel(x1,y,color);}
+                }
+            }
+            if !draw_bounds{
+                if let Some(out)=out.as_ref().filter(|out|out.region.is_positive()){
+                    let rect=out.region.expand(8.0).intersect(Rect::from_min_size(Pos2::ZERO,Vec2::new(w,hgt)));
+                    image=image::imageops::crop_imm(&image,(rect.left()*ppp)as u32,(rect.top()*ppp)as u32,
+                        (rect.width()*ppp)as u32,(rect.height()*ppp)as u32).to_image();
                 }
             }
             image.save(dest.join(format!("{name}.png"))).unwrap();
