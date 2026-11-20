@@ -398,7 +398,10 @@ impl App {
         if back {
             let wa=c.text(15.0,25.0,"‹ 无线",crate::theme::size::TITLE,W::Bold,theme::WHITE,H::Left);
             c.text(15.0+wa+1.5,25.0,"设备",crate::theme::size::TITLE,W::Bold,theme::CYAN,H::Left);
-            if c.hit(6.0,4.0,wa+46.0,30.0,"wireless-back").clicked(){self.wireless_focus=None;}
+            let title_back=c.hit(6.0,4.0,wa+46.0,30.0,"wireless-back");
+            let detail_back=c.hit(36.0,46.0,346.0,100.0,"wireless-detail-back")
+                .on_hover_cursor(eframe::egui::CursorIcon::PointingHand);
+            if title_back.clicked()||detail_back.clicked(){self.wireless_focus=None;}
         }
         let fx=self.wireless_fx.get(&device.id).cloned();let enter=self.wireless_enter(0);
         let linked=self.wireless_linked(device);

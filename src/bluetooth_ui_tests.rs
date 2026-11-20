@@ -24,6 +24,7 @@ fn wireless_custom_resident_persists_from_detail_toggle(){
     h.click(tile.rect.center());h.frame(vec![]);
     let pin=h.ctx.read_response(egui::Id::new(("card",true,("wireless-pin","device-0")))).expect("详情应提供常驻显示开关");
     h.click(pin.rect.center());
+    assert_eq!(h.app.wireless_focus.as_deref(),Some("device-0"));
     assert!(h.app.settings.bluetooth_resident_custom);
     assert_eq!(h.app.settings.bluetooth_pinned,vec!["device-0"]);
     let saved=crate::model::Settings::load();
@@ -204,6 +205,15 @@ fn wireless_device_opens_and_returns_inside_island(){
     h.click(back.rect.center());
     assert!(h.app.wireless_focus.is_none());
     assert_eq!(h.app.page(),BLUETOOTH_PAGE);
+
+    for point in [H::local(112.0,100.0),H::local(212.0,101.0)] {
+        h.frame(vec![]);
+        h.click(tile.rect.center());
+        assert_eq!(h.app.wireless_focus.as_deref(),Some("device-1"));
+        h.click(point);
+        assert!(h.app.wireless_focus.is_none(),"再点详情中的电量环或读数应返回列表");
+        assert_eq!(h.app.page(),BLUETOOTH_PAGE);
+    }
 }
 
 #[test]
