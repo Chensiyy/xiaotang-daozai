@@ -1182,8 +1182,16 @@ struct H {
 }
 
 impl H {
-    fn new() -> Self {
+    fn new() -> Self {Self::with_data(None)}
+    /// `seed` 里的文件先复制进测试数据目录，用来按某份真实设置复现画面。
+    fn with_data(seed:Option<&std::path::Path>) -> Self {
         let dir = std::env::temp_dir().join(format!("daozai-test-{}-{}", std::process::id(), rand_id()));
+        if let Some(seed)=seed {
+            std::fs::create_dir_all(&dir).unwrap();
+            for entry in std::fs::read_dir(seed).unwrap().flatten() {
+                if entry.path().is_file() {std::fs::copy(entry.path(),dir.join(entry.file_name())).unwrap();}
+            }
+        }
         std::env::set_var("DAOZAI_DATA_DIR", &dir);
         let ctx = egui::Context::default();
         let app = App::new(&ctx, Options { fetch_lyrics: false, pet_idle: 1e9 });
@@ -9280,10 +9288,18 @@ fn performance_morph_film() {
     let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     let dir=std::path::PathBuf::from(std::env::var_os("DAOZAI_PERFORMANCE_PREVIEW_DIR").unwrap());
     std::fs::create_dir_all(&dir).unwrap();
-    let mut h=H::new();
+    // DAOZAI_FILM_DATA 指向一份设置目录时按那份设置的常驻宽度拍。
+    let seed=std::env::var_os("DAOZAI_FILM_DATA").map(std::path::PathBuf::from);
+    let mut h=H::with_data(seed.as_deref());
     h.app.set_page_visible(crate::app::PERFORMANCE_PAGE,true);
-    h.app.settings.performance_bar=crate::performance::BarStyle::Dashboard;
+    h.app.settings.performance_bar=match std::env::var("DAOZAI_FILM_BAR").as_deref() {
+        Ok("pulse")=>crate::performance::BarStyle::Pulse,
+        Ok("custom")=>{h.app.settings.performance_metrics=crate::performance::Metric::ALL.iter().fold(0,|bits,m|bits|m.bit());crate::performance::BarStyle::Custom},
+        _=>crate::performance::BarStyle::Dashboard,
+    };
     h.app.page=crate::app::PERFORMANCE_PAGE;
+    for _ in 0..30 {h.frame(vec![]);}
+    println!("resident width {} / panel {}",h.app.resident.target.width,PW);
     let mut raster=feature_raster();
     let ppp=2.0;let (w,hgt)=(crate::app::CANVAS_W,WIN_H);
     let today=chrono::Local::now().date_naive().to_string();
@@ -9300,7 +9316,7 @@ fn performance_morph_film() {
         let output=h.ctx.run(raw,|ctx|{egui::CentralPanel::default().frame(egui::Frame::new()).show(ctx,|ui|{let win=Rect::from_min_size(ui.max_rect().min,Vec2::new(WIN_W,WIN_H));app.frame(ui,win,&env);});});
         raster.update_textures(&output.textures_delta);
         let primitives=h.ctx.tessellate(output.shapes,output.pixels_per_point);
-        if ((30..90).contains(&f)||(140..200).contains(&f))&&f%3==0 {
+        if ((30..80).contains(&f)||(140..170).contains(&f))&&f%2==0 {
             raster.buf.fill([0.20,0.24,0.32,1.0]);
             raster.draw(&primitives,output.pixels_per_point);
             let mut rgba=Vec::new();raster.to_rgba8(&mut rgba);

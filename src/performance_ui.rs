@@ -221,7 +221,7 @@ fn hash(a: u32, b: u32) -> f32 {
 /// 环形占用：从正上方顺时针走，两端圆头，进度弧始终落在轨道里；
 /// `glow` 时弧中间再走一道细亮芯，末端一颗亮点，光都收在轨道宽度以内，不往外溢。
 fn gauge(c: &Card, x: f32, y: f32, r: f32, width: f32, value: Option<f32>, color: Color32, glow: bool) {
-    c.ring(x, y, r, width, alpha(color, 0.12));
+    c.track(x, y, r, width, alpha(color, 0.12));
     let Some(v) = value.map(|v| v.clamp(0., 100.) / 100.).filter(|v| *v > 0.004) else {
         return;
     };
