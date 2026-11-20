@@ -1,0 +1,378 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "岛仔 SDK v1 插件清单（评审稿）",
+  "type": "object",
+  "properties": {
+    "id": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^[a-z][a-z0-9-]*(?:\\.[a-z][a-z0-9-]*)+$"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80
+    },
+    "author": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$"
+    },
+    "api": {
+      "const": 1
+    },
+    "runtime": {
+      "enum": [
+        "js",
+        "wasm",
+        "assets"
+      ]
+    },
+    "entry": {
+      "type": "string",
+      "pattern": "^(?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_-]+\\.[A-Za-z0-9]+$"
+    },
+    "owner": {
+      "enum": [
+        "self",
+        "general",
+        "appearance",
+        "tasks",
+        "focus",
+        "calendar",
+        "music",
+        "quota",
+        "notifications",
+        "weather"
+      ]
+    },
+    "capabilities": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "settings",
+          "card",
+          "module",
+          "calendar.source",
+          "lyrics.source",
+          "quota.source",
+          "appearance.skin",
+          "storage",
+          "timer",
+          "event",
+          "network",
+          "file.read",
+          "notification",
+          "appearance.pet",
+          "appearance.icon"
+        ]
+      },
+      "maxItems": 32,
+      "uniqueItems": true
+    },
+    "refreshSeconds": {"type":"integer","minimum":60,"maximum":86400,"default":60},
+    "actions": {
+      "description": "待宿主实现。列出可供用户点击或提交的动作名称。",
+      "type": "array", "uniqueItems": true, "maxItems": 32,
+      "items": {"type":"string","pattern":"^[a-z][a-z0-9_-]{0,39}$"}
+    },
+    "dataVersion": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "permissions": {
+      "type": "object",
+      "properties": {
+        "hosts": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 253,
+            "pattern": "^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]{2,63}$"
+          },
+          "maxItems": 32,
+          "uniqueItems": true
+        },
+        "events": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "focus.finished"
+            ]
+          },
+          "maxItems": 32,
+          "uniqueItems": true
+        },
+        "files": {
+          "type": "array",
+          "items": {
+            "const": "user-selected-read"
+          },
+          "maxItems": 32,
+          "uniqueItems": true
+        },
+        "notifications": {
+          "type": "boolean"
+        }
+      },
+      "required": [],
+      "additionalProperties": false
+    },
+    "settings": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "key": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_-]{0,39}$"
+              },
+              "label": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              "type": {
+                "const": "switch"
+              },
+              "default": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "key",
+              "label",
+              "type",
+              "default"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "key": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_-]{0,39}$"
+              },
+              "label": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              "type": {
+                "const": "segment"
+              },
+              "default": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              "choices": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 80
+                },
+                "maxItems": 12,
+                "uniqueItems": true,
+                "minItems": 2
+              }
+            },
+            "required": [
+              "key",
+              "label",
+              "type",
+              "default",
+              "choices"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "key": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_-]{0,39}$"
+              },
+              "label": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              "type": {
+                "const": "number"
+              },
+              "default": {
+                "type": "number"
+              },
+              "min": {
+                "type": "number"
+              },
+              "max": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "key",
+              "label",
+              "type",
+              "default",
+              "min",
+              "max"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "key": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_-]{0,39}$"
+              },
+              "label": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              "type": {
+                "const": "date"
+              },
+              "default": {
+                "type": "string",
+                "format": "date"
+              }
+            },
+            "required": [
+              "key",
+              "label",
+              "type",
+              "default"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "key": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_-]{0,39}$"
+              },
+              "label": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              },
+              "type": {
+                "const": "text"
+              },
+              "default": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 80
+              }
+            },
+            "required": [
+              "key",
+              "label",
+              "type",
+              "default"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "maxItems": 32,
+      "uniqueItems": true
+    },
+    "assets": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^(?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_-]+\\.[A-Za-z0-9]+$"
+      },
+      "maxItems": 32,
+      "uniqueItems": true
+    }
+  },
+  "required": [
+    "id",
+    "name",
+    "author",
+    "version",
+    "api",
+    "runtime",
+    "owner",
+    "capabilities",
+    "dataVersion",
+    "permissions"
+  ],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "runtime": {
+            "const": "assets"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "assets"
+        ],
+        "properties": {
+          "assets": {
+            "minItems": 1
+          },
+          "capabilities": {
+            "items": {
+              "enum": [
+                "appearance.skin",
+                "appearance.pet",
+                "appearance.icon"
+              ]
+            }
+          },
+          "permissions": {
+            "maxProperties": 0
+          }
+        },
+        "not": {
+          "required": [
+            "entry"
+          ]
+        }
+      },
+      "else": {
+        "required": [
+          "entry"
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "owner": {
+            "const": "self"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "capabilities": {
+            "contains": {
+              "const": "module"
+            }
+          }
+        }
+      }
+    }
+  ]
+}

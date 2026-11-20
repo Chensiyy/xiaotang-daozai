@@ -83,7 +83,7 @@ pub(crate) fn atomic_write(path:&Path,body:&[u8])->std::io::Result<()> {
     result
 }
 
-fn replace_file(tmp:&Path,path:&Path)->std::io::Result<()> {
+pub(crate) fn replace_file(tmp:&Path,path:&Path)->std::io::Result<()> {
     let result=fs::rename(tmp,path);
     #[cfg(windows)]
     if result.as_ref().is_err_and(|e|e.kind()==std::io::ErrorKind::CrossesDevices) {

@@ -9940,3 +9940,23 @@ mod module_settings_tests;
 mod module_mail_tests;
 #[path="module_reminder_tests.rs"]
 mod module_reminder_tests;
+#[cfg(feature="sdk-js")]
+#[test]
+fn local_plugin_island_card_shares_todo_page_and_obeys_module_switch(){
+    let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=H::new();h.app.settings.pet=false;
+    let sample=std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("spike/examples/payday/plugin.json");
+    h.app.plugins.install(&sample).unwrap();h.app.plugins.enable("example.payday",true).unwrap();
+    h.app.show_page(crate::app::TODO_PAGE);h.hover(H::local(250.,65.),1.);
+    let has_text=|h:&H,word:&str|h.shapes.iter().any(|s| matches!(&s.shape,egui::Shape::Text(t) if t.galley.text().contains(word)));
+    assert!(has_text(&h,"距离发薪"));assert!(has_text(&h,"加一个"));
+    if let Some(dest)=std::env::var_os("DAOZAI_LOCAL_PREVIEW"){
+        let dest=std::path::PathBuf::from(dest);std::fs::create_dir_all(&dest).unwrap();
+        let mut raster=feature_raster();crate::theme::load_fonts(&h.ctx);
+        shoot_feature(&mut h,&mut raster,&dest,"岛上倒计时",5,Some(H::local(250.,65.)),"2026-10-28");
+    }
+    h.app.set_page_visible(crate::app::TODO_PAGE,false);h.frame(vec![]);assert!(!h.app.plugins.has_card());
+    h.app.set_page_visible(crate::app::TODO_PAGE,true);
+    let until=std::time::Instant::now()+std::time::Duration::from_secs(3);
+    while !h.app.plugins.has_card(){assert!(std::time::Instant::now()<until);h.frame(vec![]);std::thread::yield_now();}
+}

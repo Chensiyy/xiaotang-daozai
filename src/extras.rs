@@ -1508,10 +1508,12 @@ fn setting_choices(ui:&mut egui::Ui,title:&str,value:&mut u32,values:[u32;3],uni
 pub(crate) const SETTINGS_TAB_APPEARANCE: usize = 13;
 pub(crate) const SETTINGS_TAB_POSITION: usize = 14;
 pub(crate) const SETTINGS_TAB_WIRELESS: usize = 16;
+pub(crate) const SETTINGS_TAB_PLUGINS: usize = 17;
 /// 侧栏：一项就是一页，不再有页内子标签。专注与健康（2、3）、待办与置物（4、5）各合成一页；关于固定左下角。
 /// 第四列是这一项之前的分组标题。
-const SETTINGS_GROUPS: [(&str,usize,usize,&str);15] = [
+const SETTINGS_GROUPS: [(&str,usize,usize,&str);15 + cfg!(feature="sdk-js") as usize] = [
     ("通用",0,0,"岛仔"), ("外观",SETTINGS_TAB_APPEARANCE,SETTINGS_TAB_APPEARANCE,""), ("位置",SETTINGS_TAB_POSITION,SETTINGS_TAB_POSITION,""), ("页面管理",10,10,""),
+    #[cfg(feature="sdk-js")] ("我的插件",SETTINGS_TAB_PLUGINS,SETTINGS_TAB_PLUGINS,""),
     ("音乐",1,1,"功能"), ("专注与健康",2,3,""), ("待办与置物",4,5,""), ("消息提醒",6,6,""), ("邮箱",7,7,""), ("日程",8,8,""), ("AI 额度",11,11,""), ("天气",12,12,""), ("系统性能",15,15,""), ("无线设备",SETTINGS_TAB_WIRELESS,SETTINGS_TAB_WIRELESS,""),
     ("关于",9,9,""),
 ];
@@ -1650,6 +1652,8 @@ impl App {
                 egui::ScrollArea::vertical().id_salt(("settings-scroll",tab)).auto_shrink([false,false]).show(ui,|ui|{
                     // 右侧给滚动条留出空隙，卡片和开关不会被它压住。
                     ui.set_width((ui.available_width()-12.0).max(240.0));
+                    #[cfg(any(feature="sdk-js",feature="sdk-wasm"))]
+                    if tab==4 {crate::sdk_spike::live_settings(ui);}
                     match tab {
                     15=>{
                         let on=self.settings_feature_header(ui,crate::app::PERFORMANCE_PAGE,"查看硬件负载和实时吞吐量",|_,_|{});
@@ -1672,6 +1676,8 @@ impl App {
                             });
                         });
                     }
+                    #[cfg(feature="sdk-js")]
+                    SETTINGS_TAB_PLUGINS=>{let on=self.module_on(crate::app::TODO_PAGE);if self.plugins.manage(ui,on){self.settings_tab=4;}}
                     12=>{
                         let on=self.settings_feature_header(ui,crate::app::WEATHER_PAGE,"当地天气与七日预报",|_,_|{});
                         ui.add_space(4.0);
@@ -1995,6 +2001,7 @@ impl App {
                     4=>{
                         let on=self.settings_feature_header(ui,crate::app::TODO_PAGE,"任务清单与到期提醒",|_,_|{});
                         let _=on;
+                        #[cfg(feature="sdk-js")] self.plugins.settings(ui);
                         ui.add_space(12.0);
                         let on=self.settings_feature_header(ui,crate::app::SHELF_PAGE,"临时收纳文件与剪贴板",|_,_|{});
                         ui.add_enabled_ui(on,|ui|{
