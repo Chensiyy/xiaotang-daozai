@@ -161,27 +161,28 @@ impl IslandShape {
     }
 }
 
-/// 岛体停靠的屏幕边缘：顶部为横向刘海 / 胶囊，左右两侧为竖向排列。
+/// 岛体停靠的屏幕边缘：上下为横向刘海 / 胶囊，左右两侧为竖向排列。
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Dock {
     #[default]
     Top,
+    Bottom,
     Left,
     Right,
 }
 
 impl Dock {
-    pub const ALL: [Dock; 3] = [Dock::Top, Dock::Left, Dock::Right];
+    pub const ALL: [Dock; 4] = [Dock::Top, Dock::Bottom, Dock::Left, Dock::Right];
     pub fn key(self) -> &'static str {
-        match self { Self::Top => "top", Self::Left => "left", Self::Right => "right" }
+        match self { Self::Top => "top", Self::Bottom => "bottom", Self::Left => "left", Self::Right => "right" }
     }
     pub fn parse(value: &str) -> Self {
-        match value { "left" => Self::Left, "right" => Self::Right, _ => Self::Top }
+        match value { "bottom" => Self::Bottom, "left" => Self::Left, "right" => Self::Right, _ => Self::Top }
     }
     pub fn label(self) -> &'static str {
-        match self { Self::Top => "顶部", Self::Left => "左侧", Self::Right => "右侧" }
+        match self { Self::Top => "顶部", Self::Bottom => "底部", Self::Left => "左侧", Self::Right => "右侧" }
     }
-    pub fn is_side(self) -> bool { self != Self::Top }
+    pub fn is_side(self) -> bool { matches!(self, Self::Left | Self::Right) }
 }
 
 /// 岛体大小（百分比）的范围与步进。

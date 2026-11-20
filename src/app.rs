@@ -266,12 +266,17 @@ pub fn blur_pieces(shapes: &[GlassShape], ppp: f32) -> Vec<BlurPiece> {
         match shape {
             GlassShape::Docked { rect, dock, flare, flare_h, radius } => {
                 if rect.width() <= 0.0 || rect.height() <= 0.0 { continue; }
-                // 在贴顶坐标系里按刘海拆块，再把每块转到左 / 右边缘（宽高互换）。
+                // 在贴顶坐标系里按刘海拆块，再把每块映射到当前停靠边。
                 let (map, frame) = shape::EdgeMap::of(*rect, *dock);
                 let mut pieces = blur_pieces(&[GlassShape::Notch { rect: frame, flare: *flare, flare_h: *flare_h, radius: *radius }], ppp);
-                let edge = (map.apply(Pos2::ZERO).x * ppp).round();
+                let anchor=map.apply(Pos2::ZERO);
+                let edge = (anchor.x * ppp).round();
                 for p in &mut pieces {
                     let (x, y, w, h) = (p.x, p.y, p.w, p.h);
+                    if *dock==model::Dock::Bottom {
+                        p.y=(anchor.y*ppp).round()-y-h;
+                        continue;
+                    }
                     *p = BlurPiece { x: if *dock == model::Dock::Left { edge + y } else { edge - y - h }, y: x, w: h, h: w, radius: p.radius };
                 }
                 out.extend(pieces);
@@ -364,8 +369,8 @@ mod blur_piece_tests {
     }
 
     #[test]
-    fn side_docked_blur_follows_the_rotated_outline() {
-        for dock in [model::Dock::Left, model::Dock::Right] {
+    fn docked_blur_follows_the_mapped_outline() {
+        for dock in [model::Dock::Left, model::Dock::Right, model::Dock::Bottom] {
             for ppp in [1.0, 1.5] {
                 let x = if dock == model::Dock::Left { 0.0 } else { 81.0 };
                 let shape = GlassShape::Docked { rect: Rect::from_min_size(Pos2::new(x, 200.0), Vec2::new(419.0, 140.0)), dock, flare: 17.6, flare_h: 16.0, radius: 33.0 };
@@ -389,7 +394,7 @@ mod blur_piece_tests {
                         let deep_in = inside(lx, ly) && near.iter().all(|(dx, dy)| inside((lx + dx / ppp).clamp(0.01, 499.99), ly + dy / ppp));
                         let far_out = !inside(lx, ly) && near.iter().all(|(dx, dy)| !inside(lx + dx / ppp, ly + dy / ppp));
                         if deep_in { assert!(covered(&pieces, px, py), "{dock:?} {ppp}: 岛体内 ({px},{py}) 没有模糊"); checked += 1; }
-                        let on_canvas = lx > 0.5 && lx < 499.5;
+                        let on_canvas = lx > 0.5 && lx < 499.5 && (dock!=model::Dock::Bottom || ly<340.0);
                         if far_out && on_canvas { assert!(!covered(&pieces, px, py), "{dock:?} {ppp}: 岛体外 ({px},{py}) 不能有模糊"); }
                     }
                 }
@@ -1917,6 +1922,11 @@ impl App {
         // 胶囊皮肤悬浮在屏幕顶边下方。
         let pill = self.settings.island_shape==model::IslandShape::Pill;
         let top = win.top() + if pill { PILL_GAP } else { 0.0 };
+        let bottom=self.dock()==model::Dock::Bottom;
+        let orient=|r:Rect| if bottom {
+            let axis=win.top()+win.bottom();
+            Rect::from_min_max(Pos2::new(r.left(),axis-r.bottom()),Pos2::new(r.right(),axis-r.top()))
+        }else{r};
         let side = self.side();
         let dock = self.dock();
 
@@ -1949,7 +1959,7 @@ impl App {
         let p_prev = self.progress();
         let (offset,badge,notice)=self.bar_parts(win,self.island_rect(win,self.w.pos,self.h.pos));
         let cx=win.center().x+offset.x;
-        let hit = if side {self.side_hit_rect(win,p_prev,self.page_height.pos).translate(offset)} else {self.hit_rect(cx, top, p_prev)};
+        let hit = if side {self.side_hit_rect(win,p_prev,self.page_height.pos).translate(offset)} else {orient(self.hit_rect(cx, top, p_prev))};
         let page_before=self.page;
         let previous_menu=self.shelf_menu_rect.take();
         let inside = env.cursor.is_some_and(|c| hit.contains(c) || previous_menu.is_some_and(|r|r.contains(c)));
@@ -2045,7 +2055,7 @@ impl App {
         let (offset,messenger_rect,notice_rect)=self.bar_parts(win,panel);
         let panel=panel.translate(offset);
         let cx=panel.center().x;
-        self.update_pet(env,cx);
+        self.update_pet(env,cx,panel.top());
         let appear=self.messenger_appear();
         let outside_badge=messenger_rect.filter(|_|appear>0.02);
         let pc = anim::clamp01(p);
@@ -2070,7 +2080,7 @@ impl App {
         // 毛玻璃：真实模糊下保留柔和投影增加层次；无模糊时阴影再减淡一些，保持轻盈。
         let skin_shadow = if !glass_skin {1.0} else if env.glass_blur {0.75} else {0.7};
         let shadow_k = glass::shadow_alpha(0.0, thick) / 0.12 * skin_shadow;
-        let island_shadow=|r:Rect,flare:f32,flare_h:f32,radius:f32,strength:f32| if pill {pill_shadow(&painter,r,radius,strength)} else if side {shape::shadow_docked(&painter,r,dock,flare,flare_h,radius,strength)} else {shape::shadow(&painter,r,flare,flare_h,radius,strength)};
+        let island_shadow=|r:Rect,flare:f32,flare_h:f32,radius:f32,strength:f32| if pill {pill_shadow(&painter,r,radius,strength)} else if dock!=model::Dock::Top {shape::shadow_docked(&painter,r,dock,flare,flare_h,radius,strength)} else {shape::shadow(&painter,r,flare,flare_h,radius,strength)};
         // 拿起时投影加深，像被从屏幕边缘提起来。
         let lifted = self.drag_lift.pos.clamp(0.0, 1.2);
         island_shadow(body, flare, flare_h, radius, (smoothstep(0.1, 0.9, pc) + lifted * 0.9) * shadow_k);
@@ -2101,6 +2111,7 @@ impl App {
             let (center,along)=match dock {
                 model::Dock::Left=>(body.left_center()+Vec2::X*2.0,Vec2::Y),
                 model::Dock::Right=>(body.right_center()-Vec2::X*2.0,Vec2::Y),
+                model::Dock::Bottom=>(body.center_bottom()-Vec2::Y*2.0,Vec2::X),
                 model::Dock::Top=>(body.center_top()+Vec2::Y*2.0,Vec2::X),
             };
             let strength=self.seam_guide.max(arrival);
@@ -2113,7 +2124,8 @@ impl App {
         // 内容只随形体「揭开」：不缩放，按面板裁剪，到 55% 才开始淡入
         let reveal = if self.open { smoothstep(0.50, 0.97, p) } else { smoothstep(0.55, 0.92, p) };
         self.reveal = reveal;
-        let origin = self.content_origin(win)+offset;
+        let mut origin = self.content_origin(win)+offset;
+        if bottom {origin.y=panel.top();}
         let clip = panel.intersect(win);
         let base = Card::new(ui, origin, clip);
         self.cursor_local = env.cursor.map(|p| base.to_local(p));
@@ -2203,7 +2215,7 @@ impl App {
                 let center=if dock==model::Dock::Left {panel.center().x.max(win.left()+90.0)} else {panel.center().x.min(win.right()-90.0)};
                 Pos2::new(center-PW/2.0,panel.top())
             } else {origin};
-            self.toast_layer(&Card::new(ui,toast_origin,win),h+8.0)
+            self.toast_layer(&Card::new(ui,toast_origin,win),if bottom {-36.0}else{h+8.0})
         }else{None};
         if (self.adding||self.editing.is_some()) && reveal > 0.9 && self.page == 4 && self.page_e() > 0.25 {
             self.input_field(ui, origin, &mut cmds);
@@ -2231,6 +2243,7 @@ impl App {
             let (bw, bh) = self.base_size();
             Rect::from_center_size(Pos2::new(cx, top + (bh * SWELL.1 + 12.0) / 2.0), Vec2::new(bw * SWELL.0 + 24.0, bh * SWELL.1 + 12.0))
         };
+        region=orient(region);
         // 拿起放大、甩动拉伸以及加深的投影都要留在窗口区域内，否则两端会被系统裁掉。
         if self.drag_lift.pos.abs()>0.005 || self.drag_stretch.pos.abs()>0.001 {region=region.union(panel.expand2(Vec2::new(18.0,22.0)));}
         if let Some(r)=center_guide {region=region.union(r);}
@@ -2238,7 +2251,7 @@ impl App {
         if let Some(rect)=notice_shape {region=region.union(rect.expand2(Vec2::new(12.0,8.0)));}
         if let Some(rect)=notice_details {region=region.union(rect.expand(12.0));}
         // 胶囊上方留空的那一小条也要在窗口区域内，阴影才不会被截断。
-        if pill && !side {region.min.y=region.min.y.min(win.top());}
+        if pill && bottom {region.max.y=win.bottom();} else if pill && !side {region.min.y=region.min.y.min(win.top());}
         // 浅色皮肤：把这一帧岛体内容统一换成皮肤配色。
         if let Some(palette)=palette {
             let end=crate::skin_paint::shape_count(&ctx,layer);
@@ -2260,7 +2273,7 @@ impl App {
         // 毛玻璃：窗口区域只取岛体与浮层的真实轮廓，系统模糊不会溢出到透明画布上。
         let glass_region=(glass_skin && self.settings.glass_blur || env.opaque_surface).then(||{
             let outline=|r:Rect,flare:f32,flare_h:f32,radius:f32| if pill {GlassShape::Round(rel(r),radius.min(r.height().min(r.width())*0.5))}
-                else if side {GlassShape::Docked{rect:rel(r),dock,flare,flare_h,radius}} else {GlassShape::Notch{rect:rel(r),flare,flare_h,radius}};
+                else if dock!=model::Dock::Top {GlassShape::Docked{rect:rel(r),dock,flare,flare_h,radius}} else {GlassShape::Notch{rect:rel(r),flare,flare_h,radius}};
             let mut shapes=vec![outline(body,flare,flare_h,radius)];
             if let Some(r)=outside_badge{shapes.push(GlassShape::Round(rel(r),r.width()/2.0));}
             if let Some(r)=notice_details {
@@ -2307,7 +2320,7 @@ impl App {
         // 交互形变保持 60 帧，媒体 30 帧；小表情 20 帧，睡眠 10 帧，静态界面每秒核对提醒。
         let repaint_after=std::time::Duration::from_secs_f64(if transitioning{1.0/60.0}else if ambient{1.0/30.0}else if pet_visible{if self.pet.state==PetState::Sleeping{0.1}else{0.05}}else{1.0});
         cmds.append(&mut self.pending);
-        let next_hit=if side {self.side_hit_rect(win,self.progress(),self.page_height.pos).translate(offset)} else {self.hit_rect(cx,top,self.progress())};
+        let next_hit=if side {self.side_hit_rect(win,self.progress(),self.page_height.pos).translate(offset)} else {orient(self.hit_rect(cx,top,self.progress()))};
         if page_before!=self.page && self.open {
             let previous=self.page_scroll_area.map_or(hit,|area|hit.union(area));
             // 滚轮续翻的空白带按最终页边界计算，点击区域则跟随当前画面。
@@ -2332,7 +2345,7 @@ impl App {
             page_scroll_area:self.page_scroll_area.map(rel),
             click_through: minimal_strip && !self.open && self.position_drag.is_none(),
             notice_hit:notice_shape.into_iter().chain(notice_details).chain(messenger_rect).chain(self.shelf_menu_rect).reduce(|a,b|a.union(b)).map(rel),
-            file_drop_zone:self.settings.visible_pages[3].then(||rel(if side {self.island_rect(win,PW,self.expanded_height()).translate(offset)} else {Rect::from_min_size(Pos2::new(cx-PW/2.0,top),Vec2::new(PW,96.0))})),
+            file_drop_zone:self.settings.visible_pages[3].then(||rel(if side {self.island_rect(win,PW,self.expanded_height()).translate(offset)} else {orient(Rect::from_min_size(Pos2::new(cx-PW/2.0,top),Vec2::new(PW,96.0)))})),
             expanded: self.open,
             editing: self.is_editing(),
             animating,
@@ -2446,7 +2459,7 @@ impl App {
             // 顶部停靠时面板贴着屏幕上沿，胶囊往下让一点，圆顶不会被屏幕边切掉。
             let inset=self.unread_top_inset();
             let height=self.unread_capsule_height(full.height()-inset);
-            let left=self.dock()==model::Dock::Right || self.dock()==model::Dock::Top && full.right()+UNREAD_GAP+UNREAD_W>bounds.right();
+            let left=self.dock()==model::Dock::Right || !self.side() && full.right()+UNREAD_GAP+UNREAD_W>bounds.right();
             // 胶囊在展开后的中心原地显现，避免跟着岛体边缘越过终点再弹回来。
             let cx=if left {full.left()-UNREAD_GAP-UNREAD_W/2.0}else{full.right()+UNREAD_GAP+UNREAD_W/2.0};
             let center=Pos2::new(cx,full.top()+inset+height/2.0);
@@ -2571,7 +2584,7 @@ impl App {
         let mut x=badge.left();
         // 岛体靠近屏幕右缘时，详情卡片向左展开，始终完整留在屏幕内。
         if let Some(screen)=self.screen {x=x.min(screen.right()-width-8.0).max(screen.left()+8.0);}
-        Some(Rect::from_min_size(Pos2::new(x,badge.bottom()+6.0),Vec2::new(width,height)))
+        Some(Rect::from_min_size(Pos2::new(x,if self.dock()==model::Dock::Bottom {badge.top()-height-6.0}else{badge.bottom()+6.0}),Vec2::new(width,height)))
     }
 
     /// 当前皮肤的换色调色板（经典为 None）。
@@ -2624,7 +2637,7 @@ impl App {
                 let p=map.apply(Pos2::new(x,y))-rect.min;
                 self.fluid.compose(p.x,p.y,rect.width(),rect.height(),expand)
             });
-            if self.dock().is_side() && !pill {
+            if self.dock()!=model::Dock::Top && !pill {
                 for vertex in &mut mesh.vertices {vertex.pos=map.apply(vertex.pos);}
             }
             painter.add(egui::Shape::mesh(mesh));
@@ -2639,7 +2652,7 @@ impl App {
             return;
         }
         let dock=self.dock();
-        if dock.is_side() {
+        if dock!=model::Dock::Top {
             shape::fill_docked(painter,rect,dock,flare,flare_h,radius,self.glass_fill(),feather);
             if !skin.is_glass() {return;}
             if skin==model::Skin::GlassLight {
@@ -2647,7 +2660,8 @@ impl App {
                 shape::fill_gradient_docked(painter,rect,dock,flare,flare_h,radius,sheen,Color32::TRANSPARENT,(rect.width()*0.6).min(64.0),feather);
             }
             if rect.height()>=20.0 && rect.width()>=10.0 {
-                let edge=if dock==model::Dock::Left {Rect::from_min_max(rect.min+Vec2::new(0.0,0.5),rect.max-Vec2::new(0.5,0.5))}
+                let edge=if dock==model::Dock::Bottom {Rect::from_min_max(rect.min+Vec2::splat(0.5),rect.max-Vec2::new(0.5,0.0))}
+                    else if dock==model::Dock::Left {Rect::from_min_max(rect.min+Vec2::new(0.0,0.5),rect.max-Vec2::new(0.5,0.5))}
                     else {Rect::from_min_max(rect.min+Vec2::new(0.5,0.5),rect.max-Vec2::new(0.0,0.5))};
                 painter.add(egui::Shape::line(shape::outline_docked(edge,dock,flare,flare_h,(radius-0.5).max(0.0)),egui::Stroke::new(1.0_f32,self.glass_rim())));
             }
@@ -2677,7 +2691,7 @@ impl App {
             if pill {
                 let r=radius.min(rect.height().min(rect.width())*0.5)+grow;
                 painter.rect_stroke(edge,r,stroke,egui::StrokeKind::Middle);
-            } else if dock.is_side() {
+            } else if dock!=model::Dock::Top {
                 painter.add(egui::Shape::line(shape::outline_docked(edge,dock,flare,flare_h,radius+grow),stroke));
             } else {
                 painter.add(egui::Shape::line(shape::outline(edge,flare,flare_h,radius+grow),stroke));
@@ -2708,17 +2722,19 @@ impl App {
             let mut geometry=env.cursor.zip(env.screen).map(|(p,r)|(p-r.min,r.size()));
             let mut crossed=false;
             let mut seam=None;
-            if let (Some(point),Some(active))=(env.desktop_cursor.filter(|_|self.displays.len()>1),crate::display_layout::selected(&self.displays,current_id)) {
+            let mut bottom_inset=0.0;
+            if let (Some(point),Some(active))=(env.desktop_cursor,crate::display_layout::selected(&self.displays,current_id)) {
                 let zoom=self.settings.island_scale()*ctx.zoom_factor();
                 let target=crate::display_layout::drag_target(&self.displays,active,point,zoom);
                 crossed=target.id!=active.id;
                 let scale=target.scale(zoom);
-                let b=crate::display_layout::placement_bounds(target,self.settings.avoids_top_bar());
+                let b=target.dock_bounds(self.dock(),self.settings.avoids_top_bar());
+                bottom_inset=(b.bottom-target.bottom_edge()) as f32/scale;
                 geometry=Some((Vec2::new((point.0-b.left) as f32,(point.1-b.top) as f32)/scale,
                     Vec2::new((b.right-b.left) as f32,(b.bottom-b.top) as f32)/scale));
                 seam=self.displays.iter().filter(|d|d.id!=target.id)
                     .filter_map(|d|crate::display_layout::shared_edge(target.bounds,d.bounds,point))
-                    .filter_map(|(depth,edge)|edge.map(|dock|(depth as f32/scale,dock)))
+                    .map(|(depth,dock)|(depth as f32/scale,dock))
                     .min_by(|a,b|a.0.abs().total_cmp(&b.0.abs()));
                 if crossed {
                     self.settings.display_id=if Some(&target.id)==drag.original_monitor.as_ref() {drag.original_display.clone()}else{target.id.clone()};
@@ -2727,7 +2743,7 @@ impl App {
                 }
             }
             if let Some((cursor,size))=geometry {
-                let edges=[(model::Dock::Top,cursor.y.max(0.0)),(model::Dock::Left,cursor.x.max(0.0)),(model::Dock::Right,(size.x-cursor.x).max(0.0))];
+                let edges=[(model::Dock::Top,cursor.y.max(0.0)),(model::Dock::Left,cursor.x.max(0.0)),(model::Dock::Right,(size.x-cursor.x).max(0.0)),(model::Dock::Bottom,(size.y-bottom_inset-cursor.y).max(0.0))];
                 let &(nearest,distance)=edges.iter().min_by(|a,b|a.1.total_cmp(&b.1)).unwrap();
                 let current=edges.iter().find(|(dock,_)|*dock==self.dock()).unwrap().1;
                 // 靠近新边缘才换边；角落保留缓冲，防止横竖形态来回跳变。
@@ -2818,7 +2834,7 @@ impl App {
         let along=if side {Vec2::Y}else{Vec2::X};
         let pill=self.settings.island_shape==model::IslandShape::Pill;
         let outline=|grow:f32| if pill {round_rect_points(body.expand(grow),radius+grow)}
-            else if side {shape::outline_docked(body.expand(grow),dock,flare,flare_h,radius+grow)}
+            else if dock!=model::Dock::Top {shape::outline_docked(body.expand(grow),dock,flare,flare_h,radius+grow)}
             else {shape::outline(body.expand(grow),flare,flare_h,radius+grow)};
         // 颜色即状态：接近时中性白，吸住后过渡为绿色。
         let tint=|mix:f32,alpha:f32| {
@@ -2842,6 +2858,7 @@ impl App {
             // 屏幕中轴相对岛体中心的位置（与窗口跟随同源，不会差一帧）。
             let off=self.placement_offset()*travel;
             let (out,edge)=match dock {
+                model::Dock::Bottom=>(-Vec2::Y,panel.center_top()),
                 model::Dock::Top=>(Vec2::Y,Pos2::new(panel.center().x,panel.bottom())),
                 model::Dock::Left=>(Vec2::X,Pos2::new(panel.right(),panel.center().y)),
                 model::Dock::Right=>(-Vec2::X,Pos2::new(panel.left(),panel.center().y)),
@@ -3153,7 +3170,7 @@ impl App {
         if reveal>0.004 {self.shared_header(&base.faded(reveal),base.origin.x+PW/2.0,1.0,reveal,env);}
     }
 
-    fn update_pet(&mut self, env: &Env, cx: f32) {
+    fn update_pet(&mut self, env: &Env, cx: f32, top:f32) {
         let cx=cx+self.resident.position(bar::PET);
         let idle = self.idle_for();
         if self.pet.last_idle >= self.opts.pet_idle && idle < 1.0
@@ -3161,7 +3178,7 @@ impl App {
             self.pet.waking_until = self.t + 2.2;
         }
         self.pet.last_idle = idle;
-        self.pet.hovered = env.cursor.is_some_and(|p| (p.x-cx).abs() <= BAR_W/2.0+24.0 && (0.0..70.0).contains(&p.y));
+        self.pet.hovered = env.cursor.is_some_and(|p| (p.x-cx).abs() <= BAR_W/2.0+24.0 && (top..top+70.0).contains(&p.y));
         self.pet.worried = self.settings.show_battery && env.battery.is_some_and(|v|v<=20) && !env.charging || env.network == Some(false);
         let allowed = self.pet_enabled();
         if !allowed { self.pet.reaction = None; self.pet.waking_until = 0.0; self.pet.expressions.clear(); }
@@ -3171,7 +3188,7 @@ impl App {
         let visible = available && self.pet_a > 0.7 && self.progress() < 0.1;
         self.pet.advance(self.dt, visible);
         let state = self.pet_state();
-        let gaze = env.cursor.map(|p| [((p.x-cx)/28.0).clamp(-3.0,3.0), ((p.y-15.0)/40.0).clamp(-1.0,1.5)])
+        let gaze = env.cursor.map(|p| [((p.x-cx)/28.0).clamp(-3.0,3.0), ((p.y-top-15.0)/40.0).clamp(-1.0,1.5)])
             .unwrap_or([(self.t as f32 * 0.35).sin()*0.8, 0.0]);
         self.pet.step(state, self.t, self.dt, gaze, visible);
     }

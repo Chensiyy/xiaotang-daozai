@@ -335,7 +335,7 @@ impl Shell {
         #[cfg(windows)]
         let screen=daozai::display_layout::selected(&self.app.displays,&self.app.settings.display_id).map(|d|{
             // 与岛体摆放用同一范围：避开顶栏后，拖动换边和浮层都以顶栏下沿为顶边。
-            let b=daozai::display_layout::placement_bounds(d,self.app.settings.avoids_top_bar());
+            let b=d.dock_bounds(self.app.settings.dock,self.app.settings.avoids_top_bar());
             egui::Rect::from_min_max(Pos2::new(b.left as f32/ppp-origin.x,b.top as f32/ppp-origin.y),Pos2::new(b.right as f32/ppp-origin.x,b.bottom as f32/ppp-origin.y))
         });
         #[cfg(not(windows))]
@@ -467,7 +467,7 @@ impl eframe::App for Shell {
             self.placement_key=placement_key;
             let display=daozai::display_layout::selected(&self.app.displays,&self.app.settings.display_id);
             let scale=display.filter(|_|moving_display).map_or(self.placement_scale,|d|d.scale(self.app.settings.island_scale()*ctx.zoom_factor()));
-            if display.is_some_and(|d|self.native.as_ref().is_some_and(|w|w.place_on_display(scale,daozai::display_layout::placement_bounds(d,self.app.settings.avoids_top_bar()),offset,self.app.settings.dock,shift))) {
+            if display.is_some_and(|d|self.native.as_ref().is_some_and(|w|w.place_on_display(scale,d.dock_bounds(self.app.settings.dock,self.app.settings.avoids_top_bar()),offset,self.app.settings.dock,shift))) {
                 if !self.placed {diagnostics::startup("目标屏幕物理坐标定位完成，已请求显示");}
                 self.placed=true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
@@ -617,7 +617,18 @@ impl eframe::App for Shell {
                 if !success{self.app.say(message);}
             }
         }
-        let env = self.env(ctx);
+        let mut env = self.env(ctx);
+        #[cfg(windows)]
+        let bottom_display=daozai::display_layout::selected(&self.app.displays,&self.app.settings.display_id)
+            .filter(|d|self.app.settings.dock==daozai::model::Dock::Bottom && d.auto_bottom!=0);
+        #[cfg(windows)]
+        let yield_bar=!self.app.dragging_position() && bottom_display.is_some_and(|d|d.bottom_bar_revealed());
+        #[cfg(not(windows))]
+        let yield_bar=false;
+        if yield_bar {env.cursor=None;}
+        let fade=ctx.animate_bool_with_time(egui::Id::new("bottom-taskbar-visible"),yield_bar,0.12);
+        #[cfg(windows)]
+        if bottom_display.is_some() && !self.hidden {ctx.request_repaint_after(Duration::from_millis(80));}
         #[cfg(windows)]
         if self.native.as_ref().is_some_and(|w|w.page_scroll_cancelled()) {self.app.cancel_page_scroll();}
         self.reconcile_modules(ctx);
@@ -664,6 +675,7 @@ impl eframe::App for Shell {
         egui::CentralPanel::default()
             .frame(egui::Frame::new().fill(Color32::TRANSPARENT))
             .show(ctx, |ui| {
+                ui.set_opacity(1.0-fade);
                 // 左右停靠时画布是竖向的 SIDE_W × SIDE_H。
                 let size=if self.app.settings.dock.is_side() {egui::vec2(daozai::side_dock::SIDE_W,daozai::side_dock::SIDE_H)} else {egui::vec2(app::WIN_W,app::WIN_H)};
                 let win = egui::Rect::from_min_size(ui.max_rect().min,size);
@@ -671,7 +683,7 @@ impl eframe::App for Shell {
             });
         let Some(out) = out else { return };
         #[cfg(windows)]
-        let interactive_transition = !self.hidden && out.interactive_transition;
+        let interactive_transition = !self.hidden && (out.interactive_transition || (fade>0.0 && fade<1.0));
         #[cfg(windows)]
         let last_transition_frame = std::mem::replace(&mut self.was_interactive_transition,interactive_transition);
 
@@ -688,7 +700,7 @@ impl eframe::App for Shell {
             if shift!=self.oled_shift {
                 self.oled_shift=shift;
                 let display=daozai::display_layout::selected(&self.app.displays,&self.app.settings.display_id);
-                if display.is_some_and(|d|self.native.as_ref().is_some_and(|w|w.place_on_display(ctx.pixels_per_point(),daozai::display_layout::placement_bounds(d,self.app.settings.avoids_top_bar()),self.app.placement_offset(),self.app.settings.dock,shift))) {
+                if display.is_some_and(|d|self.native.as_ref().is_some_and(|w|w.place_on_display(ctx.pixels_per_point(),d.dock_bounds(self.app.settings.dock,self.app.settings.avoids_top_bar()),self.app.placement_offset(),self.app.settings.dock,shift))) {
                     self.placement_key.4=shift;
                 }
                 ctx.request_repaint();
@@ -731,11 +743,12 @@ impl eframe::App for Shell {
             }
             let r = |r: egui::Rect| (r.left(), r.top(), r.width(), r.height());
             // 保留主窗口的事件循环，避免全屏隐藏后设置窗口无法关闭或重新打开。
-            let region=if self.hidden {(0.0,0.0,0.0,0.0)} else {r(out.region)};
-            let hit=if self.hidden || out.click_through && out.notice_hit.is_none() {(0.0,0.0,0.0,0.0)} else {r(out.hit)};
-            native.set_page_scroll_area(out.page_scroll_area.filter(|_|!self.hidden && out.expanded),ctx.pixels_per_point());
-            native.update(region, hit, if self.hidden{None}else{out.notice_hit.map(r)},if self.hidden{None}else{out.file_drop_zone.map(r)},if self.hidden{None}else{out.glass.as_deref()},ctx.pixels_per_point(), out.editing, !self.hidden && out.expanded);
-            if !self.hidden && self.app.settings.avoids_top_bar() && self.app.settings.top_bar_on_top && !self.app.settings.dock.is_side() {
+            let passive=self.hidden || yield_bar;
+            let region=if self.hidden || fade>=0.999 {(0.0,0.0,0.0,0.0)} else {r(out.region)};
+            let hit=if passive || out.click_through && out.notice_hit.is_none() {(0.0,0.0,0.0,0.0)} else {r(out.hit)};
+            native.set_page_scroll_area(out.page_scroll_area.filter(|_|!passive && out.expanded),ctx.pixels_per_point());
+            native.update(region, hit, if passive{None}else{out.notice_hit.map(r)},if passive{None}else{out.file_drop_zone.map(r)},if self.hidden || fade>=0.999 {None}else{out.glass.as_deref()},ctx.pixels_per_point(), out.editing && !passive, !passive && out.expanded);
+            if !self.hidden && self.app.settings.avoids_top_bar() && self.app.settings.top_bar_on_top && self.app.settings.dock==daozai::model::Dock::Top {
                 if let Some(display)=daozai::display_layout::selected(&self.app.displays,&self.app.settings.display_id) {
                     native.keep_above_top_bar(display.bounds);
                 }
