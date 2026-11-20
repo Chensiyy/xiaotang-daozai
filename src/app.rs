@@ -3111,14 +3111,8 @@ impl App {
         let clock_w = paint::clock_width(base,&clock,size::CLOCK);
         let battery_space=if show_battery {24.0}else{0.0};
         let group = battery_space + date_w + 8.0 + clock_w;
-        // 分栏、日期时间和右侧操作各占一区。带秒钟和时段的长时间只在空间不足时缩小。
-        let shift=self.header_music_shift();
-        let (left,right)=match self.page {
-            SHELF_PAGE=>(124.0,308.0-shift),
-            CALENDAR_PAGE=>(155.0,352.0-shift),
-            WEATHER_PAGE|QUOTA_PAGE=>(85.0,300.0-shift),
-            _=>(0.0,PW),
-        };
+        // 顶栏共用日程「新增」和天气「刷新」之间的空间，切页时日期和时钟保持原位。
+        let (left,right)=(155.0,300.0-self.header_music_shift());
         // 直接过渡时钟实际需要移动的距离，避免先等边界追上，再在最后几帧挤动文字。
         let ctx=base.ui.ctx();
         let target_fit=((right-left)/group).min(1.0);
@@ -3174,7 +3168,7 @@ impl App {
                         let (x,w)=(left-pad,right-left+pad*2.0);
                         if fill_in>0.003 {base.fill(x,5.0,w,26.0,13.0,Color32::from_white_alpha((fill_in*7.0+press*12.0) as u8));}
                         let grip=lerp(14.0,22.0,press)*lerp(0.5,1.0,grip_in);
-                        base.fill(x+w/2.0-grip/2.0,7.5,grip,2.6,1.3,Color32::from_white_alpha((grip_in*60.0+press*60.0) as u8));
+                        base.fill(local_cx-grip/2.0,7.5,grip,2.6,1.3,Color32::from_white_alpha((grip_in*60.0+press*60.0) as u8));
                     }
                     // 开始移动立即拿起；原地按住片刻也会拿起，先给反馈再移动。
                     let held=response.is_pointer_button_down_on() && base.ui.input(|i|i.pointer.primary_down() && i.pointer.press_start_time().is_some_and(|at|i.time-at>=LIFT_HOLD));
