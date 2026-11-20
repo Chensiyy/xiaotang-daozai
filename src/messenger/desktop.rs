@@ -41,12 +41,16 @@ pub(crate) unsafe fn main_window(window:HWND,client:Messenger)->bool{
     if client==Messenger::Feishu && !feishu_title(&window_title(window)) && feishu_main_frame(window_pid(window)).is_some(){return false;}
     window_sized(window)
 }
-/// 最小化，或至少 300×300：排除同进程的小弹窗。
+/// 最小化时按恢复尺寸检查，排除任何状态下不足 300×300 的小弹窗。
 unsafe fn window_sized(window:HWND)->bool{
     use windows::Win32::Foundation::RECT;
-    if IsIconic(window).as_bool(){return true;}
     let mut rect=RECT::default();
-    GetWindowRect(window,&mut rect).is_ok() && rect.right-rect.left>=300 && rect.bottom-rect.top>=300
+    if IsIconic(window).as_bool(){
+        let mut placement=WINDOWPLACEMENT{length:std::mem::size_of::<WINDOWPLACEMENT>() as u32,..Default::default()};
+        if GetWindowPlacement(window,&mut placement).is_err(){return false;}
+        rect=placement.rcNormalPosition;
+    }else if GetWindowRect(window,&mut rect).is_err(){return false;}
+    rect.right-rect.left>=300 && rect.bottom-rect.top>=300
 }
 const DINGTALK_FRAME:&str="StandardFrame_DingTalk";
 /// 钉钉 9.0.5 的 Qt 主窗口没有系统标题栏，但有完整的窗口控制样式。同进程的隐藏对话框带标题栏。
@@ -131,7 +135,8 @@ unsafe fn feishu_main_frame(pid:u32)->Option<HWND>{
     struct Search{pid:u32,found:Vec<HWND>}
     unsafe extern "system" fn visit(window:HWND,data:LPARAM)->BOOL{
         let search=&mut *(data.0 as *mut Search);
-        if window_pid(window)==search.pid && feishu_frame(window) && feishu_title(&window_title(window)){search.found.push(window);}
+        if window_pid(window)==search.pid && feishu_frame(window) && feishu_title(&window_title(window))
+            && window_sized(window){search.found.push(window);}
         true.into()
     }
     let mut search=Search{pid,found:Vec::new()};
@@ -363,6 +368,22 @@ mod tests{
             assert!(main_window(chat,Messenger::Feishu),"{state}：找不到主窗口时沿用原规则");
             DestroyWindow(chat).unwrap();
         }
+        // 同名小窗与主窗口最小化后的系统矩形相似，应以恢复尺寸区分。
+        let create=|title,width,height|CreateWindowExW(WINDOW_EX_STYLE(0),w!("Chrome_WidgetWin_1"),title,WS_OVERLAPPEDWINDOW,-10000,-10000,width,height,None,None,instance,None).unwrap();
+        let main=create(w!("飞书"),998,726);
+        let small=create(w!("Feishu"),220,220);
+        let chat=create(w!("独立会话"),400,500);
+        for window in [main,small]{
+            let _=ShowWindow(window,SW_SHOWMINNOACTIVE);
+            assert!(IsIconic(window).as_bool(),"测试窗口必须进入最小化状态");
+        }
+        let original=Target{unread:Unread{source:Messenger::Feishu,pid,window:main.0 as isize},started};
+        assert!(!main_window(small,Messenger::Feishu),"真正的小窗最小化后仍应被排除");
+        assert!(ready_with_paths(original,&paths),"正常的主窗口最小化后仍可识别");
+        assert_eq!(flash_target(Messenger::Feishu,main,&paths),Some(original.unread));
+        assert_eq!(flash_target(Messenger::Feishu,chat,&paths),Some(original.unread),"同名小窗不影响独立会话的归属");
+        assert_eq!(flash_target(Messenger::Feishu,small,&paths),Some(Unread::of(Messenger::Feishu)),"同名小窗闪动不应借用主窗口");
+        for window in [chat,small,main]{DestroyWindow(window).unwrap();}
     }}
     #[test]
     fn hidden_helpers_are_never_shown(){unsafe{
