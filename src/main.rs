@@ -60,7 +60,7 @@ struct Shell {
     opening_messenger:Option<(app::Unread,Instant)>,
     /// 后台线程正在唤起消息客户端。
     #[cfg(windows)]
-    tray_opening:Option<(app::Unread,std::sync::mpsc::Receiver<Result<(),OpenError>>)>,
+    tray_opening:Option<(app::Unread,std::sync::mpsc::Receiver<Result<messenger::Target,OpenError>>)>,
     #[cfg(windows)]
     hidden: bool,
     /// 毛玻璃皮肤的背景亮度采样（仅毛玻璃皮肤运行）。
@@ -110,12 +110,10 @@ impl Shell {
 
     #[cfg(windows)]
     fn confirm_messenger_open(&mut self,unread:app::Unread)->bool{
+        if app::Messenger::OFFICE.contains(&unread.source)
+            && unsafe{windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow().0 as isize}!=unread.window{return false;}
         let foreground=self.messengers.foreground(&[unread.source]);
-        if !self.app.confirm_messenger_open(unread,foreground){
-            let seen=foreground.map(|(source,pid)|format!("{} 账号 {pid}",source.name())).unwrap_or_else(messenger::windows::describe_foreground);
-            messenger::windows::trace(format!("唤起 {} 账号 {}：未到前台（前台是 {seen}）",unread.source.name(),unread.pid));
-            return false;
-        }
+        if !self.app.confirm_messenger_open(unread,foreground){return false;}
         messenger::windows::trace(format!("唤起 {} 账号 {}：已在前台",unread.source.name(),unread.pid));
         self.messengers.viewed_client(unread.source,unread.pid);
         true
@@ -530,9 +528,8 @@ impl eframe::App for Shell {
             let previous_pending=self.app.pending_messengers.clone();
             for event in self.messengers.poll_taskbar(ctx,&self.app.settings){match event{
                 TaskbarEvent::Status(client,status)=>self.app.set_messenger_status(client,status),
-                TaskbarEvent::Message(unread)=>{
-                    if self.messengers.track_unread(unread)==Err(OpenError::Exited){continue;}
-                    self.app.receive_messenger_reminder(unread);
+                TaskbarEvent::Message(unread,target)=>{
+                    if let Some(unread)=self.messengers.register_taskbar(unread,target){self.app.receive_messenger_reminder(unread);}
                 }
             }}
             if let Some(rx)=&self.incoming {
@@ -568,11 +565,17 @@ impl eframe::App for Shell {
             if let Some((unread,rx))=&self.tray_opening {
                 let unread=*unread;
                 match rx.try_recv(){
-                    Ok(Ok(()))=>{
+                    Ok(Ok(opened))=>{
                         self.tray_opening=None;
-                        if !self.confirm_messenger_open(unread){
-                            self.opening_messenger=Some((unread,Instant::now()));
-                            ctx.request_repaint_after(Duration::from_secs(4));
+                        if opened.unread!=unread && self.messengers.replace_opened(unread,opened).is_err(){
+                            self.app.reveal_messenger_notice(unread);
+                            self.app.messenger_unavailable(OpenError::Unavailable.message(unread.source));
+                        }else{
+                            if opened.unread!=unread{self.app.receive_messenger_reminder(opened.unread);}
+                            if !self.confirm_messenger_open(opened.unread){
+                                self.opening_messenger=Some((opened.unread,Instant::now()));
+                                ctx.request_repaint_after(Duration::from_secs(4));
+                            }
                         }
                     }
                     Ok(Err(error))=>{
@@ -593,6 +596,7 @@ impl eframe::App for Shell {
                 else if started.elapsed()>=Duration::from_secs(4){
                     self.opening_messenger=None;
                     if !self.confirm_messenger_open(unread){
+                        messenger::windows::trace(format!("唤起 {} 账号 {}：等待原窗口到前台超时（前台是 {}）",unread.source.name(),unread.pid,messenger::windows::describe_foreground()));
                         self.app.messenger_unavailable(format!("{}尚未切到前台，可点图标重试",unread.source.name()));
                     }
                 }
