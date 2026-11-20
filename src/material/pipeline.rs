@@ -283,6 +283,7 @@ fn dock_code(dock: Dock) -> u32 {
         Dock::Top => 0,
         Dock::Left => 1,
         Dock::Right => 2,
+        Dock::Bottom => 3,
     }
 }
 
@@ -444,6 +445,7 @@ mod tests {
 
         for (dock, body, [x, y], [outside_x, outside_y]) in [
             (Dock::Top, rect(20.0, 0.0, 24.0, 44.0), [17, 4], [17, 18]),
+            (Dock::Bottom, rect(20.0, 20.0, 24.0, 44.0), [17, 59], [17, 45]),
             (Dock::Left, rect(0.0, 20.0, 44.0, 24.0), [4, 17], [18, 17]),
             (
                 Dock::Right,

@@ -59,6 +59,8 @@ fn body_sdf(p : vec2<f32>) -> f32 {
         } else if (daozai_host.dock.x == 2u) {
             local = vec2<f32>(local.y, -local.x);
             half_size = half_size.yx;
+        } else if (daozai_host.dock.x == 3u) {
+            local.y = -local.y;
         }
         return notch_sdf(local, half_size, radius, frame.notch.x, frame.notch.y);
     }

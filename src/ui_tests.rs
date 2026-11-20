@@ -675,7 +675,7 @@ fn top_bar_modes_preserve_legacy_settings_and_save_the_selected_display_mode(){
     use crate::model::Settings;
     let path=crate::model::config_dir().join("settings.txt");std::fs::create_dir_all(path.parent().unwrap()).unwrap();
     let bounds=crate::display_layout::Bounds{left:-1920,top:-400,right:0,bottom:680};
-    let display=crate::display_layout::Display{id:"test".into(),label:"测试屏".into(),bounds,work_top:-368,primary:true,dpi:96};
+    let display=crate::display_layout::Display{id:"test".into(),label:"测试屏".into(),bounds,work:crate::display_layout::Bounds{top:-368,..bounds},auto_bottom:0,primary:true,dpi:96};
     for enabled in [false,true] {
         std::fs::write(&path,format!("avoid_top_bar={}\n",enabled as u8)).unwrap();
         let mut settings=Settings::load();
@@ -1332,7 +1332,7 @@ fn island_drag_frame(h:&mut H,bounds:crate::display_layout::Bounds,ppp:f32,point
     let (width,height)=if dock.is_side(){(side_dock::SIDE_W,side_dock::SIDE_H)}else{(WIN_W,WIN_H)};
     let offset=h.app.placement_offset();
     let (x,y)=if dock.is_side(){display_layout::side_origin(bounds,dock,(width,height),side_dock::SIDE_HALF_EXTENT,ppp,offset)}
-        else{display_layout::island_origin_offset(bounds,width,ppp,offset)}.unwrap();
+        else{display_layout::horizontal_origin(bounds,dock,ppp,offset)}.unwrap();
     let screen=Rect::from_min_max(Pos2::new((bounds.left-x) as f32/ppp,(bounds.top-y) as f32/ppp),Pos2::new((bounds.right-x) as f32/ppp,(bounds.bottom-y) as f32/ppp));
     let cursor=pointer.map(|p|p+screen.min.to_vec2());
     let mut events=cursor.map(|p|vec![egui::Event::PointerMoved(p)]).unwrap_or_default();
@@ -1358,6 +1358,38 @@ fn island_drag_header(h:&mut H,bounds:crate::display_layout::Bounds,ppp:f32)->Po
 }
 
 #[test]
+fn bottom_dock_hover_opens_upward_with_stable_edge_and_visible_header() {
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let win=Rect::from_min_size(Pos2::ZERO,Vec2::new(WIN_W,WIN_H));
+    for shape in crate::model::IslandShape::ALL {
+        let mut h=H::new();
+        h.app.settings.dock=crate::model::Dock::Bottom;
+        h.app.settings.island_shape=shape;
+        for _ in 0..60 {h.frame(vec![]);}
+        let body=|h:&H|h.app.island_rect(win,h.app.w.pos,h.app.h.pos);
+        let start=body(&h);
+        let pointer=win.center_bottom()-Vec2::Y;
+        assert!(h.hit.contains(pointer) && !h.hit.contains(win.center_top()));
+        h.cursor=Some(pointer);
+        let mut animated=false;
+        for _ in 0..100 {
+            h.frame(vec![]);
+            let panel=body(&h);
+            assert!((panel.bottom()-start.bottom()).abs()<0.01);
+            animated|=panel.top()<start.top()-4.0 && panel.height()<h.app.expanded_height()-4.0;
+        }
+        let panel=body(&h);
+        assert!(animated && h.app.open && panel.top()<start.top()-60.0);
+        assert!(h.region.contains(panel.center()) && h.hit.contains(panel.center()));
+        assert!(h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t)
+            if t.galley.text()=="10月28日 周三" && s.clip_rect.contains(t.visual_bounding_rect().center()))));
+        h.cursor=None;
+        for _ in 0..120 {h.frame(vec![]);}
+        assert!(!h.app.open && (body(&h).top()-start.top()).abs()<1.0);
+    }
+}
+
+#[test]
 fn island_position_drag_crosses_shared_edge_and_persists_target(){
     use crate::{display_layout::{Bounds,Display},model::{Dock,Settings}};
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
@@ -1365,8 +1397,8 @@ fn island_position_drag_crosses_shared_edge_and_persists_target(){
     let b=Bounds{left:0,top:-240,right:2560,bottom:1200};
     let mut h=H::new();
     h.app.displays=vec![
-        Display{id:"A".into(),label:"左屏".into(),bounds:a,work_top:0,primary:true,dpi:96},
-        Display{id:"B".into(),label:"右屏".into(),bounds:b,work_top:-240,primary:false,dpi:144},
+        Display{id:"A".into(),label:"左屏".into(),bounds:a,work:a,auto_bottom:0,primary:true,dpi:96},
+        Display{id:"B".into(),label:"右屏".into(),bounds:b,work:b,auto_bottom:0,primary:false,dpi:144},
     ];
     h.app.settings.display_id="A".into();
     h.app.settings.save();
@@ -1442,13 +1474,14 @@ fn island_position_drag_clamps_to_existing_limits_and_stays_resident(){
         let mut h=H::new();h.app.settings.dock=dock;h.app.settings.island_shape=shape;
         let start=island_drag_header(&mut h,bounds,1.0);
         island_drag_frame(&mut h,bounds,1.0,Some(start),Some(true));
-        let end=if dock.is_side(){Pos2::new(start.x,3000.0)}else{Pos2::new(1855.0,start.y)};
+        let side_x=if dock==crate::model::Dock::Left {0.0}else{1919.0};
+        let end=if dock.is_side(){Pos2::new(side_x,1079.0)}else{Pos2::new(1855.0,start.y)};
         for _ in 0..120{island_drag_frame(&mut h,bounds,1.0,Some(end),None);}
         assert!(!h.app.open,"{dock:?} 拖动期间应保持常驻形态");
         assert!(h.app.progress()<0.01,"拖动期间不应保留展开面板");
         assert!(!h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t) if t.galley.text()=="10月28日 周三")),"拖动期间不应显示展开顶栏");
         assert_eq!(h.app.settings.island_offset,crate::model::ISLAND_OFFSET_MAX);
-        let end=if dock.is_side(){Pos2::new(start.x,65.0)}else{Pos2::new(65.0,start.y)};
+        let end=if dock.is_side(){Pos2::new(side_x,65.0)}else{Pos2::new(65.0,start.y)};
         island_drag_frame(&mut h,bounds,1.0,Some(end),None);
         assert_eq!(h.app.settings.island_offset,-crate::model::ISLAND_OFFSET_MAX);
         assert_eq!(h.app.settings.dock,dock);
@@ -1460,11 +1493,28 @@ fn island_position_drag_clamps_to_existing_limits_and_stays_resident(){
 }
 
 #[test]
+fn bottom_dock_drag_snaps_at_taskbar_top_before_cursor_enters_taskbar() {
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    use crate::{display_layout::{Bounds,Display},model::Dock};
+    let bounds=Bounds{left:0,top:0,right:1920,bottom:1080};
+    let work=Bounds{bottom:968,..bounds};
+    let mut h=H::new();
+    h.app.displays=vec![Display{id:"primary".into(),label:String::new(),primary:true,dpi:96,bounds,work,auto_bottom:0}];
+    let start=island_drag_header(&mut h,bounds,1.0);
+    island_drag_frame(&mut h,bounds,1.0,Some(start),Some(true));
+    let end=Pos2::new(1050.0,work.bottom as f32-8.0);
+    island_drag_frame(&mut h,bounds,1.0,Some(end),None);
+    assert_eq!(h.app.settings.dock,Dock::Bottom);
+    island_drag_frame(&mut h,work,1.0,Some(end),Some(false));
+    assert_eq!(crate::model::Settings::load().dock,Dock::Bottom);
+}
+
+#[test]
 fn island_position_drag_below_a_top_bar_switches_edges_like_the_bare_screen(){
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     use crate::model::{Dock,Settings};
     let monitor=crate::display_layout::Bounds{left:0,top:0,right:1920,bottom:1080};
-    let display=crate::display_layout::Display{id:"d".into(),label:"d".into(),bounds:monitor,work_top:28,primary:true,dpi:96};
+    let display=crate::display_layout::Display{id:"d".into(),label:"d".into(),bounds:monitor,work:crate::display_layout::Bounds{top:28,..monitor},auto_bottom:0,primary:true,dpi:96};
     let bounds=crate::display_layout::placement_bounds(&display,true);
     for to in [Dock::Left,Dock::Right] {
         let mut h=H::new();h.app.settings.save();
@@ -1484,7 +1534,7 @@ fn island_position_drag_below_a_top_bar_switches_edges_like_the_bare_screen(){
 }
 
 #[test]
-fn island_position_drag_switches_between_all_three_edges_and_saves_on_release(){
+fn island_position_drag_switches_between_all_four_edges_and_saves_on_release(){
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     use crate::model::{Dock,IslandShape,Settings};
     let bounds=crate::display_layout::Bounds{left:-2560,top:-400,right:0,bottom:1040};
@@ -1493,7 +1543,7 @@ fn island_position_drag_switches_between_all_three_edges_and_saves_on_release(){
         let start=island_drag_header(&mut h,bounds,ppp);
         island_drag_frame(&mut h,bounds,ppp,Some(start),Some(true));
         let size=Vec2::new(2560.0,1440.0)/ppp;
-        let end=match to {Dock::Top=>Pos2::new(size.x*0.6,0.0),Dock::Left=>Pos2::new(0.0,size.y*0.6),Dock::Right=>Pos2::new(size.x,size.y*0.6)};
+        let end=match to {Dock::Bottom=>Pos2::new(size.x*0.6,size.y),Dock::Top=>Pos2::new(size.x*0.6,0.0),Dock::Left=>Pos2::new(0.0,size.y*0.6),Dock::Right=>Pos2::new(size.x,size.y*0.6)};
         for _ in 0..30{island_drag_frame(&mut h,bounds,ppp,Some(end),None);}
         assert_eq!(h.app.settings.dock,to,"{from:?} → {to:?} / {ppp} / {shape:?}");
         assert!(!h.app.open && h.app.progress()<0.01,"切换停靠边后仍应显示常驻形态");
@@ -4965,8 +5015,8 @@ fn display_choice_saves_and_keeps_disconnected_selection(){
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();h.app.settings_open=true;h.app.settings_tab=crate::extras::SETTINGS_TAB_POSITION;h.ctx.set_embed_viewports(false);
     let bounds=crate::display_layout::Bounds{left:0,top:0,right:1920,bottom:1080};
     h.app.displays=vec![
-        crate::display_layout::Display{id:"internal".into(),label:"显示器 1 · 主屏".into(),bounds,work_top:0,primary:true,dpi:96},
-        crate::display_layout::Display{id:r"\\?\DISPLAY#external".into(),label:"显示器 2 · 外接屏".into(),bounds,work_top:0,primary:false,dpi:96},
+        crate::display_layout::Display{id:"internal".into(),label:"显示器 1 · 主屏".into(),bounds,work:bounds,auto_bottom:0,primary:true,dpi:96},
+        crate::display_layout::Display{id:r"\\?\DISPLAY#external".into(),label:"显示器 2 · 外接屏".into(),bounds,work:bounds,auto_bottom:0,primary:false,dpi:96},
     ];
     let mut raster=crate::preview_raster::Raster::new(690,560);
     fn frame(h:&mut H,raster:&mut crate::preview_raster::Raster,events:Vec<egui::Event>){
@@ -8925,6 +8975,7 @@ fn unread_capsule_center_stays_put_as_the_island_springs_open() {
         h.app.notice=None;
         let win=Rect::from_min_size(Pos2::ZERO,Vec2::new(WIN_W,WIN_H));
         h.cursor=Some(match dock {
+            crate::model::Dock::Bottom=>win.center_bottom()-Vec2::new(0.0,12.0),
             crate::model::Dock::Top=>win.center_top()+Vec2::new(0.0,12.0),
             crate::model::Dock::Left=>win.left_center()+Vec2::new(8.0,0.0),
             crate::model::Dock::Right=>win.right_center()-Vec2::new(8.0,0.0),

@@ -1879,13 +1879,13 @@ impl App {
                             // 只在所选屏幕断开时说明，平时不占位置。
                             if !self.settings.display_id.is_empty()&&selected.is_none(){settings_hint(ui,"暂时显示在主屏，重新连接所选屏幕后自动恢复。");}
                             ui.separator();
-                            // 停靠边缘：顶部为横向；左右为竖向排列，展开面板从边缘滑出。
+                            // 停靠边缘：上下为横向；左右为竖向排列，展开面板从边缘滑出。
                             let docks:Vec<(crate::model::Dock,&str)>=crate::model::Dock::ALL.iter().map(|d|(*d,d.label())).collect();
                             settings_control_row_right(ui,"停靠",|ui|{
                                 // 换边后偏移的含义变了（水平 ↔ 上下），回到居中。
                                 if settings_segmented(ui,&mut self.settings.dock,&docks,64.0) {self.settings.island_offset=0;}
                             });
-                            if self.settings.dock.is_side() {settings_hint(ui,"左右停靠时竖向排列；吉祥物和岛上歌词只在顶部停靠时显示。");}
+                            if self.settings.dock.is_side() {settings_hint(ui,"左右停靠时竖向排列；吉祥物和岛上歌词在顶部或底部停靠时显示。");}
                             let side=self.settings.dock.is_side();
                             settings_control_row(ui,if side{"上下位置"}else{"水平位置"},56.0,|ui|{
                                 ui.horizontal_wrapped(|ui|{

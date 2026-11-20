@@ -65,12 +65,13 @@ impl App {
         if self.settings.island_shape == IslandShape::Pill { PILL_GAP } else { 0.0 }
     }
 
-    /// 宽 `w`、高 `h` 的岛体在画布 `win` 里的位置：顶部停靠水平居中贴顶，
+    /// 宽 `w`、高 `h` 的岛体在画布 `win` 里的位置：上下停靠水平居中贴边，
     /// 左右停靠贴边、竖直居中。
     pub(crate) fn island_rect(&self, win: Rect, w: f32, h: f32) -> Rect {
         let gap = self.side_gap();
         match self.dock() {
             Dock::Top => Rect::from_min_size(Pos2::new(win.center().x - w / 2.0, win.top() + gap), Vec2::new(w, h)),
+            Dock::Bottom => Rect::from_min_size(Pos2::new(win.center().x - w / 2.0, win.bottom() - gap - h), Vec2::new(w, h)),
             Dock::Left => Rect::from_min_size(Pos2::new(win.left() + gap, win.center().y - h / 2.0), Vec2::new(w, h)),
             Dock::Right => Rect::from_min_size(Pos2::new(win.right() - gap - w, win.center().y - h / 2.0), Vec2::new(w, h)),
         }
@@ -78,7 +79,8 @@ impl App {
 
     /// 展开面板（页面内容）的左上角。
     pub(crate) fn content_origin(&self, win: Rect) -> Pos2 {
-        self.island_rect(win, PW, self.page_height.pos).min
+        let height=if self.dock()==Dock::Bottom {self.h.pos}else{self.page_height.pos};
+        self.island_rect(win, PW, height).min
     }
 
     /// 侧边停靠的命中区域：收起时是胶囊外扩几点并一直延伸到屏幕边缘，展开时是整个面板。
@@ -93,17 +95,18 @@ impl App {
         match self.dock() {
             Dock::Left => Rect::from_min_max(Pos2::new(win.left(), rect.top()), rect.max),
             Dock::Right => Rect::from_min_max(rect.min, Pos2::new(win.right(), rect.bottom())),
-            Dock::Top => rect,
+            Dock::Top | Dock::Bottom => rect,
         }
     }
 
     /// 毛玻璃取样点（画布坐标）：岛体外侧上下左右各取几处估计身后明暗。
     pub fn backdrop_points(&self) -> Vec<(f32, f32)> {
         match self.dock() {
-            Dock::Top => {
+            Dock::Top | Dock::Bottom => {
                 let cx = crate::app::WIN_W / 2.0;
                 let bottom = crate::app::WIN_H - 6.0;
-                vec![(cx - 270.0, 6.0), (cx - 270.0, 26.0), (cx + 270.0, 6.0), (cx + 270.0, 26.0), (cx - 130.0, bottom), (cx, bottom), (cx + 130.0, bottom)]
+                let y=|v| if self.dock()==Dock::Bottom {crate::app::WIN_H-v} else {v};
+                vec![(cx - 270.0, y(6.0)), (cx - 270.0, y(26.0)), (cx + 270.0, y(6.0)), (cx + 270.0, y(26.0)), (cx - 130.0, y(bottom)), (cx, y(bottom)), (cx + 130.0, y(bottom))]
             }
             dock => {
                 let (near, far) = if dock == Dock::Left { (6.0, SIDE_W - 6.0) } else { (SIDE_W - 6.0, 6.0) };
