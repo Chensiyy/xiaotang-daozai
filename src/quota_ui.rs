@@ -199,24 +199,23 @@ fn relay_icon_image(ui:&egui::Ui,provider:Provider,icon:RelayIcon)->Option<egui:
 }
 
 fn relay_icon_picker(ui:&mut egui::Ui,provider:Provider,icon:&mut RelayIcon){
-    settings_control_row(ui,"图标",56.0,|ui|{
-        ui.horizontal(|ui|{
-            if let Some(image)=relay_icon_image(ui,provider,*icon){ui.add(image);}
-            egui::ComboBox::from_id_salt("relay-icon").width(124.0)
-                .selected_text(icon.label())
-                .show_ui(ui,|ui|{
-                    for choice in RelayIcon::ALL{
-                        let button=match relay_icon_image(ui,provider,choice){
-                            Some(image)=>egui::Button::image_and_text(image,choice.label()),
-                            None=>egui::Button::new(choice.label()),
-                        };
-                        if ui.add_sized([ui.available_width(),25.0],button.selected(choice==*icon)).clicked(){
-                            *icon=choice;
-                            ui.close_menu();
-                        }
+    ui.horizontal(|ui|{
+        let label=ui.label(egui::RichText::new("图标").size(12.0));
+        if let Some(image)=relay_icon_image(ui,provider,*icon){ui.add(image);}
+        let _=egui::ComboBox::from_id_salt("relay-icon").width(124.0)
+            .selected_text(icon.label())
+            .show_ui(ui,|ui|{
+                for choice in RelayIcon::ALL{
+                    let button=match relay_icon_image(ui,provider,choice){
+                        Some(image)=>egui::Button::image_and_text(image,choice.label()),
+                        None=>egui::Button::new(choice.label()),
+                    };
+                    if ui.add_sized([ui.available_width(),25.0],button.selected(choice==*icon)).clicked(){
+                        *icon=choice;
+                        ui.close_menu();
                     }
-                }).response
-        }).inner
+                }
+            }).response.labelled_by(label.id);
     });
 }
 fn deepseek_badge_svg(skin:crate::model::Skin)->String{
