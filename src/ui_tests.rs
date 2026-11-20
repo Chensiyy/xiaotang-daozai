@@ -7725,6 +7725,128 @@ fn quota_cards_expose_names_colors_settings_and_connection(){
     h.app.quota.connect_open=false;for _ in 0..8{frame(&mut h,vec![]);}assert!(!h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t) if t.galley.text()=="···"||t.galley.text()=="设置")));
 }
 
+fn relay_icon_accounts(h:&mut H) {
+    use crate::quota::{self,Provider,Snapshot};
+    h.quota_accounts(2);
+    for (i,(alias,remaining)) in [("日常",24.8),("备用",67.5)].into_iter().enumerate() {
+        let account=&mut h.app.quota.config.accounts[i];
+        account.provider=Provider::NewApi;
+        account.alias=alias.into();
+        let id=account.id.clone();
+        h.app.quota_event(quota::Event{id,result:Ok(Snapshot{
+            relay:Some(quota::relay::Quota{source:"账户余额".into(),expires_at:None,amounts:vec![
+                quota::relay::Amount{scope:quota::relay::Scope::Account,label:"账户余额".into(),unit:"¥".into(),
+                    remaining:Some(remaining),limit:None,used:None,unlimited:false}
+            ]}),
+            ..Default::default()
+        })});
+    }
+}
+
+#[test]
+fn relay_icon_picker_saves_only_the_edited_account() {
+    use crate::quota::{Config,RelayIcon};
+    fn label_position(shapes:&[egui::epaint::ClippedShape],label:&str)->Pos2 {
+        shapes.iter().find_map(|shape|match &shape.shape{
+            egui::Shape::Text(text) if text.galley.text()==label=>Some(text.visual_bounding_rect().center()),
+            _=>None,
+        }).unwrap_or_else(||panic!("应显示{label}"))
+    }
+    fn pointer_button(pos:Pos2,pressed:bool)->egui::Event{
+        egui::Event::PointerButton{pos,button:egui::PointerButton::Primary,pressed,modifiers:Default::default()}
+    }
+    let _guard=ENV_LOCK.lock().unwrap_or_else(|error|error.into_inner());
+    let destination=std::env::var_os("DAOZAI_RELAY_ICON_PREVIEW").map(std::path::PathBuf::from);
+    for (name,width,theme) in [
+        ("dark",690.0,crate::settings_theme::SettingsTheme::Dark),
+        ("light",600.0,crate::settings_theme::SettingsTheme::Light),
+    ]{
+        if name=="light"&&destination.is_none(){continue;}
+        let mut h=H::new();
+        relay_icon_accounts(&mut h);
+        let first=h.app.quota.config.accounts[0].clone();
+        let second=h.app.quota.config.accounts[1].clone();
+        h.app.quota.config.set_relay_icon(&second,RelayIcon::Arrows);
+        h.app.quota.config.save_checked().unwrap();
+        h.app.settings.settings_theme=theme;
+        h.app.settings_tab=11;
+        h.app.open_settings();
+        h.ctx.set_embed_viewports(false);
+        h.ctx.data_mut(|data|data.insert_temp(egui::Id::new(("quota-account-open",first.id.clone())),true));
+        let size=egui::vec2(width,560.0);
+        let ppp=1.5;
+        let output=std::sync::Arc::new(Mutex::new(None));
+        let capture=output.clone();
+        let queued=std::sync::Arc::new(Mutex::new(Vec::new()));
+        let input=queued.clone();
+        egui::Context::set_immediate_viewport_renderer(move|ctx,mut viewport|{
+            let id=viewport.ids.this;
+            let raw=egui::RawInput{viewport_id:id,screen_rect:Some(Rect::from_min_size(Pos2::ZERO,size)),focused:true,
+                events:std::mem::take(&mut *input.lock().unwrap()),
+                viewports:std::iter::once((id,egui::ViewportInfo{native_pixels_per_point:Some(ppp),focused:Some(true),..Default::default()})).collect(),
+                ..Default::default()};
+            *capture.lock().unwrap()=Some(ctx.run(raw,|ctx|(viewport.viewport_ui_cb)(ctx)));
+        });
+        let (w,height)=((size.x*ppp)as u32,(size.y*ppp)as u32);
+        let mut raster=destination.as_ref().map(|_|crate::preview_raster::Raster::new(w as usize,height as usize));
+        let mut frame=|h:&mut H,events:Vec<egui::Event>,shot:Option<&str>|{
+            *queued.lock().unwrap()=events;
+            let root=h.ctx.run(Default::default(),|ctx|h.app.settings_ui(ctx,false));
+            let child=output.lock().unwrap().take().unwrap();
+            if let (Some(raster),Some(directory))=(&mut raster,&destination){
+                raster.update_textures(&root.textures_delta);
+                raster.update_textures(&child.textures_delta);
+                if let Some(shot)=shot{
+                    raster.buf.fill([0.0,0.0,0.0,1.0]);
+                    raster.draw(&h.ctx.tessellate(child.shapes.clone(),child.pixels_per_point),child.pixels_per_point);
+                    let mut rgba=Vec::new();
+                    raster.to_rgba8(&mut rgba);
+                    image::save_buffer(directory.join(format!("settings-{name}-{shot}.png")),&rgba,w,height,image::ColorType::Rgba8).unwrap();
+                }
+                raster.free_textures(&root.textures_delta);
+                raster.free_textures(&child.textures_delta);
+            }
+            h.shapes=child.shapes;
+        };
+        for _ in 0..5{frame(&mut h,vec![],None);}
+        let mut click=|h:&mut H,label:&str,shot:Option<&str>|{
+            let pos=label_position(&h.shapes,label);
+            frame(h,vec![egui::Event::PointerMoved(pos),pointer_button(pos,true)],None);
+            frame(h,vec![pointer_button(pos,false)],None);
+            frame(h,vec![],None);
+            frame(h,vec![],shot);
+        };
+        click(&mut h,"默认钥匙",Some("options"));
+        for icon in RelayIcon::ALL{label_position(&h.shapes,icon.label());}
+        click(&mut h,"叠层",Some("selected"));
+        let saved=Config::load();
+        assert_eq!(saved.relay_icon(&first),RelayIcon::Layers);
+        assert_eq!(saved.relay_icon(&second),RelayIcon::Arrows);
+        click(&mut h,"叠层",None);
+        click(&mut h,"默认钥匙",None);
+        assert_eq!(Config::load().relay_icon(&first),RelayIcon::Key);
+    }
+    if let Some(destination)=destination{
+        let mut h=H::new();
+        relay_icon_accounts(&mut h);
+        let accounts=h.app.quota.config.accounts.clone();
+        h.app.quota.config.set_relay_icon(&accounts[0],RelayIcon::Layers);
+        h.app.quota.config.set_relay_icon(&accounts[1],RelayIcon::Arrows);
+        h.app.settings.pet=false;
+        h.app.settings.island_shape=crate::model::IslandShape::Pill;
+        let mut raster=feature_raster();
+        shoot_feature(&mut h,&mut raster,&destination,"island-dark",60,None,"2026-11-20");
+        h.app.settings.skin=crate::model::Skin::Cream;
+        shoot_feature(&mut h,&mut raster,&destination,"island-light",30,None,"2026-11-20");
+        h.app.show_page(6);
+        shoot_feature(&mut h,&mut raster,&destination,"island-expanded",90,Some(H::local(200.0,60.0)),"2026-11-20");
+        let (w,height)=(crate::side_dock::SIDE_W,crate::side_dock::SIDE_H);
+        h.app.settings.dock=crate::model::Dock::Left;
+        let mut raster=feature_raster_sized(w,height);
+        shoot_side(&mut h,&mut raster,&destination,"island-side",80,None);
+    }
+}
+
 #[test]
 #[ignore = "按需导出卡片式 AI 额度设置页"]
 fn quota_cards_settings_gallery(){
