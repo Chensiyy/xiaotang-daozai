@@ -1647,6 +1647,25 @@ impl App {
                             if a!=autostart{self.pending.push(Cmd::ToggleAutostart);}
                             ui.separator();
                             setting_row(ui,"全屏时隐藏","全屏隐藏岛仔，健康提醒静默保留",&mut self.settings.hide_fullscreen);
+                            ui.separator();
+                            #[cfg(windows)]
+                            let supported = crate::native::Window::capture_exclusion_supported();
+                            #[cfg(not(windows))]
+                            let supported = false;
+                            let mut enabled = self.settings.exclude_from_capture;
+                            ui.add_enabled_ui(supported, |ui| {
+                                setting_row(ui, "在截图和录屏中隐藏岛仔", "桌面上照常显示，支持的截图和录屏工具会略过岛仔。", &mut enabled);
+                            });
+                            if enabled != self.settings.exclude_from_capture {
+                                self.capture_exclusion_request = Some(enabled);
+                                self.capture_exclusion_error = None;
+                            }
+                            let error = self.capture_exclusion_error.as_deref()
+                                .or((!supported).then_some("当前系统不支持在截图和录屏中隐藏岛仔。"));
+                            if let Some(error) = error {
+                                ui.add(egui::Label::new(egui::RichText::new(error).size(11.5)
+                                    .color(settings_color(ctx, Color32::from_rgb(238,181,91), Color32::from_rgb(139,88,12)))).wrap());
+                            }
                         });
                         self.avoidance.settings(ui,&mut self.settings);
                         ui.add_space(8.0);

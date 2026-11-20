@@ -710,6 +710,10 @@ const CENTER_TINT: (f32, f32, f32) = (88.0, 222.0, 140.0);
 pub struct App {
     pub opts: Options,
     pub settings: model::Settings,
+    /// 由主程序应用原生截图保护后再保存。
+    pub capture_exclusion_request: Option<bool>,
+    /// 截图和录屏隐藏未能生效时，在设置中显示原因。
+    pub capture_exclusion_error: Option<String>,
     /// 本次运行实际使用兼容渲染（Direct3D 12）；设置里的开关与它不同时提示重启。
     pub render_compat_running: bool,
     pub(crate) todos: model::TodoList,
@@ -919,6 +923,8 @@ impl App {
             opts,
             render_compat_running: settings.render_compat,
             settings,
+            capture_exclusion_request: None,
+            capture_exclusion_error: None,
             todos: model::TodoList::load(),
             water: model::Water::default(),
             shelf: model::Shelf::load(),

@@ -134,6 +134,35 @@ impl Shell {
         self.unread_at=PollClock::now();
     }
 
+    #[cfg(windows)]
+    fn sync_capture_exclusion(app: &mut App, window: Option<&mut daozai::native::Window>) -> bool {
+        let was_enabled = app.settings.exclude_from_capture;
+        let requested = app.capture_exclusion_request.take();
+        let desired = requested.unwrap_or(was_enabled);
+        let error = match window {
+            Some(window) => window.take_capture_exclusion_error().or_else(|| {
+                requested.and_then(|enabled| {
+                    window.set_capture_exclusion(enabled);
+                    window.take_capture_exclusion_error()
+                })
+            }),
+            None => desired.then(|| "当前窗口无法应用截图和录屏隐藏。".into()),
+        };
+        let applied = desired && error.is_none();
+        if was_enabled != applied {
+            app.settings.exclude_from_capture = applied;
+            app.settings.save();
+        }
+        let failed = error.is_some();
+        if failed {
+            if was_enabled && !app.settings_open {
+                app.say("截图和录屏隐藏未生效");
+            }
+            app.capture_exclusion_error = error;
+        }
+        requested.is_some() || failed
+    }
+
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         diagnostics::graphics(cc);
         let running_compat=cc.wgpu_render_state.is_some();
@@ -175,6 +204,15 @@ impl Shell {
         #[cfg(windows)] let system_rx=daozai::system::observe(cc.egui_ctx.clone(),system_state.clone(),initial_input);
         // 岛体大小只作用于主窗口，在首帧之前生效，避免启动时先按 100% 闪一下。
         #[cfg(windows)] eframe::set_root_viewport_scale(app.settings.island_scale());
+        #[cfg(windows)]
+        let native = {
+            let mut window = daozai::native::Window::new(cc);
+            if app.settings.exclude_from_capture {
+                app.capture_exclusion_request = Some(true);
+            }
+            Self::sync_capture_exclusion(&mut app, window.as_mut());
+            window
+        };
         Self {
             app,
             t0: Instant::now(),
@@ -214,7 +252,7 @@ impl Shell {
             #[cfg(windows)] hidden:false,
             #[cfg(windows)] backdrop:None,
             #[cfg(windows)]
-            native: daozai::native::Window::new(cc),
+            native,
             #[cfg(windows)]
             tray,
             #[cfg(windows)]
@@ -809,6 +847,10 @@ impl eframe::App for Shell {
         #[cfg(windows)] let autostart = self.autostart;
         #[cfg(not(windows))] let autostart = false;
         self.app.settings_ui(ctx, autostart);
+        #[cfg(windows)]
+        if Self::sync_capture_exclusion(&mut self.app, self.native.as_mut()) {
+            ctx.request_repaint();
+        }
         self.app.mail_reader_ui(ctx);
         // 交互切换以帧起点为准，扣掉本帧已经花费的时间。
         #[cfg(windows)] let repaint_after=if self.hidden {Duration::from_secs(1)}
