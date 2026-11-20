@@ -3399,6 +3399,7 @@ fn quota_update_status_is_visible_for_every_provider_and_keeps_failed_data(){
             Provider::WorkBuddy=>crate::quota::parse(provider,&serde_json::json!({"code":0,"data":{"Packages":[{"CycleRemainCapacity":"2000"}]}})).unwrap(),
             _=>Snapshot{windows:vec![Window{label:"5 小时".into(),seconds:Some(18000),remaining:72.0,reset:None,amount:None},Window{label:"本周".into(),seconds:Some(604800),remaining:44.0,reset:None,amount:None}],..Default::default()},
         };
+        if provider==Provider::Antigravity{snapshot.antigravity=Some(Default::default());}
         snapshot.at=at;h.app.quota_event(Event{id:"preview-0".into(),result:Ok(snapshot)});
         h.app.show_page(6);
         if let Some(dest)=std::env::var_os("DAOZAI_QUOTA_STATUS_PREVIEW_DIR"){
@@ -3420,6 +3421,11 @@ fn quota_update_status_is_visible_for_every_provider_and_keeps_failed_data(){
         h.app.quota.busy.insert("preview-0".into());h.frame(vec![]);
         assert!(h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t)if t.galley.text().contains(&time)&&t.galley.text().contains(if provider==Provider::Claude{"读取中"}else{"正在更新"}))),"刷新中仍须保留已有记录时间");
         h.app.quota_event(Event{id:"preview-0".into(),result:Err("连接超时".into())});h.frame(vec![]);
+        if provider==Provider::Antigravity{
+            assert_eq!(h.app.quota.rows["preview-0"].as_ref().unwrap_err(),"连接超时");
+            assert!(h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t)if t.galley.text()=="连接超时")));
+            continue;
+        }
         assert!(h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t)if t.galley.text()==format!("上次记录 · {time}"))),"{provider:?} 刷新失败后应明确旧数据时间");
         assert_eq!(h.app.quota.rows["preview-0"].as_ref().unwrap().at,at,"刷新失败不能刷新记录时间");
     }

@@ -1,6 +1,6 @@
 use std::{
     ffi::OsStr,
-    fs::OpenOptions,
+    fs::{File, OpenOptions},
     mem::size_of,
     os::windows::{
         ffi::OsStrExt,
@@ -49,7 +49,7 @@ fn expected_publisher(filename: &str, signer: &str) -> bool {
     }
 }
 
-unsafe fn signer_matches(state: HANDLE, filename: &str) -> bool {
+unsafe fn signer_matches(state: HANDLE, expected: impl FnOnce(&str) -> bool) -> bool {
     let provider = WTHelperProvDataFromStateData(state);
     if provider.is_null() {
         return false;
@@ -73,10 +73,10 @@ unsafe fn signer_matches(state: HANDLE, filename: &str) -> bool {
         Some(&mut name),
     ) as usize;
     count > 1 && count <= name.len()
-        && String::from_utf16(&name[..count - 1]).is_ok_and(|name| expected_publisher(filename, &name))
+        && String::from_utf16(&name[..count - 1]).is_ok_and(|name| expected(&name))
 }
 
-unsafe fn trusted_file(path: PCWSTR, file: HANDLE, filename: &str) -> bool {
+unsafe fn trusted_file(path: PCWSTR, file: HANDLE, expected: impl FnOnce(&str) -> bool) -> bool {
     let mut info = WINTRUST_FILE_INFO {
         cbStruct: size_of::<WINTRUST_FILE_INFO>() as u32,
         pcwszFilePath: path,
@@ -95,10 +95,17 @@ unsafe fn trusted_file(path: PCWSTR, file: HANDLE, filename: &str) -> bool {
     let mut policy = WINTRUST_ACTION_GENERIC_VERIFY_V2;
     let no_window = HWND(INVALID_HANDLE_VALUE.0);
     let trusted = WinVerifyTrust(no_window, &mut policy, (&mut trust as *mut WINTRUST_DATA).cast()) == 0
-        && signer_matches(trust.hWVTStateData, filename);
+        && signer_matches(trust.hWVTStateData, expected);
     trust.dwStateAction = WTD_STATEACTION_CLOSE;
     let _ = WinVerifyTrust(no_window, &mut policy, (&mut trust as *mut WINTRUST_DATA).cast());
     trusted
+}
+
+pub(crate) fn lock_signed_executable(path: &Path, expected: impl FnOnce(&str) -> bool) -> Option<File> {
+    let wide_path = wide(path.as_os_str());
+    let file = OpenOptions::new().read(true).share_mode(FILE_SHARE_READ.0).open(path).ok()?;
+    // 启动结束前持有这个句柄，签名通过的文件不能被替换。
+    unsafe { trusted_file(PCWSTR(wide_path.as_ptr()), HANDLE(file.as_raw_handle()), expected) }.then_some(file)
 }
 
 unsafe fn process_token(process: HANDLE, rights: TOKEN_ACCESS_MASK) -> windows::core::Result<Owned<HANDLE>> {
@@ -124,7 +131,7 @@ pub(super) fn launch_feishu(path: &Path, pid: u32) -> Result<(), &'static str> {
     let file = OpenOptions::new().read(true).share_mode(FILE_SHARE_READ.0)
         .open(&path).map_err(|_| "无法读取客户端程序进行签名验证")?;
     unsafe {
-        if !trusted_file(PCWSTR(wide_path.as_ptr()), HANDLE(file.as_raw_handle()), filename) {
+        if !trusted_file(PCWSTR(wide_path.as_ptr()), HANDLE(file.as_raw_handle()), |signer| expected_publisher(filename, signer)) {
             return Err("客户端签名或签名发布者无法验证");
         }
         let current = process_token(GetCurrentProcess(), TOKEN_QUERY).map_err(|_| "无法确认岛仔运行权限")?;
@@ -172,6 +179,6 @@ mod tests {
         let file = std::env::current_exe().unwrap();
         let wide_file = wide(file.as_os_str());
         let handle = OpenOptions::new().read(true).open(&file).unwrap();
-        assert!(!unsafe { trusted_file(PCWSTR(wide_file.as_ptr()), HANDLE(handle.as_raw_handle()), "Feishu.exe") });
+        assert!(!unsafe { trusted_file(PCWSTR(wide_file.as_ptr()), HANDLE(handle.as_raw_handle()), |signer| expected_publisher("Feishu.exe", signer)) });
     }
 }
