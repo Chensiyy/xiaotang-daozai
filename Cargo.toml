@@ -25,6 +25,7 @@ required-features = ["record"]
 record = []
 sdk-js = []
 sdk-material = [
+  "dep:bytemuck", "dep:pollster",
   "eframe/direct-composition",
   "windows/Graphics", "windows/Graphics_Capture", "windows/Graphics_DirectX", "windows/Graphics_DirectX_Direct3D11",
   "windows/Win32_Graphics_Direct3D", "windows/Win32_Graphics_Direct3D11",
@@ -71,6 +72,8 @@ wasmi = { version = "=0.46.0", optional = true, default-features = false, featur
 eframe = { version = "0.31", default-features = false, features = ["glow", "default_fonts", "x11"] }
 
 [target.'cfg(windows)'.dependencies]
+bytemuck = { version = "1", features = ["derive"], optional = true }
+pollster = { version = "0.4", optional = true }
 zip = { version = "9.7", default-features = false, features = ["deflate-flate2"] }
 ureq = { version = "2.12", default-features = false, features = ["native-tls"] }
 tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }

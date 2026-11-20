@@ -518,6 +518,7 @@ name = "daozai"
 version = "0.6.66"
 dependencies = [
  "base64 0.22.1",
+ "bytemuck",
  "chrono",
  "chrono-tz",
  "clipboard-win",
@@ -531,6 +532,7 @@ dependencies = [
  "mailparse",
  "memmap2",
  "native-tls",
+ "pollster",
  "raw-window-handle",
  "regex",
  "ring",

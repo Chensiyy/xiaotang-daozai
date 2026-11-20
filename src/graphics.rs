@@ -59,8 +59,7 @@ pub fn run(options:eframe::NativeOptions,launch:impl FnMut(eframe::NativeOptions
     #[cfg(all(windows, feature = "sdk-material"))]
     let options={
         let mut options=options;
-        // 材质装载接入之前，启动时没有生效的材质。
-        daozai::material::configure_startup(&mut options,compat_first,false);
+        daozai::material::configure_startup(&mut options,compat_first,daozai::material::debug_requested());
         options
     };
     run_with(compat_first,options,launch)

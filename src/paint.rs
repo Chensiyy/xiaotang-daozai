@@ -288,6 +288,18 @@ impl<'a> Card<'a> {
         let p = ctx.animate_bool_with_time(r.id.with("p"), self.live && r.is_pointer_button_down_on(), 0.07);
         (h, p)
     }
+
+    pub(crate) fn material_circle(&self, _response: &Response, _x: f32, _y: f32, _r: f32) {
+        #[cfg(all(windows, feature = "sdk-material"))]
+        self.material_control(_response, self.rect(_x - _r, _y - _r, 2.0 * _r, 2.0 * _r), _r);
+    }
+
+    #[cfg(all(windows, feature = "sdk-material"))]
+    fn material_control(&self, response: &Response, rect: Rect, radius: f32) {
+        if self.live {
+            crate::material::control(response.id, rect.intersect(self.painter.clip_rect()), radius * self.s);
+        }
+    }
 }
 
 pub fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
@@ -406,6 +418,22 @@ pub fn capsule<'a>(
     let inner = c.scaled(x + w / 2.0, y + h / 2.0, k);
     inner.fill(x, y, w, h, h / 2.0, mix(base, hover, ht));
     (r, inner)
+}
+
+pub(crate) fn material_capsule<'a>(
+    c: &Card<'a>,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    id: &str,
+    base: Color32,
+    hover: Color32,
+) -> (Response, Card<'a>) {
+    let (response, inner) = capsule(c, x, y, w, h, id, base, hover);
+    #[cfg(all(windows, feature = "sdk-material"))]
+    inner.material_control(&response, inner.rect(x, y, w, h), h / 2.0);
+    (response, inner)
 }
 
 // ======================= 图标 =======================

@@ -457,6 +457,8 @@ fn main() {
             backdrop: None,
             glass_blur: false,
             opaque_surface: false,
+            #[cfg(all(windows, feature = "sdk-material"))]
+            material_active: false,
         };
 
         let mut vp = egui::ViewportInfo::default();

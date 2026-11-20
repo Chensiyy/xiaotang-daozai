@@ -85,6 +85,43 @@ pub struct Geometry {
 }
 
 impl Geometry {
+    pub(super) fn for_window(
+        hwnd: HWND,
+        body: Rect,
+        capture: Rect,
+        ppp: f32,
+    ) -> Result<Option<(Self, Rect)>, String> {
+        use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
+
+        let mut client = RECT::default();
+        unsafe { GetClientRect(hwnd, &mut client) }
+            .map_err(|err| format!("读取岛体客户区：{err}"))?;
+        let mut at = POINT::default();
+        if !unsafe { ClientToScreen(hwnd, &mut at) }.as_bool() {
+            return Err(format!("读取岛体屏幕原点：{}", Error::from_win32()));
+        }
+        let origin = (at.x, at.y);
+        let Some(body_geometry) = Self::from_rects(body, body, origin, ppp) else {
+            return Ok(None);
+        };
+        let Some(monitor) = Monitor::for_rect(body_geometry.screen) else {
+            return Err("无法定位岛体所在显示器".into());
+        };
+        let bounds = monitor.bounds;
+        let clip = Rect::from_min_max(
+            eframe::egui::pos2(
+                (bounds.x - at.x).max(client.left) as f32 / ppp,
+                (bounds.y - at.y).max(client.top) as f32 / ppp,
+            ),
+            eframe::egui::pos2(
+                (bounds.x + bounds.width - at.x).min(client.right) as f32 / ppp,
+                (bounds.y + bounds.height - at.y).min(client.bottom) as f32 / ppp,
+            ),
+        );
+        let clipped = capture.intersect(clip);
+        Ok(Self::from_rects(body, clipped, origin, ppp).map(|geometry| (geometry, clipped)))
+    }
+
     /// `capture` 是已裁剪到窗口和当前显示器交集的外扩矩形，`origin` 是客户区的屏幕物理坐标。
     pub fn from_rects(body: Rect, capture: Rect, origin: (i32, i32), ppp: f32) -> Option<Self> {
         if !capture.is_finite() || !body.is_finite() || !ppp.is_finite() || ppp <= 0.0 {
@@ -138,6 +175,7 @@ pub struct CleanPlate {
     pub geometry: Geometry,
     pub bgra: Vec<u8>,
     pub brightness: f32,
+    pub(crate) revision: u64,
 }
 
 /// 主岛专用抓屏会话。创建时无副作用，在主岛线程首次调用 `capture` 时打开。
@@ -150,10 +188,17 @@ pub struct Backdrop {
     settle_until: Option<Instant>,
     waiting_since: Option<Instant>,
     plate: Option<CleanPlate>,
+    revision: u64,
     failed: Option<String>,
 }
 
 impl Backdrop {
+    pub(super) fn current(&self, geometry: Geometry) -> Option<&CleanPlate> {
+        self.plate
+            .as_ref()
+            .filter(|plate| plate.geometry.screen == geometry.screen)
+    }
+
     /// 返回与当前几何对齐的底片。`Ok(None)` 时可继续绘制基础皮肤。
     /// 失败会关闭本次会话，重新启用材质时创建新的 `Backdrop`。
     pub fn capture(&mut self, hwnd: HWND, geometry: Geometry) -> Result<Option<&CleanPlate>, &str> {
@@ -180,7 +225,7 @@ impl Backdrop {
         if self
             .plate
             .as_ref()
-            .is_some_and(|plate| plate.geometry != geometry)
+            .is_some_and(|plate| plate.geometry.screen != geometry.screen)
         {
             self.plate = None;
         }
@@ -261,15 +306,19 @@ impl Backdrop {
                 if let Some(plate) = &mut self.plate {
                     if let Some(raw) = grab_raw(rect) {
                         compose_with_plate(plate, &raw, island);
+                        self.revision += 1;
+                        plate.revision = self.revision;
                     }
                 }
             } else {
                 self.waiting_since = None;
                 let (brightness, _) = split_luma(&raw, rect, geometry.theme_bounds());
+                self.revision += 1;
                 self.plate = Some(CleanPlate {
                     geometry,
                     bgra: raw,
                     brightness: brightness / 255.0,
+                    revision: self.revision,
                 });
             }
         }
@@ -704,6 +753,7 @@ mod tests {
             geometry,
             bgra: vec![77; screen.row_bytes() * screen.height as usize],
             brightness: 0.3,
+            revision: 1,
         }
     }
 
