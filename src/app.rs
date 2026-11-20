@@ -1953,7 +1953,14 @@ impl App {
             && !env.fullscreen_hidden && !env.screen_locked && env.cursor.is_some_and(|c|area.contains(c))
             && !ctx.input(|i|i.pointer.any_pressed() || i.key_pressed(egui::Key::Escape)));
         let page_hover=inside || self.page_scroll_area.is_some();
-        let on_notice=env.cursor.is_some_and(|c|badge.is_some_and(|r|r.contains(c)) || notice.is_some_and(|r|r.contains(c))||self.notice_details_rect(notice).is_some_and(|r|r.contains(c)));
+        // 展开时，穿过面板到通知图标之间的空隙也算悬停；按钮仍只在图标本身响应点击。
+        let on_notice=env.cursor.is_some_and(|c|badge.into_iter().chain(notice).any(|mut r|{
+            if self.open {
+                r.extend_with_x(hit.x_range().clamp(r.center().x));
+                if !side {r.extend_with_y(hit.top());}
+            }
+            r.contains(c)
+        }) || self.notice_details_rect(notice).is_some_and(|r|r.contains(c)));
         if !inside {
             self.hover_lock = false;
         }
