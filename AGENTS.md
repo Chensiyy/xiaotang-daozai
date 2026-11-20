@@ -13,6 +13,22 @@
 - 发版只在 `main` 上进行：改版本号、写 CHANGELOG 和公告、打标签。线上急修而 `main` 有不想带出去的改动时，从线上标签拉 `hotfix/…`，发版后合回 `main`。
 - 待验收的功能分支列在 `test/acceptance` 的合并记录里；临时测试分支用完就删，不长期保留。
 
+# 工作树
+
+一条分支对应一个固定工作树：
+
+| 分支 | 工作树 |
+|---|---|
+| `main` | `D:\A-TangHao\REA\Windows小工具\00-主工程\daozai` |
+| `test/acceptance` | `D:\daozai-build\worktrees\acceptance` |
+| `feat/…`、`fix/…` | `D:\A-TangHao\REA\Windows小工具\01-专项工程\<功能中文名>` |
+| 临时复测、审 PR | `D:\daozai-build\tmp\<事由>` |
+
+- 功能分支用 `feat/` 或 `fix/` 开头，名字说清功能，不带日期。
+- 功能合进 `main` 后，删除分支和它的工作树。
+- 复测旧版本、审 PR 等临时任务在 `tmp` 下建工作树，任务结束时删除；需要提交的临时分支用 `test/…`，一并删除。
+- 工作树不建在 `target`、`D:\Temp` 或其他工作树里面。
+
 # 本机测试版交付
 
 桌面「岛仔－当前测试版」只运行 `test/acceptance` 的编译结果，快捷方式指向测试分支工作树 `D:\daozai-build\worktrees\acceptance` 里的 `target/x86_64-pc-windows-msvc/release/daozai.exe`。任何会话都不用自己的分支或 `main` 直接覆盖测试版。
