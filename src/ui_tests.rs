@@ -5499,6 +5499,43 @@ fn frame_control_draw(h:&mut H,cursor:Option<Pos2>,events:Vec<egui::Event>) {
 }
 
 #[test]
+fn page_resize_quota_calendar_weather_keep_date_and_grip_fixed() {
+    use crate::display_layout::Bounds;
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let bounds=Bounds{left:0,top:0,right:1920,bottom:1080};
+    for long_clock in [false,true] {
+        let mut h=H::new();
+        h.app.settings.clock_seconds=long_clock;
+        h.app.settings.clock_period=if long_clock {2}else{0};
+        h.app.settings.island_size=105;
+        h.app.show_page(6);
+        let frame=|h:&mut H| {island_drag_frame(h,bounds,1.25,Some(Pos2::new(960.0,50.0)),None);};
+        for _ in 0..60 {frame(&mut h);}
+        let positions=|h:&H|{
+            let date=h.shapes.iter().find_map(|s|match &s.shape {
+                egui::Shape::Text(t) if t.galley.text()=="10月28日 周三"=>Some(t.pos),
+                _=>None,
+            }).expect("顶栏日期应可见");
+            let grip=h.shapes.iter().find_map(|s|match &s.shape {
+                egui::Shape::Rect(r) if (r.rect.height()-2.6).abs()<0.01 && (r.rect.top()-7.5).abs()<0.01=>Some(r.rect.center()),
+                _=>None,
+            }).expect("拖动短条应可见");
+            (date,grip)
+        };
+        let (date,grip)=positions(&h);
+        for (page,dir) in [(7,1.0),(8,1.0),(7,-1.0),(6,-1.0)] {
+            h.app.go(page,dir);
+            for _ in 0..35 {
+                frame(&mut h);
+                let (next_date,next_grip)=positions(&h);
+                assert!(next_date.distance(date)<0.1,"第 {page} 页日期偏移了 {:?}",next_date-date);
+                assert!(next_grip.distance(grip)<0.1,"第 {page} 页短条偏移了 {:?}",next_grip-grip);
+            }
+        }
+    }
+}
+
+#[test]
 fn page_resize_clock_and_calendar_controls_move_without_a_first_frame_jump() {
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     let mut h=H::new();
