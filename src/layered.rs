@@ -151,6 +151,10 @@ unsafe fn hide_owner(owner: HWND, first_frame: bool) -> windows::core::Result<()
     Ok(())
 }
 
+unsafe fn owner_visible(owner: HWND) -> bool {
+    IsWindowVisible(owner).as_bool() && GetWindowRgnBox(owner, &mut RECT::default()) != NULLREGION
+}
+
 /// 层级上紧挨在下面的可见窗口（跳过输入法等隐藏的辅助窗口）。
 unsafe fn next_visible(hwnd: HWND) -> Option<HWND> {
     let mut current = hwnd;
@@ -240,6 +244,10 @@ impl Layered {
             let blend = BLENDFUNCTION { BlendOp: AC_SRC_OVER as u8, BlendFlags: 0, SourceConstantAlpha: 255, AlphaFormat: AC_SRC_ALPHA as u8 };
             let (src, dst_pos, sz) = (POINT::default(), POINT { x: rect.left, y: rect.top }, SIZE { cx: w, cy: h });
             UpdateLayeredWindow(self.display, None, Some(&dst_pos), Some(&sz), self.dc, Some(&src), COLORREF(0), Some(&blend), ULW_ALPHA)?;
+            // 首次接管时，先显示已有像素的显示层，再淡化仍可见的主窗口。
+            if self.last.is_none() && owner_visible(owner) {
+                SetWindowPos(self.display,HWND_TOPMOST,rect.left,rect.top,0,0,SWP_NOACTIVATE|SWP_NOSIZE|SWP_SHOWWINDOW)?;
+            }
             // 显示窗口有了内容之后才把岛仔窗口自身藏起来，避免切换瞬间什么都看不到。
             hide_owner(owner, self.last.is_none())?;
         }
@@ -254,10 +262,8 @@ impl Layered {
         unsafe {
             let _ = hide_owner(owner, false);
             // 全屏隐藏只清空主窗口区域，仍需同步隐藏独立的显示层。
-            let owner_visible = IsWindowVisible(owner).as_bool()
-                && GetWindowRgnBox(owner, &mut RECT::default()) != NULLREGION;
             let display_visible = IsWindowVisible(self.display).as_bool();
-            if !owner_visible {
+            if !owner_visible(owner) {
                 if display_visible { let _ = ShowWindow(self.display, SW_HIDE); }
                 return;
             }

@@ -1,6 +1,6 @@
 use egui::{UserData, ViewportId};
 use epaint::ColorImage;
-use std::sync::{mpsc, Arc};
+use std::sync::{mpsc, Arc, Mutex};
 use wgpu::{BindGroupLayout, MultisampleState, StoreOp};
 
 /// A texture and a buffer for reading the rendered frame back to the cpu.
@@ -11,6 +11,7 @@ use wgpu::{BindGroupLayout, MultisampleState, StoreOp};
 /// from where we can pull it back
 /// to the cpu.
 pub struct CaptureState {
+    available_buffer: Arc<Mutex<Option<wgpu::Buffer>>>,
     padding: BufferPadding,
     pub texture: wgpu::Texture,
     pipeline: wgpu::RenderPipeline,
@@ -56,6 +57,7 @@ impl CaptureState {
             Self::create_texture(device, surface_texture, &bind_group_layout);
 
         Self {
+            available_buffer: Default::default(),
             padding,
             texture,
             pipeline,
@@ -122,33 +124,7 @@ impl CaptureState {
             "Texture sizes must match, `CaptureState::update` was probably not called"
         );
 
-        // It would be more efficient to reuse the Buffer, e.g. via some kind of ring buffer, but
-        // for most screenshot use cases this should be fine. When taking many screenshots (e.g. for a video)
-        // it might make sense to revisit this and implement a more efficient solution.
-        #[allow(clippy::arc_with_non_send_sync)]
-        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("egui_screen_capture_buffer"),
-            size: (self.padding.padded_bytes_per_row * self.texture.height()) as u64,
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-        let padding = self.padding;
-        let tex = &mut self.texture;
-
-        let tex_extent = tex.size();
-
-        encoder.copy_texture_to_buffer(
-            tex.as_image_copy(),
-            wgpu::TexelCopyBufferInfo {
-                buffer: &buffer,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(padding.padded_bytes_per_row),
-                    rows_per_image: None,
-                },
-            },
-            tex_extent,
-        );
+        let buffer = self.copy_to_buffer(device, encoder);
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("texture_copy"),
@@ -172,6 +148,38 @@ impl CaptureState {
         buffer
     }
 
+    fn copy_to_buffer(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+    ) -> wgpu::Buffer {
+        let size = u64::from(self.padding.padded_bytes_per_row) * u64::from(self.texture.height());
+        // 只复用已解除映射且大小匹配的缓冲；上一帧仍在读回时照常提交新帧。
+        let available = self.available_buffer.lock().unwrap().take();
+        let buffer = available.filter(|b| b.size() == size).unwrap_or_else(|| {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("egui_screen_capture_buffer"),
+                size,
+                usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                mapped_at_creation: false,
+            })
+        });
+        encoder.copy_texture_to_buffer(
+            self.texture.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(self.padding.padded_bytes_per_row),
+                    rows_per_image: None,
+                },
+            },
+            self.texture.size(),
+        );
+
+        buffer
+    }
+
     /// Handles copying from the [`CaptureState`] texture to the surface texture and the cpu
     /// This function is non-blocking and will send the data to the given sender when it's ready.
     /// Pass in the buffer returned from [`CaptureState::copy_textures`].
@@ -184,16 +192,15 @@ impl CaptureState {
         tx: CaptureSender,
         viewport_id: ViewportId,
     ) {
-        #[allow(clippy::arc_with_non_send_sync)]
-        let buffer = Arc::new(buffer);
+        let available = self.available_buffer.clone();
         let buffer_clone = buffer.clone();
         let buffer_slice = buffer_clone.slice(..);
         let format = self.texture.format();
         let tex_extent = self.texture.size();
         let padding = self.padding;
-        let to_rgba = match format {
-            wgpu::TextureFormat::Rgba8Unorm => [0, 1, 2, 3],
-            wgpu::TextureFormat::Bgra8Unorm => [2, 1, 0, 3],
+        let bgra = match format {
+            wgpu::TextureFormat::Rgba8Unorm => false,
+            wgpu::TextureFormat::Bgra8Unorm => true,
             _ => {
                 log::error!("Screen can't be captured unless the surface format is Rgba8Unorm or Bgra8Unorm. Current surface format is {:?}", format);
                 return;
@@ -206,22 +213,9 @@ impl CaptureState {
             }
             let buffer_slice = buffer.slice(..);
 
-            let mut pixels = Vec::with_capacity((tex_extent.width * tex_extent.height) as usize);
-            for padded_row in buffer_slice
-                .get_mapped_range()
-                .chunks(padding.padded_bytes_per_row as usize)
-            {
-                let row = &padded_row[..padding.unpadded_bytes_per_row as usize];
-                for color in row.chunks(4) {
-                    pixels.push(epaint::Color32::from_rgba_premultiplied(
-                        color[to_rgba[0]],
-                        color[to_rgba[1]],
-                        color[to_rgba[2]],
-                        color[to_rgba[3]],
-                    ));
-                }
-            }
+            let pixels = capture_pixels(&buffer_slice.get_mapped_range(), padding, bgra);
             buffer.unmap();
+            *available.lock().unwrap() = Some(buffer);
 
             tx.send((
                 viewport_id,
@@ -243,6 +237,36 @@ impl CaptureState {
 struct BufferPadding {
     unpadded_bytes_per_row: u32,
     padded_bytes_per_row: u32,
+}
+
+fn capture_pixels(mapped: &[u8], padding: BufferPadding, bgra: bool) -> Vec<epaint::Color32> {
+    let rows = mapped.chunks_exact(padding.padded_bytes_per_row as usize);
+    let width_bytes = padding.unpadded_bytes_per_row as usize;
+    let mut pixels = Vec::with_capacity(rows.len() * (width_bytes / 4));
+    for row in rows {
+        let row = &row[..width_bytes];
+        if bgra {
+            let colors: &[[u8; 4]] = bytemuck::cast_slice(row);
+            pixels.extend(colors.iter().map(|&[b, g, r, a]| epaint::Color32::from_rgba_premultiplied(r, g, b, a)));
+        } else {
+            pixels.extend_from_slice(bytemuck::cast_slice(row));
+        }
+    }
+    pixels
+}
+
+#[cfg(test)]
+#[test]
+fn captures_both_channel_orders_without_row_padding() {
+    let padding = BufferPadding { unpadded_bytes_per_row: 4, padded_bytes_per_row: 8 };
+    let rows = [8, 4, 2, 16, 99, 99, 99, 99, 3, 6, 9, 12, 77, 77, 77, 77];
+    for (bgra, expected) in [
+        (false, [[8, 4, 2, 16], [3, 6, 9, 12]]),
+        (true, [[2, 4, 8, 16], [9, 6, 3, 12]]),
+    ] {
+        let pixels = capture_pixels(&rows, padding, bgra);
+        assert_eq!(bytemuck::cast_slice::<_, [u8; 4]>(&pixels), &expected);
+    }
 }
 
 impl BufferPadding {

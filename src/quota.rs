@@ -14,8 +14,6 @@ mod claude;
 pub(crate) mod workbuddy;
 #[path="deepseek_quota.rs"]
 pub(crate) mod deepseek;
-#[path="zcode_quota.rs"]
-pub(crate) mod zcode;
 #[path="plan_quota.rs"]
 pub(crate) mod plans;
 #[path="relay_quota.rs"]
@@ -28,6 +26,7 @@ pub(crate) mod kiro;
 mod native_auth;
 
 pub struct Discovery {pub added:usize,pub notes:Vec<String>}
+pub(crate) const ZCODE_RECONNECT:&str="请用 GLM Coding Plan 套餐 Key 重新连接。ZCode 体验额度可在官方客户端查看。";
 impl Discovery {
     pub fn message(&self)->String{
         let mut text=if self.added>0{format!("新增 {} 个账号",self.added)}else{"未发现新的本机账号".into()};
@@ -80,7 +79,7 @@ impl Config {
     }
     pub fn add(&mut self,provider:Provider,alias:String,source:PathBuf)->Result<(),String>{
         if provider.api_key(){return Err("请使用 API Key 连接，无需登录 JSON".into());}
-        if provider==Provider::ZCode{return zcode::add(self,&source,&alias);}
+        if provider==Provider::ZCode{return Err(ZCODE_RECONNECT.into());}
         if provider==Provider::Kiro{return kiro::add(self,&source,&alias);}
         if provider==Provider::WorkBuddy{return Err("请使用浏览器连接 WorkBuddy".into());}
         if provider==Provider::DeepSeek{return Err("请使用 API Key 连接 DeepSeek".into());}
@@ -159,7 +158,6 @@ impl Config {
         candidates.extend(self.accounts.iter().filter(|a|matches!(a.provider,Provider::Codex|Provider::Kimi)||(a.provider==Provider::Claude&&a.slot.is_none())).map(|a|(a.provider,a.source.clone())));
         let before=self.accounts.len();
         let mut notes=self.discover_files(&candidates);
-        if let Some(path)=zcode::path().filter(|p|p.is_file()){if let Err(e)=zcode::add(self,&path,""){notes.push(e);}}
         if let (Some(roaming),Some(local))=(std::env::var_os("APPDATA"),std::env::var_os("LOCALAPPDATA")){
             for path in claude::paths(Path::new(&roaming),Path::new(&local)){
                 if claude::is_desktop(&path){if let Err(error)=self.import_claude(&path,""){notes.push(error);}}
@@ -232,10 +230,13 @@ impl Window {
 #[derive(serde::Serialize,serde::Deserialize)]
 pub struct Snapshot {#[serde(default)]pub kiro:Option<kiro::Details>,pub plan:String,pub windows:Vec<Window>,pub extra:Vec<Window>,pub at:i64,pub wallet:Option<deepseek::Wallet>,pub credits:Option<workbuddy::Credits>,#[serde(default)] pub relay:Option<relay::Quota>}
 impl Account {
+    pub(crate) fn can_refresh(&self)->bool{self.enabled&&self.provider!=Provider::ZCode}
+
     pub(crate) fn cache_identity_marker(&self)->Value {
         if claude::is_desktop(&self.source){json!(2)}else{json!(true)}
     }
     pub(crate) fn cached_snapshot(&self,cache:&Value)->Option<Snapshot>{
+        if self.provider==Provider::ZCode{return None;}
         let entry=&cache[&self.id];
         if entry["provider"].as_str()!=Some(self.provider.name()) || entry["slot"].as_str()!=self.slot.as_deref(){return None;}
         if self.provider.api_key() && entry["source"].as_str()!=self.source.to_str(){return None;}
@@ -295,7 +296,8 @@ pub fn parse(provider:Provider,v:&Value)->Result<Snapshot,String>{
     s.windows.sort_by_key(|w|w.seconds.unwrap_or(i64::MAX));Ok(s)
 }
 
-struct Credential {token:String,account_id:Option<String>,identity:Option<String>,stamp:Option<std::time::SystemTime>}
+pub const KIMI_RELOGIN:&str="登录已失效，请在 Kimi Code 重新登录";
+struct Credential {token:String,account_id:Option<String>,identity:Option<String>,expires_at:Option<f64>,stamp:Option<std::time::SystemTime>}
 fn same_login(a:&Credential,b:&Credential)->bool{a.token==b.token||a.identity.as_ref().zip(b.identity.as_ref()).is_some_and(|(a,b)|a==b)}
 fn login_json(path:&Path)->Result<Value,String>{
     let raw=fs::read(path).map_err(|_|"无法读取登录文件".to_string())?;
@@ -318,7 +320,10 @@ fn credentials(provider:Provider,path:&Path)->Result<Credential,String>{
         Provider::Kiro=>v.get("profileArn").and_then(Value::as_str).filter(|s|!s.is_empty()).map(str::to_owned),
         _=>None,
     };
-    Ok(Credential{token,account_id,identity,stamp:fs::metadata(path).and_then(|m|m.modified()).ok()})
+    let expires_at=if provider==Provider::Kimi {
+        number(&v["expires_at"]).filter(|at|*at!=0.0).or_else(||number(&claims["exp"]))
+    }else{None};
+    Ok(Credential{token,account_id,identity,expires_at,stamp:fs::metadata(path).and_then(|m|m.modified()).ok()})
 }
 pub struct Event {pub id:String,pub result:Result<Snapshot,String>}
 #[derive(Default)]
@@ -336,7 +341,7 @@ impl Service {
     pub fn refresh(&mut self,accounts:Vec<Account>)->bool{self.refresh_with(accounts,fetch)}
     fn refresh_with(&mut self,accounts:Vec<Account>,run:impl Fn(&ureq::Agent,&Account)->Result<Snapshot,(String,u64)>+Clone+Send+'static)->bool{
         let mut groups:Vec<Vec<Account>>=(0..10).map(|_|Vec::new()).collect();
-        for account in accounts.into_iter().filter(|account|account.enabled){groups[service_group(account.provider)].push(account);}
+        for account in accounts.into_iter().filter(Account::can_refresh){groups[service_group(account.provider)].push(account);}
         for (group,accounts) in groups.into_iter().enumerate(){
             if let Some(worker)=self.workers.get(&group){
                 let Ok(mut pending)=worker.pending.lock()else{return false;};
@@ -417,18 +422,32 @@ fn http_agent_with_connect_timeout(timeout:Duration)->ureq::Agent{
 fn fetch(agent:&ureq::Agent,account:&Account)->Result<Snapshot,(String,u64)>{
     if account.provider.api_key(){return api::fetch(agent,account);}
     if account.provider==Provider::Claude{return claude::fetch(account).map_err(|e|(e,0));}
-    if account.provider==Provider::ZCode{return zcode::fetch(agent,account).map_err(|e|(e,60));}
+    if account.provider==Provider::ZCode{return Err((ZCODE_RECONNECT.into(),0));}
     if account.provider==Provider::WorkBuddy{return workbuddy::fetch(agent,account);}
     if account.provider==Provider::DeepSeek{return deepseek::fetch(agent,account);}
     if account.provider==Provider::GrokBot{return grok::fetch(agent,account);}
     if account.provider==Provider::Gemini{return gemini::fetch(agent,account);}
     if account.provider==Provider::Kiro{return kiro::fetch(agent,account);}
     if account.provider==Provider::Doubao{return doubao::fetch(agent,account);}
-    let auth=account_credentials(account).map_err(|e|(e,0))?;
     let url=match account.provider{Provider::Codex=>"https://chatgpt.com/backend-api/wham/usage",Provider::Kimi=>"https://api.kimi.com/coding/v1/usages",_=>unreachable!()};
-    let mut req=agent.get(url).set("Authorization",&format!("Bearer {}",auth.token)).set("Accept","application/json").set("User-Agent","codex-cli/Daozai");
+    fetch_subscription_at(agent,account,url)
+}
+fn fetch_subscription_at(agent:&ureq::Agent,account:&Account,url:&str)->Result<Snapshot,(String,u64)>{
+    let auth=account_credentials(account).map_err(|e|(e,0))?;
+    if auth.expires_at.is_some_and(|at|at<=chrono::Utc::now().timestamp_millis() as f64/1000.0){
+        return Err((KIMI_RELOGIN.into(),0));
+    }
+    let user_agent=if account.provider==Provider::Kimi{concat!("Daozai/",env!("CARGO_PKG_VERSION"))}else{"codex-cli/Daozai"};
+    let mut req=agent.get(url).set("Authorization",&format!("Bearer {}",auth.token)).set("Accept","application/json").set("User-Agent",user_agent);
     if account.provider==Provider::Codex{if let Some(id)=&auth.account_id{req=req.set("ChatGPT-Account-Id",id);}}
-    let response=req.call().map_err(|e|match e{ureq::Error::Status(401|403,_)=>("登录已失效或权限不足，请在对应工具中重新登录".into(),0),ureq::Error::Status(429,r)=>("请求过于频繁，稍后自动重试".into(),r.header("Retry-After").and_then(|s|s.parse().ok()).unwrap_or(180).clamp(30,3600)),ureq::Error::Status(n,_)=>(format!("额度服务暂不可用（{n}）"),60),_=>("无法连接额度服务，请检查网络或代理".into(),30)})?;
+    let response=req.call().map_err(|e|match e{
+        ureq::Error::Status(401,_) if account.provider==Provider::Kimi=>(KIMI_RELOGIN.into(),0),
+        ureq::Error::Status(403,_) if account.provider==Provider::Kimi=>("当前账号没有查询 Kimi Code 订阅额度的权限".into(),0),
+        ureq::Error::Status(401|403,_)=>("登录已失效或权限不足，请在对应工具中重新登录".into(),0),
+        ureq::Error::Status(429,r)=>("请求过于频繁，稍后自动重试".into(),r.header("Retry-After").and_then(|s|s.parse().ok()).unwrap_or(180).clamp(30,3600)),
+        ureq::Error::Status(n,_)=>(format!("额度服务暂不可用（{n}）"),60),
+        _=>("无法连接额度服务，请检查网络或代理".into(),30),
+    })?;
     let mut body=String::new();response.into_reader().take(1024*1024).read_to_string(&mut body).map_err(|_|("读取额度响应失败".into(),30))?;
     if auth.stamp!=fs::metadata(&account.source).and_then(|m|m.modified()).ok(){return Err(("登录信息已变化，请刷新额度".into(),0));}
     let value=serde_json::from_str(&body).map_err(|_|("服务没有返回有效的额度数据".into(),60))?;
@@ -437,6 +456,55 @@ fn fetch(agent:&ureq::Agent,account:&Account)->Result<Snapshot,(String,u64)>{
 
 #[cfg(test)] mod tests {
     use super::*;
+    #[test]
+    fn kimi_expired_login_recovers_on_the_next_poll() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::net::TcpListener;
+
+        let path=std::env::temp_dir().join(format!("daozai-kimi-expiry-{}.json",std::process::id()));
+        let expired=json!({"access_token":"old-fixture","expires_at":1234.75}).to_string();
+        fs::write(&path,&expired).unwrap();
+        let mut config=Config::default();
+        config.add(Provider::Kimi,"测试".into(),path.clone()).unwrap();
+        let account=&config.accounts[0];
+        let agent=ureq::AgentBuilder::new().timeout(Duration::from_secs(1)).build();
+        let server=TcpListener::bind("127.0.0.1:0").unwrap();
+        let url=format!("http://{}/usage",server.local_addr().unwrap());
+        let (message,wait)=fetch_subscription_at(&agent,account,&url).unwrap_err();
+        assert!(message.contains("Kimi Code") && message.contains("重新登录"));
+        assert_eq!(wait,0);
+        server.set_nonblocking(true).unwrap();
+        assert_eq!(server.accept().unwrap_err().kind(),std::io::ErrorKind::WouldBlock,"过期凭据不应发出请求");
+        server.set_nonblocking(false).unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(),expired);
+
+        let responder=std::thread::spawn(move||{
+            for status in ["401 Unauthorized","403 Forbidden","429 Too Many Requests","200 OK"]{
+                let (mut stream,_)=server.accept().unwrap();
+                let reader=BufReader::new(stream.try_clone().unwrap());
+                let headers:Vec<_>=reader.lines().map(Result::unwrap).take_while(|line|!line.is_empty()).map(|line|line.to_ascii_lowercase()).collect();
+                let body=r#"{"usages":{"limit_5h":{"used_ratio":0.25}}}"#;
+                write!(stream,"HTTP/1.1 {status}\r\nRetry-After: 77\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).unwrap();
+                if status=="200 OK"{
+                    assert!(headers.iter().any(|h|h=="authorization: bearer renewed-fixture"));
+                    assert!(headers.iter().any(|h|h==concat!("user-agent: daozai/",env!("CARGO_PKG_VERSION"))));
+                }
+            }
+        });
+        fs::write(&path,r#"{"access_token":"legacy-fixture"}"#).unwrap();
+        assert_eq!(fetch_subscription_at(&agent,account,&url).unwrap_err(),(KIMI_RELOGIN.into(),0));
+        fs::write(&path,r#"{"access_token":"legacy-fixture","expires_at":0}"#).unwrap();
+        assert!(fetch_subscription_at(&agent,account,&url).unwrap_err().0.contains("权限"));
+        assert_eq!(fetch_subscription_at(&agent,account,&url).unwrap_err().1,77);
+
+        let renewed=json!({"access_token":"renewed-fixture","expires_at":chrono::Utc::now().timestamp()+900}).to_string();
+        fs::write(&path,&renewed).unwrap();
+        let snapshot=fetch_subscription_at(&agent,account,&url).unwrap();
+        assert_eq!(snapshot.rings()[0].remaining,75.0);
+        responder.join().unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(),renewed);
+        fs::remove_file(path).unwrap();
+    }
     #[test] fn lightweight_quota_startup_has_no_unused_workers(){
         let mut service=Service::start();assert!(service.workers.is_empty(),"未启用额度来源时不应创建后台线程");
         assert!(service.refresh(vec![]));assert!(service.workers.is_empty());
@@ -509,12 +577,22 @@ fn fetch(agent:&ureq::Agent,account:&Account)->Result<Snapshot,(String,u64)>{
         assert!(config.json().get("manual_resets").is_none(),"保存配置不应继续保留已撤回的手动时间");
         assert_eq!(Config::from_json(&config.json()),config);
     }
-    #[test] #[ignore="连接本机 ZCode 并只读核验套餐"]
-    fn zcode_connect_local(){
-        let mut config=Config::load();let path=zcode::path().unwrap();
-        zcode::add(&mut config,&path,"").unwrap();config.save();
-        let a=config.accounts.iter().find(|a|a.provider==Provider::ZCode).unwrap();
-        match zcode::fetch(&http_agent(),a){Ok(s)=>println!("ZCode 返回 {} 个周期",s.windows.len()),Err(msg)=>println!("ZCode 查询状态：{msg}")}
+    #[test]
+    fn legacy_zcode_config_stays_editable_without_reading_login_or_refreshing(){
+        let legacy=json!({"accounts":[{"id":"old","provider":"ZCode","alias":"个人","source":"synthetic/credentials.json","slot":"old-reference","enabled":true,"pinned":true}],"selected":"old","colors":{"old":"gold"}});
+        let mut config=Config::from_json(&legacy);
+        let original=config.clone();
+        let account=&original.accounts[0];
+        assert_eq!(Config::from_json(&config.json()),original);
+        let cache=json!({"old":{"provider":"ZCode","slot":"old-reference","snapshot":Snapshot{at:1900000000,..Default::default()}}});
+        assert!(account.cached_snapshot(&cache).is_none());
+        let mut service=Service::start();
+        assert!(service.refresh_with(original.accounts,|_,_|panic!("旧 ZCode 账号不应创建查询任务")));
+        assert!(service.workers.is_empty());
+        let agent=ureq::AgentBuilder::new().middleware(|_:ureq::Request,_:ureq::MiddlewareNext|panic!("旧 ZCode 账号不应发请求")).build();
+        assert_eq!(fetch(&agent,&config.accounts[0]).unwrap_err().0,ZCODE_RECONNECT);
+        assert_eq!(config.add(Provider::ZCode,String::new(),"synthetic/credentials.json".into()).unwrap_err(),ZCODE_RECONNECT);
+        assert_eq!(config,Config::from_json(&legacy));
     }
     #[test]
     #[ignore="只读验证本机开启的 AI 账号"]

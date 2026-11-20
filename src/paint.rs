@@ -71,6 +71,19 @@ impl<'a> Card<'a> {
         c
     }
 
+    /// 控件靠近形变边缘时整颗淡出，避免露出半个按钮或留下半块热区。
+    pub(crate) fn edge_control(&self, x: f32, y: f32, w: f32, h: f32) -> Option<Self> {
+        let clip = self.painter.clip_rect();
+        let rect = self.rect(x, y, w, h);
+        let margin = (rect.left() - clip.left()).min(clip.right() - rect.right());
+        if margin <= 0.0 || rect.top() < clip.top() || rect.bottom() > clip.bottom() {
+            return None;
+        }
+        let alpha = crate::anim::smoothstep(0.0, 6.0 * self.s, margin);
+        let control = self.faded(alpha);
+        Some(if alpha < 0.8 { control.ghost() } else { control })
+    }
+
     // ---------- 文字（y 一律是基线，跨字体对齐稳定） ----------
     pub fn font(&self, size: f32, w: W) -> FontId {
         font(size * self.s, w)
@@ -806,6 +819,22 @@ pub fn clock(c:&Card,x:f32,y:f32,text:&str,size:f32) {
         (digits,x+c.text_w(period,size*0.72,W::Semibold)+4.0)
     }else{(text,x)};
     c.text(x,y,digits,size,W::Bold,theme::WHITE,H::Left);
+}
+
+/// 顶栏图钉由倾斜轮廓转为竖直实心，剪贴板行内图标保持独立。
+pub fn hold_pin(c:&Card,cx:f32,cy:f32,active:f32,color:Color32) {
+    let (sin,cos)=((1.0-active)*0.55).sin_cos();
+    let point=|x:f32,y:f32|(cx+x*cos-y*sin,cy+x*sin+y*cos);
+    let head=[point(-2.7,-5.8),point(2.7,-5.8),point(2.0,-4.5),point(2.0,-0.8),
+        point(3.9,1.5),point(-3.9,1.5),point(-2.0,-0.8),point(-2.0,-4.5)];
+    if active>0.0 {
+        let ink=c.faded(active);
+        ink.poly(&[head[0],head[1],head[2],head[7]],color);
+        ink.poly(&[head[7],head[2],head[3],head[6]],color);
+        ink.poly(&[head[6],head[3],head[4],head[5]],color);
+    }
+    for i in 0..head.len(){c.seg(head[i],head[(i+1)%head.len()],1.2,color);}
+    c.seg(point(0.0,1.5),point(0.0,6.0),1.2,color);
 }
 
 /// 图钉：固定的剪贴板条目。

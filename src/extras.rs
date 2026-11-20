@@ -1,6 +1,6 @@
 //! 设置、通知队列与岛仔表情。
 use crate::settings_theme::color as settings_color;
-use crate::app::{App, Cmd, Env, Phase, HUD_TRACK_W, HUD_TRACK_X, HUD_W, PAGE_NAMES};
+use crate::app::{App, Cmd, Env, NotificationSound, Phase, HUD_TRACK_W, HUD_TRACK_X, HUD_W, PAGE_NAMES};
 use crate::paint::{Card, H};
 use crate::theme::{self, size, W};
 use eframe::egui::{self, Color32, Rect};
@@ -290,8 +290,10 @@ impl App {
         if self.fullscreen_hidden && a.health().is_some(){return;}
         if self.settings.notifications {
             if system && a.source==AlertSource::Internal && self.settings.system_notify {
-                self.pending
-                    .push(Cmd::Notify(a.title.clone(), a.body.clone()));
+                let sound = if !self.settings.sound { NotificationSound::Silent }
+                    else if a.health().is_some() { NotificationSound::Health }
+                    else { NotificationSound::System };
+                self.pending.push(Cmd::Notify(a.title.clone(), a.body.clone(), sound));
             }
             let same_event=|old:&Alert| match (&a.meeting,&old.meeting) {
                 (Some((next,_)),Some((previous,_)))=>crate::calendar::dedupe_key(next)==crate::calendar::dedupe_key(previous),
@@ -417,7 +419,7 @@ impl App {
         if self.notice.as_ref().is_some_and(|a|!allowed(a)){self.notice=None;}
         if self.hud_notice.as_ref().is_some_and(|a|!allowed(a)){self.hud_notice=None;}
         if self.fullscreen_hidden {
-            self.pending.retain(|cmd|!matches!(cmd,Cmd::Notify(title,_)if HealthReminder::ALL.into_iter().any(|kind|title==kind.title())));
+            self.pending.retain(|cmd|!matches!(cmd,Cmd::Notify(title,..)if HealthReminder::ALL.into_iter().any(|kind|title==kind.title())));
         }
         if !self.settings.notification_preview {
             for a in self.alerts.iter_mut().chain(self.notice.iter_mut()).chain(self.hud_notice.iter_mut()) {
@@ -900,7 +902,8 @@ impl App {
 }
 
 fn notice_button(c:&Card,x:f32,y:f32,w:f32,text:&str,id:&str)->bool {
-    let (r,b)=crate::paint::capsule(c,x,y,w,20.0,id,Color32::from_gray(35),theme::BTN_HOVER);
+    let Some(c)=c.edge_control(x,y,w,20.0) else {return false};
+    let (r,b)=crate::paint::capsule(&c,x,y,w,20.0,id,Color32::from_gray(35),theme::BTN_HOVER);
     b.centered_text(x+w/2.0,y+10.0,text,10.5,W::Semibold,theme::WHITE,H::Center);
     r.clicked()
 }
@@ -1053,7 +1056,10 @@ impl App {
             }
             _=>{
                 if setting_button(c,43.0,56.0,152.0,if self.settings.notifications{"提醒 · 开"}else{"提醒 · 关"},self.settings.notifications,"set-notice"){self.settings.notifications=!self.settings.notifications;}
-                if setting_button(c,212.0,56.0,153.0,if self.settings.sound{"声音 · 开"}else{"声音 · 关"},self.settings.sound,"set-sound"){self.settings.sound=!self.settings.sound;}
+                if setting_button(c,212.0,56.0,153.0,if self.settings.system_notify && self.settings.sound{"声音 · 开"}else{"声音 · 关"},self.settings.system_notify && self.settings.sound,"set-sound"){
+                    self.settings.sound=!(self.settings.system_notify && self.settings.sound);
+                    if self.settings.sound {self.settings.system_notify=true;}
+                }
                 if setting_button(c,43.0,84.0,152.0,if self.settings.read_notifications{"断开系统通知"}else{"连接系统通知"},self.settings.read_notifications,"set-listener"){self.pending.push(if self.settings.read_notifications{Cmd::DisconnectNotifications}else{Cmd::RequestNotifications});}
                 let status=c.fit(&self.listener_status,10.5,W::Regular,170.0);c.text(210.0,97.0,&status,10.5,W::Regular,theme::GRAY,H::Left);
             }
@@ -1336,6 +1342,20 @@ pub(crate) fn settings_control_row(ui:&mut egui::Ui,title:&str,label_width:f32,c
         content
     }).inner
 }
+fn mail_connection_choice(ui: &mut egui::Ui, id_salt: impl std::hash::Hash, use_windows_proxy: &mut bool) -> bool {
+    let before = *use_windows_proxy;
+    let direct = "直连（默认）";
+    let proxy = "使用 Windows 手动代理";
+    settings_control_row(ui, "连接方式", 56.0, |ui| {
+        egui::ComboBox::from_id_salt(id_salt).width(170.0)
+            .selected_text(if before { proxy } else { direct })
+            .show_ui(ui, |ui| {
+                ui.selectable_value(use_windows_proxy, false, direct);
+                ui.selectable_value(use_windows_proxy, true, proxy);
+            }).response
+    });
+    *use_windows_proxy != before
+}
 fn setting_number<N:egui::emath::Numeric>(ui:&mut egui::Ui,title:&str,value:&mut N,min:N,max:N,suffix:&str,speed:f64)->bool{
     let mut changed=false;
     settings_control_row(ui,title,80.0,|ui|{
@@ -1397,11 +1417,13 @@ fn setting_choices(ui:&mut egui::Ui,title:&str,value:&mut u32,values:[u32;3],uni
 /// 设置页分页序号。旧序号保持不变（岛上入口、测试都按序号跳转），新增外观与位置两页。
 pub(crate) const SETTINGS_TAB_APPEARANCE: usize = 13;
 pub(crate) const SETTINGS_TAB_POSITION: usize = 14;
+#[cfg(feature="sdk-js")]
+pub(crate) const SETTINGS_TAB_PLUGINS: usize = 17;
 /// 侧栏：一项就是一页，不再有页内子标签。专注与健康（2、3）、待办与置物（4、5）各合成一页；关于固定左下角。
 /// 第四列是这一项之前的分组标题。
 const SETTINGS_GROUPS: [(&str,usize,usize,&str);13 + cfg!(feature="sdk-js") as usize] = [
     ("通用",0,0,"岛仔"), ("外观",SETTINGS_TAB_APPEARANCE,SETTINGS_TAB_APPEARANCE,""), ("位置",SETTINGS_TAB_POSITION,SETTINGS_TAB_POSITION,""), ("页面管理",10,10,""),
-    #[cfg(feature="sdk-js")] ("我的插件",15,15,""),
+    #[cfg(feature="sdk-js")] ("我的插件",SETTINGS_TAB_PLUGINS,SETTINGS_TAB_PLUGINS,""),
     ("音乐",1,1,"功能"), ("专注与健康",2,3,""), ("待办与置物",4,5,""), ("消息提醒",6,6,""), ("邮箱",7,7,""), ("日程",8,8,""), ("AI 额度",11,11,""), ("天气",12,12,""),
     ("关于",9,9,""),
 ];
@@ -1531,7 +1553,7 @@ impl App {
                     if tab==4 {crate::sdk_spike::live_settings(ui);}
                     match tab {
                     #[cfg(feature="sdk-js")]
-                    15=>{let on=self.module_on(crate::app::TODO_PAGE);if self.plugins.manage(ui,on){self.settings_tab=4;}}
+                    SETTINGS_TAB_PLUGINS=>{let on=self.module_on(crate::app::TODO_PAGE);if self.plugins.manage(ui,on){self.settings_tab=4;}}
                     12=>{
                         let on=self.settings_feature_header(ui,crate::app::WEATHER_PAGE,"当地天气与七日预报",|_,_|{});
                         ui.add_space(4.0);
@@ -1632,6 +1654,25 @@ impl App {
                             if a!=autostart{self.pending.push(Cmd::ToggleAutostart);}
                             ui.separator();
                             setting_row(ui,"全屏时隐藏","全屏隐藏岛仔，健康提醒静默保留",&mut self.settings.hide_fullscreen);
+                            ui.separator();
+                            #[cfg(windows)]
+                            let supported = crate::native::Window::capture_exclusion_supported();
+                            #[cfg(not(windows))]
+                            let supported = false;
+                            let mut enabled = self.settings.exclude_from_capture;
+                            ui.add_enabled_ui(supported, |ui| {
+                                setting_row(ui, "在截图和录屏中隐藏岛仔", "桌面上照常显示，支持的截图和录屏工具会略过岛仔。", &mut enabled);
+                            });
+                            if enabled != self.settings.exclude_from_capture {
+                                self.capture_exclusion_request = Some(enabled);
+                                self.capture_exclusion_error = None;
+                            }
+                            let error = self.capture_exclusion_error.as_deref()
+                                .or((!supported).then_some("当前系统不支持在截图和录屏中隐藏岛仔。"));
+                            if let Some(error) = error {
+                                ui.add(egui::Label::new(egui::RichText::new(error).size(11.5)
+                                    .color(settings_color(ctx, Color32::from_rgb(238,181,91), Color32::from_rgb(139,88,12)))).wrap());
+                            }
                         });
                         self.avoidance.settings(ui,&mut self.settings);
                         ui.add_space(8.0);
@@ -1846,14 +1887,14 @@ impl App {
                         settings_label(ui,"提醒");
                         settings_card(ui,|ui|{
                             setting_row(ui,"提醒总开关","关闭后饮水、专注、待办及聊天软件提醒都不显示",&mut self.settings.notifications);
-                            // 提醒方式：系统通知与提示音合成三选一；提示音只作用于系统通知，岛上提醒本身不发声。
+                            // 提醒方式由系统通知和提示音两个设置共同决定。
                             ui.separator();
                             ui.add_enabled_ui(self.settings.notifications,|ui|{
                                 let mut mode:u8=if !self.settings.system_notify{0}else if self.settings.sound{2}else{1};
                                 settings_control_row_right(ui,"提醒方式",|ui|{settings_segmented(ui,&mut mode,&[(0,"仅岛上"),(1,"加系统通知"),(2,"系统通知 + 声音")],96.0);});
                                 settings_hint(ui,["只在岛上提醒，不发送 Windows 系统通知","同时在 Windows 通知中心留下记录，不响铃","同时发送 Windows 系统通知并播放提示音"][mode as usize]);
                                 self.settings.system_notify=mode>0;
-                                if mode>0 {self.settings.sound=mode==2;}
+                                self.settings.sound=mode==2;
                             });
                         });
                         settings_label(ui,"系统提示");
@@ -1945,6 +1986,8 @@ impl App {
                         ui.add_enabled_ui(on,|ui|{
                         settings_label(ui,"设置");
                         settings_card(ui,|ui|{
+                            setting_row(ui,"仅提醒验证码邮件","所有邮箱共用。其他邮件静默收进列表，可随时查看。",&mut self.settings.mail_code_only_notifications);
+                            ui.separator();
                             setting_row(ui,"验证码高亮","识别到验证码时在岛上放大显示，点击即复制",&mut self.settings.mail_code);
                             ui.separator();
                             let sync_before=self.settings.mail_sync_operations;
@@ -1983,6 +2026,12 @@ impl App {
                                 if i>0{ui.separator();}
                                 ui.label(egui::RichText::new(&email).size(13.0).color(settings_color(ctx,Color32::WHITE,Color32::from_rgb(30,34,41))));
                                 ui.label(egui::RichText::new(format!("{} · {}",provider.label(),status)).size(12.0).color(settings_color(ctx,Color32::from_gray(180),Color32::from_gray(75))));
+                                if provider == crate::mail::Provider::Gmail
+                                    && mail_connection_choice(ui, ("mail-account-connection", email.as_str()), &mut self.mail.accounts[i].use_windows_proxy)
+                                {
+                                    changed = true;
+                                    self.mail.note = format!("{email}：连接方式已更新");
+                                }
                                 ui.horizontal(|ui|{
                                     if ui.add_sized([66.0,30.0],egui::Button::new("测试")).clicked(){test=Some(i);}
                                     if ui.add_sized([66.0,30.0],egui::Button::new("删除")).clicked(){remove=Some(i);}
@@ -2046,7 +2095,17 @@ impl App {
                             settings_control_row(ui,"邮箱",56.0,|ui|{
                                 ui.add_sized([input_width,30.0],egui::TextEdit::singleline(&mut self.mail.form.email).vertical_align(egui::Align::Center).hint_text("输入邮箱地址"))
                             });
-                            let target=crate::mail::Account{custom:(self.mail.form.provider==crate::mail::Provider::Custom).then(||self.mail.form.custom.clone()),email:self.mail.form.email.clone(),provider:self.mail.form.provider,enabled:true};
+                            let gmail = self.mail.form.provider == crate::mail::Provider::Gmail;
+                            if gmail {
+                                mail_connection_choice(ui, "mail-form-connection", &mut self.mail.form.use_windows_proxy);
+                            }
+                            let target = crate::mail::Account {
+                                custom: (self.mail.form.provider == crate::mail::Provider::Custom).then(|| self.mail.form.custom.clone()),
+                                email: self.mail.form.email.trim().to_owned(),
+                                provider: self.mail.form.provider,
+                                enabled: true,
+                                use_windows_proxy: gmail && self.mail.form.use_windows_proxy,
+                            };
                             let unsupported=target.endpoint().err().as_deref()==Some(crate::mail::MICROSOFT_UNSUPPORTED);
                             if unsupported{ui.add(egui::Label::new(crate::mail::MICROSOFT_UNSUPPORTED).wrap());}
                             ui.add_enabled_ui(!unsupported,|ui|{
@@ -2056,29 +2115,21 @@ impl App {
                                 field
                             });
                             ui.horizontal(|ui|{
-                                if ui.button("测试连接").clicked(){
-                                    let email=self.mail.form.email.trim().to_string();
-                                    let target=crate::mail::Account{custom:(self.mail.form.provider==crate::mail::Provider::Custom).then(||self.mail.form.custom.clone()),email:email.clone(),provider:self.mail.form.provider,enabled:true};
+                                let test = ui.button("测试连接").clicked();
+                                let save = ui.button("保存并开始监控").clicked();
+                                if test || save {
+                                    let email = target.email.clone();
                                     if !email.contains('@'){self.mail.note="请先填邮箱地址".into();}
                                     else if let Err(error)=target.endpoint(){self.mail.note=error;}
                                     else if self.mail.form.password.is_empty(){self.mail.note="请先填授权码（不是邮箱登录密码）".into();}
-                                    else{
+                                    else if test {
                                         self.mail.testing=Some(email.clone());
                                         self.mail.note=format!("{email}：正在测试连接…");
-                                        self.pending.push(Cmd::MailTest(crate::mail::Account {custom: (self.mail.form.provider==crate::mail::Provider::Custom).then(||self.mail.form.custom.clone()), email:email.clone(),provider:self.mail.form.provider,enabled:true},self.mail.form.password.clone()));
-                                    }
-                                }
-                                if ui.button("保存并开始监控").clicked(){
-                                    let email=self.mail.form.email.trim().to_string();
-                                    let target=crate::mail::Account{custom:(self.mail.form.provider==crate::mail::Provider::Custom).then(||self.mail.form.custom.clone()),email:email.clone(),provider:self.mail.form.provider,enabled:true};
-                                    if !email.contains('@'){self.mail.note="请先填邮箱地址".into();}
-                                    else if let Err(error)=target.endpoint(){self.mail.note=error;}
-                                    else if self.mail.form.password.is_empty(){self.mail.note="请先填授权码（不是邮箱登录密码）".into();}
-                                    else{
+                                        self.pending.push(Cmd::MailTest(target, self.mail.form.password.clone()));
+                                    } else {
                                         match crate::mail::secrets::save(&target.credential_key(),&self.mail.form.password){
                                             Ok(())=>{
-                                                let account=crate::mail::Account {custom: (self.mail.form.provider==crate::mail::Provider::Custom).then(||self.mail.form.custom.clone()), email:email.clone(),provider:self.mail.form.provider,enabled:true};
-                                                if let Some(slot)=self.mail.accounts.iter_mut().find(|a|a.email.eq_ignore_ascii_case(&email)){*slot=account;}else{self.mail.accounts.push(account);}
+                                                if let Some(slot)=self.mail.accounts.iter_mut().find(|a|a.email.eq_ignore_ascii_case(&email)){*slot=target;}else{self.mail.accounts.push(target);}
                                                 self.mail.form.password.clear();
                                                 self.mail.note=format!("{email}：已保存，正在连接…");
                                                 self.mail_accounts_changed();
@@ -2094,7 +2145,10 @@ impl App {
                                                     if !self.mail.note.is_empty(){ui.add_space(3.0);ui.add(egui::Label::new(egui::RichText::new(&self.mail.note).size(12.0).color(settings_color(ctx,Color32::from_gray(180),Color32::from_gray(75)))).wrap());}
                             });
                             // 保存后弹窗保持打开，结果和「测试连接」都在这里；用户自己关闭。
-                            if close || modal.should_close() {self.mail.form.open=false;}
+                            if close || modal.should_close() {
+                                self.mail.form.open = false;
+                                self.mail.form.use_windows_proxy = false;
+                            }
                         }
                     }
                     8=>{
@@ -2122,7 +2176,12 @@ impl App {
                                     ui.vertical(|ui|{
                                         ui.spacing_mut().item_spacing.y=2.0;
                                         ui.label(egui::RichText::new(format!("{} · 最后同步 {}",cfg.provider.label(),if self.calendar.last_sync.is_empty(){"—".to_string()}else{self.calendar.last_sync.clone()})).size(13.0).color(settings_color(ctx,Color32::WHITE,Color32::from_rgb(30,34,41))));
-                                        ui.label(egui::RichText::new(if self.calendar.connected{format!("● 已连接 · 未来 24 小时 {n} 个日程")}else if self.calendar.failures==0{"● 正在连接…".into()}else{format!("● 上次连接失败 · 已知 {n} 个日程")}).size(11.5).color(if self.calendar.connected{settings_color(ctx,Color32::from_rgb(120,220,160),Color32::from_rgb(24,121,64))}else{settings_color(ctx,Color32::from_rgb(240,180,110),Color32::from_rgb(145,89,12))}));
+                                        let status = if self.calendar.connected {
+                                            if n == 0 && !self.calendar.warning.is_empty() { "● 已连接 · 日程同步不完整".into() }
+                                            else { format!("● 已连接 · 未来 24 小时 {n} 个日程") }
+                                        } else if self.calendar.failures == 0 { "● 正在连接…".into() }
+                                        else { format!("● 上次连接失败 · 已知 {n} 个日程") };
+                                        ui.label(egui::RichText::new(status).size(11.5).color(if self.calendar.connected{settings_color(ctx,Color32::from_rgb(120,220,160),Color32::from_rgb(24,121,64))}else{settings_color(ctx,Color32::from_rgb(240,180,110),Color32::from_rgb(145,89,12))}));
                                     });
                                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{
                                         if ui.add_enabled(!self.calendar.testing,egui::Button::new("断开")).clicked(){self.pending.push(Cmd::CalendarForget);}

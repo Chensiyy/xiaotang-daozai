@@ -5,7 +5,7 @@ pub struct Bounds { pub left:i32, pub top:i32, pub right:i32, pub bottom:i32 }
 #[derive(Clone, Debug)]
 pub struct Display { pub id:String, pub label:String, pub bounds:Bounds,
     /// 工作区顶边：顶栏类软件或置顶的任务栏登记后会比 `bounds.top` 更靠下。
-    pub work_top:i32, pub primary:bool }
+    pub work_top:i32, pub primary:bool, pub dpi:u32 }
 
 /// 岛体摆放用的屏幕范围：开启「避开顶栏」时顶边换成工作区顶边。
 /// 只认屏幕上方三分之一以内的占用，异常的工作区不会把岛推到屏幕中间。
@@ -19,6 +19,34 @@ pub fn placement_bounds(display:&Display, avoid_top_bar:bool)->Bounds {
 pub fn selected<'a>(displays:&'a [Display],id:&str)->Option<&'a Display>{
     displays.iter().find(|d|!id.is_empty()&&d.id==id)
         .or_else(||displays.iter().find(|d|d.primary)).or_else(||displays.first())
+}
+
+/// 两个屏幕在光标所在行或列相接时，返回光标进入本屏的深度和本屏的停靠边。
+/// 底边可供鼠标穿越，岛体只支持顶部和左右停靠。
+pub(crate) fn shared_edge(b:Bounds, other:Bounds, (x,y):(i32,i32))->Option<(i32,Option<crate::model::Dock>)> {
+    use crate::model::Dock;
+    if (b.top.max(other.top)..b.bottom.min(other.bottom)).contains(&y) {
+        if b.left==other.right {return Some((x-b.left,Some(Dock::Left)));}
+        if b.right==other.left {return Some((b.right-x,Some(Dock::Right)));}
+    }
+    if (b.left.max(other.left)..b.right.min(other.right)).contains(&x) {
+        if b.top==other.bottom {return Some((y-b.top,Some(Dock::Top)));}
+        if b.bottom==other.top {return Some((b.bottom-y,None));}
+    }
+    None
+}
+
+/// 光标越过共享边 16 个目标屏逻辑点后才换屏。一次快速移动可以直接命中远处的显示器。
+pub(crate) fn drag_target<'a>(displays:&'a [Display],active:&'a Display,point:(i32,i32),zoom:f32)->&'a Display {
+    displays.iter().find(|d|{
+        let b=d.bounds;
+        (b.left..b.right).contains(&point.0) && (b.top..b.bottom).contains(&point.1)
+    }).filter(|d|d.id!=active.id && shared_edge(d.bounds,active.bounds,point)
+        .is_none_or(|(depth,_)|depth as f32>=16.0*d.scale(zoom))).unwrap_or(active)
+}
+
+impl Display {
+    pub fn scale(&self,zoom:f32)->f32 {self.dpi as f32/96.0*zoom}
 }
 
 #[cfg(windows)]
@@ -37,7 +65,10 @@ pub fn connected()->Vec<Display>{
             let primary=info.monitorInfo.dwFlags&1!=0;
             let label=format!("显示器 {number}{} · {} × {}{}",if name.is_empty(){String::new()}else{format!(" · {name}")},r.right-r.left,r.bottom-r.top,if primary{" · 主屏"}else{""});
             let displays=&mut *(data.0 as *mut Vec<Display>);
-            displays.push(Display{id:if stable_id.is_empty(){device}else{stable_id},label,bounds:Bounds{left:r.left,top:r.top,right:r.right,bottom:r.bottom},work_top:info.monitorInfo.rcWork.top,primary});
+            use windows::Win32::UI::HiDpi::{GetDpiForMonitor,MDT_EFFECTIVE_DPI};
+            let (mut dpi,mut dpi_y)=(96,96);
+            if GetDpiForMonitor(monitor,MDT_EFFECTIVE_DPI,&mut dpi,&mut dpi_y).is_err() || dpi==0 {dpi=96;}
+            displays.push(Display{id:if stable_id.is_empty(){device}else{stable_id},label,bounds:Bounds{left:r.left,top:r.top,right:r.right,bottom:r.bottom},work_top:info.monitorInfo.rcWork.top,primary,dpi});
         }
         BOOL(1)
     }
@@ -185,7 +216,7 @@ mod shift_slack_tests {
 #[cfg(test)]
 mod top_bar_tests {
     use super::*;
-    fn display(bounds:Bounds,work_top:i32)->Display {Display{id:"d".into(),label:"d".into(),bounds,work_top,primary:true}}
+    fn display(bounds:Bounds,work_top:i32)->Display {Display{id:"d".into(),label:"d".into(),bounds,work_top,primary:true,dpi:96}}
     #[test]
     fn avoiding_the_top_bar_starts_below_it_and_keeps_other_edges(){
         for (m,bar) in [(Bounds{left:0,top:0,right:1920,bottom:1080},28),(Bounds{left:-2560,top:-400,right:0,bottom:1040},42)] {
@@ -278,8 +309,8 @@ mod tests {
         if !displays.is_empty(){assert_eq!(displays.iter().filter(|d|d.primary).count(),1);}
     }
     #[test] fn display_selection_survives_reordering_disconnect_and_reconnect(){
-        let primary=Display{id:"internal".into(),label:"内屏".into(),bounds:Bounds{left:0,top:0,right:1920,bottom:1080},work_top:0,primary:true};
-        let external=Display{id:"external".into(),label:"外屏".into(),bounds:Bounds{left:-2560,top:-400,right:0,bottom:1040},work_top:-400,primary:false};
+        let primary=Display{id:"internal".into(),label:"内屏".into(),bounds:Bounds{left:0,top:0,right:1920,bottom:1080},work_top:0,primary:true,dpi:96};
+        let external=Display{id:"external".into(),label:"外屏".into(),bounds:Bounds{left:-2560,top:-400,right:0,bottom:1040},work_top:-400,primary:false,dpi:144};
         for displays in [vec![primary.clone(),external.clone()],vec![external.clone(),primary.clone()]] {
             assert_eq!(selected(&displays,"").unwrap().id,"internal");
             let target=selected(&displays,"external").unwrap();assert_eq!(target.id,"external");

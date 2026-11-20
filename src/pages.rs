@@ -12,7 +12,7 @@ use std::f32::consts::{FRAC_PI_2, TAU};
 
 /// 剪贴板分栏一屏显示的条数。
 pub(crate) const CLIP_ROWS: usize = 4;
-pub(crate) const MUSIC_VOLUME_RECT: Rect = Rect::from_min_max(Pos2::new(345.0,6.0),Pos2::new(389.0,104.0));
+const MUSIC_VOLUME_RECT: Rect = Rect::from_min_max(Pos2::new(345.0,6.0),Pos2::new(389.0,104.0));
 
 fn mmss(secs: f64) -> String {
     let s = secs.max(0.0) as u64;
@@ -181,10 +181,16 @@ impl App {
         cmds.push(Cmd::MusicVolume(command,self.media.source.clone()));
     }
 
+    pub(crate) fn music_volume_bounds(&self)->Rect {
+        // 顶栏固定时浮条靠在扬声器左侧，给图钉留下完整热区。
+        MUSIC_VOLUME_RECT.translate(egui::vec2(-43.0,27.0)*self.hold_slot)
+    }
+
     pub(crate) fn draw_music_volume(&mut self,c:&Card,cmds:&mut Vec<Cmd>){
         let ctx=c.ui.ctx();
+        let placed=self.music_volume_bounds();
         let bounds=MUSIC_VOLUME_RECT;
-        let panel=c.rect(bounds.min.x,bounds.min.y,bounds.width(),bounds.height());
+        let panel=c.rect(placed.min.x,placed.min.y,placed.width(),placed.height());
         let trigger=c.rect(354.0,106.0,26.0,24.0);
         if self.music_volume_open && ctx.input(|i|i.pointer.any_pressed() && i.pointer.interact_pos().is_some_and(|p|!panel.contains(p) && !trigger.contains(p))){
             self.music_volume_open=false;
@@ -192,7 +198,7 @@ impl App {
         let a=ctx.animate_bool_with_time(egui::Id::new("music-volume-open"),self.music_volume_open,0.12);
         let Some((volume,muted))=self.music_volume_ui else{return;};
         if a<0.01{return;}
-        let popup=c.faded(a);
+        let popup=c.shifted(placed.min.x-bounds.min.x,placed.min.y-bounds.min.y).faded(a);
         let popup=if self.music_volume_open{popup}else{popup.ghost()};
         // 浮条最后绘制并占据整块命中区域，防止点击穿到后面的翻页按钮。
         popup.hit(bounds.min.x,bounds.min.y,bounds.width(),bounds.height(),"m-volume-surface");
@@ -265,9 +271,9 @@ impl App {
     }
 
     // ================= 专注（番茄钟） =================
-    pub(crate) fn page_focus(&mut self, c: &Card, _env: &Env) {
-        if c.hit(90.0,8.0,42.0,21.0,"focus-settings").on_hover_text("专注设置").clicked(){self.open_settings_category(2);}
-        c.text(111.0,23.0,"设置",10.5,W::Regular,theme::GRAY,H::Center);
+    pub(crate) fn page_focus(&mut self, c: &Card, header: &Card, _env: &Env) {
+        if header.hit(90.0,8.0,42.0,21.0,"focus-settings").on_hover_text("专注设置").clicked(){self.open_settings_category(2);}
+        header.text(111.0,23.0,"设置",10.5,W::Regular,theme::GRAY,H::Center);
         let (rx, ry, rr) = (79.0, 74.0, 32.0);
         let frac = self.ring_shown.pos.clamp(0.0, 1.0);
         let run = c.ui.ctx().animate_bool_with_time(egui::Id::new("pomo-run"), self.pomo.running, 0.3);
@@ -355,9 +361,9 @@ impl App {
     /// 健康页：标题「健康」后接「喝水 | 久坐」分段切换。两种模式是同一套版式——
     /// 大数字、右上开关、状态行、进度条、主按钮 + 设置、右侧进度环都在同一位置，
     /// 只换内容和主色（蓝 / 绿）。设置按钮、分隔线和开关本体不随切换闪动。
-    pub(crate) fn page_water(&mut self, c: &Card, env: &Env) {
+    pub(crate) fn page_water(&mut self, c: &Card, header: &Card, env: &Env) {
         let sv = self.sit_view_t.pos.clamp(0.0, 1.0);
-        self.health_tabs(c, 15.0, sv);
+        self.health_tabs(header, 15.0, sv);
 
         // 共用的开关：位置不变，颜色和旋钮图标随模式过渡。
         let sit = self.sit_mode;
@@ -653,18 +659,19 @@ impl App {
         x + total
     }
 
-    pub(crate) fn page_shelf(&mut self, c: &Card, env: &Env, cmds: &mut Vec<Cmd>) {
+    pub(crate) fn page_shelf(&mut self, c: &Card, header: &Card, env: &Env, cmds: &mut Vec<Cmd>) {
         let n = self.shelf.items.len();
         let drag = self.drag_a;
         // 拖文件进来时回到「文件」分栏。
         if drag > 0.002 { self.shelf_tab = 0; }
-        self.shelf_tabs(c, 13.0);
+        self.shelf_tabs(header, 13.0);
+        let header=header.shifted(-self.header_music_shift(),0.0);
         if self.shelf_tab == 1 {
-            self.page_clipboard(c, env, cmds);
+            self.page_clipboard(c, &header, env, cmds);
             return;
         }
-        c.text(344.0,23.0,"添加",size::SMALL,W::Regular,theme::GRAY,H::Right);
-        if c.hit(311.0,8.0,38.0,22.0,"shelf-add").on_hover_text("从电脑选择文件").clicked(){cmds.push(Cmd::AddFiles);}
+        header.text(344.0,23.0,"添加",size::SMALL,W::Regular,theme::GRAY,H::Right);
+        if header.hit(311.0,8.0,38.0,22.0,"shelf-add").on_hover_text("从电脑选择文件").clicked(){cmds.push(Cmd::AddFiles);}
         if n>5 {c.text(209.5,121.0,&format!("{}–{} / {n} · 滚轮查看",self.shelf_first+1,(self.shelf_first+5).min(n)),10.5,W::Regular,theme::DIM,H::Center);}
 
         if n > 0 {
@@ -779,7 +786,7 @@ impl App {
     }
 
     // ================= 剪贴板（置物架第二个分栏） =================
-    fn page_clipboard(&mut self, c: &Card, _env: &Env, _cmds: &mut Vec<Cmd>) {
+    fn page_clipboard(&mut self, c: &Card, header: &Card, _env: &Env, _cmds: &mut Vec<Cmd>) {
         if !self.settings.clipboard_history {
             c.dashed(42.0, 32.0, 335.0, 91.0, 12.0, 1.2, Color32::from_gray(70), 0.0);
             c.text(209.5, 66.0, "剪贴板记录已关闭", 12.0, W::Semibold, theme::WHITE, H::Center);
@@ -803,7 +810,7 @@ impl App {
             let base = if confirming { Color32::from_rgb(120, 28, 36) } else { theme::BTN };
             let hover = if confirming { Color32::from_rgb(150, 34, 44) } else { theme::BTN_HOVER };
             let x = 351.0 - lw;
-            let (r, bc) = capsule(c, x, 11.5, lw, 17.0, "clip-clear", base, hover);
+            let (r, bc) = capsule(header, x, 11.5, lw, 17.0, "clip-clear", base, hover);
             bc.text(x + lw / 2.0, 23.5, label, size::SMALL, W::Regular, theme::WHITE, H::Center);
             let r = r.on_hover_text(if confirming { "再点一次清空未固定的记录" } else { "清空未固定的记录" });
             if r.clicked() {
@@ -1151,7 +1158,7 @@ impl App {
         content.set_opacity(c.painter.opacity());if !c.live{content.disable();}
         content.spacing_mut().item_spacing.y=0.0;content.spacing_mut().scroll.floating=false;content.spacing_mut().scroll.bar_width=4.0*c.s;
         content.visuals_mut().widgets.inactive.bg_fill=Color32::from_gray(80);
-        egui::ScrollArea::vertical().id_salt(("mail-list-scroll",trash,self.mail.manage.unread_only)).max_height(list_bounds.height()*c.s).auto_shrink([false,false]).scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible).show_rows(&mut content,row_h*c.s,indices.len(),|ui,range|{
+        let scroll=egui::ScrollArea::vertical().id_salt(("mail-list-scroll",trash,self.mail.manage.unread_only)).max_height(list_bounds.height()*c.s).auto_shrink([false,false]).scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysVisible).show_rows(&mut content,row_h*c.s,indices.len(),|ui,range|{
             let rows:Vec<_>=range.map(|i|self.mail_rows()[indices[i]].clone()).collect();
             for raw in rows{
                 let item=self.display_mail(&raw);let hidden=self.mail_code_hidden(&raw);let seen=self.mail_seen(&raw,folder);
@@ -1190,6 +1197,7 @@ impl App {
                 if hit.clicked()&&!acted{self.mail_open(&raw);}
             }
         });
+        if c.live {self.content_scroll=Some((scroll.id,scroll.state.offset.y));}
     }
 
     /// 岛内邮件详情可滚动，也可以进入独立窗口阅读全文。
@@ -1239,7 +1247,7 @@ impl App {
         content.spacing_mut().item_spacing.y=6.0*c.s;
         content.style_mut().spacing.scroll.floating=false;
         content.spacing_mut().scroll.bar_width=4.0*c.s;
-        egui::ScrollArea::vertical().id_salt(("mail-body",&item.account,item.uid)).max_height(90.0*c.s).auto_shrink([false,false]).show(&mut content,|ui|{
+        let scroll=egui::ScrollArea::vertical().id_salt(("mail-body",&item.account,item.uid)).max_height(90.0*c.s).auto_shrink([false,false]).show(&mut content,|ui|{
             if !body.is_empty() {
                 crate::mail_reader::body_ui(ui,body.as_ref(),11.5*c.s);
             }else if item.links.is_empty(){
@@ -1253,6 +1261,7 @@ impl App {
             }
         });
 
+        if c.live {self.content_scroll=Some((scroll.id,scroll.state.offset.y));}
         if !self.mail.manage.message.is_empty(){
             c.text(46.0,229.0,&c.fit(&self.mail.manage.message,8.0,W::Regular,130.0),8.0,W::Regular,theme::GRAY,H::Left);
             c.hit(44.0,219.0,132.0,15.0,"mail-detail-status").on_hover_text(&self.mail.manage.message);

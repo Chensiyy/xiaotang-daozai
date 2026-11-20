@@ -261,16 +261,16 @@ impl App {
         events
     }
 
-    pub(crate) fn page_calendar(&mut self,c:&Card,env:&Env) {
+    pub(crate) fn page_calendar(&mut self,c:&Card,header:&Card,env:&Env) {
         let accent=Color32::from_rgb(82,162,255);
         let muted=Color32::from_rgb(142,142,150);
         let today=NaiveDate::parse_from_str(&env.today,"%Y-%m-%d").unwrap_or_else(|_|chrono::Local::now().date_naive());
         let now=calendar_now(env);
-        c.fill(37.0,9.0,54.0,18.0,8.0,Color32::from_rgb(30,30,33));
-        source_icon(c,Source::Calendar(None),43.0,13.0,10.0);
-        c.centered_text(69.0,18.0,"日程",10.0,W::Semibold,theme::WHITE,H::Center);
-        if c.hit(37.0,9.0,54.0,18.0,"calendar-today").on_hover_text("回到今天").clicked(){self.select_calendar_day(today);}
-        let (add,b)=paint::capsule(c,101.0,9.0,46.0,18.0,"calendar-add-local",theme::BTN,theme::BTN_HOVER);
+        header.fill(37.0,9.0,54.0,18.0,8.0,Color32::from_rgb(30,30,33));
+        source_icon(header,Source::Calendar(None),43.0,13.0,10.0);
+        header.centered_text(69.0,18.0,"日程",10.0,W::Semibold,theme::WHITE,H::Center);
+        if header.hit(37.0,9.0,54.0,18.0,"calendar-today").on_hover_text("回到今天").clicked(){self.select_calendar_day(today);}
+        let (add,b)=paint::capsule(header,101.0,9.0,46.0,18.0,"calendar-add-local",theme::BTN,theme::BTN_HOVER);
         b.centered_text(124.0,18.0,"＋ 新增",9.0,W::Regular,theme::WHITE,H::Center);
         if add.clicked(){self.open_calendar_editor(None);return;}
         c.seg((155.0,36.0),(155.0,208.0),0.6,Color32::from_gray(38));
