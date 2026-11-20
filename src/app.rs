@@ -1883,6 +1883,14 @@ impl App {
         }
     }
 
+    /// 常驻区比展开面板还宽时（比如开了综合监测），展开、收起途中岛宽会先窄于常驻内容。
+    /// 这时常驻内容跟着岛宽一起等比收拢，而不是被岛的边缘直接切掉。
+    fn resident_squeeze(&self)->f32 {
+        if self.side()||self.island_lyrics_active()||self.notice.is_some() {return 1.0;}
+        let content=self.resident.target.width.min(self.resident_limit());
+        (self.w.pos/content.max(1.0)).clamp(0.5,1.0)
+    }
+
     /// 0 = 药丸，1 = 完整面板（展开时可略超过 1）。
     #[cfg(test)]
     pub(crate) fn current_width(&self) -> f32 { self.w.pos+self.notice_width.pos }
@@ -1968,7 +1976,8 @@ impl App {
             (if self.open {self.page==PERFORMANCE_PAGE} else {performance_bar && self.notice.is_none() && !self.island_lyrics_active()});
         let performance_detail=performance_visible && self.open && self.page==PERFORMANCE_PAGE;
         self.performance.tick(self.module_on(PERFORMANCE_PAGE),performance_visible,performance_detail,&ctx);
-        if !(self.open && self.page==PERFORMANCE_PAGE) {self.performance.view=None;}
+        // 鼠标移开收起再移回来，接着看刚才的详情；切到别的页面才回到设置里的起始页。
+        if self.page!=PERFORMANCE_PAGE {self.performance.view=None;}
         if performance_bar {layout.add_performance(self.settings.performance_bar.width(self.settings.performance_metrics));}
         layout.reorder(&self.settings.resident_order);
         for (position,extra) in self.quota_balance_layout(&ctx){layout.balance_tail(position,extra);}
@@ -2261,7 +2270,7 @@ impl App {
         if pet_alpha>0.004 && !minimal_pill {
             let y=(h.min(self.base_size().1)-BAR_H).max(0.0)/2.0;
             // 吉祥物跟随皮肤换色：浅色底上变成深色版本，保持清晰。
-            let fit=if self.island_lyrics_active()||self.notice.is_some(){1.0}else{(self.resident_limit()/self.resident.target.width).min(1.0)};
+            let fit=if self.island_lyrics_active()||self.notice.is_some(){1.0}else{(self.resident_limit()/self.resident.target.width).min(1.0)*self.resident_squeeze()};
             self.pet.draw(&base.scaled(cx-origin.x,15.0,fit).shifted(0.0,y).faded(pet_alpha),cx-origin.x+self.resident.position(bar::PET),self.t,self.skin_palette());
         }
         let previous_scroll=self.content_scroll.take();
@@ -3075,7 +3084,7 @@ impl App {
     // ---------------------------------------------------------------
     fn shared_header(&mut self, base: &Card, cx: f32, p: f32, reveal: f32, env: &Env) {
         let local_cx = cx - base.origin.x;
-        let fit=if self.island_lyrics_active(){1.0}else{(self.resident_limit()/self.resident.target.width).min(1.0)};
+        let fit=if self.island_lyrics_active(){1.0}else{(self.resident_limit()/self.resident.target.width).min(1.0)*self.resident_squeeze()};
         let fitted=base.scaled(local_cx,15.0,lerp(fit,1.0,p));
         let base=&fitted;
         let lyric=self.island_lyric().map(|(index,_)|index);
