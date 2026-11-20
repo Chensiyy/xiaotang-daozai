@@ -10,7 +10,7 @@ mod qq;
 #[cfg(windows)]
 pub(crate) mod desktop;
 #[cfg(windows)]
-mod trust;
+pub(crate) mod trust;
 #[cfg(windows)]
 pub use windows::{Runtime,ToastAccounts,TaskbarEvent};
 
