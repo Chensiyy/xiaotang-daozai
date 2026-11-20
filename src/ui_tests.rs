@@ -8717,6 +8717,38 @@ fn messenger_accounts_get_number_tags_and_clear_one_by_one(){
 }
 
 #[test]
+fn unread_capsule_stays_full_size_when_crossing_the_gap() {
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    for dock in crate::model::Dock::ALL {
+        let mut h=H::new();
+        h.app.settings.dock=dock;
+        h.app.settings.wechat_notifications=true;
+        h.app.receive_wechat_reminder();
+        let win=Rect::from_min_size(Pos2::ZERO,Vec2::new(WIN_W,WIN_H));
+        let panel=h.app.island_rect(win,crate::app::PW,h.app.expanded_height());
+        h.app.show_page(1);
+        h.hover(panel.center(),5.0);
+        let badge=|h:&H|h.ctx.read_response(egui::Id::new(("card",true,"微信"))).unwrap().rect;
+        let initial=badge(&h);
+        let y=initial.center().y;
+        let left=initial.center().x<panel.center().x;
+        let (edge,near)=if left {(panel.left(),initial.right())}else{(panel.right(),initial.left())};
+        let gap=Pos2::new(edge+(near-edge)*0.80,y);
+        assert!(!h.hit.contains(gap) && !initial.contains(gap),"间隙不属于可点击区域");
+        h.hover(gap,0.8);
+        assert!(h.app.open,"{dock:?} 停在通往未读图标的间隙时误收起");
+        if dock==crate::model::Dock::Top {
+            h.hover(Pos2::new(initial.center().x,panel.top()+1.0),0.4);
+            assert!(h.app.open,"沿屏幕顶边移到图标上方应保持展开");
+        }
+        h.hover(initial.center(),0.2);
+        assert_eq!(badge(&h),initial,"鼠标移到图标时应保持原有位置和尺寸");
+        h.hover(Pos2::new(gap.x,initial.bottom()+12.0),1.0);
+        assert!(!h.app.open,"离开胶囊高度范围后应恢复收起");
+    }
+}
+
+#[test]
 fn messenger_notifications_stay_right_and_move_outside_expanded_panel(){
     let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     let mut h=H::new();h.app.settings.wechat_notifications=true;
