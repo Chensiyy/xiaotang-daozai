@@ -292,14 +292,13 @@ impl Runtime {
         };
         let [bx, by, bw, bh] = geometry.body;
         let body_pixels = Rect::from_min_size(egui::pos2(bx, by), egui::vec2(bw, bh));
-        let pointer_in_island = screen_pointer
-            .map(|(x, y)| {
-                egui::pos2(
-                    (x - geometry.screen.x) as f32,
-                    (y - geometry.screen.y) as f32,
-                )
-            })
-            .filter(|&p| body_pixels.contains(p));
+        let pointer = screen_pointer.map(|(x, y)| {
+            egui::pos2(
+                (x - geometry.screen.x) as f32,
+                (y - geometry.screen.y) as f32,
+            )
+        });
+        let pointer_in_island = pointer.filter(|&p| body_pixels.contains(p));
         let moved = self.pointer != pointer_in_island;
         self.pointer = pointer_in_island;
         let dt = self
@@ -342,7 +341,7 @@ impl Runtime {
             ];
             frame.capture = [x as f32, y as f32, w as f32, h as f32];
             frame.body = geometry.body;
-            let pointer = pointer_in_island.unwrap_or(egui::pos2(-1.0, -1.0));
+            let pointer = pointer.unwrap_or(egui::pos2(-1.0, -1.0));
             frame.shape = [layer.radius * ppp, layer.expansion, pointer.x, pointer.y];
             let (flare, height) = layer.notch.unwrap_or_default();
             frame.notch = [

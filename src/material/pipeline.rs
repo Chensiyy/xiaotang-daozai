@@ -337,6 +337,14 @@ mod tests {
     use super::*;
     use std::mem::{align_of, offset_of};
 
+    const LIQUID_GLASS_SHADER: &str =
+        include_str!("../../spike/examples/liquid-glass/material.wgsl");
+
+    #[test]
+    fn liquid_glass_shader_validates_with_the_material_prelude() {
+        validate_shader(&format!("{PRELUDE}\n{LIQUID_GLASS_SHADER}")).unwrap();
+    }
+
     #[test]
     fn debug_shader_validates_and_matches_rust_frame_layout() {
         let module = validate_shader(&format!("{PRELUDE}\n{DEBUG_SHADER}")).unwrap();
@@ -418,6 +426,7 @@ mod tests {
         ";
         assert!(validate_shader(&format!("{PRELUDE}\n{missing_constant}")).is_ok());
         assert!(Pipeline::new(&state, missing_constant).is_err());
+        Pipeline::new(&state, LIQUID_GLASS_SHADER).unwrap();
         let mut pipeline = Pipeline::new(&state, DEBUG_SHADER).unwrap();
 
         let rect = |x, y, w, h| egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(w, h));

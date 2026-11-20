@@ -321,6 +321,49 @@ mod material_tests {
 
     #[test]
     #[cfg(windows)]
+    fn liquid_glass_package_installs_and_keeps_parameters_when_disabled() -> Result<()> {
+        let root = root();
+        let path =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("spike/examples/liquid-glass/plugin.json");
+        let manifest = Package::read(&path)?.manifest;
+        let id = &manifest.id;
+        let first_parameter = &manifest.settings[0].key;
+        let mut host = LocalPlugins::open(root.clone());
+        host.install(&path)?;
+        assert!(host.enable(id, true).is_err());
+        assert!(host.active_material().is_none());
+        assert!(!LocalPlugins::startup_material(&root));
+
+        host.activate_material(Some(id), true)?;
+        assert!(LocalPlugins::startup_material(&root));
+        let active = host.active_material().unwrap();
+        assert!(active.controls);
+        assert_eq!((active.stiffness, active.damping), (1.0, 0.5));
+        let mut expected = [48.0, 8.0, 1.5, 87.0, 1.5, 0.9, 1.0];
+        assert_eq!(active.params[..expected.len()], expected);
+        expected[0] = 49.0;
+        host.set_material_parameter(id, first_parameter, expected[0])?;
+        assert_eq!(
+            host.active_material().unwrap().params[..expected.len()],
+            expected
+        );
+        host.enable(id, false)?;
+        assert!(host.active_material().is_none());
+        assert!(!LocalPlugins::startup_material(&root));
+
+        let mut host = LocalPlugins::open(root.clone());
+        assert!(host.active_material().is_none());
+        host.enable(id, true)?;
+        assert_eq!(
+            host.active_material().unwrap().params[..expected.len()],
+            expected
+        );
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    #[cfg(windows)]
     fn an_authorized_material_is_selected_exclusively_and_reloaded_with_its_parameters(
     ) -> Result<()> {
         let root = root();
