@@ -431,13 +431,18 @@ impl App {
                 let at=at.with_timezone(&chrono::Local);let time=at.format(if at.date_naive()==chrono::Local::now().date_naive(){"%H:%M"}else{"%m/%d %H:%M"}).to_string();
                 let busy=self.quota.busy.contains(&a.id);let stale=self.quota.stale.get(&a.id);
                 let status=if busy{format!("{} · {time}",if a.provider==Provider::Claude{"读取中…"}else{"正在更新…"})}
+                    else if stale.map(String::as_str)==Some(quota::KIMI_RELOGIN){"上次记录 · 请在 Kimi Code 重新登录".to_owned()}
                     else if stale.is_some(){format!("上次记录 · {time}")}
                     else if a.provider==Provider::Claude{format!("本地记录 · {time}")}
                     else if let Some(wallet)=&s.wallet{let b=wallet.primary();if wallet.balances.len()>1{let other=wallet.balances.iter().find(|other|other.currency!=b.currency).unwrap();format!("另有 {} {} · {time}",other.currency,other.full(other.total))}else{format!("{} · {time} 更新",b.currency)}}
                     else{format!("{time} 更新")};
                 let x=if a.provider.balance(){125.0}else{157.0};let width=357.0-x;let y=154.0;
                 c.centered_text(x,y,&c.fit(&status,10.0,W::Regular,width),10.0,W::Regular,if stale.is_some()&&!busy{Color32::from_rgb(255,166,77)}else{theme::DIM},H::Left);
-                c.hit(x,y-6.0,width,8.0,("quota-update-time",&a.id)).on_hover_text(if let Some(reason)=stale{format!("{status}\n{reason}")}else{status});
+                let tooltip=match stale{
+                    Some(reason) if !busy=>format!("上次记录 · {time}\n{reason}"),
+                    Some(reason)=>format!("{status}\n{reason}"),None=>status,
+                };
+                c.hit(x,y-6.0,width,8.0,("quota-update-time",&a.id)).on_hover_text(tooltip);
             }
         }
         if a.provider==Provider::WorkBuddy{
