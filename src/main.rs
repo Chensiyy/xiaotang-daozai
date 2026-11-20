@@ -164,6 +164,8 @@ impl Shell {
     }
 
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        #[cfg(all(windows, feature = "sdk-material"))]
+        daozai::material::report_startup_failure();
         diagnostics::graphics(cc);
         let running_compat=cc.wgpu_render_state.is_some();
         diagnostics::startup("加载本地配置");
@@ -1202,5 +1204,14 @@ fn run() -> eframe::Result<()> {
         .with_always_on_top()
         .with_visible(false);
     let opts = eframe::NativeOptions { viewport, vsync: !cfg!(windows), ..Default::default() };
-    graphics::run(opts,|opts|eframe::run_native("岛仔", opts, Box::new(|cc| Ok(Box::new(Shell::new(cc))))))
+    graphics::run(opts,|opts|{
+        let result=eframe::run_native("岛仔",opts,Box::new(|cc|Ok(Box::new(Shell::new(cc)))));
+        #[cfg(all(windows, feature = "sdk-material"))]
+        if daozai::material::report_run_failure(&result)
+            && diagnostics::spawn_replacement_with_args(&[daozai::material::FALLBACK_ARG])
+        {
+            return Ok(());
+        }
+        result
+    })
 }

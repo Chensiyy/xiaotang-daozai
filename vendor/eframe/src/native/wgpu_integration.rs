@@ -174,15 +174,41 @@ impl<'app> WgpuWinitApp<'app> {
         Ok(())
     }
 
-    fn init_run_state(
+    fn create_root_window(
         &mut self,
-        egui_ctx: egui::Context,
+        egui_ctx: &egui::Context,
         event_loop: &ActiveEventLoop,
-        storage: Option<Box<dyn Storage>>,
+        builder: &ViewportBuilder,
+        settings: Option<egui_winit::WindowSettings>,
+    ) -> Result<(Arc<Window>, egui_wgpu::winit::Painter)> {
+        #[cfg(all(windows, feature = "direct-composition"))]
+        if self.native_options.wgpu_options.direct_composition {
+            let attempt = (|| {
+                let window =
+                    egui_winit::create_window_without_redirection(egui_ctx, event_loop, builder)?;
+                epi_integration::apply_window_settings(&window, settings);
+                self.attach_root_window(egui_ctx, window)
+            })();
+            match attempt {
+                Ok(window_and_painter) => return Ok(window_and_painter),
+                Err(error) => {
+                    // 重建带重定向位图的窗口。普通 HWND 交换链依赖这块位图。
+                    egui_wgpu::winit::record_direct_composition_error(error.to_string());
+                    self.native_options.wgpu_options.direct_composition = false;
+                }
+            }
+        }
+
+        let window = egui_winit::create_window(egui_ctx, event_loop, builder)?;
+        epi_integration::apply_window_settings(&window, settings);
+        self.attach_root_window(egui_ctx, window)
+    }
+
+    fn attach_root_window(
+        &self,
+        egui_ctx: &egui::Context,
         window: Window,
-        builder: ViewportBuilder,
-    ) -> crate::Result<&mut WgpuWinitRunning<'app>> {
-        profiling::function_scope!();
+    ) -> Result<(Arc<Window>, egui_wgpu::winit::Painter)> {
         #[allow(unsafe_code, unused_mut, unused_unsafe)]
         let mut painter = pollster::block_on(egui_wgpu::winit::Painter::new(
             egui_ctx.clone(),
@@ -202,6 +228,29 @@ impl<'app> WgpuWinitApp<'app> {
             profiling::scope!("set_window");
             pollster::block_on(painter.set_window(ViewportId::ROOT, Some(window.clone())))?;
         }
+
+        Ok((window, painter))
+    }
+
+    fn init_run_state(
+        &mut self,
+        egui_ctx: egui::Context,
+        event_loop: &ActiveEventLoop,
+        storage: Option<Box<dyn Storage>>,
+    ) -> crate::Result<&mut WgpuWinitRunning<'app>> {
+        profiling::function_scope!();
+
+        let window_settings = epi_integration::load_window_settings(storage.as_deref());
+        let builder = epi_integration::viewport_builder(
+            egui_ctx.zoom_factor(),
+            event_loop,
+            &mut self.native_options,
+            window_settings,
+        )
+        .with_visible(false); // 先渲染首帧，避免启动时白闪。
+
+        let (window, painter) =
+            self.create_root_window(&egui_ctx, event_loop, &builder, window_settings)?;
 
         let wgpu_render_state = painter.render_state();
 
@@ -405,13 +454,7 @@ impl WinitApp for WgpuWinitApp<'_> {
                 )
             };
             let egui_ctx = winit_integration::create_egui_context(storage.as_deref());
-            let (window, builder) = create_window(
-                &egui_ctx,
-                event_loop,
-                storage.as_deref(),
-                &mut self.native_options,
-            )?;
-            self.init_run_state(egui_ctx, event_loop, storage, window, builder)?
+            self.init_run_state(egui_ctx, event_loop, storage)?
         };
 
         let viewport = &running.shared.borrow().viewports[&ViewportId::ROOT];
@@ -464,7 +507,17 @@ impl WinitApp for WgpuWinitApp<'_> {
         self.initialized_all_windows(event_loop);
 
         if let Some(running) = &mut self.running {
-            Ok(running.on_window_event(window_id, &event))
+            let result = running.on_window_event(window_id, &event);
+            #[cfg(all(windows, feature = "direct-composition"))]
+            if let Some(error) = running
+                .shared
+                .borrow_mut()
+                .painter
+                .take_direct_composition_error()
+            {
+                return Err(error.into());
+            }
+            Ok(result)
         } else {
             Ok(EventResult::Wait)
         }
@@ -712,6 +765,10 @@ impl WgpuWinitRunning<'_> {
             &textures_delta,
             screenshot_commands,
         );
+        #[cfg(all(windows, feature = "direct-composition"))]
+        if let Some(error) = painter.take_direct_composition_error() {
+            return Err(error.into());
+        }
 
         for action in viewport.actions_requested.drain() {
             match action {
@@ -928,28 +985,6 @@ impl Viewport {
             }
         }
     }
-}
-
-fn create_window(
-    egui_ctx: &egui::Context,
-    event_loop: &ActiveEventLoop,
-    storage: Option<&dyn Storage>,
-    native_options: &mut NativeOptions,
-) -> Result<(Window, ViewportBuilder), winit::error::OsError> {
-    profiling::function_scope!();
-
-    let window_settings = epi_integration::load_window_settings(storage);
-    let viewport_builder = epi_integration::viewport_builder(
-        egui_ctx.zoom_factor(),
-        event_loop,
-        native_options,
-        window_settings,
-    )
-    .with_visible(false); // Start hidden until we render the first frame to fix white flash on startup (https://github.com/emilk/egui/pull/3631)
-
-    let window = egui_winit::create_window(egui_ctx, event_loop, &viewport_builder)?;
-    epi_integration::apply_window_settings(&window, window_settings);
-    Ok((window, viewport_builder))
 }
 
 fn render_immediate_viewport(

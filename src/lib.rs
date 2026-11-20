@@ -40,6 +40,8 @@ pub mod side_dock;
 mod task_picker;
 pub mod model;
 pub mod renderer;
+#[cfg(all(windows, feature = "sdk-material"))]
+pub mod material;
 pub mod otp;
 pub mod quota;
 mod quota_ui;
