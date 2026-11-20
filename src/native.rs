@@ -261,7 +261,9 @@ unsafe extern "system" fn subclass(
     _id: usize,
     _data: usize,
 ) -> LRESULT {
-    if msg==WM_DISPLAYCHANGE {DISPLAY_CHANGED.store(true,Ordering::Relaxed);}
+    if msg==WM_DISPLAYCHANGE || (msg==WM_SETTINGCHANGE && wp.0==SPI_SETWORKAREA.0 as usize) {
+        DISPLAY_CHANGED.store(true,Ordering::Relaxed);
+    }
     if matches!(msg,WM_DWMCOMPOSITIONCHANGED|WM_DISPLAYCHANGE|WM_DWMCOLORIZATIONCOLORCHANGED)
         || (msg==WM_SHOWWINDOW && wp.0!=0) {
         // 隐藏创建到首次显示、隐藏后恢复时也要恢复透明；等框架处理完窗口状态再应用。

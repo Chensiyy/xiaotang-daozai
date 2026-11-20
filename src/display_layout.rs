@@ -48,6 +48,15 @@ pub(crate) fn drag_target<'a>(displays:&'a [Display],active:&'a Display,point:(i
 impl Display {
     /// 常显任务栏以本屏工作区为准。自动隐藏时，留出系统唤出热区。
     pub fn bottom_edge(&self)->i32 {
+        let resting=self.resting_bottom_edge();
+        #[cfg(windows)]
+        if self.auto_bottom!=0 {
+            return self.visible_bottom_bar_top(resting).unwrap_or(resting);
+        }
+        resting
+    }
+
+    fn resting_bottom_edge(&self)->i32 {
         if self.auto_bottom!=0 {self.bounds.bottom-(3.0*self.scale(1.0)).ceil() as i32}
         else if self.work.bottom>self.bounds.top && self.work.bottom<=self.bounds.bottom {self.work.bottom}
         else {self.bounds.bottom}
@@ -66,27 +75,27 @@ impl Display {
     }
 
     #[cfg(windows)]
-    pub fn bottom_bar_revealed(&self)->bool {
+    fn visible_bottom_bar_top(&self,resting:i32)->Option<i32> {
         use windows::Win32::{Foundation::{HWND,POINT,RECT},UI::WindowsAndMessaging::{GetWindowRect,IsWindowVisible,WindowFromPoint,GetAncestor,GA_ROOT}};
-        if self.auto_bottom==0 {return false;}
         let hwnd=HWND(self.auto_bottom as _);
         let mut r=RECT::default();
         unsafe {
             if !IsWindowVisible(hwnd).as_bool() || GetWindowRect(hwnd,&mut r).is_err() ||
-                !self.bottom_bar_overlaps(Bounds{left:r.left,top:r.top,right:r.right,bottom:r.bottom}) {return false;}
+                !self.bottom_bar_overlaps(Bounds{left:r.left,top:r.top,right:r.right,bottom:r.bottom}) {return None;}
             // Explorer 有时保留原窗口矩形。沿任务栏取样，避免被岛体遮住的单点造成反复显隐。
             let left=r.left.max(self.bounds.left);
             let right=r.right.min(self.bounds.right)-1;
-            let y=self.bottom_edge()-1;
+            let y=resting-1;
             let inset=8.min((right-left)/2);
             [left+inset,left+(right-left)/2,right-inset].into_iter()
                 .any(|x|GetAncestor(WindowFromPoint(POINT{x,y}),GA_ROOT)==hwnd)
+                .then_some(r.top)
         }
     }
 
     fn bottom_bar_overlaps(&self,bar:Bounds)->bool {
         self.auto_bottom!=0 && bar.left<self.bounds.right && bar.right>self.bounds.left &&
-            bar.bottom>=self.bottom_edge() && bar.top<self.bottom_edge()
+            bar.top>=self.bounds.top && bar.bottom>=self.resting_bottom_edge() && bar.top<self.resting_bottom_edge()
     }
     pub fn scale(&self,zoom:f32)->f32 {self.dpi as f32/96.0*zoom}
 }
@@ -286,10 +295,10 @@ mod bottom_dock_tests {
     }
 
     #[test]
-    fn autohide_reserves_trigger_strip_and_yields_only_when_revealed() {
+    fn autohide_reserves_trigger_strip_and_detects_partial_reveal() {
         let bounds=Bounds{left:0,top:0,right:2560,bottom:1440};
         let display=screen(bounds,Bounds{bottom:1438,..bounds},1);
-        let edge=display.dock_bounds(Dock::Bottom,false).bottom;
+        let edge=display.resting_bottom_edge();
         assert_eq!(edge,1435);
         for (top,overlap) in [(1438,false),(edge,false),(edge-1,true),(1368,true),(1438,false)] {
             assert_eq!(display.bottom_bar_overlaps(Bounds{top,bottom:top+72,..bounds}),overlap);
@@ -299,7 +308,7 @@ mod bottom_dock_tests {
 
     #[cfg(windows)]
     #[test]
-    fn bottom_dock_autohide_window_releases_and_restores_the_island() {
+    fn bottom_dock_follows_taskbar_on_every_reveal_and_retraction() {
         use windows::{core::w,Win32::UI::WindowsAndMessaging::*};
         let work=connected().into_iter().find(|d|d.primary).unwrap().work;
         // 用临时原生栏覆盖一小段测试边界，验证窗口显隐与真实命中，无需修改系统任务栏。
@@ -309,13 +318,20 @@ mod bottom_dock_tests {
                 WS_POPUP,b.left,b.bottom-24,b.right-b.left,24,None,None,None,None).unwrap();
             let display=screen(b,b,hwnd.0 as usize);
             let _=ShowWindow(hwnd,SW_SHOWNOACTIVATE);
-            let revealed=display.bottom_bar_revealed();
-            SetWindowPos(hwnd,None,b.left,b.bottom-2,0,0,SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE).unwrap();
-            let retracted=display.bottom_bar_revealed();
+            let anchor=||{
+                let bounds=display.dock_bounds(Dock::Bottom,false);
+                let (_,y)=horizontal_origin(bounds,Dock::Bottom,1.5,0.0).unwrap();
+                y+(crate::app::WIN_H*1.5).round() as i32
+            };
+            let mut anchors=vec![anchor()];
+            for depth in [12,2,12,24] {
+                SetWindowPos(hwnd,None,b.left,b.bottom-depth,0,0,SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE).unwrap();
+                anchors.push(anchor());
+            }
             let _=ShowWindow(hwnd,SW_HIDE);
-            let hidden=display.bottom_bar_revealed();
+            anchors.push(anchor());
             DestroyWindow(hwnd).unwrap();
-            assert!(revealed && !retracted && !hidden);
+            assert_eq!(anchors,[24,12,5,12,24,5].map(|depth|b.bottom-depth));
         }
     }
 
