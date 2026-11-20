@@ -737,6 +737,10 @@ pub struct App {
     pub capture_exclusion_request: Option<bool>,
     /// 截图和录屏隐藏未能生效时，在设置中显示原因。
     pub capture_exclusion_error: Option<String>,
+    #[cfg(all(windows, feature = "sdk-material"))]
+    pub material_capture_forced: bool,
+    #[cfg(all(windows, feature = "sdk-material"))]
+    pub material_active_id: Option<String>,
     /// 本次运行实际使用兼容渲染（Direct3D 12）；设置里的开关与它不同时提示重启。
     pub render_compat_running: bool,
     pub(crate) todos: model::TodoList,
@@ -968,6 +972,10 @@ impl App {
             settings,
             capture_exclusion_request: None,
             capture_exclusion_error: None,
+            #[cfg(all(windows, feature = "sdk-material"))]
+            material_capture_forced: false,
+            #[cfg(all(windows, feature = "sdk-material"))]
+            material_active_id: None,
             todos: model::TodoList::load(),
             water: model::Water::default(),
             shelf: model::Shelf::load(),
@@ -1078,6 +1086,16 @@ impl App {
             updates: crate::updates::State::load(model::config_dir().join("update-check.json")),
             performance: Default::default(), resident: Default::default(), resident_power:(None,false),
         }
+    }
+
+    #[cfg(all(windows, feature = "sdk-js", feature = "sdk-material"))]
+    pub fn material_spec(&self) -> Option<crate::sdk_spike::local::MaterialSpec<'_>> {
+        self.plugins.active_material()
+    }
+
+    #[cfg(all(windows, feature = "sdk-js", feature = "sdk-material"))]
+    pub fn deactivate_material(&mut self) -> Result<(), String> {
+        self.plugins.activate_material(None, false).map_err(|error| error.to_string())
     }
 
     pub fn say(&mut self, msg: impl Into<String>) {
@@ -2202,8 +2220,8 @@ impl App {
         #[cfg(all(windows, feature = "sdk-material"))]
         let material_layer = env.material_active.then(|| {
             let radius=if pill {radius.min(body.width().min(body.height())*0.5)} else {radius};
-            let notch=(!pill).then_some((flare,flare_h,dock));
-            crate::material::Layer::reserve(&painter, ui.max_rect(), body, radius, pc, notch, self.music_artwork.as_ref())
+            let notch=(!pill).then_some((flare,flare_h));
+            crate::material::Layer::reserve(&painter, ui.max_rect(), body, radius, pc, notch, dock, self.music_artwork.as_ref())
         });
         if lifted > 0.01 {self.paint_lift_halo(&painter, body, flare, flare_h, radius, lifted.min(1.0));}
         let arrival=1.0-smoothstep(0.0,0.12,(self.t-self.crossed_at) as f32);

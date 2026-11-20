@@ -29,7 +29,8 @@
       "enum": [
         "js",
         "wasm",
-        "assets"
+        "assets",
+        "material"
       ]
     },
     "entry": {
@@ -61,6 +62,7 @@
           "lyrics.source",
           "quota.source",
           "appearance.skin",
+          "appearance.material",
           "storage",
           "timer",
           "event",
@@ -117,9 +119,29 @@
         },
         "notifications": {
           "type": "boolean"
+        },
+        "screen.backdrop": {
+          "const": true
         }
       },
       "required": [],
+      "additionalProperties": false
+    },
+    "material": {
+      "type": "object",
+      "properties": {
+        "controls": {"type": "boolean"},
+        "spring": {
+          "type": "object",
+          "properties": {
+            "stiffness": {"type": "number", "minimum": 0.2, "maximum": 3},
+            "damping": {"type": "number", "minimum": 0.1, "maximum": 1}
+          },
+          "required": ["stiffness", "damping"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["controls", "spring"],
       "additionalProperties": false
     },
     "settings": {
@@ -210,13 +232,17 @@
                 "const": "number"
               },
               "default": {
-                "type": "number"
+                "type": ["number", "string"]
               },
               "min": {
                 "type": "number"
               },
               "max": {
                 "type": "number"
+              },
+              "step": {
+                "type": "number",
+                "exclusiveMinimum": 0
               }
             },
             "required": [
@@ -315,6 +341,50 @@
   ],
   "additionalProperties": false,
   "allOf": [
+    {
+      "if": {"properties": {"runtime": {"const": "material"}}},
+      "then": {
+        "required": ["entry", "material", "settings"],
+        "properties": {
+          "owner": {"const": "appearance"},
+          "dataVersion": {"const": 1},
+          "entry": {"pattern": "^(?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_-]+\\.wgsl$"},
+          "capabilities": {
+            "items": {"enum": ["appearance.material", "settings"]},
+            "contains": {"const": "appearance.material"}
+          },
+          "permissions": {
+            "required": ["screen.backdrop"],
+            "maxProperties": 1
+          },
+          "settings": {
+            "items": {
+              "properties": {
+                "type": {"const": "number"},
+                "default": {"type": "string", "pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$"}
+              },
+              "required": ["min", "max", "step"]
+            }
+          }
+        },
+        "not": {"anyOf": [{"required": ["assets"]}, {"required": ["actions"]}]},
+        "if": {"properties": {"settings": {"minItems": 1}}},
+        "then": {"properties": {"capabilities": {"contains": {"const": "settings"}}}}
+      },
+      "else": {
+        "not": {"required": ["material"]},
+        "properties": {
+          "capabilities": {"not": {"contains": {"const": "appearance.material"}}},
+          "permissions": {"not": {"required": ["screen.backdrop"]}},
+          "settings": {
+            "items": {
+              "if": {"properties": {"type": {"const": "number"}}},
+              "then": {"properties": {"default": {"type": "number"}}}
+            }
+          }
+        }
+      }
+    },
     {
       "if": {
         "properties": {

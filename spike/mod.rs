@@ -1,6 +1,8 @@
 //! 独立验证入口；仅在显式打开运行环境 feature 时编译。
 mod engines;
 #[cfg(feature="sdk-js")] pub(crate) mod local;
+#[cfg(all(windows, feature="sdk-js", feature="sdk-material"))]
+pub use local::LocalPlugins;
 mod ui;
 use chrono::{Datelike, Local, NaiveDate};
 use engines::{Bridge, Engine};

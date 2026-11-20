@@ -12,6 +12,10 @@ use std::{
     time::{Duration, Instant},
 };
 
+const MATERIAL_SOURCE_LIMIT: u64 = 64 * 1024;
+const SCRIPT_SOURCE_LIMIT: u64 = 256 * 1024;
+const BACKDROP_PERMISSION: &str = "screen.backdrop";
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Field {
@@ -20,6 +24,24 @@ struct Field {
     #[serde(rename = "type")]
     kind: String,
     default: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    min: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    max: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    step: Option<f32>,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Material {
+    controls: bool,
+    spring: MaterialSpring,
+}
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MaterialSpring {
+    stiffness: f32,
+    damping: f32,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
@@ -38,6 +60,8 @@ struct Manifest {
     settings: Vec<Field>,
     #[serde(default = "default_refresh")]
     refresh_seconds: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    material: Option<Material>,
 }
 fn default_refresh() -> u32 {
     60
@@ -55,6 +79,42 @@ struct Record {
     enabled: bool,
     values: Values,
     storage: Value,
+    #[serde(default)]
+    material_granted: bool,
+}
+
+impl Record {
+    fn valid(&self, id: &str) -> bool {
+        self.package.as_ref().is_none_or(|package| {
+            let manifest = &package.manifest;
+            manifest.id == id
+                && manifest.validate().is_ok()
+                && !package.source.trim().is_empty()
+                && package.source.len() as u64 <= manifest.source_limit()
+                && manifest.settings.iter().all(|field| {
+                    self.values
+                        .get(&field.key)
+                        .is_some_and(|value| valid_field(field, value))
+                })
+        })
+    }
+
+    #[cfg(feature = "sdk-material")]
+    fn material_package(&self) -> Option<&Package> {
+        self.package
+            .as_ref()
+            .filter(|package| package.manifest.is_material())
+    }
+}
+
+#[cfg(feature = "sdk-material")]
+pub struct MaterialSpec<'a> {
+    pub id: &'a str,
+    pub source: &'a str,
+    pub controls: bool,
+    pub stiffness: f32,
+    pub damping: f32,
+    pub params: [f32; 32],
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -85,22 +145,45 @@ fn valid_id(id: &str) -> bool {
 }
 fn valid_field(f: &Field, v: &str) -> bool {
     match f.kind.as_str() {
-        "text" => !v.trim().is_empty() && v.chars().count() <= 80,
-        "date" => {
+        "text" if f.min.is_none() && f.max.is_none() && f.step.is_none() => {
+            !v.trim().is_empty() && v.chars().count() <= 80
+        }
+        "date" if f.min.is_none() && f.max.is_none() && f.step.is_none() => {
             chrono::NaiveDate::parse_from_str(v, "%Y-%m-%d").is_ok_and(|d| d.to_string() == v)
+        }
+        "number" => {
+            let (Some(min), Some(max), Some(step)) = (f.min, f.max, f.step) else {
+                return false;
+            };
+            let width = max - min;
+            width.is_finite()
+                && step > 0.0
+                && step <= width
+                && v.parse::<f32>()
+                    .is_ok_and(|number| number.is_finite() && (min..=max).contains(&number))
         }
         _ => false,
     }
 }
 impl Manifest {
+    fn is_material(&self) -> bool {
+        self.runtime == "material"
+    }
+
+    fn source_limit(&self) -> u64 {
+        if self.is_material() {
+            MATERIAL_SOURCE_LIMIT
+        } else {
+            SCRIPT_SOURCE_LIMIT
+        }
+    }
+
     fn validate(&self) -> Result<()> {
         let m = self;
         if !valid_id(&m.id)
             || !(60..=86400).contains(&m.refresh_seconds)
             || m.api != 1
             || m.data_version != 1
-            || m.runtime != "js"
-            || m.owner != "tasks"
             || m.name.trim().is_empty()
             || m.name.chars().count() > 80
             || m.author.trim().is_empty()
@@ -110,6 +193,37 @@ impl Manifest {
                 .version
                 .split('.')
                 .all(|v| v.parse::<u32>().is_ok_and(|n| n.to_string() == v))
+        {
+            return Err(fail("请核对插件 ID、作者、版本和 API 版本"));
+        }
+        let material = m.is_material();
+        if material {
+            if m.owner != "appearance"
+                || m.permissions.len() != 1
+                || m.permissions
+                    .get(BACKDROP_PERMISSION)
+                    .and_then(Value::as_bool)
+                    != Some(true)
+                || m.capabilities
+                    .iter()
+                    .filter(|c| c.as_str() == "appearance.material")
+                    .count()
+                    != 1
+                || m.capabilities.len() > 2
+                || !m
+                    .capabilities
+                    .iter()
+                    .all(|c| matches!(c.as_str(), "appearance.material" | "settings"))
+                || !m.material.as_ref().is_some_and(|material| {
+                    (0.2..=3.0).contains(&material.spring.stiffness)
+                        && (0.1..=1.0).contains(&material.spring.damping)
+                })
+            {
+                return Err(fail("请核对材质归属、屏幕底片权限、能力和弹簧参数"));
+            }
+        } else if m.runtime != "js"
+            || m.owner != "tasks"
+            || m.material.is_some()
             || !m.permissions.is_empty()
             || !m.capabilities.iter().any(|c| c == "card")
             || !m
@@ -117,15 +231,14 @@ impl Manifest {
                 .iter()
                 .all(|c| matches!(c.as_str(), "card" | "settings" | "timer" | "storage"))
         {
-            return Err(fail(
-                "仅支持本地 v1 待办卡片、无外部权限的 JS 包，请核对清单",
-            ));
+            return Err(fail("仅支持本地 v1 待办卡片和材质插件，请核对清单"));
         }
         let mut keys = std::collections::BTreeSet::new();
         if m.settings.len() > 32
             || (!m.settings.is_empty() && !m.capabilities.iter().any(|c| c == "settings"))
             || !m.settings.iter().all(|f| {
-                valid_field(f, &f.default)
+                (f.kind == "number") == material
+                    && valid_field(f, &f.default)
                     && !f.label.trim().is_empty()
                     && f.label.chars().count() <= 80
                     && f.key.starts_with(|c: char| c.is_ascii_lowercase())
@@ -146,17 +259,55 @@ impl Manifest {
         };
         if !m
             .entry
-            .strip_suffix(".js")
+            .strip_suffix(if material { ".wgsl" } else { ".js" })
             .is_some_and(|name| name.split('/').all(allowed_name))
             || !entry
                 .components()
                 .all(|c| matches!(c, Component::Normal(_)))
         {
-            return Err(fail("脚本入口必须在插件目录内"));
+            return Err(fail("插件入口文件的类型或路径不符合清单要求"));
         }
         Ok(())
     }
 }
+
+fn validate_material_files(dir: &Path, manifest: &Path, shader: &Path) -> Result<()> {
+    let mut folders = vec![dir.to_path_buf()];
+    while let Some(folder) = folders.pop() {
+        for item in fs::read_dir(folder)? {
+            let item = item?;
+            let path = item.path();
+            let kind = item.file_type()?;
+            if kind.is_symlink() || path.canonicalize()? != path {
+                return Err(fail("材质包内不能包含链接或重定向路径"));
+            }
+            if kind.is_dir() {
+                folders.push(path);
+                continue;
+            }
+            let description = path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| {
+                    matches!(ext.to_ascii_lowercase().as_str(), "md" | "txt" | "rst")
+                })
+                || path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| {
+                        matches!(
+                            name.to_ascii_uppercase().as_str(),
+                            "README" | "LICENSE" | "COPYING" | "NOTICE" | "CHANGELOG"
+                        )
+                    });
+            if !kind.is_file() || (path != shader && path != manifest && !description) {
+                return Err(fail("材质包只能包含 plugin.json、一个 WGSL 入口和说明文件"));
+            }
+        }
+    }
+    Ok(())
+}
+
 impl Package {
     fn read(path: &Path) -> Result<Self> {
         let manifest: Manifest = serde_json::from_str(&bounded(path, 32 * 1024)?)?;
@@ -167,12 +318,18 @@ impl Package {
             .ok_or_else(|| fail("缺少包目录"))?
             .canonicalize()?;
         let resolved = base.join(entry).canonicalize()?;
-        if !resolved.starts_with(base) || !resolved.is_file() {
+        if !resolved.starts_with(&base) || !resolved.is_file() {
             return Err(fail("入口越出插件目录"));
         }
-        let source = bounded(&resolved, 256 * 1024)?;
+        if manifest.is_material() {
+            if path.file_name().and_then(|name| name.to_str()) != Some("plugin.json") {
+                return Err(fail("材质清单必须命名为 plugin.json"));
+            }
+            validate_material_files(&base, &base.join("plugin.json"), &resolved)?;
+        }
+        let source = bounded(&resolved, manifest.source_limit())?;
         if source.trim().is_empty() {
-            return Err(fail("入口脚本为空"));
+            return Err(fail("插件入口文件为空"));
         }
         Ok(Self { source, manifest })
     }
@@ -231,12 +388,16 @@ pub struct LocalPlugins {
     focus: Option<String>,
     drafts: BTreeMap<String, Values>,
     card_index: usize,
+    #[cfg(feature = "sdk-material")]
+    selected_material: Option<String>,
 }
 impl LocalPlugins {
     pub fn open(dir: PathBuf) -> Self {
         let mut s = Self {
             jobs: BTreeMap::new(),
             invalid: Default::default(),
+            #[cfg(feature = "sdk-material")]
+            selected_material: Self::read_material_id(&dir),
             dir,
             records: BTreeMap::new(),
             cards: BTreeMap::new(),
@@ -266,18 +427,7 @@ impl LocalPlugins {
                 let parsed = bounded(&p, 2 * 1024 * 1024)
                     .ok()
                     .and_then(|v| serde_json::from_str::<Record>(&v).ok());
-                let valid = parsed.as_ref().is_some_and(|r| {
-                    r.package.as_ref().is_none_or(|p| {
-                        p.manifest.id == id
-                            && p.manifest.validate().is_ok()
-                            && !p.source.trim().is_empty()
-                            && p.source.len() <= 256 * 1024
-                            && p.manifest
-                                .settings
-                                .iter()
-                                .all(|f| r.values.get(&f.key).is_some_and(|v| valid_field(f, v)))
-                    })
-                });
+                let valid = parsed.as_ref().is_some_and(|r| r.valid(id));
                 if valid {
                     s.records.insert(id.into(), parsed.unwrap());
                 } else {
@@ -299,6 +449,111 @@ impl LocalPlugins {
         self.records.insert(id.into(), r);
         Ok(())
     }
+
+    #[cfg(feature = "sdk-material")]
+    fn read_material_id(dir: &Path) -> Option<String> {
+        let text = bounded(&dir.join("active-material.json"), 128).ok()?;
+        serde_json::from_str::<Option<String>>(&text)
+            .ok()?
+            .filter(|id| valid_id(id))
+    }
+
+    #[cfg(feature = "sdk-material")]
+    pub fn startup_material(dir: &Path) -> bool {
+        Self::read_material_id(dir).is_some_and(|id| {
+            bounded(&dir.join(format!("local-{id}.json")), 2 * 1024 * 1024)
+                .ok()
+                .and_then(|text| serde_json::from_str::<Record>(&text).ok())
+                .is_some_and(|record| {
+                    record.material_granted
+                        && record.material_package().is_some()
+                        && record.valid(&id)
+                })
+        })
+    }
+
+    #[cfg(feature = "sdk-material")]
+    pub fn selected_material_id(&self) -> Option<&str> {
+        self.selected_material
+            .as_deref()
+            .filter(|id| self.material_permission_granted(id))
+    }
+
+    #[cfg(feature = "sdk-material")]
+    pub fn material_permission_granted(&self, id: &str) -> bool {
+        self.records
+            .get(id)
+            .is_some_and(|record| record.material_granted && record.material_package().is_some())
+    }
+
+    #[cfg(feature = "sdk-material")]
+    pub fn activate_material(&mut self, id: Option<&str>, grant: bool) -> Result<()> {
+        if let Some(id) = id {
+            let mut record = self.installed(id)?;
+            if record.material_package().is_none() {
+                return Err(fail("所选插件不提供 GPU 材质"));
+            }
+            if !record.material_granted {
+                if !grant {
+                    return Err(fail("请先确认读取岛体背后屏幕画面的权限"));
+                }
+                record.material_granted = true;
+                self.put(id, record)?;
+            }
+        }
+        if self.selected_material.as_deref() != id {
+            crate::model::atomic_write(
+                &self.dir.join("active-material.json"),
+                &serde_json::to_vec(&id)?,
+            )?;
+            self.selected_material = id.map(str::to_owned);
+        }
+        Ok(())
+    }
+
+    #[cfg(feature = "sdk-material")]
+    pub fn active_material(&self) -> Option<MaterialSpec<'_>> {
+        let id = self.selected_material_id()?;
+        let record = self.records.get(id)?;
+        let package = record.material_package()?;
+        let material = package.manifest.material.as_ref()?;
+        let mut params = [0.0; 32];
+        for (param, field) in params.iter_mut().zip(&package.manifest.settings) {
+            *param = record.values.get(&field.key)?.parse().ok()?;
+        }
+        Some(MaterialSpec {
+            id,
+            source: &package.source,
+            controls: material.controls,
+            stiffness: material.spring.stiffness,
+            damping: material.spring.damping,
+            params,
+        })
+    }
+
+    #[cfg(feature = "sdk-material")]
+    pub fn set_material_parameter(&mut self, id: &str, key: &str, value: f32) -> Result<()> {
+        let mut record = self.installed(id)?;
+        let field = record
+            .material_package()
+            .and_then(|package| {
+                package
+                    .manifest
+                    .settings
+                    .iter()
+                    .find(|field| field.key == key)
+            })
+            .ok_or_else(|| fail("找不到该材质参数"))?;
+        let value = value.to_string();
+        if !valid_field(field, &value) {
+            return Err(fail("材质参数超出有效范围"));
+        }
+        if record.values.get(key) != Some(&value) {
+            record.values.insert(key.to_owned(), value);
+            self.put(id, record)?;
+        }
+        Ok(())
+    }
     fn forget_view(&mut self, id: &str) {
         if let Some(job) = self.jobs.get_mut(id) {
             job.valid = false;
@@ -311,6 +566,9 @@ impl LocalPlugins {
     pub(crate) fn install(&mut self, path: &Path) -> Result<()> {
         let path = path.canonicalize()?;
         let pkg = Package::read(&path)?;
+        if !cfg!(all(windows, feature = "sdk-material")) && pkg.manifest.is_material() {
+            return Err(fail("当前版本未启用 Windows GPU 材质支持"));
+        }
         let id = pkg.manifest.id.clone();
         let mut record = Record {
             origin: path.clone(),
@@ -318,6 +576,7 @@ impl LocalPlugins {
             enabled: false,
             package: None,
             storage: Value::Null,
+            material_granted: false,
         };
         if let Some(old) = self.records.get(&id) {
             if old.package.is_some() {
@@ -358,6 +617,16 @@ impl LocalPlugins {
     }
     pub(crate) fn enable(&mut self, id: &str, on: bool) -> Result<()> {
         let mut r = self.installed(id)?;
+        if r.package.as_ref().unwrap().manifest.is_material() {
+            #[cfg(feature = "sdk-material")]
+            if on || self.selected_material_id() == Some(id) {
+                return self.activate_material(on.then_some(id), false);
+            } else {
+                return Ok(());
+            }
+            #[cfg(not(feature = "sdk-material"))]
+            return Err(fail("当前版本未启用 GPU 材质支持"));
+        }
         r.enabled = on;
         self.put(id, r)?;
         self.forget_view(id);
@@ -383,9 +652,14 @@ impl LocalPlugins {
     }
     fn uninstall(&mut self, id: &str, keep: bool) -> Result<()> {
         let mut r = self.installed(id)?;
+        #[cfg(feature = "sdk-material")]
+        if self.selected_material.as_deref() == Some(id) {
+            self.activate_material(None, false)?;
+        }
         if keep {
             r.package = None;
             r.enabled = false;
+            r.material_granted = false;
             self.put(id, r)?
         } else {
             fs::remove_file(self.path(id))?;
@@ -447,9 +721,10 @@ impl LocalPlugins {
                 !self.jobs.contains_key(*id)
                     && r.enabled
                     && r.package.as_ref().is_some_and(|pkg| {
-                        self.next.get(*id).is_none_or(|t| {
-                            *t <= now && pkg.manifest.capabilities.iter().any(|c| c == "timer")
-                        })
+                        !pkg.manifest.is_material()
+                            && self.next.get(*id).is_none_or(|t| {
+                                *t <= now && pkg.manifest.capabilities.iter().any(|c| c == "timer")
+                            })
                     })
             })
             .map(|(id, _)| id.clone())

@@ -55,11 +55,22 @@ fn forced_compatible()->bool {
 pub fn run(options:eframe::NativeOptions,launch:impl FnMut(eframe::NativeOptions)->eframe::Result<()>)->eframe::Result<()> {
     // 上次崩在显卡 OpenGL 驱动里时，崩溃处理留下的标记会在这里转成设置。
     let _=daozai::renderer::apply_pending_fallback();
-    let compat_first=forced_compatible() || daozai::renderer::compat_requested();
+    let forced=forced_compatible();
+    #[cfg(all(windows, feature = "sdk-js", feature = "sdk-material"))]
+    let compat_enabled=daozai::renderer::compat_requested();
+    #[cfg(not(all(windows, feature = "sdk-js", feature = "sdk-material")))]
+    let compat_enabled=!forced && daozai::renderer::compat_requested();
+    let compat_first=forced || compat_enabled;
     #[cfg(all(windows, feature = "sdk-material"))]
     let options={
         let mut options=options;
-        daozai::material::configure_startup(&mut options,compat_first,daozai::material::debug_requested());
+        let debug=daozai::material::debug_requested();
+        #[cfg(feature="sdk-js")]
+        let installed=compat_enabled && !daozai::material::falling_back() && !debug
+            && daozai::sdk_spike::LocalPlugins::startup_material(&daozai::model::config_dir().join("local-plugins"));
+        #[cfg(not(feature="sdk-js"))]
+        let installed=false;
+        daozai::material::configure_startup(&mut options,compat_first,debug || installed);
         options
     };
     run_with(compat_first,options,launch)

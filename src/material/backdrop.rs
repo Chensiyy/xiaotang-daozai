@@ -25,10 +25,6 @@ use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemIntero
 use windows::Win32::System::WinRT::{
     RoInitialize, RoUninitialize, RO_INIT_MULTITHREADED, RO_INIT_SINGLETHREADED,
 };
-use windows::Win32::UI::WindowsAndMessaging::{
-    GetWindowDisplayAffinity, IsWindow, SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE,
-    WINDOW_DISPLAY_AFFINITY,
-};
 
 use super::log;
 
@@ -182,7 +178,6 @@ pub struct CleanPlate {
 #[derive(Default)]
 pub struct Backdrop {
     source: Option<Wgc>,
-    exclusion: Option<CaptureExclusion>,
     topology: Option<Vec<(isize, ScreenRect)>>,
     next_topology_check: Option<Instant>,
     settle_until: Option<Instant>,
@@ -199,11 +194,11 @@ impl Backdrop {
             .filter(|plate| plate.geometry.screen == geometry.screen)
     }
 
-    /// 返回与当前几何对齐的底片。`Ok(None)` 时可继续绘制基础皮肤。
+    /// 原生窗口确认截图排除后，返回与当前几何对齐的底片。
     /// 失败会关闭本次会话，重新启用材质时创建新的 `Backdrop`。
-    pub fn capture(&mut self, hwnd: HWND, geometry: Geometry) -> Result<Option<&CleanPlate>, &str> {
+    pub(super) fn capture(&mut self, geometry: Geometry) -> Result<Option<&CleanPlate>, &str> {
         if self.failed.is_none() {
-            if let Err(error) = self.capture_frame(hwnd, geometry) {
+            if let Err(error) = self.capture_frame(geometry) {
                 log(&format!("抓屏失败，退回基础皮肤：{error}"));
                 self.fail(error);
             }
@@ -216,12 +211,11 @@ impl Backdrop {
 
     fn fail(&mut self, error: String) {
         self.source = None;
-        self.exclusion = None;
         self.plate = None;
         self.failed = Some(error);
     }
 
-    fn capture_frame(&mut self, hwnd: HWND, geometry: Geometry) -> Result<(), String> {
+    fn capture_frame(&mut self, geometry: Geometry) -> Result<(), String> {
         if self
             .plate
             .as_ref()
@@ -264,23 +258,6 @@ impl Backdrop {
             return Ok(());
         };
 
-        if self
-            .exclusion
-            .as_ref()
-            .is_some_and(|exclusion| exclusion.hwnd != hwnd)
-        {
-            self.source = None;
-            self.exclusion = None;
-            self.plate = None;
-        }
-        if self.exclusion.is_none() {
-            self.exclusion = Some(CaptureExclusion::new(hwnd)?);
-        }
-        if self.exclusion.as_ref().unwrap().ensure()? {
-            // 窗口区域或样式变动后，旧帧可能包含岛体，重开会话清空帧池。
-            self.source = None;
-            self.plate = None;
-        }
         if self
             .source
             .as_ref()
@@ -333,51 +310,6 @@ impl Backdrop {
             return Err("WGC 未能提供可用的桌面帧".into());
         }
         Ok(())
-    }
-}
-
-struct CaptureExclusion {
-    hwnd: HWND,
-    original: WINDOW_DISPLAY_AFFINITY,
-}
-
-impl CaptureExclusion {
-    fn new(hwnd: HWND) -> Result<Self, String> {
-        if !crate::native::Window::capture_exclusion_supported() {
-            return Err("截图排除需要 Windows 10 2004 或更新版本".into());
-        }
-        Ok(Self {
-            hwnd,
-            original: WINDOW_DISPLAY_AFFINITY(Self::affinity(hwnd)?),
-        })
-    }
-
-    fn affinity(hwnd: HWND) -> Result<u32, String> {
-        let mut affinity = 0;
-        unsafe { GetWindowDisplayAffinity(hwnd, &mut affinity) }
-            .map_err(|err| format!("读取岛体截图排除：{err}"))?;
-        Ok(affinity)
-    }
-
-    fn ensure(&self) -> Result<bool, String> {
-        if Self::affinity(self.hwnd)? == WDA_EXCLUDEFROMCAPTURE.0 {
-            return Ok(false);
-        }
-        unsafe { SetWindowDisplayAffinity(self.hwnd, WDA_EXCLUDEFROMCAPTURE) }
-            .map_err(|err| format!("启用岛体截图排除：{err}"))?;
-        Ok(true)
-    }
-}
-
-impl Drop for CaptureExclusion {
-    fn drop(&mut self) {
-        if unsafe { IsWindow(self.hwnd) }.as_bool()
-            && Self::affinity(self.hwnd) != Ok(self.original.0)
-        {
-            if let Err(err) = unsafe { SetWindowDisplayAffinity(self.hwnd, self.original) } {
-                log(&format!("恢复岛体截图排除：{err}"));
-            }
-        }
     }
 }
 
@@ -808,7 +740,7 @@ mod tests {
         backdrop.settle_until = backdrop.next_topology_check;
         geometry.screen.width += 1;
         assert!(backdrop
-            .capture(HWND::default(), geometry)
+            .capture(geometry)
             .unwrap()
             .is_none());
     }
@@ -824,7 +756,7 @@ mod tests {
         assert!(backdrop.plate.is_none());
         assert!(backdrop.source.is_none());
         assert!(matches!(
-            backdrop.capture(HWND::default(), geometry),
+            backdrop.capture(geometry),
             Err("测试抓屏失败")
         ));
     }

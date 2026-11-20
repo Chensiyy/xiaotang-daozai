@@ -482,6 +482,18 @@ impl Window {
         self.capture_exclusion.set(desired, targets);
     }
 
+    #[cfg(feature = "sdk-material")]
+    pub fn ensure_material_capture_exclusion(&mut self) -> Result<bool, String> {
+        let targets = self.capture_targets();
+        self.capture_exclusion.ensure(targets)
+    }
+
+    #[cfg(feature = "sdk-material")]
+    pub fn restore_capture_exclusion(&mut self, desired: bool) {
+        let targets = self.capture_targets();
+        self.capture_exclusion.restore(desired, targets);
+    }
+
     pub fn take_capture_exclusion_error(&mut self) -> Option<String> {
         self.capture_exclusion.take_error()
     }

@@ -10,7 +10,7 @@
 - PR #235 原始代码在分支 `test/pr235-liquid-glass`，用 `git show test/pr235-liquid-glass:<路径>` 阅读，或打开只读参考工作树 `D:\daozai-build\tmp\pr235-preview`。不要在参考工作树里改代码或提交。
 - 编译、测试遵守根目录 AGENTS.md：持 `Local\Daozai.Cargo` 锁排队，`CARGO_BUILD_JOBS=1`。release 编译需要 `RUST_MIN_STACK=67108864`。
 - 插件相关代码受 `sdk-js` 特性控制，检查和测试都加 `--features sdk-js`。材质相关新代码放在新的 `sdk-material` 特性后面，测试时两个特性一起开。
-- 设计稿里的接口（清单字段、`Frame` 布局、prelude 函数）是定稿。需要改动时先在回报里说明原因，不要自行改设计稿。
+- 设计稿里的接口（清单字段、`Frame` 布局、prelude 函数）是实验接口，本轮按现有内容实现。需要改动时先在回报里说明原因，不要自行改设计稿。
 - 每个阶段结束：跑完相关测试并提交。在最后一条回复里列出提交号、改动文件、测试命令和结果、没做完或有疑问的地方，交给审查。
 - 是否出包按各阶段说明，不按 AGENTS.md 的默认出包。
 
@@ -63,6 +63,8 @@
 
 目标：材质能作为插件安装、启用、调参和停用。
 
+0. 第 2 阶段审查遗留：停靠方向目前用 `@binding(3)` 的 `DaozaiHost` 传入，插件着色器也能读到它，等于多了一个未写进接口的字段。改为放进 `Frame.count.y`（0 顶部、1 左侧、2 右侧），删除 `binding(3)` 和 `DaozaiHost`，`Frame` 仍为 1024 字节。同步更新设计稿 `Frame` 注释，`prelude.wgsl` 里 `body_sdf` 改读 `frame.count.y`，补一条单元测试确认插件声明 `binding(3)` 也会被拒绝。
+
 1. 清单：
    - `spike/local.rs` 的校验接受 `runtime: "material"`、`owner: "appearance"`、`capabilities` 含 `appearance.material`；
    - 新增 `material` 字段（`controls`、`spring`）和 `number` 设置类型（`min`、`max`、`step`，最多 32 个）；
@@ -114,4 +116,12 @@
    - 插件包通过清单校验并能安装、启用、停用；
    - 着色器通过 naga 校验；
    - 关闭插件后外观回到原皮肤。
-4. 出包：合进 `test/acceptance`，编测试版替换桌面测试版。在回报里写明安装插件包的步骤，让用户在测试版里试用。
+4. 出包：合进 `test/acceptance`，编测试版替换桌面测试版。在回报里写明安装插件包的步骤，让用户在测试版里试用。插件包只用于本机验收，不发布到插件市场。
+5. 接口反馈：回报里单列「接口问题」一节，作为定插件技术规范的依据。写明移植中遇到的不够用或别扭的地方，例如：
+   - 控件 16 块、参数 32 个是否够用；
+   - `Frame` 缺少或多余的字段；
+   - prelude 函数是否需要增减；
+   - 弹簧参数放在清单里是否合适；
+   - 参数滑块的类型和范围表达是否够用。
+   
+   每条写现状、问题和建议，不在本阶段自行改接口。

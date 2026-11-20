@@ -10,7 +10,6 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use eframe::egui::{self, Pos2, Rect};
-use windows::Win32::Foundation::HWND;
 
 use crate::{app::FrameOut, model::Dock};
 use controls::{Controls, Registration};
@@ -70,6 +69,18 @@ pub struct Options {
     pub params: [f32; 32],
 }
 
+#[cfg(feature = "sdk-js")]
+impl From<&crate::sdk_spike::local::MaterialSpec<'_>> for Options {
+    fn from(spec: &crate::sdk_spike::local::MaterialSpec<'_>) -> Self {
+        Self {
+            controls: spec.controls,
+            stiffness: spec.stiffness,
+            damping: spec.damping,
+            params: spec.params,
+        }
+    }
+}
+
 impl Default for Options {
     fn default() -> Self {
         Self {
@@ -88,7 +99,8 @@ pub(crate) struct Layer {
     capture: Rect,
     radius: f32,
     expansion: f32,
-    notch: Option<(f32, f32, Dock)>,
+    notch: Option<(f32, f32)>,
+    dock: Dock,
     artwork: Option<(egui::TextureId, Arc<egui::ColorImage>)>,
 }
 
@@ -99,10 +111,11 @@ impl Layer {
         body: Rect,
         radius: f32,
         expansion: f32,
-        notch: Option<(f32, f32, Dock)>,
+        notch: Option<(f32, f32)>,
+        dock: Dock,
         artwork: Option<&(Arc<egui::ColorImage>, egui::TextureHandle)>,
     ) -> Self {
-        let padding = if notch.is_some_and(|(_, _, dock)| dock.is_side()) {
+        let padding = if dock.is_side() {
             egui::vec2(48.0, 64.0)
         } else {
             egui::vec2(64.0, 48.0)
@@ -115,6 +128,7 @@ impl Layer {
             radius,
             expansion,
             notch,
+            dock,
             artwork: artwork.map(|(image, texture)| (texture.id(), Arc::clone(image))),
         }
     }
@@ -172,6 +186,7 @@ pub struct Runtime {
     pointer: Option<Pos2>,
     screen: Option<ScreenRect>,
     tint: Option<(egui::TextureId, [f32; 3])>,
+    capture_ready: bool,
     has_drawn: bool,
 }
 
@@ -197,6 +212,7 @@ impl Runtime {
             pointer: None,
             screen: None,
             tint: None,
+            capture_ready: false,
             has_drawn: false,
         })
     }
@@ -205,6 +221,20 @@ impl Runtime {
         let material = Self::load(render_state, pipeline::DEBUG_SHADER, Options::default())?;
         log("调试材质已加载");
         Ok(material)
+    }
+
+    pub fn set_options(&mut self, options: Options) {
+        self.options = options;
+    }
+
+    pub fn capture_ready(&self) -> bool {
+        self.capture_ready
+    }
+
+    fn clear_backdrop(&mut self) {
+        self.backdrop = None;
+        self.pipeline.clear_backdrop();
+        self.screen = None;
     }
 
     pub fn draw(&mut self, draw_island: impl FnOnce() -> FrameOut) -> FrameOut {
@@ -219,22 +249,21 @@ impl Runtime {
 
     /// 隐藏或锁屏期间释放桌面捕获，并在恢复后重新定位底片。
     pub fn suspend(&mut self) {
-        if self.backdrop.take().is_some() {
-            self.pipeline.clear_backdrop();
+        if self.backdrop.is_some() {
+            self.clear_backdrop();
             self.controls = Controls::default();
             self.registrations.clear();
             self.cadence = Cadence::default();
             self.budget = Budget::default();
             self.last_frame = None;
             self.pointer = None;
-            self.screen = None;
         }
     }
 
     pub fn finish(
         &mut self,
         ctx: &egui::Context,
-        hwnd: HWND,
+        window: &mut crate::native::Window,
         out: &mut FrameOut,
         time: f64,
         screen_pointer: Option<(i32, i32)>,
@@ -245,10 +274,16 @@ impl Runtime {
         if ctx.will_discard() {
             return Ok(None);
         }
+        let hwnd = window.material_window().ok_or("透明交换链不可用")?;
         if !unsafe { windows::Win32::UI::WindowsAndMessaging::IsWindowVisible(hwnd) }.as_bool() {
             return Ok(Some(Duration::from_millis(20)));
         }
         let started = Instant::now();
+        if window.ensure_material_capture_exclusion()? {
+            // 原生样式恢复后，旧的抓屏会话可能含有岛体画面。
+            self.clear_backdrop();
+        }
+        self.capture_ready = true;
         let ppp = ctx.pixels_per_point();
         let Some((geometry, viewport)) =
             Geometry::for_window(hwnd, layer.body, layer.capture, ppp)?
@@ -257,14 +292,13 @@ impl Runtime {
         };
         let [bx, by, bw, bh] = geometry.body;
         let body_pixels = Rect::from_min_size(egui::pos2(bx, by), egui::vec2(bw, bh));
-        let pointer_in_island = screen_pointer
-            .map(|(x, y)| {
-                egui::pos2(
-                    (x - geometry.screen.x) as f32,
-                    (y - geometry.screen.y) as f32,
-                )
-            })
-            .filter(|&p| body_pixels.contains(p));
+        let pointer = screen_pointer.map(|(x, y)| {
+            egui::pos2(
+                (x - geometry.screen.x) as f32,
+                (y - geometry.screen.y) as f32,
+            )
+        });
+        let pointer_in_island = pointer.filter(|&p| body_pixels.contains(p));
         let moved = self.pointer != pointer_in_island;
         self.pointer = pointer_in_island;
         let dt = self
@@ -292,7 +326,7 @@ impl Runtime {
         {
             self.cadence.last_sample = Some(started);
             self.screen = Some(geometry.screen);
-            backdrop.capture(hwnd, geometry).map_err(str::to_owned)?
+            backdrop.capture(geometry).map_err(str::to_owned)?
         } else {
             backdrop.current(geometry)
         };
@@ -307,9 +341,9 @@ impl Runtime {
             ];
             frame.capture = [x as f32, y as f32, w as f32, h as f32];
             frame.body = geometry.body;
-            let pointer = pointer_in_island.unwrap_or(egui::pos2(-1.0, -1.0));
+            let pointer = pointer.unwrap_or(egui::pos2(-1.0, -1.0));
             frame.shape = [layer.radius * ppp, layer.expansion, pointer.x, pointer.y];
-            let (flare, height, dock) = layer.notch.unwrap_or((0.0, 0.0, Dock::Top));
+            let (flare, height) = layer.notch.unwrap_or_default();
             frame.notch = [
                 flare * ppp,
                 height * ppp,
@@ -332,7 +366,7 @@ impl Runtime {
             for (dest, source) in frame.params.iter_mut().flatten().zip(self.options.params) {
                 *dest = source;
             }
-            Some(self.pipeline.callback(viewport, frame, plate, dock)?)
+            Some(self.pipeline.callback(viewport, frame, plate, layer.dock)?)
         } else {
             self.pipeline.clear_backdrop();
             None
