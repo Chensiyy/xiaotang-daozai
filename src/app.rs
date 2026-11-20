@@ -2850,7 +2850,7 @@ impl App {
                 crossed=target.id!=active.id;
                 let scale=target.scale(zoom);
                 let b=target.dock_bounds(self.dock(),self.settings.avoids_top_bar());
-                bottom_inset=(b.bottom-target.bottom_edge()) as f32/scale;
+                if self.dock()!=model::Dock::Bottom {bottom_inset=(b.bottom-target.bottom_edge()) as f32/scale;}
                 geometry=Some((Vec2::new((point.0-b.left) as f32,(point.1-b.top) as f32)/scale,
                     Vec2::new((b.right-b.left) as f32,(b.bottom-b.top) as f32)/scale));
                 seam=self.displays.iter().filter(|d|d.id!=target.id)
