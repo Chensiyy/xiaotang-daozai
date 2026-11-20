@@ -1,4 +1,4 @@
-use super::{Process, Reading, Volume};
+use super::{Process, Reading, Volume, LIST_LEN};
 use ::windows::core::{w, PCWSTR};
 use ::windows::Wdk::Graphics::Direct3D::*;
 use ::windows::Wdk::System::SystemInformation::{NtQuerySystemInformation, SYSTEM_INFORMATION_CLASS};
@@ -142,12 +142,12 @@ impl Sampler {
             self.processes = Some((now, times));
             let mut programs: Vec<_> = programs.into_values().filter(|p| !p.name.is_empty()).collect();
             programs.sort_by(|a, b| b.memory.cmp(&a.memory));
-            r.by_memory = programs.iter().take(5).cloned().collect();
+            r.by_memory = programs.iter().take(LIST_LEN).cloned().collect();
             if warm {
                 programs.sort_by(|a, b| b.io.total_cmp(&a.io));
                 r.by_io = programs.iter().take(5).filter(|p| p.io > 0.).cloned().collect();
                 programs.sort_by(|a, b| b.cpu.total_cmp(&a.cpu));
-                r.by_cpu = programs.into_iter().take(5).filter(|p| p.cpu > 0.).collect();
+                r.by_cpu = programs.into_iter().take(LIST_LEN).filter(|p| p.cpu > 0.).collect();
             }
             if self.icons.len() > 256 {
                 self.icons.clear();

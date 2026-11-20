@@ -233,7 +233,7 @@ fn gauge(c: &Card, x: f32, y: f32, r: f32, width: f32, value: Option<f32>, color
     if glow {
         c.arc(x, y, r, a0, a1, width * 0.3, alpha(mix(color, Color32::WHITE, 0.45), 0.55));
         let (ex, ey) = (x + r * a1.cos(), y + r * a1.sin());
-        c.glow(ex, ey, width * 0.75, alpha(mix(color, Color32::WHITE, 0.4), 0.6));
+        c.glow(ex, ey, width * 0.5, alpha(mix(color, Color32::WHITE, 0.4), 0.6));
         c.circle(ex, ey, width * 0.2, mix(color, Color32::WHITE, 0.75));
     }
 }
@@ -420,18 +420,27 @@ fn glass_span(c: &Card, rect: [f32; 4], from: f32, to: f32, color: Color32, ener
     }
 }
 
-/// 鼠标落在右列哪一行程序上（行从 `y + 20` 起、行距 `ROW`）。
-/// 整个列表区连成一片按最近的行算，行与行之间没有空隙，快速扫过时不会短暂落空。
-fn row_hover(c: &Card, y: f32, count: usize) -> Option<usize> {
-    if !c.live || count == 0 {
+/// 鼠标落在右列哪一行程序上（行从 `y + 20` 起、行距 `ROW`；可见 `rows` 行，已滚过 `offset` 行，共 `total` 行）。
+/// 整个列表区连成一片按最近的行算，行与行之间没有空隙，快速扫过时不会短暂落空。返回在整个列表里的名次。
+fn row_hover(c: &Card, y: f32, rows: usize, offset: f32, total: usize) -> Option<usize> {
+    let rows = rows.min(total);
+    if !c.live || rows == 0 {
         return None;
     }
     let p = c.ui.ctx().pointer_hover_pos().map(|p| c.to_local(p))?;
     let top = y + 20. - 13.5;
-    if !(COL_X - 5.0..RIGHT + 5.).contains(&p.x) || !(top..top + count as f32 * ROW).contains(&p.y) {
+    if !(COL_X - 5.0..RIGHT + 5.).contains(&p.x) || !(top..top + rows as f32 * ROW).contains(&p.y) {
         return None;
     }
-    Some((((p.y - top) / ROW) as usize).min(count - 1))
+    Some((((p.y - top) / ROW + offset).max(0.) as usize).min(total - 1))
+}
+
+/// CPU、内存详情的程序列表一屏几行；更多的名次滚动查看。
+const LIST_ROWS: usize = 5;
+
+/// 可滚动程序列表占的区域（页面坐标）：滚轮落在这里只滚列表，不翻页。
+pub(crate) fn list_area() -> egui::Rect {
+    egui::Rect::from_min_size(Pos2::new(COL_X - 6., LIST_Y + 7.), egui::vec2(RIGHT - COL_X + 18., LIST_ROWS as f32 * ROW))
 }
 
 /// 程序图标：有系统图标就画图标，没有就画一个带首字母的小方块。
@@ -469,6 +478,23 @@ impl App {
     /// 岛内当前显示的页面：先看岛内的临时选择，没有就用设置里的。
     fn performance_view(&self) -> View {
         self.performance.view.unwrap_or(self.settings.performance_view)
+    }
+
+    /// 当前详情页的程序列表还能往下滚几行；不是 CPU、内存详情或列表不满一屏时为 0。
+    pub(crate) fn performance_list_max(&self) -> usize {
+        let r = &self.performance.latest;
+        let len = match self.performance_view() {
+            View::Cpu => r.by_cpu.len(),
+            View::Memory => r.by_memory.len(),
+            _ => return 0,
+        };
+        len.saturating_sub(LIST_ROWS)
+    }
+
+    /// 列表滚过的行数，按名次一行一行地滑过去。各详情页各记各的动画，换页时不会从别的页的位置滑过来。
+    fn list_offset(&self, c: &Card, view: View, len: usize) -> f32 {
+        let first = self.performance.list_first.min(len.saturating_sub(LIST_ROWS)) as f32;
+        c.ui.ctx().animate_value_with_time(egui::Id::new(("performance-list-offset", view.key())), first, 0.16)
     }
 
     // ---------- 采样历史 ----------
@@ -772,6 +798,12 @@ impl App {
             ctx.request_repaint_after(SHIMMER);
         }
         let view = self.performance_view();
+        // 换到别的详情页时程序列表回到顶部；同一页收起再展开还停在原处。
+        if view != self.performance.list_view {
+            self.performance.list_view = view;
+            self.performance.list_first = 0;
+        }
+        self.performance.list_first = self.performance.list_first.min(self.performance_list_max());
         // 总览 ↔ 详情切换时整页交叉淡入，并有一点缩放，像推进去 / 退出来。
         // 动画状态不区分可交互与否：展开到一半（只画不交互）和展开完成共用一份，重新展开时不会从旧值再跳一次。
         let depth = ctx.animate_bool_with_time(egui::Id::new("performance-depth"), view != View::Overview, 0.26);
@@ -987,7 +1019,8 @@ impl App {
         let accent = view_color(view);
         c.fill(sx, TAB_Y, w, TAB_H, 9., RAISED);
         c.stroke(sx + 0.5, TAB_Y + 0.5, w - 1., TAB_H - 1., 8.5, 1., alpha(accent, 0.5));
-        c.glow(sx + w / 2., TAB_Y + TAB_H, w * 0.5, alpha(accent, 0.18));
+        // 选中页签只在自己底边亮一道线，不往下面的大环上漏光。
+        c.seg((sx + 12., TAB_Y + TAB_H - 1.), (sx + w - 12., TAB_Y + TAB_H - 1.), 1.2, alpha(accent, 0.7));
         for (i, tab) in View::DETAILS.into_iter().enumerate() {
             let x = LEFT + i as f32 * (w + TAB_GAP);
             let color = view_color(tab);
@@ -1024,7 +1057,6 @@ impl App {
     fn hero(&self, c: &Card, key: &str, value: Option<f32>, big: &str, unit: &str, color: Color32) {
         let ctx = c.ui.ctx().clone();
         let shown = value.map(|v| if c.live { ctx.animate_value_with_time(egui::Id::new(("performance-hero", key)), v, 0.45) } else { v });
-        c.glow(HERO_X, HERO_Y, HERO_R * 1.5, alpha(color, 0.06));
         gauge(c, HERO_X, HERO_Y, HERO_R, 7., shown, color, true);
         let size = if big.chars().count() > 4 { 17. } else { 22. };
         c.centered_text(HERO_X, HERO_Y - 4., big, size, W::Bold, if value.is_some() { INK } else { FAINT }, H::Center);
@@ -1047,20 +1079,29 @@ impl App {
     }
     /// 程序排行：图标、名称、发光细条和数值；悬停的行有一层底色。还没有数据时显示一行灰字。
     #[allow(clippy::too_many_arguments)]
-    fn program_rows(&self, c: &Card, y: f32, limit: usize, programs: &[Process], color: Color32, value: impl Fn(&Process) -> (f32, String)) {
+    /// `scroll` 为 `Some(滚过的行数)` 时整张列表都画出来、裁在 `limit` 行的窗口里，右边一条细滚动条；否则只画前 `limit` 名。
+    fn program_rows(&self, c: &Card, y: f32, limit: usize, programs: &[Process], scroll: Option<f32>, color: Color32, value: impl Fn(&Process) -> (f32, String)) {
         if programs.is_empty() {
             c.text(COL_X, y + 20., "正在统计…", 10., W::Regular, FAINT, H::Left);
             return;
         }
-        let hovered = row_hover(c, y, programs.len().min(limit));
+        let offset = scroll.unwrap_or(0.);
+        let total = if scroll.is_some() { programs.len() } else { programs.len().min(limit) };
+        let hovered = row_hover(c, y, limit, offset, total);
         let top = programs.first().map_or(1., |p| value(p).0.max(0.001));
-        for (i, program) in programs.iter().take(limit).enumerate() {
-            let base = y + 20. + i as f32 * ROW;
+        let outer = c;
+        let window = c.clipped(COL_X - 6., y + 7., RIGHT - COL_X + 12., limit as f32 * ROW);
+        let c = &window;
+        for (i, program) in programs.iter().take(total).enumerate() {
+            let base = y + 20. + (i as f32 - offset) * ROW;
+            if base < y + 20. - ROW || base > y + 20. + limit as f32 * ROW {
+                continue;
+            }
             if hovered == Some(i) {
                 c.fill(COL_X - 5., base - 13., COL_W + 10., 17., 5., RAISED);
             }
             let (amount, text) = value(program);
-            let tint = mix(color, SURFACE, i as f32 * 0.14);
+            let tint = mix(color, SURFACE, (i as f32 * 0.14).min(0.56));
             program_icon(c, COL_X, base - 10.5, 13., program, color);
             c.text(COL_X + 19., base, &c.fit(&program.name, 10., W::Regular, 94.), 10., W::Regular, INK, H::Left);
             let bar_x = COL_X + 118.;
@@ -1070,6 +1111,15 @@ impl App {
             c.fill(bar_x, base - 5., len, 3., 1.5, tint);
             c.circle(bar_x + len - 1.5, base - 3.5, 1.4, mix(tint, Color32::WHITE, 0.5));
             c.text(RIGHT, base, &text, 10., W::Bold, INK, H::Right);
+        }
+        // 细滚动条：轨道是窗口的高度，滑块长度是可见行占全部的比例。
+        if scroll.is_some() && total > limit {
+            let (track_y, track_h) = (y + 9., limit as f32 * ROW - 4.);
+            let thumb = (track_h * limit as f32 / total as f32).max(12.);
+            let at = track_y + (track_h - thumb) * (offset / (total - limit) as f32).clamp(0., 1.);
+            let k = if hovered.is_some() { 0.75 } else { 0.4 };
+            outer.fill(RIGHT + 7., track_y, 2., track_h, 1., alpha(INK, 0.06));
+            outer.fill(RIGHT + 7., at, 2., thumb, 1., alpha(color, k));
         }
     }
     /// 60 秒霓虹面积图，带 50% 参考线和「现在」光点。
@@ -1109,7 +1159,8 @@ impl App {
         self.section(c, 180., &title, &busiest, FAINT);
         self.core_bars(c, [COL_X, 186., COL_W, 26.], 32, Some(t));
         self.section(c, LIST_Y, "占用最高的程序", "", FAINT);
-        self.program_rows(c, LIST_Y, 5, &r.by_cpu, color, |p| (p.cpu, format!("{:.1}%", p.cpu)));
+        let offset = self.list_offset(c, View::Cpu, r.by_cpu.len());
+        self.program_rows(c, LIST_Y, LIST_ROWS, &r.by_cpu, Some(offset), color, |p| (p.cpu, format!("{:.1}%", p.cpu)));
     }
 
     fn performance_gpu(&self, c: &Card, r: &Reading, color: Color32, t: f64) {
@@ -1180,7 +1231,8 @@ impl App {
         // 悬停下面的某个程序：整条压暗，只点亮「程序」段里属于它的那一小截（按排行顺序从左往右排）。
         // 在列表里上下移动时亮块滑到下一个程序，不会先全亮再亮起。
         let programs = &r.by_memory;
-        let hovered = row_hover(c, LIST_Y, programs.len().min(5));
+        let offset = self.list_offset(c, View::Memory, programs.len());
+        let hovered = row_hover(c, LIST_Y, LIST_ROWS, offset, programs.len());
         let ctx = c.ui.ctx().clone();
         // 刚移进列表时亮块直接出现在当前行，之后在行间移动才滑过去。
         let was = ctx.data_mut(|d| std::mem::replace(d.get_temp_mut_or_default::<bool>(egui::Id::new("performance-memory-span-on")), hovered.is_some()));
@@ -1218,7 +1270,7 @@ impl App {
         self.section(c, 182., "最近一分钟", &peak, FAINT);
         self.trend(c, |s| s.ram(), 100., color, [COL_X, 188., COL_W, 28.]);
         self.section(c, LIST_Y, "占用内存最多的程序", "", FAINT);
-        self.program_rows(c, LIST_Y, 5, &r.by_memory, color, |p| (p.memory as f32, bytes(p.memory)));
+        self.program_rows(c, LIST_Y, LIST_ROWS, &r.by_memory, Some(offset), color, |p| (p.memory as f32, bytes(p.memory)));
     }
 
     fn performance_disk(&self, c: &Card, r: &Reading, color: Color32, t: f64) {
@@ -1250,7 +1302,7 @@ impl App {
         let list_y = 198. + r.volumes.len().clamp(1, 3) as f32 * ROW + 6.;
         let limit = (((BODY_BOTTOM - 10. - (list_y + 20.)) / ROW).floor() as usize + 1).min(5);
         self.section(c, list_y, "读写最多的程序", "", FAINT);
-        self.program_rows(c, list_y, limit, &r.by_io, color, |p| (p.io, speed(Some(p.io))));
+        self.program_rows(c, list_y, limit, &r.by_io, None, color, |p| (p.io, speed(Some(p.io))));
     }
 
     fn performance_network(&self, c: &Card, r: &Reading, color: Color32) {

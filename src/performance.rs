@@ -200,7 +200,29 @@ pub(crate) struct Reading {
     pub by_io: Vec<Process>,
     pub volumes: Vec<Volume>,
 }
+/// 详情列表最多列几名程序：总览只看前四，CPU、内存详情可以滚动看完这些。
+pub(crate) const LIST_LEN: usize = 10;
+
 impl Reading {
+    /// 程序排行、内存构成和分区只在展开页显示时才统计。岛收起后、或刚展开还没算出新一轮时，
+    /// 沿用上一次的结果，展开时列表直接就在，下一秒再换成新的，不会每次从空白加载。
+    pub fn keep_lists(&mut self, previous: Reading) {
+        if self.by_memory.is_empty() {
+            self.by_memory = previous.by_memory;
+            self.by_cpu = previous.by_cpu;
+            self.by_io = previous.by_io;
+            self.memory_cache = self.memory_cache.or(previous.memory_cache);
+            self.memory_kernel = self.memory_kernel.or(previous.memory_kernel);
+            if self.volumes.is_empty() {
+                self.volumes = previous.volumes;
+            }
+        } else if self.by_cpu.is_empty() && self.by_io.is_empty() {
+            // 刚开始统计的第一秒只有内存，CPU 和读写要两次采样才算得出。
+            self.by_cpu = previous.by_cpu;
+            self.by_io = previous.by_io;
+        }
+    }
+
     pub fn ram(&self) -> Option<f32> {
         self.memory
             .filter(|&(_, total)| total > 0)
@@ -212,10 +234,13 @@ impl Reading {
 pub(crate) struct Monitor {
     pub latest: Reading,
     pub history: VecDeque<(Instant, Reading)>,
-    /// 岛内正在看的页面；收起后清空，下次展开回到设置里选的页面。
+    /// 岛内正在看的页面；切到别的页面或点常驻指标时清空，下次展开回到设置里选的页面。
     pub view: Option<View>,
     /// 最近看过的详情页，退回总览的过渡里继续画它。
     pub last_detail: View,
+    /// CPU、内存详情的程序列表滚过了几名；`list_view` 记着是哪一页的，换页时回到顶部。
+    pub list_first: usize,
+    pub list_view: View,
     #[cfg(windows)]
     worker: Option<Worker>,
 }
@@ -288,11 +313,11 @@ impl Monitor {
             worker.visible.store(visible, std::sync::atomic::Ordering::Relaxed);
             worker.detail.store(detail, std::sync::atomic::Ordering::Relaxed);
             let mut queue = worker.samples.lock().unwrap();
-            if let Some((_, last)) = queue.back() {
-                self.latest = last.clone();
-            } else {
+            let Some((_, last)) = queue.back() else {
                 return;
-            }
+            };
+            let previous = std::mem::replace(&mut self.latest, last.clone());
+            self.latest.keep_lists(previous);
             let now = Instant::now();
             self.history.extend(queue.drain(..));
             while self
@@ -321,6 +346,21 @@ mod tests {
         unsafe { GetProcessTimes(GetCurrentProcess(), &mut created, &mut ended, &mut kernel, &mut user) }.unwrap();
         let ticks = |t: FILETIME| u64::from(t.dwHighDateTime) << 32 | u64::from(t.dwLowDateTime);
         (ticks(kernel) + ticks(user)) as f64 / 1e7
+    }
+
+    #[test]
+    fn collapsed_readings_keep_the_last_program_lists() {
+        let program = |name: &str| Process { name: name.into(), cpu: 1., memory: 1, ..Default::default() };
+        let open = Reading { by_cpu: vec![program("a")], by_memory: vec![program("b")], memory_cache: Some(5), ..Default::default() };
+        let mut collapsed = Reading::default();
+        collapsed.keep_lists(open.clone());
+        assert_eq!((collapsed.by_cpu.clone(), collapsed.by_memory.clone(), collapsed.memory_cache), (open.by_cpu.clone(), open.by_memory.clone(), Some(5)));
+        let mut warming = Reading { by_memory: vec![program("c")], ..Default::default() };
+        warming.keep_lists(open.clone());
+        assert_eq!((warming.by_memory[0].name.as_str(), warming.by_cpu.clone()), ("c", open.by_cpu.clone()));
+        let mut fresh = Reading { by_memory: vec![program("c")], by_cpu: vec![program("d")], ..Default::default() };
+        fresh.keep_lists(open);
+        assert_eq!(fresh.by_cpu[0].name, "d");
     }
 
     #[test]

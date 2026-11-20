@@ -9127,6 +9127,33 @@ fn performance_badge_opens_overview_and_drills_into_details() {
 
 #[cfg(windows)]
 #[test]
+fn performance_program_list_scrolls_under_the_wheel_without_turning_pages() {
+    use crate::{app::PERFORMANCE_PAGE,performance::{Process,View},performance_ui::list_area};
+    let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=H::new();
+    h.app.set_page_visible(PERFORMANCE_PAGE,true);
+    h.app.show_page(PERFORMANCE_PAGE);
+    h.app.performance.view=Some(View::Memory);
+    h.app.performance.latest.by_memory=(0..10).map(|i|Process{name:format!("程序 {i}"),memory:(10-i) as u64*1048576,..Default::default()}).collect();
+    let list=list_area().center();
+    for (delta,first) in [(-40.0_f32,1),(-400.0,5),(-40.0,5),(40.0,4),(400.0,0),(40.0,0)] {
+        h.hover(H::local(list.x,list.y),0.3);
+        for _ in 0..(delta.abs() as usize/40) {h.wheel(delta.signum()*40.0);}
+        assert_eq!(h.app.page,PERFORMANCE_PAGE,"程序列表上滚到首尾都不翻页");
+        assert_eq!(h.app.performance.list_first,first);
+    }
+    h.app.performance.list_first=3;
+    h.app.performance.view=Some(View::Cpu);
+    h.frame(vec![]);
+    assert_eq!(h.app.performance.list_first,0,"换到别的详情页时列表回到顶部");
+    h.app.performance.view=Some(View::Memory);
+    h.hover(H::local(80.0,100.0),0.3);
+    h.wheel(-40.0);
+    assert_ne!(h.app.page,PERFORMANCE_PAGE,"列表外的滚轮仍然翻页");
+}
+
+#[cfg(windows)]
+#[test]
 fn performance_keeps_sampling_across_hidden_and_open_views() {
     let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     let mut h=H::new();
@@ -9273,18 +9300,18 @@ fn performance_morph_film() {
         let output=h.ctx.run(raw,|ctx|{egui::CentralPanel::default().frame(egui::Frame::new()).show(ctx,|ui|{let win=Rect::from_min_size(ui.max_rect().min,Vec2::new(WIN_W,WIN_H));app.frame(ui,win,&env);});});
         raster.update_textures(&output.textures_delta);
         let primitives=h.ctx.tessellate(output.shapes,output.pixels_per_point);
-        if f>=30&&f%4==0&&film.len()<64 {
+        if ((30..90).contains(&f)||(140..200).contains(&f))&&f%3==0 {
             raster.buf.fill([0.20,0.24,0.32,1.0]);
             raster.draw(&primitives,output.pixels_per_point);
             let mut rgba=Vec::new();raster.to_rgba8(&mut rgba);
             let image=image::RgbaImage::from_raw((w*ppp) as u32,(hgt*ppp) as u32,rgba).unwrap();
-            film.push(image::imageops::crop_imm(&image,(WIN_W*ppp/2.0) as u32-600,0,1200,200).to_image());
+            film.push(image::imageops::crop_imm(&image,(WIN_W*ppp/2.0) as u32-600,0,1200,560).to_image());
         }
         raster.free_textures(&output.textures_delta);
     }
-    for (n,chunk) in film.chunks(9).enumerate() {
-        let mut sheet=image::RgbaImage::new(1200,200*chunk.len() as u32);
-        for (i,frame) in chunk.iter().enumerate(){image::imageops::replace(&mut sheet,frame,0,200*i as i64);}
+    for (n,chunk) in film.chunks(4).enumerate() {
+        let mut sheet=image::RgbaImage::new(1200,560*chunk.len() as u32);
+        for (i,frame) in chunk.iter().enumerate(){image::imageops::replace(&mut sheet,frame,0,560*i as i64);}
         sheet.save(dir.join(format!("morph-{n}.png"))).unwrap();
     }
 }

@@ -96,6 +96,8 @@ const OPEN_H: (f32, f32) = (290.0, 0.74);
 // 收起：临界阻尼，约 0.18 s 干净收回，无回弹。
 const CLOSE: (f32, f32) = (620.0, 1.0);
 const SWELL_K: (f32, f32) = (420.0, 0.8);
+// 宽常驻条展开时先收窄：临界阻尼、比收起略快，收到面板宽后高度才开始往下长。
+const WIDE_NARROW: (f32, f32) = (900.0, 1.0);
 const PAGE_SLIDE: f32 = 46.0;
 
 pub struct Options {
@@ -1982,6 +1984,9 @@ impl App {
                         self.wheel_delta=0.0;
                         let calendar_max=if self.page==CALENDAR_PAGE {self.calendar_scroll_max(env)}else{0};
                         let calendar_body=self.page==CALENDAR_PAGE && Rect::from_min_max(Pos2::new(163.0,52.0),Pos2::new(378.0,208.0)).contains(cursor);
+                        // 性能 CPU、内存详情的程序列表：滚轮在列表上只滚列表，滚到头也不翻页。
+                        let performance_list=self.page==PERFORMANCE_PAGE && crate::performance_ui::list_area().contains(cursor);
+                        let performance_max=if performance_list {self.performance_list_max()}else{0};
                         let clipboard_tab=self.page==3 && self.shelf_tab==1;
                         let clipboard_body=clipboard_tab && Rect::from_min_max(Pos2::new(42.0,31.0),Pos2::new(377.0,124.0)).contains(cursor);
                         let list=match self.page {
@@ -1992,6 +1997,8 @@ impl App {
                                 =>Some((&mut self.clip_first,self.clipboard.lock().items.len().saturating_sub(crate::pages::CLIP_ROWS))),
                             3 if !clipboard_tab && Rect::from_min_max(Pos2::new(36.0,28.0),Pos2::new(383.0,128.0)).contains(cursor)
                                 =>Some((&mut self.shelf_first,self.shelf.items.len().saturating_sub(5))),
+                            PERFORMANCE_PAGE if performance_list && performance_max>0
+                                =>Some((&mut self.performance.list_first,performance_max)),
                             _=>None,
                         };
                         let content_scrolls=list.as_ref().is_some_and(|(_,max)|*max>0);
@@ -2857,6 +2864,16 @@ impl App {
         }
         let _ = inside;
         if self.open {self.h.target=self.expanded_height();}
+        // 常驻条比展开面板还宽时（比如开了综合监测），展开是「由宽变窄」。宽高同时变会有几帧又宽又高的空黑框，像两侧被切掉。
+        // 改成分两步：展开先收窄到面板宽再往下长；收起先缩回条高，再往两边伸回常驻宽度。
+        if !self.side() && self.position_drag.is_none() && bw > PW + 1.0 {
+            if self.open {
+                self.w.tune(WIDE_NARROW.0, WIDE_NARROW.1);
+                if self.w.pos > PW + 6.0 {self.h.target=self.h.pos.min(bh*SWELL.1).max(bh);}
+            } else if self.h.pos > bh + 3.0 {
+                self.w.target=self.w.pos.clamp(PW,bw);
+            }
+        }
         let (prev_w,prev_h)=(self.w.pos,self.h.pos);
         self.w.step(dt);
         self.h.step(dt);
