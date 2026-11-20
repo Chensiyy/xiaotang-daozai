@@ -20,6 +20,8 @@ struct Shell {
     /// 兼容渲染上一次请求读回画面的时刻（无输入的持续动画按约 30 帧/秒读回）。
     #[cfg(windows)]
     readback_at: Option<Instant>,
+    #[cfg(windows)]
+    was_interactive_transition: bool,
     media: smtc::Shared,
     seek_rx: Option<(&'static str,std::sync::mpsc::Receiver<bool>)>,
     media_control:Option<smtc::ControlWorker>,
@@ -221,6 +223,8 @@ impl Shell {
             frame_at: Instant::now(),
             #[cfg(windows)]
             readback_at: None,
+            #[cfg(windows)]
+            was_interactive_transition: false,
             media,
             seek_rx: None,
             media_control:None,
@@ -691,7 +695,9 @@ impl eframe::App for Shell {
             });
         let Some(out) = out else { return };
         #[cfg(windows)]
-        let interactive_transition = !self.hidden && (out.page_transition || out.water_view_transition);
+        let interactive_transition = !self.hidden && out.interactive_transition;
+        #[cfg(windows)]
+        let last_transition_frame = std::mem::replace(&mut self.was_interactive_transition,interactive_transition);
 
         #[cfg(windows)]
         {
@@ -727,7 +733,9 @@ impl eframe::App for Shell {
                     .then(||self.frame_at+Duration::from_secs_f64(1.0/60.0));
                 // 若首张截图没产生回调，也继续尝试，直到正常交接或走轮廓回退。
                 if let Some(deadline)=startup_capture {schedule_repaint(ctx,deadline.saturating_duration_since(Instant::now()));}
-                let interactive=other_input || interactive_transition || startup_capture.is_some();
+                // 动画刚停稳时也交付最后一帧，避免最终位置延迟到下一次闲置刷新。
+                let capture_transition=interactive_transition || (last_transition_frame && !self.hidden);
+                let interactive=other_input || capture_transition || startup_capture.is_some();
                 if shot.is_none() || changed || interactive {
                     // 输入结束后，短暂的切换过渡仍需逐帧交付。
                     let now=Instant::now();
@@ -736,8 +744,8 @@ impl eframe::App for Shell {
                             self.readback_at=Some(now);
                             let data=if let Some(deadline)=startup_capture {
                                 egui::UserData::new(eframe::InteractiveCapture(deadline))
-                            } else if interactive_transition && self.app.render_compat_running {
-                                egui::UserData::new(eframe::InteractiveCapture(self.frame_at+out.repaint_after))
+                            } else if capture_transition && self.app.render_compat_running {
+                                egui::UserData::new(eframe::InteractiveCapture(self.frame_at+Duration::from_secs_f64(1.0/60.0)))
                             } else {Default::default()};
                             ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(data));
                         }

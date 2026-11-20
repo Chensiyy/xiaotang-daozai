@@ -451,6 +451,8 @@ pub struct FrameOut {
     pub page_transition: bool,
     /// 喝水页的百分比环和柱状图正在切换。
     pub water_view_transition: bool,
+    /// 展开、收起、翻页或内容滚动仍有画面需要逐帧交付。
+    pub interactive_transition: bool,
     pub repaint_after: std::time::Duration,
     pub cmds: Vec<Cmd>,
 }
@@ -773,6 +775,7 @@ pub struct App {
     slide: Spring,
     dots: [Spring; 11],
     wheel_delta: f32,
+    pub(crate) content_scroll: Option<(egui::Id, f32)>,
     wheel_at: f64,
     wheel_page_at: f64,
 
@@ -988,6 +991,7 @@ impl App {
             slide: Spring::new(0.0, 260.0, 0.92),
             dots: std::array::from_fn(|i| Spring::new(if i == initial_page { 16.0 } else { 4.0 }, 380.0, 0.86)),
             wheel_delta: 0.0,
+            content_scroll: None,
             wheel_at: -1.0,
             wheel_page_at: -1.0,
             drag_hot: false,
@@ -2260,6 +2264,7 @@ impl App {
             let fit=if self.island_lyrics_active()||self.notice.is_some(){1.0}else{(self.resident_limit()/self.resident.target.width).min(1.0)};
             self.pet.draw(&base.scaled(cx-origin.x,15.0,fit).shifted(0.0,y).faded(pet_alpha),cx-origin.x+self.resident.position(bar::PET),self.t,self.skin_palette());
         }
+        let previous_scroll=self.content_scroll.take();
         let mut page_transition=false;
         if reveal > 0.004 && !banner && !restoring_lyrics {
             let c = base.shifted(0.0, (1.0 - reveal) * -5.0).faded(reveal);
@@ -2347,18 +2352,24 @@ impl App {
         let water_view_transition = self.open && self.page == WATER_PAGE && self.subpage.is_none() && !self.sit_mode
             // 点击在本帧推进弹簧之后处理，先识别尚未同步的目标。
             && (self.water_view_t.target != self.water_view as f32 || !self.water_view_t.settled(1.0));
-        let transitioning = (self.hold_slot>0.0 && self.hold_slot<1.0) || water_view_transition || self.position_drag.is_some() || self.drag_glide.is_some() || !self.drag_lift.settled(1.0) || !self.drag_stretch.settled(1.0) || !self.w.settled(PW)
+        let scrolling=previous_scroll.zip(self.content_scroll).is_some_and(|((old_id,old_y),(id,y))| old_id==id && old_y!=y);
+        let resizing=!self.w.settled(PW) || !self.h.settled(self.expanded_height());
+        let shelf_scrolling=self.open && self.page==3 && self.shelf_tab==0 && !self.shelf.items.is_empty()
+            && (self.shelf_scroll.target!=self.shelf_first as f32 || !self.shelf_scroll.settled(1.0)
+                || self.shelf_x.values().any(|s|!s.settled(68.0)));
+        let pet_fading=self.pet_a>0.001 && self.pet_a<0.999;
+        let resident_moving=!self.resident.settled();
+        let closing_tail=!self.open && (resident_moving || (!minimal_pill && pet_fading));
+        let interactive_transition=closing_tail || (self.hold_slot>0.0 && self.hold_slot<1.0) || resizing || page_transition || scrolling || shelf_scrolling || water_view_transition;
+        let transitioning = interactive_transition || self.position_drag.is_some() || self.drag_glide.is_some() || !self.drag_lift.settled(1.0) || !self.drag_stretch.settled(1.0)
             || self.center_guide>0.002 || self.center_lock_a>0.002 || self.t-self.center_lock_at<CENTER_SWEEP
-            || !self.h.settled(self.expanded_height())
             || self.page_e() < 0.7
             || self.dots.iter().any(|d| !d.settled(16.0))
             || self.hover_since.is_some() && !self.open
             || self.leave_since.is_some()
             || (self.drag_a > 0.001 && self.drag_a < 0.999)
             || self.drag_hot
-            || (self.pet_a > 0.001 && self.pet_a < 0.999)
-            || !self.resident.settled()
-            || self.open && self.page==3 && self.shelf_x.values().any(|s| !s.settled(68.0))
+            || pet_fading || resident_moving
             || self.open && self.page==2 && (!self.water_ring.settled(1.0) || !self.sit_view_t.settled(1.0) || !self.sit_t.settled(1.0))
             || self.toast.is_some()
             || self.notification_bell().is_some_and(|at|self.t-at<0.95)
@@ -2405,6 +2416,7 @@ impl App {
             animating,
             page_transition,
             water_view_transition,
+            interactive_transition,
             repaint_after,
             cmds,
         }
