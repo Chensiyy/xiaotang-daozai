@@ -208,6 +208,12 @@ fn ready_with_paths(target:Target,paths:&[String])->bool{
     let pid=target.unread.pid;
     (unsafe{pid_matches(pid,paths)}) && matches!(candidates(target.unread.source,pid).as_deref(),Some([one]) if *one==target)
 }
+pub(super) fn matches_foreground(target:Target,window:HWND,paths:&[String])->bool{
+    let window=window.0 as isize;
+    if target.unread.window==window{return ready_with_paths(target,paths);}
+    // 手动打开客户端时也只确认原进程中唯一合格的前台新主窗。
+    rebuild_target(target,paths).is_some_and(|rebuilt|rebuilt.unread.window==window)
+}
 /// 重建时没有新闪动可校验，必须有该客户端明确的主窗口特征。
 pub(crate) fn rebuild_target(target:Target,paths:&[String])->Option<Target>{unsafe{
     let pid=target.unread.pid;
