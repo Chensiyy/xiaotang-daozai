@@ -126,6 +126,11 @@ pub struct Env {
     pub network: Option<bool>,
     /// 光标位置（与 `frame` 传入的 `win` 同一坐标系）；不在窗口附近时为 None。
     pub cursor: Option<Pos2>,
+    /// Windows 虚拟桌面中的鼠标物理坐标，跨屏时独立于岛体窗口。
+    pub desktop_cursor: Option<(i32,i32)>,
+    pub cancel_position_drag: bool,
+    /// 窗口移开后也能在原生桌面上识别松手。
+    pub primary_down: Option<bool>,
     pub idle_seconds: Option<f64>,
     /// 当前会话是否处于锁屏（Win + L、自动锁屏、唤醒后的登录界面）。
     pub screen_locked: bool,
@@ -675,8 +680,9 @@ impl CalendarState {
 
 }
 
-#[derive(Clone, Copy)]
 struct PositionDrag {
+    original_display:String,
+    original_monitor:Option<String>,
     start: Vec2,
     /// 本段拖动的起始偏移（未取整，换边后重置），单位与 `island_offset` 相同。
     offset: f32,
@@ -739,6 +745,8 @@ pub struct App {
     drag_glide: Option<anim::Spring>,
     /// 拿起程度 0..1（可略过冲）与速度拉伸量，只影响岛体外形，不影响展开进度。
     drag_lift: anim::Spring,
+    seam_guide:f32,
+    crossed_at:f64,
     drag_stretch: anim::Spring,
     /// 拖动时是否吸在居中；进入吸附的时刻用于触发扫光和「咔嗒」。
     pub(crate) center_locked: bool,
@@ -945,6 +953,7 @@ impl App {
             reveal: 0.0,
             position_drag: None,
             drag_glide: None,
+            seam_guide:0.0, crossed_at:f64::NEG_INFINITY,
             drag_lift: anim::Spring::new(0.0, LIFT_K.0, LIFT_K.1),
             drag_stretch: anim::Spring::new(0.0, 260.0, 0.6),
             center_locked: false,
@@ -2076,6 +2085,17 @@ impl App {
         }
         self.paint_body(&painter, body, flare, flare_h, radius, feather);
         if lifted > 0.01 {self.paint_lift_halo(&painter, body, flare, flare_h, radius, lifted.min(1.0));}
+        let arrival=1.0-smoothstep(0.0,0.12,(self.t-self.crossed_at) as f32);
+        if self.seam_guide>0.01 || arrival>0.0 {
+            let (center,along)=match dock {
+                model::Dock::Left=>(body.left_center()+Vec2::X*2.0,Vec2::Y),
+                model::Dock::Right=>(body.right_center()-Vec2::X*2.0,Vec2::Y),
+                model::Dock::Top=>(body.center_top()+Vec2::Y*2.0,Vec2::X),
+            };
+            let strength=self.seam_guide.max(arrival);
+            let length=lerp(6.0,20.0,strength)*(1.0-0.45*arrival);
+            painter.line_segment([center-along*length,center+along*length],egui::Stroke::new(2.5,Color32::from_white_alpha((210.0*strength) as u8)));
+        }
         let center_guide=self.paint_center_rim(&painter, body, panel, flare, flare_h, radius, env.screen);
         let content_from=crate::skin_paint::shape_count(&ctx,layer);
 
@@ -2647,12 +2667,47 @@ impl App {
 
     fn update_position_drag(&mut self,ctx:&egui::Context,env:&Env,dt:f32) {
         let limit=model::ISLAND_OFFSET_MAX as f32;
-        if let Some(mut drag)=self.position_drag {
+        let mut seam_strength=0.0;
+        if let Some(mut drag)=self.position_drag.take() {
+            let current_id=&self.settings.display_id;
+            let monitor=if *current_id==drag.original_display {drag.original_monitor.as_ref()}else{Some(current_id)};
+            let disconnected=monitor.is_some_and(|id|!self.displays.iter().any(|d|d.id==*id));
+            if disconnected || env.cancel_position_drag || ctx.input(|i|i.key_pressed(egui::Key::Escape)) {
+                self.settings.display_id=drag.original_display;
+                (self.settings.dock,self.settings.island_offset)=drag.original;
+                self.drag_glide=None;
+                self.drag_stretch.target=0.0;
+                self.hover_lock=true;
+                self.center_locked=false;
+                self.center_guide=0.0;
+                self.crossed_at=f64::NEG_INFINITY;
+                self.seam_guide=0.0;
+                return;
+            }
             let mut speed=0.0;
-            if let (Some(cursor),Some(screen))=(env.cursor,env.screen) {
-                // 使用屏幕内坐标，窗口移动或横竖画布切换不会累积位移。
-                let cursor=cursor-screen.min;
-                let edges=[(model::Dock::Top,cursor.y.max(0.0)),(model::Dock::Left,cursor.x.max(0.0)),(model::Dock::Right,(screen.width()-cursor.x).max(0.0))];
+            let mut geometry=env.cursor.zip(env.screen).map(|(p,r)|(p-r.min,r.size()));
+            let mut crossed=false;
+            let mut seam=None;
+            if let (Some(point),Some(active))=(env.desktop_cursor.filter(|_|self.displays.len()>1),crate::display_layout::selected(&self.displays,current_id)) {
+                let zoom=self.settings.island_scale()*ctx.zoom_factor();
+                let target=crate::display_layout::drag_target(&self.displays,active,point,zoom);
+                crossed=target.id!=active.id;
+                let scale=target.scale(zoom);
+                let b=crate::display_layout::placement_bounds(target,self.settings.avoids_top_bar());
+                geometry=Some((Vec2::new((point.0-b.left) as f32,(point.1-b.top) as f32)/scale,
+                    Vec2::new((b.right-b.left) as f32,(b.bottom-b.top) as f32)/scale));
+                seam=self.displays.iter().filter(|d|d.id!=target.id)
+                    .filter_map(|d|crate::display_layout::shared_edge(target.bounds,d.bounds,point))
+                    .filter_map(|(depth,edge)|edge.map(|dock|(depth as f32/scale,dock)))
+                    .min_by(|a,b|a.0.abs().total_cmp(&b.0.abs()));
+                if crossed {
+                    self.settings.display_id=if Some(&target.id)==drag.original_monitor.as_ref() {drag.original_display.clone()}else{target.id.clone()};
+                    self.crossed_at=self.t;
+                    self.center_locked=false;
+                }
+            }
+            if let Some((cursor,size))=geometry {
+                let edges=[(model::Dock::Top,cursor.y.max(0.0)),(model::Dock::Left,cursor.x.max(0.0)),(model::Dock::Right,(size.x-cursor.x).max(0.0))];
                 let &(nearest,distance)=edges.iter().min_by(|a,b|a.1.total_cmp(&b.1)).unwrap();
                 let current=edges.iter().find(|(dock,_)|*dock==self.dock()).unwrap().1;
                 // 靠近新边缘才换边；角落保留缓冲，防止横竖形态来回跳变。
@@ -2660,12 +2715,16 @@ impl App {
                 // 左右对侧：过了中线、明显更靠近另一侧就换过去，不必甩到屏幕尽头；中线附近留缓冲不来回跳。
                 if target.is_none() && self.side() {
                     let (opposite,far)=if self.dock()==model::Dock::Left {(model::Dock::Right,edges[2].1)}else{(model::Dock::Left,edges[1].1)};
-                    if far+screen.width()*0.07<current {target=Some(opposite);}
+                    if far+size.x*0.07<current {target=Some(opposite);}
                 }
+                if crossed {target=Some(seam.filter(|(depth,_)|depth.abs()<=64.0).map_or(nearest,|(_,dock)|dock));}
                 let switch=target.is_some();
                 if let Some(dock)=target {self.settings.dock=dock;}
-                let (position,length,extent,start)=if self.side() {(cursor.y,screen.height(),crate::side_dock::SIDE_HALF_EXTENT,drag.start.y)}
-                    else {(cursor.x,screen.width(),crate::display_layout::ISLAND_HALF_EXTENT,drag.start.x)};
+                if let Some((depth,_))=seam.filter(|(_,dock)|*dock==self.dock()) {
+                    seam_strength=(1.0-smoothstep(16.0,72.0,depth))*smoothstep(-16.0,0.0,depth);
+                }
+                let (position,length,extent,start)=if self.side() {(cursor.y,size.y,crate::side_dock::SIDE_HALF_EXTENT,drag.start.y)}
+                    else {(cursor.x,size.x,crate::display_layout::ISLAND_HALF_EXTENT,drag.start.x)};
                 let travel=(length/2.0-extent).max(0.0);
                 let raw=if travel<=0.0 {0.0}else if switch {(position-length/2.0)/travel*limit}
                     else {drag.offset+(position-start)/travel*limit};
@@ -2678,7 +2737,7 @@ impl App {
                     self.drag_lift.vel-=2.8;
                 }
                 self.center_locked=centered;
-                let original=Some(drag.original.1 as f32).filter(|_|self.dock()==drag.original.0);
+                let original=Some(drag.original.1 as f32).filter(|_|self.dock()==drag.original.0 && self.settings.display_id==drag.original_display);
                 let target=if centered {0.0}else{original.filter(|p|(raw-p).abs()<=DRAG_MAGNET).unwrap_or(raw)};
                 self.settings.island_offset=target.round() as i32;
                 let glide=self.drag_glide.get_or_insert_with(||anim::Spring::new(drag.offset,GLIDE_FOLLOW.0,GLIDE_FOLLOW.1));
@@ -2694,7 +2753,7 @@ impl App {
                 if travel>0.0 {speed=self.drag_glide.map_or(0.0,|g|g.vel.abs()/limit*travel);}
             }
             self.drag_stretch.target=(speed/STRETCH_SPEED).min(1.0)*STRETCH_MAX;
-            if !ctx.input(|i|i.pointer.primary_down()) {
+            if !env.primary_down.unwrap_or_else(||ctx.input(|i|i.pointer.primary_down())) {
                 self.position_drag=None;
                 self.hover_lock=true;
                 self.drag_stretch.target=0.0;
@@ -2702,11 +2761,12 @@ impl App {
                     glide.tune(GLIDE_SETTLE.0,GLIDE_SETTLE.1);
                     glide.target=self.settings.island_offset as f32;
                 }
-                if (self.dock(),self.settings.island_offset)!=drag.original {self.settings.save();}
+                if self.settings.display_id!=drag.original_display || (self.dock(),self.settings.island_offset)!=drag.original {self.settings.save();}
             }else{
                 self.position_drag=Some(drag);
             }
         }
+        self.seam_guide=anim::approach(self.seam_guide,seam_strength,24.0,dt);
         self.drag_lift.target=if self.position_drag.is_some() {1.0}else{0.0};
         self.drag_lift.step(dt);
         self.drag_stretch.step(dt);
@@ -2804,6 +2864,8 @@ impl App {
         Some(bounds)
     }
 
+    pub fn dragging_position(&self)->bool {self.position_drag.is_some()}
+
     /// 拖动中和落位期间窗口使用的位置（-1 … 1，不取整）；其余时候就是保存的位置。
     pub fn placement_offset(&self)->f32 {
         let limit=model::ISLAND_OFFSET_MAX as f32;
@@ -2814,13 +2876,15 @@ impl App {
     fn drag_scale(&self)->(f32,f32) {
         let lift=self.drag_lift.pos.max(0.0);let stretch=self.drag_stretch.pos.max(0.0);
         let along=1.0+LIFT_SCALE.0*lift+stretch;
-        let across=1.0+LIFT_SCALE.1*lift-stretch*0.5;
+        let arrival=1.0-smoothstep(0.0,0.12,(self.t-self.crossed_at) as f32);
+        let across=(1.0+LIFT_SCALE.1*lift-stretch*0.5)*(1.0-0.22*arrival);
         if self.side() {(across,along)}else{(along,across)}
     }
 
     fn start_position_drag(&mut self,start:Pos2,screen:Rect) {
         let offset=self.settings.island_offset;
-        self.position_drag=Some(PositionDrag{start:start-screen.min,offset:offset as f32,original:(self.dock(),offset)});
+        let original_monitor=crate::display_layout::selected(&self.displays,&self.settings.display_id).map(|d|d.id.clone());
+        self.position_drag=Some(PositionDrag{original_display:self.settings.display_id.clone(),original_monitor,start:start-screen.min,offset:offset as f32,original:(self.dock(),offset)});
         let mut glide=anim::Spring::new(offset as f32,GLIDE_FOLLOW.0,GLIDE_FOLLOW.1);
         if let Some(g)=self.drag_glide {glide.pos=g.pos;glide.vel=g.vel;}
         self.drag_glide=Some(glide);
@@ -3007,18 +3071,18 @@ impl App {
         if self.open && reveal>0.95 && p>0.98 && !self.is_editing() && !self.drag_hot {
             if let Some(screen)=env.screen {
                 // 中间的日期时间区不占用两侧的新增、刷新和设置按钮。
-                let left=hd.max(150.0).max(left);let right=(hc+clock_w*fit).min(303.0).min(right);
+                let left=(hd-12.0).max(140.0).max(left);let right=(hc+clock_w*fit+12.0).min(303.0).min(right);
                 if right>left {
                     // Windows 没有「抓手」光标，Grab 会变成四向箭头；保持普通箭头，改用岛体内的把手提示。
                     let response=base.hit_drag(left,4.0,right-left,26.0,"island-position").on_hover_text("按住拖动位置");
                     let (_,press)=base.hover_t(&response);
-                    // 停留才显现：划过（< 0.3 s）什么都不出现；先露出把手，再慢慢浮起底色；按下立即到位，移开快速淡出。
+                    // 展开时保留淡把手；悬停后加亮，按下立即反馈。
                     let dwell=(if response.hovered() {self.t-*self.grip_hover_since.get_or_insert(self.t)}else{self.grip_hover_since=None;0.0}) as f32;
                     if response.hovered() && dwell<1.2 {base.ui.ctx().request_repaint();}
                     let ctx=base.ui.ctx();
                     let grip_in=ctx.animate_value_with_time(response.id.with("grip"),smoothstep(0.30,0.65,dwell),0.12);
                     let fill_in=ctx.animate_value_with_time(response.id.with("grip-fill"),smoothstep(0.50,1.00,dwell),0.12);
-                    let (grip_in,fill_in)=(grip_in.max(press),fill_in.max(press));
+                    let (grip_in,fill_in)=(grip_in.max(press).max(0.40),fill_in.max(press));
                     if grip_in>0.003 {
                         let pad=6.0;
                         let (x,w)=(left-pad,right-left+pad*2.0);

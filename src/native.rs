@@ -33,6 +33,7 @@ const WS_EX_NOREDIRECTIONBITMAP: isize = 0x0020_0000;
 static HIT: OnceLock<Mutex<Vec<(i32, i32, i32, i32)>>> = OnceLock::new();
 /// 前台窗口切到别的进程时置位，由主线程消费。
 static FG_CHANGED: AtomicBool = AtomicBool::new(false);
+static DISPLAY_CHANGED: AtomicBool = AtomicBool::new(false);
 // 前台事件在安装钩子的 UI 线程上派发。
 thread_local! {
     static FG_CONTEXT: std::cell::RefCell<Option<eframe::egui::Context>> = const { std::cell::RefCell::new(None) };
@@ -260,6 +261,7 @@ unsafe extern "system" fn subclass(
     _id: usize,
     _data: usize,
 ) -> LRESULT {
+    if msg==WM_DISPLAYCHANGE {DISPLAY_CHANGED.store(true,Ordering::Relaxed);}
     if matches!(msg,WM_DWMCOMPOSITIONCHANGED|WM_DISPLAYCHANGE|WM_DWMCOLORIZATIONCOLORCHANGED)
         || (msg==WM_SHOWWINDOW && wp.0!=0) {
         // 隐藏创建到首次显示、隐藏后恢复时也要恢复透明；等框架处理完窗口状态再应用。
@@ -676,6 +678,8 @@ impl Window {
         unsafe { GetWindowRect(self.hwnd,&mut r).ok()?; }
         Some(eframe::egui::pos2(r.left as f32/scale,r.top as f32/scale))
     }
+
+    pub fn take_display_change(&self)->bool {DISPLAY_CHANGED.swap(false,Ordering::Relaxed)}
 
     pub fn take_foreground_change(&mut self)->bool {
         let changed=FG_CHANGED.swap(false,Ordering::Relaxed);
