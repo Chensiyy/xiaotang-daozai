@@ -63,6 +63,8 @@
 
 目标：材质能作为插件安装、启用、调参和停用。
 
+0. 第 2 阶段审查遗留：停靠方向目前用 `@binding(3)` 的 `DaozaiHost` 传入，插件着色器也能读到它，等于多了一个未写进接口的字段。改为放进 `Frame.count.y`（0 顶部、1 左侧、2 右侧），删除 `binding(3)` 和 `DaozaiHost`，`Frame` 仍为 1024 字节。同步更新设计稿 `Frame` 注释，`prelude.wgsl` 里 `body_sdf` 改读 `frame.count.y`，补一条单元测试确认插件声明 `binding(3)` 也会被拒绝。
+
 1. 清单：
    - `spike/local.rs` 的校验接受 `runtime: "material"`、`owner: "appearance"`、`capabilities` 含 `appearance.material`；
    - 新增 `material` 字段（`controls`、`spring`）和 `number` 设置类型（`min`、`max`、`step`，最多 32 个）；

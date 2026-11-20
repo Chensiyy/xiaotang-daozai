@@ -73,7 +73,7 @@ struct Frame {
   env     : vec4<f32>,   // 时间 s、背景平均亮度 0..1、物理像素/逻辑点、是否透明交换链
   tint    : vec4<f32>,   // 封面主色 rgb、强度
   tex     : vec4<f32>,   // 底片纹理宽、高、有效区宽、高
-  count   : vec4<u32>,   // 控件数量、保留
+  count   : vec4<u32>,   // 控件数量、停靠方向（0 顶部、1 左侧、2 右侧）、保留、保留
   ctl_rect  : array<vec4<f32>, 16>, // 控件 x,y,w,h（抓取矩形内 px）
   ctl_shape : array<vec4<f32>, 16>, // 圆角半径、启用、悬停 0..1、按下 0..1
   ctl_spring: array<vec4<f32>, 16>, // 弹簧位移 x、y、缩放、保留
