@@ -445,6 +445,8 @@ pub struct FrameOut {
     pub glass: Option<Vec<GlassShape>>,
     #[cfg(all(windows, feature = "sdk-material"))]
     pub(crate) material_layer: Option<crate::material::Layer>,
+    /// 超长常驻条实际占用的窗口轮廓，透明留白交给下层窗口。
+    pub resident_clip: Option<Vec<GlassShape>>,
     /// 鼠标命中区（相对 `win` 左上角），区域外点击穿透到下层窗口。
     pub hit: Rect,
     /// 切到较矮页面时，原页边缘临时保留的续滚范围，不参与绘制或点击命中。
@@ -2459,8 +2461,8 @@ impl App {
                 }
             }
         });
-        // 毛玻璃：窗口区域只取岛体与浮层的真实轮廓，系统模糊不会溢出到透明画布上。
-        let glass_region=(glass_skin && self.settings.glass_blur || env.opaque_surface).then(||{
+        // 原生模糊与窗口裁剪共用岛体和浮层的绘制轮廓。
+        let outlines=||{
             let outline=|r:Rect,flare:f32,flare_h:f32,radius:f32| if pill {GlassShape::Round(rel(r),radius.min(r.height().min(r.width())*0.5))}
                 else if dock!=model::Dock::Top {GlassShape::Docked{rect:rel(r),dock,flare,flare_h,radius}} else {GlassShape::Notch{rect:rel(r),flare,flare_h,radius}};
             let mut shapes=vec![outline(body,flare,flare_h,radius)];
@@ -2472,7 +2474,12 @@ impl App {
             if let Some(r)=floating_toast {shapes.push(GlassShape::Round(rel(r),11.0));}
             shapes.extend(tooltips.iter().map(|r|GlassShape::Round(rel(*r),6.0)));
             shapes
-        });
+        };
+        // 常驻条宽于展开面板时，两端的动画留白会盖住相邻窗口按钮。
+        let resident_clip=(!side && !self.open && pc<=0.1 && body.width()>PW && lifted<0.001 && self.drag_stretch.pos.abs()<=0.001 && !self.drag_hot
+            && center_guide.is_none() && self.shelf_menu_rect.is_none()).then(&outlines);
+        let glass_region=(glass_skin && self.settings.glass_blur || env.opaque_surface)
+            .then(||resident_clip.clone().unwrap_or_else(outlines));
         self.update_position_drag(&ctx,env,dt);
         let water_view_transition = self.open && self.page == WATER_PAGE && self.subpage.is_none() && !self.sit_mode
             // 点击在本帧推进弹簧之后处理，先识别尚未同步的目标。
@@ -2533,6 +2540,7 @@ impl App {
             glass: glass_region,
             #[cfg(all(windows, feature = "sdk-material"))]
             material_layer,
+            resident_clip,
             hit: rel(next_hit),
             page_scroll_area:self.page_scroll_area.map(rel),
             click_through: minimal_strip && !self.open && self.position_drag.is_none(),
@@ -2567,7 +2575,7 @@ impl App {
             Rect::from_min_size(Pos2::new(cx - PW / 2.0 - 4.0, top), Vec2::new(PW + 8.0, self.expanded_height() + 2.0))
         } else {
             let (bw,bh)=self.base_size();
-            let (hit_w,hit_h)=(bw+12.0,bh+4.0);
+            let (hit_w,hit_h)=if bw>PW {(self.w.pos.min(bw),bh)}else{(bw+12.0,bh+4.0)};
             Rect::from_min_size(Pos2::new(cx-hit_w/2.0,top),Vec2::new(hit_w,hit_h))
         }
     }
