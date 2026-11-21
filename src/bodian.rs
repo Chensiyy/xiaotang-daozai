@@ -186,6 +186,10 @@ fn metadata(value:&serde_json::Value,title:&str,duration:f64)->Option<(NowPlayin
     Some((NowPlaying{source:"bodian_pc.exe".into(),title:title.into(),artist:artist.into(),album:album.into(),song_id:Some(song_id),
         playback_type:MediaKind::Music,..Default::default()},cover))
 }
+/// 本机歌曲库还没有这首歌时的临时信息：只有歌名，没有歌手、封面和歌曲 ID。
+fn pending(title:&str)->(NowPlaying,String){
+    (NowPlaying{source:"bodian_pc.exe".into(),title:title.into(),playback_type:MediaKind::Music,..Default::default()},String::new())
+}
 fn read_metadata(title:&str,duration:f64)->Option<(NowPlaying,String)>{
     let path=CString::new(data_root()?.join("database/songDB.db").to_str()?).ok()?;
     unsafe {
@@ -237,7 +241,8 @@ impl Reader {
         if self.metadata.is_none() && self.lookup.is_none_or(|at|at.elapsed()>=Duration::from_secs(1)) {
             self.lookup=Some(Instant::now());self.metadata=read_metadata(&title,duration);
         }
-        let (mut media,url)=self.metadata.clone()?;
+        // 波点要播放一会儿才把新歌写进本机歌曲库：查到之前先只显示歌名，查到后补上歌手、封面和歌曲 ID（换歌后不再整段空白）。
+        let (mut media,url)=self.metadata.clone().unwrap_or_else(||pending(&title));
         media.position=position;media.duration=duration;media.playing=playing;media.sampled_at=Some(sampled_at);
         media.artwork=self.cover.get_with(&url,fetch_cover);Some(media)
     }
@@ -375,15 +380,18 @@ fn discovery_due(last:Option<Instant>,hint:impl FnOnce()->bool)->bool{
     since.is_none_or(|since|since>=DISCOVER_FALLBACK) || since.is_some_and(|since|since>=DISCOVER_HINTED) && hint()
 }
 
-/// 便宜的线索：波点（Flutter 程序）的主窗口属于 bodian_pc.exe。窗口类名若被改，仍有 30 秒一次的兜底查找。
+/// 便宜的线索：波点主窗口（实测类名 BODIAN_FLUTTER_WIN32_WINDOW，也兼容 Flutter 默认类名）属于 bodian_pc.exe。
+/// 窗口类名若再被改，仍有 30 秒一次的兜底查找。
 fn window_hint()->bool{
     use windows::{core::{w,PCWSTR},Win32::{Foundation::HWND,UI::WindowsAndMessaging::{FindWindowExW,GetWindowThreadProcessId}}};
-    let mut after=HWND::default();
-    for _ in 0..16 {
-        let Ok(window)=(unsafe{FindWindowExW(HWND::default(),after,w!("FLUTTER_RUNNER_WIN32_WINDOW"),PCWSTR::null())})else{return false;};
-        let mut pid=0;unsafe{GetWindowThreadProcessId(window,Some(&mut pid));}
-        if super::player_process::image_is(pid,"bodian_pc.exe"){return true;}
-        after=window;
+    for class in [w!("BODIAN_FLUTTER_WIN32_WINDOW"),w!("FLUTTER_RUNNER_WIN32_WINDOW")] {
+        let mut after=HWND::default();
+        for _ in 0..16 {
+            let Ok(window)=(unsafe{FindWindowExW(HWND::default(),after,class,PCWSTR::null())})else{break;};
+            let mut pid=0;unsafe{GetWindowThreadProcessId(window,Some(&mut pid));}
+            if super::player_process::image_is(pid,"bodian_pc.exe"){return true;}
+            after=window;
+        }
     }
     false
 }
@@ -397,4 +405,31 @@ fn discovery_without_a_window_hint_falls_back_to_a_slow_check(){
     assert!(!discovery_due(ago(4),||false),"没有线索时不做 3 秒一次的进程快照");
     assert!(discovery_due(ago(31),||false),"窗口线索失效也能在 30 秒内找到");
     let mut asked=false;assert!(!discovery_due(ago(1),||{asked=true;true}));assert!(!asked,"未到 3 秒不查窗口");
+}
+
+#[test]
+#[ignore="需要本机波点正在播放：连续读 20 秒，打印每次读到的歌名、进度和是否找到播放器，用于排查切歌后不显示"]
+fn live_bodian_trace(){
+    let mut reader=Reader::default();
+    let started=Instant::now();
+    while started.elapsed()<Duration::from_secs(45) {
+        let media=reader.poll();
+        if let Some(target)=reader.target {
+            if let Some(process)=Process::open(target.pid) {
+                let mut cursor=0;let pb=playback(&process,target,&mut cursor);
+                println!("   播放引擎：{pb:?}");
+                if let Some((title,_,_,duration,_))=&pb {println!("   本机歌曲库：{}",read_metadata(title,*duration).map_or("没找到".into(),|(m,_)|format!("{} - {}",m.title,m.artist)));}
+            }
+        }
+        println!("{:>5.1}s 窗口线索{} 已找到{} → {}",started.elapsed().as_secs_f32(),window_hint(),reader.target.is_some(),
+            media.map_or("无".into(),|m|format!("{} - {} {:.1}/{:.1} 播放{}",m.title,m.artist,m.position,m.duration,m.playing)));
+        std::thread::sleep(Duration::from_millis(1000));
+    }
+}
+
+#[test]
+fn a_song_not_yet_in_the_local_library_still_shows_its_title(){
+    let (media,cover)=pending("一剪梅");
+    assert_eq!((media.title.as_str(),media.artist.as_str(),media.song_id,cover.as_str()),("一剪梅","",None,""));
+    assert!(media.is_music(),"只有歌名也按歌曲显示");
 }
