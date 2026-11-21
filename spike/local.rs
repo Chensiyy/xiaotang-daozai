@@ -129,12 +129,18 @@ struct Record {
     origin: PathBuf,
     #[serde(default)]
     from_market: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    official_market: bool,
     package: Option<Package>,
     enabled: bool,
     values: Values,
     storage: Value,
     #[serde(default)]
     material_granted: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 impl Record {
@@ -498,7 +504,9 @@ struct Job {
 pub struct LocalPlugins {
     jobs: BTreeMap<String, Job>,
     #[cfg(windows)]
-    market_catalog: Option<market::Catalog>,
+    market_catalog: Option<std::sync::Arc<market::Catalog>>,
+    #[cfg(windows)]
+    official_market: market_state::OfficialMarket,
     #[cfg(windows)]
     market_job: Option<market_state::MarketJob>,
     invalid: std::collections::BTreeSet<String>,
@@ -521,6 +529,8 @@ impl LocalPlugins {
             jobs: BTreeMap::new(),
             #[cfg(windows)]
             market_catalog: None,
+            #[cfg(windows)]
+            official_market: Default::default(),
             #[cfg(windows)]
             market_job: None,
             invalid: Default::default(),
@@ -707,6 +717,7 @@ impl LocalPlugins {
         let mut record = Record {
             origin: path.clone(),
             from_market: false,
+            official_market: false,
             values: Values::new(),
             enabled: false,
             package: None,

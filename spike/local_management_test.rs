@@ -219,10 +219,23 @@ fn market_buttons_install_and_update_an_existing_sample() -> Result<()> {
         }
         assert!(!host.market_busy(), "测试集市操作未完成");
     };
-    click_button(&mut host, "插件集市");
+    let official = frame(&ctx, vec![], |ui| draw(&mut host, ui));
+    assert!(has_text(&official, "刷新目录"));
+    assert!(!has_text(&official, "发薪倒计时"));
+    assert!(!has_text(&official, "导入测试集市目录…"));
+    click_button(&mut host, "我的插件 · 0");
+    click_button(&mut host, "开发者模式");
+    let developers = frame(&ctx, vec![], |ui| draw(&mut host, ui));
+    assert!(has_text(&developers, "导入测试集市目录…"));
+    click_button(&mut host, "打开测试集市");
+    assert!(has_text(
+        &frame(&ctx, vec![], |ui| draw(&mut host, ui)),
+        "本地测试集市"
+    ));
     click_button(&mut host, "安装");
     finish(&mut host);
     assert!(!host.records["example.payday"].enabled);
+    click_button(&mut host, "返回我的插件");
     click_button(&mut host, "启用");
     assert!(host.records["example.payday"].enabled);
 
@@ -235,7 +248,7 @@ fn market_buttons_install_and_update_an_existing_sample() -> Result<()> {
     let second = files.join("second.zip");
     market::pack(&updated, &second)?;
     market::submit(&second, &catalog)?;
-    click_button(&mut host, "插件集市");
+    click_button(&mut host, "打开测试集市");
     click_button(&mut host, "刷新目录");
     let available = frame(&ctx, vec![], |ui| draw(&mut host, ui));
     assert!(has_text(&available, "已安装 v1.0.0"));

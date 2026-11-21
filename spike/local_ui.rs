@@ -8,6 +8,8 @@ use crate::{
     theme::{self, W},
 };
 use eframe::egui::{self, Color32};
+#[cfg(windows)]
+use std::sync::Arc;
 
 const COVERS: &str = "settings-plugin-covers";
 type CoverCache = std::collections::VecDeque<(egui::Id, Option<egui::TextureHandle>)>;
@@ -22,7 +24,7 @@ fn plugin_cover(
     width: f32,
     radius: egui::CornerRadius,
     placeholder: &str,
-    load: impl FnOnce() -> Option<Vec<u8>>,
+    load: impl FnOnce() -> Option<std::result::Result<Vec<u8>, ()>>,
 ) -> bool {
     let size = egui::vec2(width, width * 9.0 / 16.0);
     let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
@@ -51,12 +53,17 @@ fn plugin_cover(
             budget.1 += 1;
             true
         });
+    let mut pending = queued;
     let texture = if queued {
         ui.ctx().request_repaint();
         None
     } else {
         cached.unwrap_or_else(|| {
-            let texture = load().and_then(|png| {
+            let Some(result) = load() else {
+                pending = true;
+                return None;
+            };
+            let texture = result.ok().and_then(|png| {
                 let image =
                     image::load_from_memory_with_format(&png, image::ImageFormat::Png).ok()?;
                 let (w, h) = (image.width(), image.height());
@@ -99,7 +106,7 @@ fn plugin_cover(
         ui.painter().text(
             rect.center(),
             egui::Align2::CENTER_CENTER,
-            if queued {
+            if pending {
                 "正在加载封面…"
             } else {
                 placeholder
@@ -174,7 +181,15 @@ fn market_button(ui: &egui::Ui, text: &str) -> egui::Button<'static> {
 }
 
 #[cfg(windows)]
-fn plugin_tabs(ui: &mut egui::Ui, show_market: &mut bool, installed: usize) {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PluginPage {
+    Market,
+    Mine,
+    TestMarket,
+}
+
+#[cfg(windows)]
+fn plugin_tabs(ui: &mut egui::Ui, page: &mut PluginPage, installed: usize) {
     let accent = color(
         ui.ctx(),
         Color32::from_rgb(165, 148, 228),
@@ -198,8 +213,12 @@ fn plugin_tabs(ui: &mut egui::Ui, show_market: &mut bool, installed: usize) {
             ui.spacing_mut().item_spacing.x = 20.0;
             ui.spacing_mut().button_padding = egui::vec2(1.0, 4.0);
             let mine = format!("我的插件 · {installed}");
-            for (market, title) in [(true, "插件集市"), (false, mine.as_str())] {
-                let selected = market == *show_market;
+            for (target, title) in [
+                (PluginPage::Market, "插件集市"),
+                (PluginPage::Mine, mine.as_str()),
+            ] {
+                let selected = target == *page
+                    || (target == PluginPage::Mine && *page == PluginPage::TestMarket);
                 let text = egui::RichText::new(title).size(13.0);
                 let text = if selected {
                     text.strong()
@@ -216,7 +235,7 @@ fn plugin_tabs(ui: &mut egui::Ui, show_market: &mut bool, installed: usize) {
                     );
                 }
                 if response.clicked() {
-                    *show_market = market;
+                    *page = target;
                     active_rect = response.rect;
                 } else if selected {
                     active_rect = response.rect;
@@ -386,65 +405,73 @@ impl LocalPlugins {
     }
 
     #[cfg(windows)]
-    fn market(&mut self, ui: &mut egui::Ui) -> bool {
+    fn market(&mut self, ui: &mut egui::Ui, official: bool) -> bool {
+        if official {
+            self.ensure_official_catalog();
+        }
         let busy = self.market_busy();
-        ui.add_enabled_ui(!busy, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                let import = if self.market_catalog.is_some() {
-                    egui::Button::new("导入目录…")
+        let syncing = official && self.official_catalog_busy();
+        let exit_test = ui
+            .horizontal_wrapped(|ui| {
+                let exit_test = if official {
+                    false
                 } else {
-                    market_button(ui, "导入目录…")
+                    ui.strong("本地测试集市");
+                    ui.button("返回我的插件").clicked()
                 };
-                if ui.add(import).clicked() {
-                    match crate::system::pick_files_for("选择插件测试集市的 catalog.json", false)
-                    {
-                        Ok(paths) => {
-                            if let Some(path) = paths.first() {
-                                self.notice = match self.set_market_catalog(path) {
-                                    Ok(()) => {
-                                        forget_covers(ui);
-                                        "已加载集市目录".into()
-                                    }
-                                    Err(e) => e.to_string(),
-                                };
+                if ui
+                    .add_enabled(!busy && !syncing, egui::Button::new("刷新目录"))
+                    .clicked()
+                {
+                    if official {
+                        forget_covers(ui);
+                        self.refresh_official_catalog();
+                    } else {
+                        self.notice = match self.refresh_market_catalog() {
+                            Ok(()) => {
+                                forget_covers(ui);
+                                "目录已刷新".into()
                             }
-                        }
-                        Err(e) => self.notice = e.to_string(),
+                            Err(e) => e.to_string(),
+                        };
                     }
                 }
-                if self.market_catalog.is_some() && ui.button("刷新目录").clicked() {
-                    self.notice = match self.refresh_market_catalog() {
-                        Ok(()) => {
-                            forget_covers(ui);
-                            "目录已刷新".into()
-                        }
-                        Err(e) => e.to_string(),
-                    };
-                }
-            });
-        });
+                exit_test
+            })
+            .inner;
+        if exit_test {
+            return true;
+        }
         ui.add_space(6.0);
-        if busy {
+        if syncing || busy {
             ui.horizontal(|ui| {
                 ui.spinner();
-                ui.label("正在校验插件包…");
+                ui.label(if syncing {
+                    "正在同步插件集市…"
+                } else {
+                    "正在校验插件包…"
+                });
             });
             ui.add_space(4.0);
         }
-        let Some(catalog) = self.market_catalog.as_ref() else {
-            settings_card(ui, |ui| {
-                ui.strong("尚未导入测试集市");
-                settings_hint(
-                    ui,
-                    "导入本机的 catalog.json，即可查看、安装和更新里面的插件。",
-                );
-            });
+        let catalog = self.market_catalog(official);
+        if official && !syncing {
+            if let Some(error) = self.official_catalog_error() {
+                let text = if catalog.is_some() {
+                    "同步失败，正在显示上次的集市目录"
+                } else {
+                    "暂时无法加载集市，请刷新重试"
+                };
+                ui.label(text).on_hover_text(error);
+                ui.add_space(4.0);
+            }
+        }
+        let Some(catalog) = catalog else {
             return false;
         };
         if catalog.entries.is_empty() {
             settings_card(ui, |ui| {
                 ui.strong("目录中暂无插件");
-                settings_hint(ui, "作者提交插件后，刷新目录即可查看。");
             });
         }
         let columns = if ui.available_width() >= 575.0 {
@@ -459,10 +486,10 @@ impl LocalPlugins {
         for row in catalog.entries.chunks(columns) {
             ui.columns(columns, |cells| {
                 for (ui, entry) in cells.iter_mut().zip(row) {
-                    let state = self.market_status(entry);
+                    let state = self.market_status(&catalog, entry);
                     let clicked = ui
                         .push_id(&entry.id, |ui| {
-                            self.market_card(ui, catalog, entry, state, columns == 3)
+                            self.market_card(ui, &catalog, entry, state, columns == 3)
                         })
                         .inner;
                     if clicked {
@@ -478,7 +505,7 @@ impl LocalPlugins {
         }
         if let Some(id) = action {
             self.notice = self
-                .market_action(&id)
+                .market_action(official, &id)
                 .err()
                 .map(|e| e.to_string())
                 .unwrap_or_default();
@@ -489,9 +516,9 @@ impl LocalPlugins {
 
     #[cfg(windows)]
     fn market_card(
-        &self,
+        &mut self,
         ui: &mut egui::Ui,
-        catalog: &market::Catalog,
+        catalog: &Arc<market::Catalog>,
         entry: &market::Entry,
         state: MarketStatus,
         wide_grid: bool,
@@ -520,7 +547,14 @@ impl LocalPlugins {
                         se: 0,
                     },
                     "封面不可用",
-                    || catalog.cover_png(entry).ok(),
+                    || {
+                        if catalog.is_official() {
+                            self.official_cover(catalog, entry)
+                                .map(|cover| cover.map(|png| png.bytes().to_vec()))
+                        } else {
+                            Some(catalog.cover_png(entry).map_err(|_| ()))
+                        }
+                    },
                 );
                 egui::Frame::new()
                     .inner_margin(egui::Margin::symmetric(12, 10))
@@ -618,33 +652,45 @@ impl LocalPlugins {
             .map(|(id, _)| id.clone())
             .collect();
         #[cfg(windows)]
-        let (page, show_market) = {
+        let (page_id, page) = {
             let was_busy = self.market_busy();
             self.poll_market();
-            if self.market_busy() {
+            if self.market_pending() {
                 ui.ctx().request_repaint_after(Duration::from_millis(32));
-            } else if was_busy {
+            }
+            if was_busy && !self.market_busy() {
                 ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
             }
-            let page = egui::Id::new("settings-plugins-market");
-            let previous = ui
-                .data(|data| data.get_temp::<bool>(page))
-                .unwrap_or(ids.is_empty());
-            let mut show_market = previous;
-            plugin_tabs(ui, &mut show_market, ids.len());
-            if show_market != previous {
-                ui.data_mut(|data| data.insert_temp(page, show_market));
+            let id = egui::Id::new("settings-plugins-market");
+            let previous =
+                ui.data(|data| data.get_temp::<PluginPage>(id))
+                    .unwrap_or(if ids.is_empty() {
+                        PluginPage::Market
+                    } else {
+                        PluginPage::Mine
+                    });
+            let mut page = previous;
+            plugin_tabs(ui, &mut page, ids.len());
+            if page != previous {
+                ui.data_mut(|data| data.insert_temp(id, page));
+                if page == PluginPage::Market {
+                    forget_covers(ui);
+                    self.refresh_official_catalog();
+                }
             }
-            (page, show_market)
+            (id, page)
         };
         if !self.notice.is_empty() {
             settings_hint(ui, &self.notice);
             ui.add_space(4.0);
         }
         #[cfg(windows)]
-        if show_market {
-            if self.market(ui) {
-                ui.data_mut(|data| data.insert_temp(page, false));
+        if page != PluginPage::Mine {
+            if self.market(ui, page == PluginPage::Market) {
+                ui.data_mut(|data| data.insert_temp(page_id, PluginPage::Mine));
+            }
+            if self.market_pending() {
+                ui.ctx().request_repaint_after(Duration::from_millis(32));
             }
             return None;
         }
@@ -657,7 +703,9 @@ impl LocalPlugins {
                 settings_hint(ui, "装好后可以在这里管理。");
                 #[cfg(windows)]
                 if ui.add(market_button(ui, "去插件集市")).clicked() {
-                    ui.data_mut(|data| data.insert_temp(page, true));
+                    forget_covers(ui);
+                    self.refresh_official_catalog();
+                    ui.data_mut(|data| data.insert_temp(page_id, PluginPage::Market));
                 }
             });
         }
@@ -700,7 +748,7 @@ impl LocalPlugins {
                             width,
                             egui::CornerRadius::same(7),
                             "暂无封面",
-                            || cover.as_ref().map(|cover| cover.bytes().to_vec()),
+                            || Some(cover.as_ref().map(|cover| cover.bytes().to_vec()).ok_or(())),
                         );
                         ui.vertical(|ui| {
                             ui.spacing_mut().item_spacing.y = 3.0;
@@ -834,6 +882,31 @@ impl LocalPlugins {
         {
             ui.add_space(6.0);
             ui.collapsing("开发者模式", |ui| {
+                if ui.button("导入测试集市目录…").clicked() {
+                    match crate::system::pick_files_for("选择测试集市的 catalog.json", false)
+                    {
+                        Ok(paths) => {
+                            if let Some(path) = paths.first() {
+                                match self.set_market_catalog(path) {
+                                    Ok(()) => {
+                                        forget_covers(ui);
+                                        self.notice.clear();
+                                        ui.data_mut(|data| {
+                                            data.insert_temp(page_id, PluginPage::TestMarket)
+                                        });
+                                    }
+                                    Err(e) => self.notice = e.to_string(),
+                                }
+                            }
+                        }
+                        Err(e) => self.notice = e.to_string(),
+                    }
+                }
+                if self.market_catalog(false).is_some() && ui.button("打开测试集市").clicked()
+                {
+                    self.notice.clear();
+                    ui.data_mut(|data| data.insert_temp(page_id, PluginPage::TestMarket));
+                }
                 if ui.button("安装本地插件…").clicked() {
                     match crate::system::pick_files_for("选择本地插件的 plugin.json", false)
                     {
