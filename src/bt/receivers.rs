@@ -279,7 +279,7 @@ mod tests {
             let baseline = snapshot();
             assert_eq!(baseline.len(), 1);
             assert_eq!(baseline[0].name, "小米无线键鼠套装 2");
-            let mut data = Files::builtin();
+            let mut data = Files::external();
             data["version"] = json!("1.1.0");
             data["receivers"] = json!([
                 {"vid":"2717","pid":"5055","name":"兼容包里的同型号名称"},
@@ -331,7 +331,7 @@ mod tests {
             assert_eq!(xiaomi[0].battery, None);
         };
         assert_xiaomi();
-        let mut data = Files::builtin();
+        let mut data = Files::external();
         data["version"] = json!("1.0.1");
         data["receivers"] = json!([{"vid":"2717","pid":"5055","name":"兼容包里的同型号名称"}]);
         store.install(&files.write(&data)).unwrap();
