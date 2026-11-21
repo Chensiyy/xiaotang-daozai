@@ -745,7 +745,7 @@ impl eframe::App for Shell {
             let region=if self.hidden {(0.0,0.0,0.0,0.0)} else {r(out.region)};
             let hit=if self.hidden || out.click_through && out.notice_hit.is_none() {(0.0,0.0,0.0,0.0)} else {r(out.hit)};
             native.set_page_scroll_area(out.page_scroll_area.filter(|_|!self.hidden && out.expanded),ctx.pixels_per_point());
-            native.update(region, hit, if self.hidden{None}else{out.notice_hit.map(r)},if self.hidden{None}else{out.file_drop_zone.map(r)},if self.hidden {None}else{out.glass.as_deref()},ctx.pixels_per_point(), out.editing && !self.hidden, !self.hidden && out.expanded);
+            native.update(region, hit, if self.hidden{None}else{out.notice_hit.map(r)},if self.hidden{None}else{out.file_drop_zone.map(r)},if self.hidden {None}else{out.glass.as_deref()},ctx.pixels_per_point(), out.editing && !self.hidden, !self.hidden && out.expanded,if self.hidden {None}else{out.resident_clip.as_deref()});
             if !self.hidden && self.app.settings.avoids_top_bar() && self.app.settings.top_bar_on_top && self.app.settings.dock==daozai::model::Dock::Top {
                 if let Some(display)=daozai::display_layout::selected(&self.app.displays,&self.app.settings.display_id) {
                     native.keep_above_top_bar(display.bounds);

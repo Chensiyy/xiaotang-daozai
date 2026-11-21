@@ -707,6 +707,7 @@ impl Window {
         ppp: f32,
         editing: bool,
         expanded: bool,
+        resident_clip: Option<&[crate::app::GlassShape]>,
     ) {
         let px = |v: f32| (v * ppp).round() as i32;
         let r = (px(region.0), px(region.1), px(region.0 + region.2), px(region.1 + region.3));
@@ -736,8 +737,7 @@ impl Window {
         let passive=r.2>r.0 && r.3>r.1 && h.2==h.0 && notice_hit.is_none() && !capture;
         if let Some((x,y,w,h))=notice_hit {hits.push((px(x),px(y),px(x+w),px(y+h)));}
         *hit().lock().unwrap_or_else(|e| e.into_inner()) = hits;
-        // 毛玻璃：合成引擎的模糊块贴合岛体轮廓，窗口区域仍用矩形（含阴影与拖放感应区）。
-        let _ = capture;
+        // 合成引擎的模糊块贴合岛体轮廓。
         // 分层窗口显示的是带真实透明通道的画面时，系统模糊同样能透出来（模糊底板紧贴在岛仔窗口下方，
         // 分层显示窗口在上方）；只有轮廓裁剪或按轮廓补 alpha（内部不透明）时才关掉模糊。
         let layered_alpha=matches!(self.layering,Layering::Active(_)) && !self.outline.active;
@@ -782,7 +782,9 @@ impl Window {
         }
         // 不可靠的透明合成路径按真实轮廓裁剪，避免圆角外侧和透明画布留下黑底。
         let outline_clip=self.opaque_surface && !hold_startup && !matches!(self.layering,Layering::Active(_));
-        match glass.filter(|_|outline_clip) {
+        // 跨进程输入由系统窗口区域先分派；透明的动画预留区不能只靠 WM_NCHITTEST 放行。
+        let resident_clip=resident_clip.filter(|_|!capture && !hold_startup && r.0<r.2 && r.1<r.3);
+        match resident_clip.or_else(||glass.filter(|_|outline_clip)) {
             Some(shapes) => {
                 let key=glass_key(shapes,ppp);
                 if self.glass.as_ref()!=Some(&key) {
@@ -894,7 +896,7 @@ mod tests {
             {
                 let mut native=Window{hwnd,capture_exclusion:Default::default(),layering:Layering::Pending,region:(0,0,0,0),expanded:false,hook:HWINEVENTHOOK::default(),page_wheel_hook:None,browser_state:(None,PollClock::now()),drag_capture:DragCapture::default(),glass:None,backdrop:None,blur:false,blur_unavailable,opaque_surface:surface_needs_outline_clip(backend,vendor,renderer),outline:ShapeAlpha::default()};
                 let shapes=[crate::app::GlassShape::Round(eframe::egui::Rect::from_min_max(eframe::egui::pos2(80.0,60.0),eframe::egui::pos2(320.0,160.0)),25.0)];
-                native.update((0.0,0.0,400.0,200.0),(80.0,60.0,240.0,100.0),None,None,Some(&shapes),ppp,false,false);
+                native.update((0.0,0.0,400.0,200.0),(80.0,60.0,240.0,100.0),None,None,Some(&shapes),ppp,false,false,None);
                 let region=CreateRectRgn(0,0,0,0);
                 GetWindowRgn(hwnd,region);
                 assert!(PtInRegion(region,px(200.0),px(100.0)).as_bool());
@@ -902,7 +904,7 @@ mod tests {
                 assert!(!PtInRegion(region,px(81.0),px(61.0)).as_bool(),"圆角外侧必须透出桌面");
                 assert!(!native.blur);
                 assert!(native.backdrop.is_none(),"轮廓兼容模式不能再启用独立模糊底板");
-                native.update((0.0,0.0,0.0,0.0),(0.0,0.0,0.0,0.0),None,None,None,ppp,false,false);
+                native.update((0.0,0.0,0.0,0.0),(0.0,0.0,0.0,0.0),None,None,None,ppp,false,false,None);
                 GetWindowRgn(hwnd,region);
                 assert!(!PtInRegion(region,px(200.0),px(100.0)).as_bool(),"隐藏时不能留下上一帧轮廓");
                 let _=DeleteObject(region);
@@ -931,7 +933,7 @@ mod tests {
                 let opaque=[0u8,0,0,255].repeat(w*h);
                 assert!(!native.present_frame([w,h],&opaque),"还没收到轮廓时先保持轮廓裁剪");
                 assert!(matches!(native.layering,Layering::Pending));
-                native.update((0.0,0.0,w as f32,h as f32),(80.0,0.0,240.0,60.0),None,None,Some(&shapes),1.0,false,false);
+                native.update((0.0,0.0,w as f32,h as f32),(80.0,0.0,240.0,60.0),None,None,Some(&shapes),1.0,false,false,None);
                 assert!(native.wants_frames());
                 assert!(native.present_frame([w,h],&opaque),"读不到透明通道也要切到分层窗口");
                 assert!(matches!(native.layering,Layering::Active(_)) && native.outline.active);
@@ -943,7 +945,7 @@ mod tests {
                 assert!(soft>=80,"圆角和肩部要有抗锯齿过渡像素，实际 {soft}");
                 assert!(frame.chunks_exact(4).all(|p|p[0]<=p[3]&&p[1]<=p[3]&&p[2]<=p[3]),"必须是合法的预乘颜色");
                 // 切到分层窗口后不再用轮廓裁剪岛仔窗口本身。
-                native.update((0.0,0.0,w as f32,h as f32),(80.0,0.0,240.0,60.0),None,None,Some(&shapes),1.0,false,false);
+                native.update((0.0,0.0,w as f32,h as f32),(80.0,0.0,240.0,60.0),None,None,Some(&shapes),1.0,false,false,None);
                 let region=CreateRectRgn(0,0,0,0);
                 if GetWindowRgn(hwnd,region).0!=0 {assert!(PtInRegion(region,10,150).as_bool(),"分层显示后窗口区域应回到矩形");}
                 let _=DeleteObject(region);
@@ -965,7 +967,7 @@ mod tests {
             {
                 let mut native=Window{hwnd,capture_exclusion:Default::default(),layering:Layering::Starting(None),region:(i32::MIN,0,0,0),expanded:false,hook:HWINEVENTHOOK::default(),page_wheel_hook:None,browser_state:(None,PollClock::now()),drag_capture:DragCapture::default(),glass:None,backdrop:None,blur:false,blur_unavailable:true,opaque_surface:true,outline:ShapeAlpha::default()};
                 let shapes=[GlassShape::Round(Rect::from_min_max(pos2(3.0,1.0),pos2(28.0,14.0)),4.0)];
-                let update=|window:&mut Window| window.update((0.0,0.0,32.0,16.0),(3.0,1.0,25.0,13.0),None,None,Some(&shapes),1.0,false,false);
+                let update=|window:&mut Window| window.update((0.0,0.0,32.0,16.0),(3.0,1.0,25.0,13.0),None,None,Some(&shapes),1.0,false,false,None);
                 let mut frame=[0u8;32*16*4];
                 update(&mut native);
                 assert_eq!(GetWindowRgnBox(hwnd,&mut RECT::default()),NULLREGION);
@@ -1025,6 +1027,30 @@ mod tests {
             assert!(PtInRegion(rgn,510,20).as_bool(),"通知详情等圆角块也在区域内");
             assert!(!PtInRegion(rgn,470,20).as_bool(),"两块之间保持透明");
             let _=DeleteObject(rgn);
+        }
+    }
+
+    #[test]
+    fn long_resident_edges_do_not_own_the_window_below() {
+        use windows::Win32::Graphics::Gdi::{GetWindowRgn,PtInRegion};
+        let _guard=NATIVE_STATE_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+        unsafe {
+            let hwnd=CreateWindowExW(WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE,windows::core::w!("STATIC"),windows::core::w!(""),WS_POPUP,-10000,-10000,1000,200,None,None,None,None).unwrap();
+            let mut native=Window{hwnd,capture_exclusion:Default::default(),layering:Layering::Pending,region:(0,0,0,0),expanded:false,hook:HWINEVENTHOOK::default(),page_wheel_hook:None,browser_state:(None,PollClock::now()),drag_capture:DragCapture::default(),glass:None,backdrop:None,blur:false,blur_unavailable:true,opaque_surface:false,outline:ShapeAlpha::default()};
+            let bar=(64.0,0.0,500.0,30.0);
+            let shapes=[crate::app::GlassShape::Notch{rect:eframe::egui::Rect::from_min_size(eframe::egui::pos2(bar.0,bar.1),eframe::egui::vec2(bar.2,bar.3)),flare:5.0,flare_h:8.0,radius:12.5}];
+            for ppp in [1.0,1.75] {
+                native.update((32.0,0.0,564.0,48.0),bar,None,None,None,ppp,false,false,Some(&shapes));
+                let rgn=CreateRectRgn(0,0,0,0);
+                let _=GetWindowRgn(hwnd,rgn);
+                let owns=|x:f32,y:f32|PtInRegion(rgn,(x*ppp).round() as i32,(y*ppp).round() as i32).as_bool();
+                let visible=owns(65.0,15.0)&&owns(563.0,15.0);
+                let outside=owns(62.0,15.0)||owns(566.0,15.0)||owns(65.0,29.0);
+                let _=DeleteObject(rgn);
+                assert!(visible && !outside,"缩放 {ppp}，实体命中 {visible}，透明边缘命中 {outside}");
+            }
+            drop(native);
+            DestroyWindow(hwnd).unwrap();
         }
     }
 
@@ -1125,7 +1151,7 @@ mod tests {
             let foreground=GetForegroundWindow();
             let saved=hit().lock().unwrap_or_else(|e|e.into_inner()).clone();
             let mut native=Window{hwnd:island.0,capture_exclusion:Default::default(),layering:Layering::Pending,region:(0,0,0,0),expanded:false,hook:HWINEVENTHOOK::default(),page_wheel_hook:None,browser_state:(None,PollClock::now()),drag_capture:DragCapture::default(),glass:None,backdrop:None,blur:false,blur_unavailable:false,opaque_surface:false,outline:ShapeAlpha::default()};
-            let update=|native:&mut Window,expanded|native.update((0.0,0.0,416.0,140.0),(0.0,0.0,416.0,140.0),None,None,None,1.0,false,expanded);
+            let update=|native:&mut Window,expanded|native.update((0.0,0.0,416.0,140.0),(0.0,0.0,416.0,140.0),None,None,None,1.0,false,expanded,None);
             update(&mut native,true);
             assert!(above(island.0,cover.0),"展开时必须重新抬高实际窗口层级，不能只检查置顶标记");
             assert_eq!(GetForegroundWindow(),foreground,"悬停展开不能抢走当前应用的输入焦点");
@@ -1184,10 +1210,10 @@ mod tests {
             let saved=hit().lock().unwrap_or_else(|e|e.into_inner()).clone();
             let find=|x,y|std::thread::spawn(move||WindowFromPoint(POINT{x,y}).0 as usize).join().unwrap();
             let region=(0.0,0.0,80.0,32.0);
-            native.update(region,(0.0,0.0,0.0,0.0),None,None,None,1.0,false,false);
+            native.update(region,(0.0,0.0,0.0,0.0),None,None,None,1.0,false,false,None);
             let center=find(120,84);
             let margin=find(130,96);
-            native.update(region,region,None,None,None,1.0,false,true);
+            native.update(region,region,None,None,None,1.0,false,true,None);
             let panel=find(120,84);
             drop(native);
             let _=DestroyWindow(island);
