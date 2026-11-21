@@ -1,7 +1,9 @@
+#[cfg(windows)]
+use super::market_state::MarketStatus;
 use super::*;
 use crate::{
-    extras::{settings_card, settings_control_row},
-    paint::{Card, H},
+    extras::{settings_card, settings_control_row, settings_hint},
+    paint::{self, Card, H},
     theme::{self, W},
 };
 use eframe::egui;
@@ -77,19 +79,20 @@ fn material_error(ui: &mut egui::Ui) {
 }
 
 impl LocalPlugins {
-    pub fn card(&mut self, c: &Card) {
+    pub fn card(&mut self, c: &Card) -> bool {
         let count = self.cards.len();
         if count == 0 {
-            return;
+            return false;
         }
         self.card_index %= count;
         let (id, body) = self.cards.iter().nth(self.card_index).unwrap();
         c.fill(42., 130., 335., 40., 9., theme::CARD);
-        let name = &self.records[id].package.as_ref().unwrap().manifest.name;
+        let manifest = &self.records[id].package.as_ref().unwrap().manifest;
+        let has_settings = !manifest.settings.is_empty();
         c.text(
             52.,
             145.,
-            &c.fit(name, 11., W::Regular, 220.),
+            &c.fit(&manifest.name, 11., W::Regular, 220.),
             11.,
             W::Regular,
             theme::CYAN,
@@ -98,7 +101,12 @@ impl LocalPlugins {
         c.text(
             52.,
             163.,
-            &c.fit(body, 14., W::Semibold, 305.),
+            &c.fit(
+                body,
+                14.,
+                W::Semibold,
+                if has_settings { 290. } else { 305. },
+            ),
             14.,
             W::Semibold,
             theme::WHITE,
@@ -106,7 +114,7 @@ impl LocalPlugins {
         );
         if count > 1 {
             c.text(
-                367.,
+                if has_settings { 343. } else { 367. },
                 145.,
                 &format!("{}/{} ›", self.card_index + 1, count),
                 11.,
@@ -114,14 +122,130 @@ impl LocalPlugins {
                 theme::GRAY,
                 H::Right,
             );
-            if c.hit(42., 130., 335., 40., "local-plugin-next")
-                .on_hover_text("下一张卡片")
-                .clicked()
+            if c.hit(
+                42.,
+                130.,
+                if has_settings { 307. } else { 335. },
+                40.,
+                "local-plugin-next",
+            )
+            .on_hover_text("下一张卡片")
+            .clicked()
             {
                 self.card_index = (self.card_index + 1) % count;
             }
         }
+        if has_settings {
+            let response = c
+                .hit(349., 130., 28., 40., "local-plugin-settings")
+                .on_hover_text("打开插件设置");
+            let (hover, press) = c.hover_t(&response);
+            c.circle(
+                363.,
+                145.,
+                11.,
+                egui::Color32::from_white_alpha((hover * 24.) as u8),
+            );
+            paint::gear(
+                &c.scaled(363., 145., 0.8 * (1. - press * 0.08)),
+                363.,
+                145.,
+                paint::mix(theme::GRAY, theme::WHITE, hover),
+            );
+            if response.clicked() {
+                self.focus = Some(id.clone());
+                return true;
+            }
+        }
+        false
     }
+
+    #[cfg(windows)]
+    fn market(&mut self, ui: &mut egui::Ui) {
+        let busy = self.market_busy();
+        ui.add_enabled_ui(!busy, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                if ui.button("导入集市索引…").clicked() {
+                    match crate::system::pick_files_for("选择插件测试集市的 catalog.json", false)
+                    {
+                        Ok(paths) => {
+                            if let Some(path) = paths.first() {
+                                self.notice = match self.set_market_catalog(path) {
+                                    Ok(()) => "已加载集市索引".into(),
+                                    Err(e) => e.to_string(),
+                                };
+                            }
+                        }
+                        Err(e) => self.notice = e.to_string(),
+                    }
+                }
+                if self.market_catalog.is_some() && ui.button("刷新目录").clicked() {
+                    self.notice = match self.refresh_market_catalog() {
+                        Ok(()) => "目录已刷新".into(),
+                        Err(e) => e.to_string(),
+                    };
+                }
+            });
+        });
+        if busy {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label("正在校验插件包…");
+            });
+        }
+        let Some(catalog) = self.market_catalog.as_ref() else {
+            settings_hint(ui, "选择作者提交的 catalog.json 后可安装插件。");
+            return;
+        };
+        if catalog.entries.is_empty() {
+            settings_hint(ui, "目录中暂无插件。");
+        }
+        let mut action = None;
+        for entry in &catalog.entries {
+            ui.push_id(&entry.id, |ui| {
+                settings_card(ui, |ui| {
+                    ui.strong(&entry.name);
+                    ui.label(format!("{} · v{}", entry.author, entry.version));
+                    settings_hint(ui, "待办与置物 · 无需外部权限");
+                    match self.market_status(entry) {
+                        MarketStatus::Install => {
+                            if ui.add_enabled(!busy, egui::Button::new("安装")).clicked() {
+                                action = Some(entry.id.clone());
+                            }
+                        }
+                        MarketStatus::Update => {
+                            ui.horizontal_wrapped(|ui| {
+                                if let Some(package) = self.records[&entry.id].package.as_ref() {
+                                    ui.label(format!("已安装 v{}", package.manifest.version));
+                                }
+                                if ui.add_enabled(!busy, egui::Button::new("更新")).clicked() {
+                                    action = Some(entry.id.clone());
+                                }
+                            });
+                        }
+                        MarketStatus::Installed => {
+                            ui.label("已安装");
+                        }
+                        MarketStatus::OtherSource => {
+                            ui.label("已从其他来源安装或保留数据");
+                        }
+                        MarketStatus::Unavailable => {
+                            ui.label("目录中的版本低于已安装版本");
+                        }
+                    }
+                });
+            });
+        }
+        if let Some(id) = action {
+            self.notice = self
+                .market_action(&id)
+                .err()
+                .map(|e| e.to_string())
+                .unwrap_or_default();
+            ui.ctx().request_repaint();
+        }
+    }
+
     pub fn manage(
         &mut self,
         ui: &mut egui::Ui,
@@ -129,6 +253,17 @@ impl LocalPlugins {
         #[cfg(all(windows, feature = "sdk-material"))] active_material: Option<&str>,
     ) -> Option<usize> {
         let mut jump = None;
+        #[cfg(windows)]
+        {
+            let was_busy = self.market_busy();
+            self.poll_market();
+            if self.market_busy() {
+                ui.ctx().request_repaint_after(Duration::from_millis(32));
+            } else if was_busy {
+                ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
+            }
+            ui.collapsing("测试集市", |ui| self.market(ui));
+        }
         ui.collapsing("开发者模式", |ui| {
             #[cfg(windows)]
             if ui.button("安装本地插件…").clicked() {
@@ -146,7 +281,7 @@ impl LocalPlugins {
             }
         });
         if !self.notice.is_empty() {
-            ui.label(&self.notice);
+            settings_hint(ui, &self.notice);
         }
         let ids: Vec<_> = self
             .records
@@ -200,10 +335,12 @@ impl LocalPlugins {
                     } else {
                         let on = r.enabled;
                         ui.strong(&manifest.name);
+                        let has_settings = !manifest.settings.is_empty();
+                        ui.label(format!("{} · v{}", manifest.author, manifest.version));
                         ui.label(if !on {
                             "已停用"
                         } else if !owner {
-                            "所属待办模块已停用"
+                            "已开启 · 模块已暂停"
                         } else {
                             "已启用"
                         });
@@ -211,9 +348,12 @@ impl LocalPlugins {
                             ui.label(format!("刷新失败 · {e}"));
                         }
                         ui.horizontal_wrapped(|ui| {
-                            if ui.button("前往设置").clicked() {
+                            if on && owner && has_settings && ui.button("前往设置").clicked() {
                                 self.focus = Some(id.clone());
-                                jump = Some(4);
+                                jump = Some(crate::app::PAGE_SETTINGS_TABS[crate::app::TODO_PAGE]);
+                            }
+                            if on && !owner && ui.button("前往页面管理").clicked() {
+                                jump = Some(crate::extras::SETTINGS_TAB_PAGES);
                             }
                             if ui.button(if on { "停用" } else { "启用" }).clicked() {
                                 self.notice = self
@@ -221,6 +361,9 @@ impl LocalPlugins {
                                     .err()
                                     .map(|e| e.to_string())
                                     .unwrap_or_default();
+                                if self.notice.is_empty() {
+                                    ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
+                                }
                             }
                             if ui.button("卸载").clicked() {
                                 self.pending = Some(id.clone());
@@ -237,7 +380,6 @@ impl LocalPlugins {
                                         .err()
                                         .map(|e| e.to_string())
                                         .unwrap_or_default();
-                                    #[cfg(all(windows, feature = "sdk-material"))]
                                     if self.notice.is_empty() {
                                         ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
                                     }
@@ -436,17 +578,24 @@ impl LocalPlugins {
         restart
     }
 
-    pub fn settings(&mut self, ui: &mut egui::Ui) {
+    pub fn settings(&mut self, ui: &mut egui::Ui, owner: bool) {
+        if !owner {
+            return;
+        }
         let ids: Vec<_> = self
             .records
             .iter()
             .filter(|(_, r)| {
-                r.package
-                    .as_ref()
-                    .is_some_and(|p| !p.manifest.is_material())
+                r.enabled
+                    && r.package.as_ref().is_some_and(|p| {
+                        !p.manifest.is_material() && !p.manifest.settings.is_empty()
+                    })
             })
             .map(|(id, _)| id.clone())
             .collect();
+        if ids.is_empty() {
+            return;
+        }
         for id in ids {
             ui.push_id(&id, |ui| {
                 settings_card(ui, |ui| {
@@ -473,7 +622,10 @@ impl LocalPlugins {
                     if ui.button("保存设置").clicked() {
                         let values = fields.clone();
                         self.notice = match self.save(&id, values) {
-                            Ok(()) => "设置已保存".into(),
+                            Ok(()) => {
+                                ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
+                                "设置已保存".into()
+                            }
                             Err(e) => e.to_string(),
                         };
                     }

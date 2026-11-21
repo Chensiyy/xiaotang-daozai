@@ -1,4 +1,10 @@
 //! 本地开发包的安装、状态及卡片执行。每次操作原子保存一个插件的快照。
+#[cfg(windows)]
+#[path = "market.rs"]
+pub(super) mod market;
+#[cfg(windows)]
+#[path = "market_state.rs"]
+mod market_state;
 #[path = "local_ui.rs"]
 mod ui;
 use super::{fail, Result};
@@ -110,6 +116,8 @@ struct Package {
 #[derive(Clone, Serialize, Deserialize)]
 struct Record {
     origin: PathBuf,
+    #[serde(default)]
+    from_market: bool,
     package: Option<Package>,
     enabled: bool,
     values: Values,
@@ -208,6 +216,23 @@ fn valid_field(f: &Field, v: &str) -> bool {
     }
 }
 impl Manifest {
+    fn decode(contents: &str) -> Result<Self> {
+        #[derive(Deserialize)]
+        struct ApiHeader {
+            api: u64,
+        }
+        // 先检查版本，使未来清单新增的字段能够得到明确的升级提示。
+        let ApiHeader { api } = serde_json::from_str(contents)?;
+        if api > u64::from(API_VERSION) {
+            return Err(fail(&format!(
+                "需要更新岛仔。此插件需要 API v{api}，当前支持 v{API_VERSION}"
+            )));
+        }
+        let manifest: Self = serde_json::from_str(contents)?;
+        manifest.validate()?;
+        Ok(manifest)
+    }
+
     fn is_material(&self) -> bool {
         self.runtime == "material"
     }
@@ -357,20 +382,7 @@ fn validate_material_files(dir: &Path, manifest: &Path, shader: &Path) -> Result
 
 impl Package {
     fn read(path: &Path) -> Result<Self> {
-        #[derive(Deserialize)]
-        struct ApiHeader {
-            api: u64,
-        }
-        let contents = bounded(path, 32 * 1024)?;
-        // 先检查版本，使未来清单新增的字段能够得到明确的升级提示。
-        let ApiHeader { api } = serde_json::from_str(&contents)?;
-        if api > u64::from(API_VERSION) {
-            return Err(fail(&format!(
-                "需要更新岛仔。此插件需要 API v{api}，当前支持 v{API_VERSION}"
-            )));
-        }
-        let manifest: Manifest = serde_json::from_str(&contents)?;
-        manifest.validate()?;
+        let manifest = Manifest::decode(&bounded(path, 32 * 1024)?)?;
         let entry = Path::new(&manifest.entry);
         let base = path
             .parent()
@@ -392,6 +404,21 @@ impl Package {
         }
         Ok(Self { source, manifest })
     }
+
+    fn settings_values(&self, previous: &Values) -> Values {
+        self.manifest
+            .settings
+            .iter()
+            .map(|field| {
+                let value = previous
+                    .get(&field.key)
+                    .filter(|value| valid_field(field, value))
+                    .unwrap_or(&field.default);
+                (field.key.clone(), value.clone())
+            })
+            .collect()
+    }
+
     fn render(&self, values: &Values, storage: &Value, today: &str) -> Result<Output> {
         let runtime = rquickjs::Runtime::new()?;
         runtime.set_memory_limit(4 * 1024 * 1024);
@@ -436,6 +463,10 @@ struct Job {
 }
 pub struct LocalPlugins {
     jobs: BTreeMap<String, Job>,
+    #[cfg(windows)]
+    market_catalog: Option<market::Catalog>,
+    #[cfg(windows)]
+    market_job: Option<market_state::MarketJob>,
     invalid: std::collections::BTreeSet<String>,
     dir: PathBuf,
     records: BTreeMap<String, Record>,
@@ -454,6 +485,10 @@ impl LocalPlugins {
     pub fn open(dir: PathBuf) -> Self {
         let mut s = Self {
             jobs: BTreeMap::new(),
+            #[cfg(windows)]
+            market_catalog: None,
+            #[cfg(windows)]
+            market_job: None,
             invalid: Default::default(),
             #[cfg(feature = "sdk-material")]
             selected_material: Self::read_material_id(&dir),
@@ -498,6 +533,8 @@ impl LocalPlugins {
         if let Err(e) = read {
             s.notice = e.to_string()
         }
+        #[cfg(windows)]
+        s.restore_market_catalog();
         s
     }
     fn path(&self, id: &str) -> PathBuf {
@@ -506,6 +543,8 @@ impl LocalPlugins {
     fn put(&mut self, id: &str, r: Record) -> Result<()> {
         crate::model::atomic_write(&self.path(id), &serde_json::to_vec(&r)?)?;
         self.records.insert(id.into(), r);
+        #[cfg(windows)]
+        self.cancel_market(id);
         Ok(())
     }
 
@@ -633,6 +672,7 @@ impl LocalPlugins {
         let id = pkg.manifest.id.clone();
         let mut record = Record {
             origin: path.clone(),
+            from_market: false,
             values: Values::new(),
             enabled: false,
             package: None,
@@ -643,7 +683,7 @@ impl LocalPlugins {
             if old.package.is_some() {
                 return Err(fail("此插件 ID 已安装"));
             }
-            if old.origin != path {
+            if old.origin != path || old.from_market {
                 return Err(fail("保留数据属于原本地清单，请从原位置重装"));
             }
             record.storage = old.storage.clone();
@@ -651,19 +691,7 @@ impl LocalPlugins {
         } else if self.path(&id).exists() && !self.invalid.contains(&id) {
             return Err(fail("已有无法读取的插件记录"));
         }
-        let mut values = Values::new();
-        for f in &pkg.manifest.settings {
-            values.insert(
-                f.key.clone(),
-                record
-                    .values
-                    .get(&f.key)
-                    .filter(|v| valid_field(f, v))
-                    .unwrap_or(&f.default)
-                    .clone(),
-            );
-        }
-        record.values = values;
+        record.values = pkg.settings_values(&record.values);
         record.package = Some(pkg);
         self.put(&id, record)?;
         self.invalid.remove(&id);
@@ -725,11 +753,15 @@ impl LocalPlugins {
         } else {
             fs::remove_file(self.path(id))?;
             self.records.remove(id);
+            #[cfg(windows)]
+            self.cancel_market(id);
         }
         self.forget_view(id);
         Ok(())
     }
     pub fn tick(&mut self, owner: bool, today: &str) {
+        #[cfg(windows)]
+        self.poll_market();
         if !owner {
             self.cards.clear();
             self.next.clear();

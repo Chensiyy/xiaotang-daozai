@@ -3639,7 +3639,11 @@ impl App {
             2 => self.page_water(c, header, env),
             3 => self.page_shelf(c, header, env, cmds),
             4 => {self.page_todo(c, env, cmds);
-                #[cfg(feature="sdk-js")] self.plugins.card(c);
+                #[cfg(feature="sdk-js")]
+                if self.plugins.card(c) {
+                    self.settings_tab=PAGE_SETTINGS_TABS[TODO_PAGE];
+                    self.open_settings();
+                }
             }
             5 => self.page_mail(c, env, cmds),
             6 => self.page_quota(c,&actions),

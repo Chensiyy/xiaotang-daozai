@@ -1,6 +1,6 @@
-# 本地试装倒计时插件
+# 本地试装与测试集市
 
-在 Windows 的 `plugin-sdk-local-install` 分支，用启用了 `sdk-js` 的岛仔打开「设置 → 我的插件」。已在使用岛仔时，先从托盘退出当前实例，再启动试用版。可以双击[试用本地插件.cmd](../../spike/试用本地插件.cmd)编译并启动。等价的 PowerShell 命令在分支根目录运行，试用数据放进本工作树的 `target/local-trial`。
+在 Windows 上，用启用了 `sdk-js` 的岛仔打开「设置 → 我的插件」。已在使用岛仔时，可先从托盘退出当前实例，再启动试用版。可以双击[试用本地插件.cmd](../../spike/试用本地插件.cmd)编译并启动。等价的 PowerShell 命令在工作树根目录运行，试用数据放进 `target/local-trial`。
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File spike/cargo-serial.ps1 build --locked --features sdk-js --bin daozai --target x86_64-pc-windows-msvc
@@ -22,3 +22,34 @@ $env:DAOZAI_DATA_DIR = Join-Path (Get-Location) 'target/local-trial'
 每个包用同一份清单声明 `timer` 和 `refreshSeconds`（60 到 86400 秒，省略时为 60）。每次刷新都从头执行 main.js；下次还要用的值请放进返回的 storage。停用、关闭待办或改完设置后，上一次计算即使返回也不会再显示或保存。action（按钮）和 event（事件）仍待宿主实现。
 
 重启时岛仔重新核对已安装记录的 ID、清单、脚本入口和设置。看到“需要重新安装”时，在开发者模式重新选择可信的原包。未通过检查的记录不会启动；重装会使用原包的默认设置。
+
+## 测试集市
+
+测试集市使用本地的 `catalog.json` 和同目录 ZIP。用另一个插件 ID 或干净的试用配置做测试，方便分别验证开发者模式和集市的安装来源。
+
+### 作者校验、打包和提交
+
+复制[发薪倒计时样例](../../spike/examples/payday)到可编辑目录。用岛仔试用版执行三条命令。下面的示例从工作树根目录运行，以已编译的 Debug 程序为例。
+
+```powershell
+$island = (Resolve-Path './target/x86_64-pc-windows-msvc/debug/daozai.exe').Path
+$manifest = (Resolve-Path './spike/examples/payday/plugin.json').Path
+$bundle = Join-Path (Get-Location).Path 'target/payday-trial.zip'
+$catalog = Join-Path (Get-Location).Path 'target/test-market/catalog.json'
+New-Item -ItemType Directory -Force (Split-Path $catalog) | Out-Null
+
+& $island --plugin-test $manifest | Out-Host
+& $island --plugin-pack $manifest $bundle | Out-Host
+& $island --plugin-submit $bundle $catalog | Out-Host
+```
+
+`--plugin-test` 检查清单和入口，并用默认设置试跑一张卡片。`--plugin-pack` 导出 ZIP。`--plugin-submit` 将已验证的包放进测试目录，随后更新索引。命令失败时查看输出，并在修正后重新执行。
+
+要试更新，把样例副本的 `version` 从 `1.0.0` 改成 `1.0.1`，同时给卡片文案加一处能看出版本差异的改动。保持插件 ID、设置键和数据版本。用新清单、新 ZIP 文件路径再次校验和打包，然后提交到同一个 `catalog.json`。
+
+### 用户安装和更新
+
+1. 在「设置 → 我的插件 → 测试集市」导入 `catalog.json`。找到插件并点「安装」，到同页的已装列表启用。
+2. 点「前往设置」或岛上插件卡片的小齿轮，在「待办与置物」修改名称和日期。停用后，这一组插件设置和卡片收起。暂停待办模块时，「我的插件」保留原启用选择。
+3. 作者提交更高版本后，在同一个测试目录点「刷新目录」和「更新」。重新打开卡片核对新文案，原名称、日期和启用状态仍在。
+4. 卸载时选择保留数据，从原测试目录重装同 ID 插件并启用，核对原设置。选择删除数据时，下次安装使用样包默认值。

@@ -1538,13 +1538,14 @@ fn setting_choices(ui:&mut egui::Ui,title:&str,value:&mut u32,values:[u32;3],uni
 /// 设置页分页序号。岛上入口和测试按序号跳转。
 pub(crate) const SETTINGS_TAB_APPEARANCE: usize = 13;
 pub(crate) const SETTINGS_TAB_POSITION: usize = 14;
+pub(crate) const SETTINGS_TAB_PAGES: usize = 10;
 pub(crate) const SETTINGS_TAB_WIRELESS: usize = 16;
 #[cfg(feature="sdk-js")]
 pub(crate) const SETTINGS_TAB_PLUGINS: usize = 17;
 /// 侧栏：一项就是一页，不再有页内子标签。专注与健康（2、3）、待办与置物（4、5）各合成一页；关于固定左下角。
 /// 第四列是这一项之前的分组标题。
 const SETTINGS_GROUPS: [(&str,usize,usize,&str);15 + cfg!(feature="sdk-js") as usize] = [
-    ("通用",0,0,"岛仔"), ("外观",SETTINGS_TAB_APPEARANCE,SETTINGS_TAB_APPEARANCE,""), ("位置",SETTINGS_TAB_POSITION,SETTINGS_TAB_POSITION,""), ("页面管理",10,10,""),
+    ("通用",0,0,"岛仔"), ("外观",SETTINGS_TAB_APPEARANCE,SETTINGS_TAB_APPEARANCE,""), ("位置",SETTINGS_TAB_POSITION,SETTINGS_TAB_POSITION,""), ("页面管理",SETTINGS_TAB_PAGES,SETTINGS_TAB_PAGES,""),
     #[cfg(feature="sdk-js")] ("我的插件",SETTINGS_TAB_PLUGINS,SETTINGS_TAB_PLUGINS,""),
     ("音乐",1,1,"功能"), ("专注与健康",2,3,""), ("待办与置物",4,5,""), ("消息提醒",6,6,""), ("邮箱",7,7,""), ("日程",8,8,""), ("AI 额度",11,11,""), ("天气",12,12,""), ("系统性能",15,15,""), ("无线设备",SETTINGS_TAB_WIRELESS,SETTINGS_TAB_WIRELESS,""),
     ("关于",9,9,""),
@@ -1734,7 +1735,7 @@ impl App {
                         ui.add_space(4.0);
                         ui.add_enabled_ui(on,|ui|self.quota_settings(ui));
                     }
-                    10=>{
+                    SETTINGS_TAB_PAGES=>{
                         ui.label(egui::RichText::new("选择需要的页面和状态组件。").size(12.0).color(settings_color(ctx,Color32::from_gray(180),Color32::from_gray(75))));
                         // 岛上显示：收起时的常驻内容在这里统一排序和开关；岛上歌词属于音乐的显示方式，在音乐页设置。
                         settings_label(ui,"岛上显示");
@@ -2082,7 +2083,7 @@ impl App {
                     4=>{
                         let on=self.settings_feature_header(ui,crate::app::TODO_PAGE,"任务清单与到期提醒",|_,_|{});
                         let _=on;
-                        #[cfg(feature="sdk-js")] self.plugins.settings(ui);
+                        #[cfg(feature="sdk-js")] self.plugins.settings(ui,on);
                         ui.add_space(12.0);
                         let on=self.settings_feature_header(ui,crate::app::SHELF_PAGE,"临时收纳文件与剪贴板",|_,_|{});
                         ui.add_enabled_ui(on,|ui|{

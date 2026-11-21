@@ -11,6 +11,174 @@ fn settle(host: &mut LocalPlugins, today: &str) {
     }
 }
 
+#[cfg(windows)]
+mod test_market {
+    use super::*;
+    use crate::sdk_spike::local::market_state::MarketStatus;
+
+    const ID: &str = "example.payday";
+
+    struct Fixture {
+        root: PathBuf,
+        manifest_path: PathBuf,
+        index: PathBuf,
+    }
+
+    impl Fixture {
+        fn new() -> Result<Self> {
+            let root = std::env::temp_dir().join(format!(
+                "daozai-market-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)?
+                    .as_nanos()
+            ));
+            let source = root.join("source");
+            let market_dir = root.join("market");
+            fs::create_dir_all(&source)?;
+            fs::create_dir_all(&market_dir)?;
+            let sample = Path::new(env!("CARGO_MANIFEST_DIR")).join("spike/examples/payday");
+            let manifest_path = source.join("plugin.json");
+            fs::copy(sample.join("plugin.json"), &manifest_path)?;
+            fs::copy(sample.join("main.js"), source.join("main.js"))?;
+            Ok(Self {
+                root,
+                manifest_path,
+                index: market_dir.join("catalog.json"),
+            })
+        }
+
+        fn publish(&self, version: &str, incompatible: bool) -> Result<()> {
+            let mut manifest: Value = serde_json::from_slice(&fs::read(&self.manifest_path)?)?;
+            manifest["version"] = json!(version);
+            if incompatible {
+                manifest["settings"][0]["type"] = json!("date");
+                manifest["settings"][0]["default"] = json!("2026-12-01");
+            }
+            fs::write(&self.manifest_path, serde_json::to_vec(&manifest)?)?;
+            let zip = self.root.join(format!("submit-{version}.zip"));
+            market::pack(&self.manifest_path, &zip)?;
+            market::submit(&zip, &self.index)
+        }
+
+        fn install(&self, host: &mut LocalPlugins) -> Result<()> {
+            self.publish("1.0.0", false)?;
+            host.set_market_catalog(&self.index)?;
+            host.market_action(ID)?;
+            settle_market(host);
+            assert_eq!(status(host), MarketStatus::Installed);
+            assert!(!host.records[ID].enabled);
+            Ok(())
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn settle_market(host: &mut LocalPlugins) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while host.market_busy() {
+            host.poll_market();
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    fn status(host: &LocalPlugins) -> MarketStatus {
+        host.market_status(&host.market_catalog.as_ref().unwrap().entries[0])
+    }
+
+    #[test]
+    fn market_install_update_restart_and_reinstall_keep_data() -> Result<()> {
+        let fixture = Fixture::new()?;
+        let storage = fixture.root.join("installed");
+        let mut host = LocalPlugins::open(storage.clone());
+        fixture.install(&mut host)?;
+        let previous_index = fs::read(&fixture.index)?;
+        host.enable(ID, true)?;
+        let mut values = host.records[ID].values.clone();
+        values.insert("title".into(), "我的发薪日".into());
+        host.save(ID, values.clone())?;
+        settle(&mut host, "2026-12-01");
+        let saved = host.records[ID].storage.clone();
+        assert!(!saved.is_null());
+        host.tick(false, "2026-12-02");
+        assert!(host.records[ID].enabled && !host.has_card());
+
+        fixture.publish("1.1.0", false)?;
+        host.refresh_market_catalog()?;
+        assert_eq!(status(&host), MarketStatus::Update);
+        host.tick(true, "2026-12-02");
+        host.market_action(ID)?;
+        settle_market(&mut host);
+        assert!(!host.jobs[ID].valid, "上个版本的迟到结果应作废");
+        assert_eq!(host.records[ID].storage, saved);
+        assert_eq!(status(&host), MarketStatus::Installed);
+        assert!(host.records[ID].enabled);
+        assert_eq!(host.records[ID].values, values);
+        settle(&mut host, "2026-12-01");
+
+        let mut host = LocalPlugins::open(storage);
+        assert_eq!(status(&host), MarketStatus::Installed);
+        assert_eq!(host.records[ID].values, values);
+        assert_eq!(host.records[ID].storage, saved);
+        assert!(host.records[ID].enabled);
+        host.uninstall(ID, true)?;
+        host.market_action(ID)?;
+        settle_market(&mut host);
+        assert_eq!(host.records[ID].values, values);
+        assert_eq!(host.records[ID].storage, saved);
+        assert!(!host.records[ID].enabled);
+
+        fs::write(&fixture.index, previous_index)?;
+        host.refresh_market_catalog()?;
+        assert_eq!(status(&host), MarketStatus::Unavailable);
+        assert!(host.market_action(ID).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn market_bad_or_cancelled_update_never_replaces_installed_record() -> Result<()> {
+        let fixture = Fixture::new()?;
+        let mut host = LocalPlugins::open(fixture.root.join("installed"));
+        fixture.install(&mut host)?;
+        host.enable(ID, true)?;
+        let previous = fs::read(host.path(ID))?;
+
+        fixture.publish("1.1.0", false)?;
+        let zip = fixture
+            .index
+            .with_file_name(format!("plugin-{ID}-1.1.0.zip"));
+        let mut bytes = fs::read(&zip)?;
+        bytes[0] ^= 1;
+        fs::write(&zip, bytes)?;
+        host.refresh_market_catalog()?;
+        host.market_action(ID)?;
+        settle_market(&mut host);
+        assert!(host.notice.contains("更新失败"));
+        assert_eq!(fs::read(host.path(ID))?, previous);
+
+        fixture.publish("1.2.0", true)?;
+        host.refresh_market_catalog()?;
+        host.market_action(ID)?;
+        settle_market(&mut host);
+        assert!(host.notice.contains("字段类型"));
+        assert_eq!(fs::read(host.path(ID))?, previous);
+
+        host.market_action(ID)?;
+        host.enable(ID, false)?;
+        let disabled = fs::read(host.path(ID))?;
+        settle_market(&mut host);
+        assert!(host.notice.contains("插件状态已变化"));
+        assert_eq!(fs::read(host.path(ID))?, disabled);
+        assert!(!host.records[ID].enabled);
+        Ok(())
+    }
+}
+
 #[test]
 fn two_packages_survive_disable_restart_and_both_uninstall_choices() -> Result<()> {
     let root = std::env::temp_dir().join(format!(
