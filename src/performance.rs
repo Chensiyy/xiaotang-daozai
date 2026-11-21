@@ -16,6 +16,10 @@ impl Metric {
         Self::Cpu, Self::Gpu, Self::Ram, Self::Vram, Self::GpuTemp,
         Self::Download, Self::Upload, Self::Read, Self::Write,
     ];
+    pub(crate) const RATE_PAIRS: [[Self; 2]; 2] = [
+        [Self::Download, Self::Upload],
+        [Self::Read, Self::Write],
+    ];
     pub(crate) fn label(self) -> &'static str {
         match self {
             Self::Cpu => "CPU", Self::Gpu => "GPU", Self::Ram => "内存", Self::Vram => "显存",
@@ -24,11 +28,20 @@ impl Metric {
         }
     }
     pub(crate) fn bit(self) -> u16 { 1 << self as u16 }
+    pub(crate) fn rate_label(self) -> Option<&'static str> {
+        match self {
+            Self::Download => Some("↓"),
+            Self::Upload => Some("↑"),
+            Self::Read => Some("读"),
+            Self::Write => Some("写"),
+            _ => None,
+        }
+    }
     fn width(self) -> f32 {
         match self {
             Self::Cpu | Self::Gpu | Self::Ram => 52.,
             Self::Vram | Self::GpuTemp => 68.,
-            _ => 79.,
+            _ => BarStyle::RATE_WIDTH,
         }
     }
 }
@@ -44,9 +57,10 @@ pub enum BarStyle {
     Cores,
 }
 impl BarStyle {
-    pub(crate) fn columns(mask: u16) -> impl Iterator<Item = (Metric, Option<Metric>, f32)> {
-        let mut metrics = Metric::ALL.into_iter().filter(move |m| mask & m.bit() != 0);
-        let stacked = metrics.clone().count() > 3;
+    pub(crate) const RATE_WIDTH: f32 = 66.;
+    pub(crate) fn value_columns(mask: u16) -> impl Iterator<Item = (Metric, Option<Metric>, f32)> {
+        let mut metrics = Metric::ALL.into_iter().filter(move |m| mask & m.bit() != 0 && m.rate_label().is_none());
+        let stacked = mask.count_ones() > 3;
         std::iter::from_fn(move || {
             let first = metrics.next()?;
             let second = if stacked { metrics.next() } else { None };
@@ -54,10 +68,18 @@ impl BarStyle {
             Some((first, second, width))
         })
     }
+    pub(crate) fn rate_columns(mask: u16) -> impl Iterator<Item = [Option<Metric>; 2]> {
+        Metric::RATE_PAIRS.into_iter()
+            .map(move |pair| pair.map(|m| (mask & m.bit() != 0).then_some(m)))
+            .filter(|pair| pair.iter().any(Option::is_some))
+    }
     /// 侧边停靠时占的高度：和横条同样的内容竖着排。
     pub(crate) fn side_height(self, mask: u16) -> f32 {
         match self {
-            Self::Custom => Metric::ALL.into_iter().filter(|m| mask & m.bit() != 0).count() as f32 * 23.,
+            Self::Custom => {
+                let values = Metric::ALL.into_iter().filter(|m| mask & m.bit() != 0 && m.rate_label().is_none()).count();
+                (values + Self::rate_columns(mask).count()) as f32 * 23.
+            }
             Self::Gauges => 90.,
             Self::Dashboard => 158.,
             Self::Cores | Self::Pulse => 46.,
@@ -67,7 +89,8 @@ impl BarStyle {
     pub(crate) const ALL: [Self; 6] = [Self::Custom, Self::Gauges, Self::Cores, Self::Pulse, Self::Network, Self::Dashboard];
     pub(crate) fn width(self, mask: u16) -> f32 {
         match self {
-            Self::Custom => Self::columns(mask).map(|(_, _, w)| w).sum(),
+            Self::Custom => Self::value_columns(mask).map(|(_, _, w)| w).sum::<f32>()
+                + Self::rate_columns(mask).count() as f32 * Self::RATE_WIDTH,
             Self::Gauges => 146.,
             Self::Pulse => 78.,
             Self::Cores => 104.,

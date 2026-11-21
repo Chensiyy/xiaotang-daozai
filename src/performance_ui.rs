@@ -218,6 +218,18 @@ fn metric_color(m: Metric) -> Color32 {
     }
 }
 
+fn paint_rate_column(c: &Card, left: f32, rates: [Option<Metric>; 2], r: &Reading, divider: bool) {
+    if divider {
+        c.seg((left - 4., 8.), (left - 4., 22.), 1., GRID);
+    }
+    for (i, m) in rates.into_iter().enumerate() {
+        let Some(m) = m else { continue };
+        let y = 9.5 + i as f32 * 11.5;
+        c.centered_text(left, y, m.rate_label().unwrap(), 8.5, W::Bold, metric_color(m), H::Left);
+        c.centered_text(left + 60., y, &resident_value(m, r), 9.5, W::Bold, INK, H::Right);
+    }
+}
+
 /// 整数哈希到 0..1，颗粒的位置、相位都由它决定，同一格每帧一致。
 fn hash(a: u32, b: u32) -> f32 {
     let mut x = a.wrapping_mul(0x9E37_79B1) ^ b.wrapping_mul(0x85EB_CA77).rotate_left(13);
@@ -666,8 +678,9 @@ impl App {
             BarStyle::Custom => {
                 let mask = self.settings.performance_metrics;
                 let stacked = mask.count_ones() > 3;
-                let mut left = x - BarStyle::Custom.width(mask) / 2.;
-                for (first, second, width) in BarStyle::columns(mask) {
+                let start = x - BarStyle::Custom.width(mask) / 2.;
+                let mut left = start;
+                for (first, second, width) in BarStyle::value_columns(mask) {
                     if stacked {
                         // 两行一列；单数时最后一列只占上一行，字号与其它列一致。
                         for (m, y) in std::iter::once((first, 9.5)).chain(second.map(|m| (m, 21.))) {
@@ -681,24 +694,19 @@ impl App {
                     }
                     left += width;
                 }
+                for rates in BarStyle::rate_columns(mask) {
+                    paint_rate_column(c, left + 3., rates, r, left > start);
+                    left += BarStyle::RATE_WIDTH;
+                }
             }
             BarStyle::Gauges | BarStyle::Dashboard => {
                 let dashboard = style == BarStyle::Dashboard;
                 let left_edge = x - style.width(self.settings.performance_metrics) / 2.;
                 if dashboard {
                     self.plot(c, |s| s.cpu, [left_edge, 8., 26., 14.], 16., 100., CPU_COLOR, 1.4, 0.35, false, false);
-                    for (j, (values, labels, color)) in [(r.network, ["↓", "↑"], NET), (r.disk, ["读", "写"], DISK)]
-                        .into_iter()
-                        .enumerate()
-                    {
-                        let left = left_edge + 178. + j as f32 * 66.;
-                        c.seg((left - 4., 8.), (left - 4., 22.), 1., GRID);
-                        for i in 0..2 {
-                            let cy = 9.5 + i as f32 * 11.5;
-                            let tint = if i == 0 { color } else { secondary(color) };
-                            c.centered_text(left, cy, labels[i], 8.5, W::Bold, tint, H::Left);
-                            c.centered_text(left + 60., cy, &speed(values[i]), 9.5, W::Bold, INK, H::Right);
-                        }
+                    for (j, rates) in Metric::RATE_PAIRS.into_iter().enumerate() {
+                        let left = left_edge + 178. + j as f32 * BarStyle::RATE_WIDTH;
+                        paint_rate_column(c, left, rates.map(Some), r, true);
                     }
                 }
                 for i in 0..3 {
@@ -758,13 +766,13 @@ impl App {
             c.centered_text(x, cy + 14., &percent(value), 9., W::Bold, INK, H::Center);
         };
         // 两行读数：左边彩色标签，右边白色数值，数值放不下时缩小字号。
-        let pair = |c: &Card, cy: f32, labels: [&str; 2], values: [Option<f32>; 2], color: Color32| {
-            for i in 0..2 {
+        let pair = |c: &Card, cy: f32, rates: [Option<Metric>; 2]| {
+            for (i, m) in rates.into_iter().enumerate() {
+                let Some(m) = m else { continue };
                 let row = cy + i as f32 * 11.;
-                let tint = if i == 0 { color } else { secondary(color) };
-                let value = speed(values[i]).replace("B/s", "").replace(' ', "");
+                let value = resident_value(m, &r).replace("B/s", "").replace(' ', "");
                 let size = 8.5 * (22. / c.text_w(&value, 8.5, W::Bold)).min(1.);
-                c.centered_text(x - 15., row, labels[i], 7.5, W::Bold, tint, H::Left);
+                c.centered_text(x - 15., row, m.rate_label().unwrap(), 7.5, W::Bold, metric_color(m), H::Left);
                 c.centered_text(x + 16., row, &value, size, W::Bold, INK, H::Right);
             }
         };
@@ -774,12 +782,17 @@ impl App {
         };
         match self.settings.performance_bar {
             BarStyle::Custom => {
+                let mask = self.settings.performance_metrics;
                 let mut top = top;
-                for m in Metric::ALL.into_iter().filter(|m| self.settings.performance_metrics & m.bit() != 0) {
+                for m in Metric::ALL.into_iter().filter(|m| mask & m.bit() != 0 && m.rate_label().is_none()) {
                     let value = resident_value(m, &r).replace(' ', "");
                     let size = 10. * (30. / c.text_w(&value, 10., W::Bold)).min(1.);
                     c.centered_text(x, top + 6., m.label(), 7.5, W::Semibold, metric_color(m), H::Center);
                     c.centered_text(x, top + 16., &value, size, W::Bold, INK, H::Center);
+                    top += 23.;
+                }
+                for rates in BarStyle::rate_columns(mask) {
+                    pair(c, top + 6., rates);
                     top += 23.;
                 }
             }
@@ -795,8 +808,8 @@ impl App {
                     ring(c, top + 31. + i as f32 * 30., i);
                 }
                 c.seg((x - 12., top + 112.), (x + 12., top + 112.), 1., GRID);
-                pair(c, top + 120., ["↓", "↑"], r.network, NET);
-                pair(c, top + 145., ["读", "写"], r.disk, DISK);
+                pair(c, top + 120., Metric::RATE_PAIRS[0].map(Some));
+                pair(c, top + 145., Metric::RATE_PAIRS[1].map(Some));
             }
             BarStyle::Cores => {
                 cpu_label(c, top);
@@ -809,7 +822,7 @@ impl App {
                     c.circle(p.0, p.1, 1.8, CPU_COLOR);
                 }
             }
-            BarStyle::Network => pair(c, top + 11., ["↓", "↑"], r.network, NET),
+            BarStyle::Network => pair(c, top + 11., Metric::RATE_PAIRS[0].map(Some)),
         }
         if crate::quota_ui::bar_tooltip(c.hit(x - 16., y - height / 2., 32., height, "side-performance"), "打开系统性能".into())
             .clicked()
