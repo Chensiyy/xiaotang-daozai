@@ -78,6 +78,8 @@ fn pill_shadow(painter:&egui::Painter,rect:Rect,radius:f32,strength:f32){
         painter.rect_filled(r,radius+grow*0.8,Color32::from_black_alpha((255.0*a*strength) as u8));
     }
 }
+/// 歌词因播放器版本无法同步时，岛上歌名的暖色（只用颜色提示，原因写在设置页）。
+pub(crate) const MUSIC_LIMITED_INK:egui::Color32=egui::Color32::from_rgb(236,190,104);
 pub(crate) const PAGE_NAMES: [&str; 9] = ["音乐", "专注", "健康", "置物架", "待办", "邮箱", "AI 额度", "日程", "天气"];
 pub(crate) const PAGE_SETTINGS_TABS: [usize; 9] = [1,2,3,5,4,7,11,8,12];
 
@@ -1745,8 +1747,14 @@ impl App {
     /// 换句、分段和展开高亮共用时间调整；正数延后，负数提前。
     pub(crate) fn lyric_position(&self)->f32 {(self.media.position-self.settings.lyric_delay_ms as f64/1000.0)as f32}
 
+    /// 当前播放器的版本读不到播放进度：歌词无法同步，岛上改显示歌名并用暖色提示（原因在设置的音乐页）。
+    pub(crate) fn music_lyrics_limited(&self)->bool {
+        #[cfg(windows)] {crate::smtc::music_compat::lyrics_limited(&self.media.source)}
+        #[cfg(not(windows))] {false}
+    }
+
     pub(crate) fn island_lyric(&self) -> Option<(usize,&str)> {
-        if !self.island_lyrics_active(){return None;}
+        if !self.island_lyrics_active() || self.music_lyrics_limited(){return None;}
         if !lyric_key_matches(&self.ly.key,&self.media) {return None;}
         let lyrics=self.ly.lyrics.as_ref().filter(|lyrics|lyrics.synced)?;
         let index=lyrics.index_at(self.lyric_position())?;
@@ -1757,7 +1765,8 @@ impl App {
     fn update_island_lyric_layout(&mut self,ctx:&egui::Context) {
         if !self.island_lyrics_active(){self.island_lyric_layout=None;return;}
         let current=self.island_lyric();
-        let lyrics=self.ly.lyrics.as_ref().filter(|lyrics|lyric_key_matches(&self.ly.key,&self.media)
+        let limited=self.music_lyrics_limited();
+        let lyrics=self.ly.lyrics.as_ref().filter(|lyrics|!limited && lyric_key_matches(&self.ly.key,&self.media)
             && lyrics.synced && lyrics.lines.iter().any(|line|!line.text.trim().is_empty()));
         let title=lyrics.is_none();
         let text=if let Some((_,line))=current {line}
@@ -1765,7 +1774,7 @@ impl App {
                 if lyrics.index_at(self.lyric_position()).is_none() {"前奏"}
                 else {"间奏"}
             } else {self.media.title.trim()};
-        let ink=if current.is_some()||title{theme::WHITE}else{theme::GRAY};
+        let ink=if limited{MUSIC_LIMITED_INK}else if current.is_some()||title{theme::WHITE}else{theme::GRAY};
         let layout=|text:String| {
             // 维语等从右往左的歌词：先按阅读顺序分行再逐行转换，否则折行后第一行会是句子的结尾（#200）。
             let font=theme::font(11.0,W::Semibold);

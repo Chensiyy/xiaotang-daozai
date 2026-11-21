@@ -1149,6 +1149,38 @@ fn island_size_slider(ui:&mut egui::Ui,value:&mut u32)->egui::Response {
     response
 }
 
+/// 音乐页的「播放器兼容」：每个用过的播放器的版本，以及进度、时长、跳转等是否可用、为什么不可用。
+#[cfg(windows)]
+fn music_compat_card(ui:&mut egui::Ui){
+    use crate::smtc::music_compat::{self as compat,Support};
+    let ctx=&ui.ctx().clone();
+    settings_label(ui,"播放器兼容");
+    settings_card(ui,|ui|{
+        let players=compat::all();
+        if players.is_empty() {
+            settings_hint(ui,"播放音乐后，这里会显示播放器版本，以及播放进度、时长、拖动跳转是否可用。");
+            return;
+        }
+        for (index,player) in players.iter().enumerate() {
+            if index>0 {ui.separator();}
+            let title=match &player.version {Some(version)=>format!("{} {version}",player.name()),None=>player.name().to_owned()};
+            ui.add(egui::Label::new(egui::RichText::new(title).size(13.0).color(settings_color(ctx,Color32::WHITE,Color32::from_rgb(30,34,41)))).wrap());
+            if player.items.is_empty() {settings_hint(ui,"通过系统媒体接口读取，不需要单独适配。");continue;}
+            for (item,support) in &player.items {
+                let (text,color)=match support {
+                    Support::Ok=>("已适配",settings_color(ctx,Color32::from_rgb(118,196,151),Color32::from_rgb(36,140,82))),
+                    Support::Learned=>("已自动适配",settings_color(ctx,Color32::from_rgb(118,196,151),Color32::from_rgb(36,140,82))),
+                    Support::Learning=>("正在自动适配，播放几秒即可",settings_color(ctx,Color32::from_gray(170),Color32::from_gray(92))),
+                    Support::Unavailable(_)=>("不可用",settings_color(ctx,crate::app::MUSIC_LIMITED_INK,Color32::from_rgb(176,112,20))),
+                };
+                settings_control_row_right(ui,item.label(),|ui|{ui.label(egui::RichText::new(text).size(12.0).color(color));});
+                if let Support::Unavailable(reason)=support {settings_hint(ui,reason);}
+            }
+        }
+        settings_hint(ui,"播放器版本不在适配表里时，岛仔会在播放时自动适配进度。仍不可用的项，可把播放器更新到最新版，或用「收集岛仔诊断」反馈。收起显示歌词时，歌名变为暖色表示当前播放器的歌词暂时无法同步。");
+    });
+}
+
 pub(crate) fn settings_hint(ui:&mut egui::Ui,text:&str){
     let ctx=&ui.ctx().clone();
     ui.add(egui::Label::new(egui::RichText::new(text).size(11.5).color(settings_color(ctx,Color32::from_gray(170),Color32::from_gray(92)))).wrap());
@@ -1796,6 +1828,12 @@ impl App {
                                 if setting_number(ui,"时间偏移",&mut advance,-5.0,5.0," 秒",0.1){self.settings.lyric_delay_ms=(-advance*1000.0).round()as i32;}
                                 settings_hint(ui,"歌词和歌声对不上时调整：正数提前，负数延后；默认提前 0.35 秒。");
                             });
+                            settings_label(ui,"播放器");
+                            settings_card(ui,|ui|{
+                                setting_row(ui,"系统事件通知","切歌、暂停时由系统立即通知，反应更快、后台更省；个别电脑上不跟手时可关闭，改为定时检查",&mut self.settings.music_events);
+                            });
+                            #[cfg(windows)]
+                            music_compat_card(ui);
                         });
                     }
                     2=>{
