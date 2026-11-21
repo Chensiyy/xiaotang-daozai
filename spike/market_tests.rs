@@ -31,6 +31,66 @@ fn gitee_contents_accepts_only_the_requested_bounded_file() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn raw_fallback_requires_rate_limiting_and_the_same_gitee_file() -> Result<()> {
+    assert!(gitee_rate_limited(429, std::io::empty()));
+    assert!(gitee_rate_limited(
+        403,
+        &b"Forbidden (Rate Limit Exceeded)"[..]
+    ));
+    assert!(!gitee_rate_limited(403, &b"Forbidden"[..]));
+    assert!(!gitee_rate_limited(404, &b"Rate Limit Exceeded"[..]));
+    assert!(!gitee_rate_limited(403, &vec![b'x'; 4096][..]));
+
+    let base = "https://gitee.com/api/v5/repos/xiaotangtoken/xiaotang-daozai-plugins/contents/";
+    let source = Url::parse(&format!("{base}preview/catalog.json?ref=master"))?;
+    let raw = gitee_raw_url(&source).unwrap();
+    let raw_path = "/xiaotangtoken/xiaotang-daozai-plugins/raw/master/preview/catalog.json";
+    assert_eq!(raw.as_str(), format!("https://gitee.com{raw_path}"));
+    assert!(gitee_raw_url(&Url::parse(&format!(
+        "{base}stable/avatar-author.png?ref=master"
+    ))?)
+    .is_some());
+    assert!(gitee_raw_url(&Url::parse(&format!(
+        "{base}stable/plugin-example.payday-1.0.0.zip?ref=master"
+    ))?)
+    .is_some());
+    for invalid in [
+        format!("{base}preview/catalog.json?ref=other"),
+        format!("{base}preview/catalog.json?ref=master&ref=other"),
+        format!("{base}unapproved/catalog.json?ref=master"),
+        format!("{base}preview/nested/catalog.json?ref=master"),
+        format!("{base}preview/index.json?ref=master"),
+        format!("{base}preview/catalog.json?ref=master#fragment"),
+        source
+            .as_str()
+            .replace("gitee.com/", "gitee.com.evil.invalid/"),
+        source.as_str().replace("xiaotangtoken/", "another-owner/"),
+    ] {
+        assert!(gitee_raw_url(&Url::parse(&invalid)?).is_none(), "{invalid}");
+    }
+    let redirect = format!("https://raw.giteeusercontent.com{raw_path}?signature=abc");
+    assert_eq!(
+        gitee_signed_location(&raw, &redirect),
+        Some(Url::parse(&redirect)?)
+    );
+    for invalid in [
+        redirect.replace("https:", "http:"),
+        redirect.replace(
+            "raw.giteeusercontent.com",
+            "raw.giteeusercontent.com.evil.invalid",
+        ),
+        redirect.replace("raw.giteeusercontent.com", "user@raw.giteeusercontent.com"),
+        redirect.replace("preview", "stable"),
+        redirect.replace("signature=abc", "token=abc"),
+        redirect.replace("signature=abc", "signature="),
+        redirect.replace("catalog.json", "avatar-author.png"),
+    ] {
+        assert!(gitee_signed_location(&raw, &invalid).is_none(), "{invalid}");
+    }
+    Ok(())
+}
+
 struct Fixture(PathBuf);
 
 impl Fixture {
@@ -81,6 +141,7 @@ fn market_author_packages_and_submits_immutable_versions() -> Result<()> {
 
     let catalog = Catalog::open(&catalog_path)?;
     let original = &catalog.entries[0];
+    assert!(original.presentation.is_none());
     assert_eq!(catalog.load(original)?.manifest.version, "1.2.9");
     assert_eq!(
         catalog.cover_png(original)?.as_slice(),
@@ -89,6 +150,20 @@ fn market_author_packages_and_submits_immutable_versions() -> Result<()> {
     let original_path = original.path_in(&catalog.path);
     let original_bytes = fs::read(&original_path)?;
     assert!(submit(&first, &catalog_path).is_err());
+
+    let mut index: Value = serde_json::from_slice(&fs::read(&catalog_path)?)?;
+    let presentation = json!({
+        "description": "发薪日提醒",
+        "updated_on": "2026-11-21",
+        "official": true,
+        "sample": true,
+        "maintainer": "Renly1994",
+        "author_avatar": "avatar-renly1994.png",
+        "downloads": 22,
+        "favorites": 0
+    });
+    index["plugins"][0]["presentation"] = presentation.clone();
+    fs::write(&catalog_path, serde_json::to_vec(&index)?)?;
 
     let second = fixture.0.join("second.zip");
     pack(&fixture.project("1.2.10")?, &second)?;
@@ -104,6 +179,7 @@ fn market_author_packages_and_submits_immutable_versions() -> Result<()> {
     assert!(submit(&first, &catalog_path).is_err());
 
     let entry = &catalog.entries[0];
+    assert_eq!(serde_json::to_value(&entry.presentation)?, presentation);
     let mut raw = fs::read(entry.path_in(&catalog.path))?;
     raw[0] ^= 1;
     fs::write(entry.path_in(&catalog.path), raw)?;
@@ -157,6 +233,18 @@ fn market_rejects_invalid_archives_and_catalogs() -> Result<()> {
     data["plugins"] = json!([entry.clone(), entry]);
     fs::write(&catalog, serde_json::to_vec(&data)?)?;
     assert!(Catalog::open(&catalog).is_err());
+    data["plugins"] = json!([entry]);
+    for presentation in [
+        json!({"updated_on": "2026-13-01"}),
+        json!({"author_avatar": "https://example.invalid/avatar.png"}),
+        json!({"author_avatar": "../avatar-renly1994.png"}),
+        json!({"maintainer": "@island"}),
+        json!({"downloads": -1}),
+    ] {
+        data["plugins"][0]["presentation"] = presentation;
+        fs::write(&catalog, serde_json::to_vec(&data)?)?;
+        assert!(Catalog::open(&catalog).is_err());
+    }
     assert!(compare_versions("1.02.0", "1.2.0").is_none());
     assert!(compare_versions("1.4294967296.0", "1.2.0").is_none());
     Ok(())

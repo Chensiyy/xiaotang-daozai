@@ -131,6 +131,9 @@ struct Record {
     from_market: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     official_market: bool,
+    #[cfg(windows)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    presentation: Option<market::Presentation>,
     package: Option<Package>,
     enabled: bool,
     values: Values,
@@ -509,6 +512,8 @@ pub struct LocalPlugins {
     official_market: market_state::OfficialMarket,
     #[cfg(windows)]
     market_job: Option<market_state::MarketJob>,
+    #[cfg(windows)]
+    market_favorites: BTreeMap<String, String>,
     invalid: std::collections::BTreeSet<String>,
     dir: PathBuf,
     records: BTreeMap<String, Record>,
@@ -533,6 +538,8 @@ impl LocalPlugins {
             official_market: Default::default(),
             #[cfg(windows)]
             market_job: None,
+            #[cfg(windows)]
+            market_favorites: Default::default(),
             invalid: Default::default(),
             #[cfg(feature = "sdk-material")]
             selected_material: Self::read_material_id(&dir),
@@ -718,6 +725,8 @@ impl LocalPlugins {
             origin: path.clone(),
             from_market: false,
             official_market: false,
+            #[cfg(windows)]
+            presentation: None,
             values: Values::new(),
             enabled: false,
             package: None,

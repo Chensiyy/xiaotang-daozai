@@ -1,6 +1,9 @@
 use super::{market, *};
 use std::{cmp::Ordering, sync::Arc, thread::JoinHandle};
 
+const FAVORITES_FILE: &str = "market-favorites.json";
+const FAVORITES_LIMIT: u64 = 256 * 1024;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum MarketStatus {
     Install,
@@ -23,8 +26,8 @@ pub(super) struct OfficialMarket {
     last_attempt: Option<Instant>,
     sync_job: Option<JoinHandle<std::result::Result<market::Catalog, String>>>,
     error: Option<String>,
-    cover_job: Option<(String, JoinHandle<Option<CoverPng>>)>,
-    covers: BTreeMap<String, Option<CoverPng>>,
+    image_job: Option<(String, JoinHandle<Option<CoverPng>>)>,
+    images: BTreeMap<String, Option<CoverPng>>,
     #[cfg(test)]
     test_index: Option<url::Url>,
 }
@@ -40,6 +43,54 @@ impl LocalPlugins {
             .saved_market_path()
             .and_then(|path| market::Catalog::open(&path).ok())
             .map(Arc::new);
+        let mut favorites: BTreeMap<String, String> =
+            bounded(&self.dir.join(FAVORITES_FILE), FAVORITES_LIMIT)
+                .ok()
+                .and_then(|contents| serde_json::from_str(&contents).ok())
+                .unwrap_or_default();
+        favorites.retain(|id, name| {
+            valid_id(id) && !name.trim().is_empty() && name.chars().count() <= 80
+        });
+        self.market_favorites = favorites;
+    }
+
+    pub(super) fn favorites(&self) -> &BTreeMap<String, String> {
+        &self.market_favorites
+    }
+
+    pub(super) fn is_favorite(&self, id: &str) -> bool {
+        self.market_favorites.contains_key(id)
+    }
+
+    pub(super) fn set_favorite(&mut self, entry: &market::Entry, saved: bool) -> Result<()> {
+        if !saved {
+            return self.remove_favorite(&entry.id);
+        }
+        if self.is_favorite(&entry.id) {
+            return Ok(());
+        }
+        let mut favorites = self.market_favorites.clone();
+        favorites.insert(entry.id.clone(), entry.name.clone());
+        self.save_favorites(favorites)
+    }
+
+    pub(super) fn remove_favorite(&mut self, id: &str) -> Result<()> {
+        if !self.is_favorite(id) {
+            return Ok(());
+        }
+        let mut favorites = self.market_favorites.clone();
+        favorites.remove(id);
+        self.save_favorites(favorites)
+    }
+
+    fn save_favorites(&mut self, favorites: BTreeMap<String, String>) -> Result<()> {
+        let contents = serde_json::to_vec(&favorites)?;
+        if contents.len() as u64 > FAVORITES_LIMIT {
+            return Err(fail("已达到本机收藏上限"));
+        }
+        crate::model::atomic_write(&self.dir.join(FAVORITES_FILE), &contents)?;
+        self.market_favorites = favorites;
+        Ok(())
     }
 
     pub(super) fn set_market_catalog(&mut self, path: &Path) -> Result<()> {
@@ -104,7 +155,7 @@ impl LocalPlugins {
                 .map(Arc::new);
         }
         official.error = None;
-        official.covers.retain(|_, cover| cover.is_some());
+        official.images.retain(|_, image| image.is_some());
         official.sync_job = Some(std::thread::spawn(move || {
             market::Catalog::sync_official(path, index).map_err(|error| error.to_string())
         }));
@@ -136,16 +187,40 @@ impl LocalPlugins {
         catalog: &Arc<market::Catalog>,
         entry: &market::Entry,
     ) -> Option<std::result::Result<CoverPng, ()>> {
+        self.official_image(&entry.sha256, catalog, entry, |catalog, entry| {
+            catalog.load(entry).ok()?.cover
+        })
+    }
+
+    pub(super) fn official_avatar(
+        &mut self,
+        catalog: &Arc<market::Catalog>,
+        entry: &market::Entry,
+    ) -> Option<std::result::Result<CoverPng, ()>> {
+        let Some(name) = entry.avatar_name().filter(|_| catalog.is_official()) else {
+            return Some(Err(()));
+        };
+        self.official_image(name, catalog, entry, |catalog, entry| {
+            catalog.avatar_png(entry.avatar_name()?)
+        })
+    }
+
+    fn official_image(
+        &mut self,
+        key: &str,
+        catalog: &Arc<market::Catalog>,
+        entry: &market::Entry,
+        load: fn(&market::Catalog, &market::Entry) -> Option<CoverPng>,
+    ) -> Option<std::result::Result<CoverPng, ()>> {
         let official = &mut self.official_market;
-        if let Some(cover) = official.covers.get(&entry.sha256) {
-            return Some(cover.clone().ok_or(()));
+        if let Some(image) = official.images.get(key) {
+            return Some(image.clone().ok_or(()));
         }
-        if official.cover_job.is_none() {
+        if official.image_job.is_none() {
             let (catalog, entry) = (Arc::clone(catalog), entry.clone());
-            let sha256 = entry.sha256.clone();
-            official.cover_job = Some((
-                sha256,
-                std::thread::spawn(move || catalog.load(&entry).ok()?.cover),
+            official.image_job = Some((
+                key.to_owned(),
+                std::thread::spawn(move || load(&catalog, &entry)),
             ));
         }
         None
@@ -182,7 +257,7 @@ impl LocalPlugins {
     pub(super) fn market_pending(&self) -> bool {
         self.market_busy()
             || self.official_catalog_busy()
-            || self.official_market.cover_job.is_some()
+            || self.official_market.image_job.is_some()
     }
 
     pub(super) fn cancel_market(&mut self, id: &str) {
@@ -221,6 +296,7 @@ impl LocalPlugins {
                 origin: catalog.path.clone(),
                 from_market: true,
                 official_market: official,
+                presentation: None,
                 package: None,
                 enabled: false,
                 values: Values::new(),
@@ -234,7 +310,12 @@ impl LocalPlugins {
             update,
             cancelled: false,
             result: std::thread::spawn(move || {
-                let prepare = || prepare_record(record, catalog.load(&entry)?);
+                let prepare = || {
+                    let mut record = record;
+                    let package = catalog.load(&entry)?;
+                    record.presentation = entry.presentation.filter(|_| official);
+                    prepare_record(record, package)
+                };
                 prepare().map_err(|error| error.to_string())
             }),
         });
@@ -291,26 +372,24 @@ impl LocalPlugins {
                 .unwrap_or_else(|_| Err("同步集市时出现错误".into()))
             {
                 Ok(catalog) => {
-                    official
-                        .covers
-                        .retain(|sha, _| catalog.entries.iter().any(|entry| &entry.sha256 == sha));
+                    official.images.retain(|key, _| catalog.has_image(key));
                     official.catalog = Some(Arc::new(catalog));
                 }
                 Err(error) => official.error = Some(error),
             }
         }
         if official
-            .cover_job
+            .image_job
             .as_ref()
             .is_some_and(|(_, job)| job.is_finished())
         {
-            let (sha, job) = official.cover_job.take().unwrap();
+            let (key, job) = official.image_job.take().unwrap();
             if official
                 .catalog
                 .as_ref()
-                .is_some_and(|catalog| catalog.entries.iter().any(|entry| entry.sha256 == sha))
+                .is_some_and(|catalog| catalog.has_image(&key))
             {
-                official.covers.insert(sha, job.join().unwrap_or(None));
+                official.images.insert(key, job.join().unwrap_or(None));
             }
         }
     }

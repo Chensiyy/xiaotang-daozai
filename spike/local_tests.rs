@@ -94,6 +94,28 @@ mod test_market {
     }
 
     #[test]
+    fn market_favorites_survive_a_restart_and_delisting() -> Result<()> {
+        let fixture = Fixture::new()?;
+        fixture.publish("1.0.0", false)?;
+        let entry = market::Catalog::open(&fixture.index)?.entries.remove(0);
+        let storage = fixture.root.join("installed");
+        let mut host = LocalPlugins::open(storage.clone());
+        assert!(host.favorites().is_empty());
+        host.set_favorite(&entry, true)?;
+        host.set_favorite(&entry, true)?;
+        assert!(host.is_favorite(ID));
+        assert_eq!(host.favorites().len(), 1);
+
+        // 删除在线目录后，收藏仍可显示名称并取消。
+        fs::remove_file(&fixture.index)?;
+        let mut host = LocalPlugins::open(storage.clone());
+        assert_eq!(host.favorites().get(ID), Some(&entry.name));
+        host.remove_favorite(ID)?;
+        assert!(LocalPlugins::open(storage).favorites().is_empty());
+        Ok(())
+    }
+
+    #[test]
     fn market_install_update_restart_and_reinstall_keep_data() -> Result<()> {
         let fixture = Fixture::new()?;
         let storage = fixture.root.join("installed");
@@ -214,13 +236,24 @@ mod test_market {
     fn official_market_updates_from_its_mirror_and_keeps_verified_state_on_failure() -> Result<()> {
         use base64::{engine::general_purpose::STANDARD, Engine};
         use std::{
-            io::{BufRead, BufReader, Write},
+            io::{BufRead, BufReader, Cursor, Write},
             net::TcpListener,
         };
 
         let fixture = Fixture::new()?;
         fixture.publish("1.0.0", false)?;
-        let first = fs::read(&fixture.index)?;
+        let mut first: Value = serde_json::from_slice(&fs::read(&fixture.index)?)?;
+        let avatar_name = "avatar-author.png";
+        first["plugins"][0]["presentation"] = json!({
+            "official": true,
+            "sample": true,
+            "maintainer": "renly1994",
+            "author_avatar": avatar_name
+        });
+        let first = serde_json::to_vec(&first)?;
+        let mut avatar = Cursor::new(Vec::new());
+        image::RgbaImage::new(1, 1).write_to(&mut avatar, image::ImageFormat::Png)?;
+        let avatar = avatar.into_inner();
         let first_name = format!("plugin-{ID}-1.0.0.zip");
         let first_zip = fs::read(fixture.index.with_file_name(&first_name))?;
         fixture.publish("1.1.0", false)?;
@@ -237,6 +270,7 @@ mod test_market {
         ))?;
         let replies = [
             ("catalog.json", first, false),
+            (avatar_name, avatar.clone(), false),
             (first_name.as_str(), first_zip.clone(), false),
             (first_name.as_str(), first_zip, false),
             ("catalog.json", second.clone(), false),
@@ -301,6 +335,18 @@ mod test_market {
             host.market_catalog(false).unwrap().entries[0].version,
             "1.1.0"
         );
+        let local = host.market_catalog(false).unwrap();
+        assert!(matches!(
+            host.official_avatar(&local, &remote.entries[0]),
+            Some(Err(()))
+        ));
+        assert!(host.official_avatar(&remote, &remote.entries[0]).is_none());
+        settle_market(&mut host);
+        let image = host
+            .official_avatar(&remote, &remote.entries[0])
+            .unwrap()
+            .unwrap();
+        assert_eq!(image.bytes(), avatar.as_slice());
         assert!(host.official_cover(&remote, &remote.entries[0]).is_none());
         settle_market(&mut host);
         assert!(matches!(
@@ -310,6 +356,7 @@ mod test_market {
         host.market_action(true, ID)?;
         settle_market(&mut host);
         assert!(host.records[ID].official_market);
+        assert!(host.records[ID].presentation.as_ref().unwrap().sample);
         assert!(!host.records[ID].enabled);
         assert_eq!(status(&host), MarketStatus::OtherSource);
         host.enable(ID, true)?;

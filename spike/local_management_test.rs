@@ -81,8 +81,24 @@ fn management_buttons_jump_disable_and_confirm_uninstall() -> Result<()> {
     ));
     let mut host = LocalPlugins::open(dir.clone());
     host.install(&Path::new(env!("CARGO_MANIFEST_DIR")).join("spike/examples/payday/plugin.json"))?;
+    let mut legacy = host.records["example.payday"].clone();
+    let package = legacy.package.as_mut().unwrap();
+    package.manifest.cover = None;
+    package.cover = None;
+    host.put("example.payday", legacy)?;
+    drop(host);
+    let mut host = LocalPlugins::open(dir.clone());
     let ctx = egui::Context::default();
     crate::theme::load_fonts(&ctx);
+    let first = frame(&ctx, vec![], |ui| {
+        host.manage(
+            ui,
+            true,
+            #[cfg(all(windows, feature = "sdk-material"))]
+            None,
+        );
+    });
+    assert!(has_text(&first, "暂无封面"));
     let mut jumped = false;
     let mut click = |host: &mut LocalPlugins, label: &str| {
         click(&ctx, label, |ui| {
