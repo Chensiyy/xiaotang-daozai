@@ -83,7 +83,8 @@ impl Sampler {
             self.disk = Counters::open();
         }
         if let Some(counters) = &self.disk {
-            let [read, write, idle, performance] = counters.read();
+            let [read, write, idle, performance, free] = counters.read();
+            r.memory_free = free.map(|bytes| bytes as u64);
             r.disk = [read, write];
             r.disk_active = idle.map(|v| (100. - v).clamp(0., 100.));
             let max = *self.max_mhz.get_or_insert_with(max_mhz);
@@ -405,13 +406,13 @@ fn net_rates(prev: &Interfaces, cur: &Interfaces, secs: f64) -> [Option<f32>; 2]
 /// 同一个 PDH 查询里的四个计数器：磁盘读、写、空闲时间，处理器性能百分比（换算当前频率）。
 struct Counters {
     query: isize,
-    counters: [isize; 4],
+    counters: [isize; 5],
 }
 impl Counters {
     fn open() -> Option<Self> {
         let mut disk = Self {
             query: 0,
-            counters: [0; 4],
+            counters: [0; 5],
         };
         if unsafe { PdhOpenQueryW(PCWSTR::null(), 0, &mut disk.query) } != 0 {
             return None;
@@ -421,15 +422,17 @@ impl Counters {
             w!("\\PhysicalDisk(_Total)\\Disk Write Bytes/sec"),
             w!("\\PhysicalDisk(_Total)\\% Idle Time"),
             w!("\\Processor Information(_Total)\\% Processor Performance"),
+            // 真正空着的内存（空闲 + 已清零页）；可用内存减去它就是随时能让出来的备用缓存。
+            w!("\\Memory\\Free & Zero Page List Bytes"),
         ];
         for (slot, name) in disk.counters.iter_mut().zip(names) {
             unsafe { PdhAddEnglishCounterW(disk.query, name, 0, slot) };
         }
         Some(disk)
     }
-    fn read(&self) -> [Option<f32>; 4] {
+    fn read(&self) -> [Option<f32>; 5] {
         if unsafe { PdhCollectQueryData(self.query) } != 0 {
-            return [None; 4];
+            return [None; 5];
         }
         self.counters.map(|c| {
             let mut v = PDH_FMT_COUNTERVALUE::default();
@@ -640,7 +643,7 @@ mod tests {
         assert!(!r.by_memory.is_empty() && r.by_memory.iter().all(|p| !p.name.is_empty() && p.memory > 0));
         assert!(r.by_memory.windows(2).all(|w| w[0].memory >= w[1].memory));
         assert!(r.volumes.iter().all(|v| v.used <= v.total) && !r.volumes.is_empty());
-        assert!(r.memory_cache.is_some() && r.memory_kernel.is_some());
+        assert!(r.memory_cache.is_some() && r.memory_kernel.is_some() && r.memory_free.is_some());
         println!("{:?} {:?} {:?} {:?} {:?}", r.cpu_mhz, r.cpu_kernel, r.disk_active, r.link_speed, &r.by_cpu);
         let quiet = sampler.read(Instant::now(), false);
         assert!(quiet.by_memory.is_empty() && quiet.volumes.is_empty(), "收起后不再统计程序和分区");

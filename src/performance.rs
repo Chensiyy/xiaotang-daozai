@@ -194,6 +194,8 @@ pub(crate) struct Reading {
     /// 内存构成：系统缓存与内核常驻（非分页池）字节数。
     pub memory_cache: Option<u64>,
     pub memory_kernel: Option<u64>,
+    /// 真正空着的内存（空闲 + 已清零页）。可用 = 备用缓存 + 它。
+    pub memory_free: Option<u64>,
     /// 磁盘活动时间百分比。
     pub disk_active: Option<f32>,
     /// 当前网卡的链路速率（比特每秒）与网卡启用以来的累计收发字节。
