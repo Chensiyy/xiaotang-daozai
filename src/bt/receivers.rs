@@ -1,5 +1,5 @@
 //! 已识别的 2.4G USB 接收器。拔插查询独立于蓝牙枚举。
-use super::compat::{Package, Store};
+use super::compat::{builtin_receivers, Package, Store};
 use super::{Device, DeviceKind};
 use std::{
     ffi::c_void,
@@ -18,9 +18,10 @@ use windows::{
 const GUID_DEVINTERFACE_USB_DEVICE: GUID = GUID::from_u128(0xa5dcbf10_6530_11d2_901f_00c04fb951ed);
 
 fn receiver_snapshot(
-    pack: &Package,
+    pack: Option<&Package>,
     instances: impl IntoIterator<Item = impl AsRef<str>>,
 ) -> Vec<Device> {
+    let builtin = builtin_receivers();
     let mut devices: Vec<_> = instances
         .into_iter()
         .filter_map(|instance| {
@@ -30,7 +31,9 @@ fn receiver_snapshot(
                 return None;
             }
             // 只匹配完整 USB 设备的硬件 ID，复合设备的 MI_* 子接口不会单独出现。
-            let name = pack.receiver_name(hardware)?;
+            let name = builtin
+                .receiver_name(hardware)
+                .or_else(|| pack?.receiver_name(hardware))?;
             Some(Device {
                 id: format!("usb:{instance}"),
                 name: name.into(),
@@ -44,7 +47,7 @@ fn receiver_snapshot(
     devices
 }
 
-fn present_receivers(pack: &Package) -> Option<Vec<Device>> {
+fn present_usb_instances() -> Option<Vec<String>> {
     const FLAGS: u32 = CM_GETIDLIST_FILTER_ENUMERATOR | CM_GETIDLIST_FILTER_PRESENT;
     // 拔插发生在查询长度和读取之间时，PnP 可能要求扩大缓冲区。
     for _ in 0..3 {
@@ -58,8 +61,9 @@ fn present_receivers(pack: &Package) -> Option<Vec<Device>> {
                 let ids = buffer
                     .split(|&ch| ch == 0)
                     .take_while(|id| !id.is_empty())
-                    .map(String::from_utf16_lossy);
-                return Some(receiver_snapshot(pack, ids));
+                    .map(String::from_utf16_lossy)
+                    .collect();
+                return Some(ids);
             }
             CR_BUFFER_SMALL => continue,
             _ => return None,
@@ -149,7 +153,7 @@ pub(super) fn run(
         wake,
         changes,
         scan_interval,
-        present_receivers,
+        present_usb_instances,
     );
 }
 
@@ -160,10 +164,11 @@ fn run_scans(
     wake: impl Fn(),
     changes: mpsc::Receiver<()>,
     scan_interval: Duration,
-    scan: impl Fn(&Package) -> Option<Vec<Device>>,
+    scan: impl Fn() -> Option<Vec<String>>,
 ) {
     let mut active = store.package();
     let mut next_scan = Instant::now();
+    let mut instances = None;
     let mut latest = None;
     let mut published = None;
     while !stop.load(Ordering::Relaxed) {
@@ -174,13 +179,13 @@ fn run_scans(
         };
         if Instant::now() >= next_scan || changed {
             active = selected;
-            let observed = match &active {
-                Some(package) => scan(package),
-                None => Some(Vec::new()),
-            };
-            if observed.is_some() {
-                latest = observed;
+            if let Some(found) = scan() {
+                instances = Some(found);
             }
+            // 启停和更新按最新识别表重算，刚好枚举失败时也能移除已停用的扩展项。
+            latest = instances
+                .as_ref()
+                .map(|ids| receiver_snapshot(active.as_deref(), ids));
             next_scan = Instant::now() + scan_interval;
         }
         if latest != published {
@@ -208,6 +213,31 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn receiver_snapshot_native_catalog_covers_all_23_without_plugin() {
+        let data = Files::builtin();
+        let rows = data["receivers"].as_array().unwrap();
+        let instances: Vec<_> = rows
+            .iter()
+            .map(|row| {
+                format!(
+                    r"USB\VID_{}&PID_{}\DEVICE",
+                    row["vid"].as_str().unwrap(),
+                    row["pid"].as_str().unwrap()
+                )
+            })
+            .collect();
+        let devices = receiver_snapshot(None, &instances);
+        assert_eq!(devices.len(), 23);
+        for (instance, row) in instances.iter().zip(rows) {
+            let device = devices
+                .iter()
+                .find(|device| device.id == format!("usb:{instance}"))
+                .unwrap();
+            assert_eq!(Some(device.name.as_str()), row["name"].as_str());
+        }
+    }
+
+    #[test]
     fn receiver_worker_tracks_compat_pack_lifecycle() {
         let files = Files::new();
         let store = files.store();
@@ -228,50 +258,57 @@ mod tests {
                     || {},
                     changes,
                     Duration::from_secs(60),
-                    |pack| {
-                        scans.fetch_add(1, Ordering::Relaxed);
-                        Some(receiver_snapshot(
-                            pack,
+                    || {
+                        let count = scans.fetch_add(1, Ordering::Relaxed);
+                        // 首次枚举成功。之后模拟 PnP 读取失败，验证启停仍能重新匹配实体列表。
+                        (count == 0).then(|| {
                             [
                                 r"USB\VID_2717&PID_5055\DEVICE_2",
                                 r"USB\VID_046D&PID_C542\DEVICE_1",
                                 r"usb\vid_046d&pid_c542\device_1",
                                 r"USB\VID_046D&PID_C542&MI_00\INTERFACE_1",
-                            ],
-                        ))
+                            ]
+                            .map(str::to_owned)
+                            .to_vec()
+                        })
                     },
                 );
             });
 
             let snapshot = || service.rx.recv_timeout(Duration::from_secs(3)).unwrap();
-            assert!(snapshot().is_empty());
-            assert_eq!(scans.load(Ordering::Relaxed), 0);
-            store.test_install_builtin();
-            assert!(!store.enabled());
-            store.set_enabled(true).unwrap();
-            assert_eq!(snapshot().len(), 1);
+            let baseline = snapshot();
+            assert_eq!(baseline.len(), 1);
+            assert_eq!(baseline[0].name, "小米无线键鼠套装 2");
             let mut data = Files::builtin();
             data["version"] = json!("1.1.0");
-            data["receivers"]
-                .as_array_mut()
-                .unwrap()
-                .push(json!({"vid":"046D","pid":"C542","name":"罗技 Nano 接收器"}));
+            data["receivers"] = json!([
+                {"vid":"2717","pid":"5055","name":"兼容包里的同型号名称"},
+                {"vid":"046D","pid":"C542","name":"罗技 Nano 接收器"}
+            ]);
             store.install(&files.write(&data)).unwrap();
+            assert!(!store.enabled());
+            store.set_enabled(true).unwrap();
 
             let updated = snapshot();
             assert_eq!(updated.len(), 2);
             assert_eq!(updated[0].name, "罗技 Nano 接收器");
             assert_eq!(updated[0].id, r"usb:USB\VID_046D&PID_C542\DEVICE_1");
+            assert_eq!(updated[1], baseline[0]);
             assert_eq!(files.store().version().as_deref(), Some("1.1.0"));
 
-            let scanned = scans.load(Ordering::Relaxed);
+            data["version"] = json!("1.2.0");
+            data["receivers"][1]["name"] = json!("罗技 Nano 无线接收器");
+            store.install(&files.write(&data)).unwrap();
+            let latest = snapshot();
+            assert_eq!(latest[0].name, "罗技 Nano 无线接收器");
+            assert_eq!(latest[1], baseline[0]);
+
             store.set_enabled(false).unwrap();
-            assert!(snapshot().is_empty());
-            assert_eq!(scans.load(Ordering::Relaxed), scanned);
+            assert_eq!(snapshot(), baseline);
             store.set_enabled(true).unwrap();
-            assert_eq!(snapshot(), updated);
+            assert_eq!(snapshot(), latest);
             store.uninstall().unwrap();
-            assert!(snapshot().is_empty());
+            assert_eq!(snapshot(), baseline);
             store.test_install_builtin();
             assert!(store.package().is_none());
         });
@@ -279,58 +316,38 @@ mod tests {
 
     #[test]
     #[ignore = "需本机插有小米无线键鼠套装 2 的接收器"]
-    fn receiver_live_usb_hot_reloads_compat_pack() {
+    fn receiver_live_usb_builtin_survives_plugin_lifecycle() {
         let files = Files::new();
-        let store = files.enabled_store();
-        let is_xiaomi = |device: &Device| device.id.starts_with(r"usb:USB\VID_2717&PID_5055\");
-        assert!(
-            present_receivers(&store.package().unwrap())
-                .unwrap()
+        let store = files.store();
+        let assert_xiaomi = || {
+            let devices =
+                receiver_snapshot(store.package().as_deref(), present_usb_instances().unwrap());
+            let xiaomi: Vec<_> = devices
                 .iter()
-                .any(is_xiaomi),
-            "请插入小米无线键鼠套装 2 的接收器"
-        );
-
-        let mut data = Files::builtin();
-        data["version"] = json!("1.0.1");
-        data["receivers"]
-            .as_array_mut()
-            .unwrap()
-            .retain(|row| row["vid"] != "2717" || row["pid"] != "5055");
-        store.install(&files.write(&data)).unwrap();
-        std::thread::scope(|scope| {
-            let (tx, rx) = mpsc::sync_channel(1);
-            let stop = Arc::new(AtomicBool::new(false));
-            let worker_stop = stop.clone();
-            let service = crate::bt::Service { rx, stop };
-            let worker_store = store.clone();
-            scope.spawn(move || run(tx, worker_stop, worker_store, || {}));
-
-            let initial = service.rx.recv_timeout(Duration::from_secs(3)).unwrap();
-            assert!(!initial.iter().any(is_xiaomi));
-            let mut data = Files::builtin();
-            data["version"] = json!("1.1.0");
-            store.install(&files.write(&data)).unwrap();
-
-            let updated = service.rx.recv_timeout(Duration::from_secs(3)).unwrap();
-            let xiaomi: Vec<_> = updated.iter().filter(|device| is_xiaomi(device)).collect();
-            assert_eq!(xiaomi.len(), 1);
+                .filter(|device| device.id.starts_with(r"usb:USB\VID_2717&PID_5055\"))
+                .collect();
+            assert_eq!(xiaomi.len(), 1, "请插入一枚小米无线键鼠套装 2 的接收器");
             assert_eq!(xiaomi[0].name, "小米无线键鼠套装 2");
             assert_eq!(xiaomi[0].battery, None);
-            store.set_enabled(false).unwrap();
-            assert!(service
-                .rx
-                .recv_timeout(Duration::from_secs(3))
-                .unwrap()
-                .is_empty());
-        });
+        };
+        assert_xiaomi();
+        let mut data = Files::builtin();
+        data["version"] = json!("1.0.1");
+        data["receivers"] = json!([{"vid":"2717","pid":"5055","name":"兼容包里的同型号名称"}]);
+        store.install(&files.write(&data)).unwrap();
+        assert_xiaomi();
+        store.set_enabled(true).unwrap();
+        assert_xiaomi();
+        store.set_enabled(false).unwrap();
+        assert_xiaomi();
+        store.uninstall().unwrap();
+        assert_xiaomi();
     }
 
     #[test]
     fn receiver_snapshot_uses_physical_usb_instance() {
-        let files = Files::new();
         let devices = receiver_snapshot(
-            &files.enabled_store().package().unwrap(),
+            None,
             [
                 r"USB\VID_2717&PID_5055\5&AAA&0&1",
                 r"usb\vid_2717&pid_5055\5&aaa&0&1",
@@ -353,10 +370,8 @@ mod tests {
 
     #[test]
     fn receiver_snapshot_excludes_unverified_vid_pid_and_non_usb_nodes() {
-        let files = Files::new();
-        let pack = files.enabled_store().package().unwrap();
         assert!(receiver_snapshot(
-            &pack,
+            None,
             [
                 r"USB\VID_8087&PID_0026\5&AAA&0&1",
                 r"USB\VID_046D&PID_C08B\5&AAA&0&2",
@@ -368,7 +383,7 @@ mod tests {
         )
         .is_empty());
         assert_eq!(
-            receiver_snapshot(&pack, [r"USB\VID_046D&PID_C548\A"])[0].name,
+            receiver_snapshot(None, [r"USB\VID_046D&PID_C548\A"])[0].name,
             "罗技 Bolt 接收器"
         );
     }
@@ -403,11 +418,12 @@ mod tests {
     #[test]
     #[ignore = "按需验证本机 USB 通知及接收器枚举"]
     fn receiver_live_usb_sources() {
-        let files = Files::new();
         let (sender, _changes) = mpsc::sync_channel(1);
         let _notification = Notification::register(sender).expect("Windows USB 拔插通知注册应成功");
-        let devices = present_receivers(&files.enabled_store().package().unwrap())
-            .expect("Windows 已插入 USB 设备枚举应成功");
+        let devices = receiver_snapshot(
+            None,
+            present_usb_instances().expect("Windows 已插入 USB 设备枚举应成功"),
+        );
         for device in devices {
             println!(
                 "{} | id={} | 电量={:?}",

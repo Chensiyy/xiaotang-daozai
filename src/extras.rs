@@ -1693,8 +1693,7 @@ impl App {
                     }
                     SETTINGS_TAB_WIRELESS=>{
                         let compat_enabled=self.wireless_compat.enabled();
-                        let description=if compat_enabled {"查看蓝牙电量和 2.4G 接收器状态"} else {"查看蓝牙设备电量和充电状态"};
-                        let on=self.settings_feature_header(ui,crate::app::BLUETOOTH_PAGE,description,|_,_|{});
+                        let on=self.settings_feature_header(ui,crate::app::BLUETOOTH_PAGE,"查看蓝牙电量和 2.4G 接收器状态",|_,_|{});
                         ui.add_enabled_ui(on,|ui|{
                             settings_label(ui,"岛上常驻");
                             settings_card(ui,|ui|{

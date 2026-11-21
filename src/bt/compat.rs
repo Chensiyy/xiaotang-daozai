@@ -1,4 +1,4 @@
-//! 本地数据型兼容包。只有已启用的包参与接收器识别。
+//! 接收器识别表与用于补充型号的本地兼容包。
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -11,7 +11,7 @@ use std::{
 const PACKAGE_ID: &str = "daozai.wireless-receivers";
 const API_VERSION: u32 = 1;
 const FILE_NAME: &str = "wireless-receivers.json";
-#[cfg(test)]
+#[cfg(any(windows, test))]
 const BUILTIN: &[u8] = include_bytes!("../../assets/wireless-receivers.json");
 const MAX_BYTES: usize = 256 * 1024;
 
@@ -78,6 +78,12 @@ impl Package {
             .get(&(usb_id(vid)?, usb_id(pid)?))
             .map(|&index| self.manifest.receivers[index].name.as_str())
     }
+}
+
+#[cfg(windows)]
+pub(super) fn builtin_receivers() -> &'static Package {
+    static PACKAGE: std::sync::OnceLock<Package> = std::sync::OnceLock::new();
+    PACKAGE.get_or_init(|| Package::parse(BUILTIN).expect("内置接收器识别表应有效"))
 }
 
 fn usb_id(hex: &str) -> Option<u16> {
@@ -263,14 +269,6 @@ pub(super) mod fixtures {
 
         pub(in crate::bt) fn store(&self) -> Store {
             Store::load_from(self.dir.join(FILE_NAME))
-        }
-
-        #[cfg(windows)]
-        pub(in crate::bt) fn enabled_store(&self) -> Store {
-            let store = self.store();
-            store.test_install_builtin();
-            store.set_enabled(true).unwrap();
-            store
         }
 
         pub(in crate::bt) fn builtin() -> serde_json::Value {
