@@ -77,7 +77,7 @@
 | `settings[].unit` | 可选，滑块数值后显示的单位，最多 4 个字符，例如 `"px"`、`"%"`。只用于显示，宿主不做换算 |
 | `settings[].precision` | 可选，0 至 3，滑块显示的小数位数。不写时按 `step` 的小数位数显示 |
 
-包内只允许 `plugin.json`、入口 `.wgsl` 和说明文件（`.md`、`.txt`、`.rst`，或 README、LICENSE、COPYING、NOTICE、CHANGELOG），不允许链接、重定向路径、脚本和可执行文件。清单出现未列出的字段即拒绝安装。
+清单须声明 `"cover": "cover.png"`。包内只允许 `plugin.json`、包根目录的 `cover.png`、入口 `.wgsl` 和可选的说明文件（`.md`、`.txt`、`.rst`，或 README、LICENSE、COPYING、NOTICE、CHANGELOG）。封面须为有效 PNG，最大 256 KiB、1920×1080，建议 16:9。岛仔拒绝链接、重定向路径、脚本、可执行文件和未知清单字段。
 
 ### 权限
 

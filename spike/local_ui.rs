@@ -4,17 +4,242 @@ use super::*;
 use crate::{
     extras::{settings_card, settings_control_row, settings_hint},
     paint::{self, Card, H},
+    settings_theme::color,
     theme::{self, W},
 };
-use eframe::egui;
+use eframe::egui::{self, Color32};
+
+const COVERS: &str = "settings-plugin-covers";
+type CoverCache = std::collections::VecDeque<(egui::Id, Option<egui::TextureHandle>)>;
+
+fn forget_covers(ui: &egui::Ui) {
+    ui.data_mut(|data| data.remove::<CoverCache>(egui::Id::new(COVERS)));
+}
+
+fn plugin_cover(
+    ui: &mut egui::Ui,
+    key: egui::Id,
+    width: f32,
+    radius: egui::CornerRadius,
+    placeholder: &str,
+    load: impl FnOnce() -> Option<Vec<u8>>,
+) -> bool {
+    let size = egui::vec2(width, width * 9.0 / 16.0);
+    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    let cache_id = egui::Id::new(COVERS);
+    let cached = ui.data_mut(|data| {
+        let cache = data.get_temp_mut_or_default::<CoverCache>(cache_id);
+        let index = cache.iter().position(|(id, _)| *id == key)?;
+        let entry = cache.remove(index)?;
+        let texture = entry.1.clone();
+        cache.push_front(entry);
+        Some(texture)
+    });
+    if !ui.is_rect_visible(rect) {
+        return cached.is_some_and(|texture| texture.is_some());
+    }
+    let frame = ui.ctx().cumulative_pass_nr();
+    let queued = cached.is_none()
+        && !ui.data_mut(|data| {
+            let budget = data.get_temp_mut_or_default::<(u64, u8)>(cache_id.with("decode"));
+            if budget.0 != frame {
+                *budget = (frame, 0);
+            }
+            if budget.1 == 2 {
+                return false;
+            }
+            budget.1 += 1;
+            true
+        });
+    let texture = if queued {
+        ui.ctx().request_repaint();
+        None
+    } else {
+        cached.unwrap_or_else(|| {
+            let texture = load().and_then(|png| {
+                let image =
+                    image::load_from_memory_with_format(&png, image::ImageFormat::Png).ok()?;
+                let (w, h) = (image.width(), image.height());
+                let crop_w = w.min((h * 16 / 9).max(1));
+                let crop_h = h.min((w * 9 / 16).max(1));
+                let pixels = image
+                    .crop_imm((w - crop_w) / 2, (h - crop_h) / 2, crop_w, crop_h)
+                    .thumbnail(768, 432)
+                    .to_rgba8();
+                let size = [pixels.width() as usize, pixels.height() as usize];
+                let image = egui::ColorImage::from_rgba_unmultiplied(size, pixels.as_raw());
+                Some(
+                    ui.ctx()
+                        .load_texture("plugin-cover", image, egui::TextureOptions::LINEAR),
+                )
+            });
+            ui.data_mut(|data| {
+                let cache = data.get_temp_mut_or_default::<CoverCache>(cache_id);
+                cache.push_front((key, texture.clone()));
+                cache.truncate(24);
+            });
+            texture
+        })
+    };
+    ui.painter().rect_filled(
+        rect,
+        radius,
+        color(
+            ui.ctx(),
+            Color32::from_rgb(45, 45, 50),
+            Color32::from_rgb(233, 236, 241),
+        ),
+    );
+    if let Some(texture) = texture {
+        egui::Image::new(&texture)
+            .corner_radius(radius)
+            .paint_at(ui, rect);
+        true
+    } else {
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            if queued {
+                "正在加载封面…"
+            } else {
+                placeholder
+            },
+            egui::FontId::proportional(11.5),
+            color(ui.ctx(), Color32::from_gray(170), Color32::from_gray(92)),
+        );
+        false
+    }
+}
+
+fn plugin_title(ui: &mut egui::Ui, title: egui::RichText, name: &str, author: &str, version: &str) {
+    ui.add(egui::Label::new(title.size(15.0).strong()).truncate())
+        .on_hover_text(name);
+    let metadata = format!("{author} · v{version}");
+    let muted = color(ui.ctx(), Color32::from_gray(175), Color32::from_gray(90));
+    ui.add(egui::Label::new(egui::RichText::new(&metadata).size(11.5).color(muted)).truncate())
+        .on_hover_text(metadata);
+}
+
+fn plugin_accent(ui: &egui::Ui) -> Color32 {
+    color(
+        ui.ctx(),
+        Color32::from_rgb(110, 95, 166),
+        Color32::from_rgb(91, 80, 140),
+    )
+}
+
+fn plugin_switch(ui: &mut egui::Ui, id: &str, on: bool) -> bool {
+    let (_, rect) = ui.allocate_space(egui::vec2(39.0, 22.0));
+    let response = ui.interact(
+        rect,
+        egui::Id::new(("settings-plugin-switch", id)),
+        egui::Sense::click(),
+    );
+    let label = if on { "停用插件" } else { "启用插件" };
+    response
+        .widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, on, label));
+    let fill = if on {
+        plugin_accent(ui)
+    } else {
+        color(
+            ui.ctx(),
+            Color32::from_gray(86),
+            Color32::from_rgb(203, 207, 214),
+        )
+    };
+    ui.painter().rect_filled(rect, 11.0, fill);
+    if response.has_focus() {
+        ui.painter().rect_stroke(
+            rect.expand(2.0),
+            13.0,
+            egui::Stroke::new(1.0, plugin_accent(ui)),
+            egui::StrokeKind::Outside,
+        );
+    }
+    let x = if on {
+        rect.right() - 11.0
+    } else {
+        rect.left() + 11.0
+    };
+    ui.painter()
+        .circle_filled(egui::pos2(x, rect.center().y), 7.0, Color32::WHITE);
+    response.on_hover_text(label).clicked()
+}
+
+#[cfg(windows)]
+fn market_button(ui: &egui::Ui, text: &str) -> egui::Button<'static> {
+    egui::Button::new(egui::RichText::new(text).color(Color32::WHITE))
+        .fill(plugin_accent(ui))
+        .corner_radius(6.0)
+}
+
+#[cfg(windows)]
+fn plugin_tabs(ui: &mut egui::Ui, show_market: &mut bool, installed: usize) {
+    let accent = color(
+        ui.ctx(),
+        Color32::from_rgb(165, 148, 228),
+        Color32::from_rgb(116, 99, 182),
+    );
+    let muted = color(
+        ui.ctx(),
+        Color32::from_gray(180),
+        Color32::from_rgb(88, 97, 108),
+    );
+    let line = color(
+        ui.ctx(),
+        Color32::from_rgb(55, 55, 62),
+        Color32::from_rgb(214, 218, 226),
+    );
+    let left = ui.cursor().left();
+    let right = left + ui.available_width();
+    let mut active_rect = egui::Rect::NOTHING;
+    let row = ui
+        .horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 20.0;
+            ui.spacing_mut().button_padding = egui::vec2(1.0, 4.0);
+            let mine = format!("我的插件 · {installed}");
+            for (market, title) in [(true, "插件集市"), (false, mine.as_str())] {
+                let selected = market == *show_market;
+                let text = egui::RichText::new(title).size(13.0);
+                let text = if selected {
+                    text.strong()
+                } else {
+                    text.color(muted)
+                };
+                let response = ui.add(egui::Button::new(text).frame(false));
+                if response.has_focus() {
+                    ui.painter().rect_stroke(
+                        response.rect,
+                        4.0,
+                        egui::Stroke::new(1.0, accent),
+                        egui::StrokeKind::Inside,
+                    );
+                }
+                if response.clicked() {
+                    *show_market = market;
+                    active_rect = response.rect;
+                } else if selected {
+                    active_rect = response.rect;
+                }
+            }
+        })
+        .response
+        .rect;
+    ui.painter()
+        .hline(left..=right, row.bottom(), egui::Stroke::new(1.0, line));
+    let underline = egui::Rect::from_min_max(
+        egui::pos2(active_rect.left(), row.bottom() - 2.0),
+        egui::pos2(active_rect.right(), row.bottom() + 1.0),
+    );
+    ui.painter().rect_filled(underline, 1.0, accent);
+    ui.add_space(13.0);
+}
 
 #[cfg(all(windows, feature = "sdk-material"))]
 const CAPTURE_PERMISSION: &str = "读取岛体背后一小块屏幕画面，只在本机用于绘制材质，不保存、不上传；插件本身没有网络和文件权限。";
 
 #[cfg(all(windows, feature = "sdk-material"))]
 fn material_name(ui: &egui::Ui, name: &str, selected: bool, active: bool) -> egui::RichText {
-    use crate::settings_theme::color;
-    use egui::Color32;
     let title = egui::RichText::new(name);
     if !selected {
         return title;
@@ -161,17 +386,25 @@ impl LocalPlugins {
     }
 
     #[cfg(windows)]
-    fn market(&mut self, ui: &mut egui::Ui) {
+    fn market(&mut self, ui: &mut egui::Ui) -> bool {
         let busy = self.market_busy();
         ui.add_enabled_ui(!busy, |ui| {
             ui.horizontal_wrapped(|ui| {
-                if ui.button("导入集市索引…").clicked() {
+                let import = if self.market_catalog.is_some() {
+                    egui::Button::new("导入目录…")
+                } else {
+                    market_button(ui, "导入目录…")
+                };
+                if ui.add(import).clicked() {
                     match crate::system::pick_files_for("选择插件测试集市的 catalog.json", false)
                     {
                         Ok(paths) => {
                             if let Some(path) = paths.first() {
                                 self.notice = match self.set_market_catalog(path) {
-                                    Ok(()) => "已加载集市索引".into(),
+                                    Ok(()) => {
+                                        forget_covers(ui);
+                                        "已加载集市目录".into()
+                                    }
                                     Err(e) => e.to_string(),
                                 };
                             }
@@ -181,60 +414,67 @@ impl LocalPlugins {
                 }
                 if self.market_catalog.is_some() && ui.button("刷新目录").clicked() {
                     self.notice = match self.refresh_market_catalog() {
-                        Ok(()) => "目录已刷新".into(),
+                        Ok(()) => {
+                            forget_covers(ui);
+                            "目录已刷新".into()
+                        }
                         Err(e) => e.to_string(),
                     };
                 }
             });
         });
+        ui.add_space(6.0);
         if busy {
             ui.horizontal(|ui| {
                 ui.spinner();
                 ui.label("正在校验插件包…");
             });
+            ui.add_space(4.0);
         }
         let Some(catalog) = self.market_catalog.as_ref() else {
-            settings_hint(ui, "选择作者提交的 catalog.json 后可安装插件。");
-            return;
+            settings_card(ui, |ui| {
+                ui.strong("尚未导入测试集市");
+                settings_hint(
+                    ui,
+                    "导入本机的 catalog.json，即可查看、安装和更新里面的插件。",
+                );
+            });
+            return false;
         };
         if catalog.entries.is_empty() {
-            settings_hint(ui, "目录中暂无插件。");
+            settings_card(ui, |ui| {
+                ui.strong("目录中暂无插件");
+                settings_hint(ui, "作者提交插件后，刷新目录即可查看。");
+            });
         }
+        let columns = if ui.available_width() >= 575.0 {
+            3
+        } else if ui.available_width() >= 370.0 {
+            2
+        } else {
+            1
+        };
         let mut action = None;
-        for entry in &catalog.entries {
-            ui.push_id(&entry.id, |ui| {
-                settings_card(ui, |ui| {
-                    ui.strong(&entry.name);
-                    ui.label(format!("{} · v{}", entry.author, entry.version));
-                    settings_hint(ui, "待办与置物 · 无需外部权限");
-                    match self.market_status(entry) {
-                        MarketStatus::Install => {
-                            if ui.add_enabled(!busy, egui::Button::new("安装")).clicked() {
-                                action = Some(entry.id.clone());
-                            }
-                        }
-                        MarketStatus::Update => {
-                            ui.horizontal_wrapped(|ui| {
-                                if let Some(package) = self.records[&entry.id].package.as_ref() {
-                                    ui.label(format!("已安装 v{}", package.manifest.version));
-                                }
-                                if ui.add_enabled(!busy, egui::Button::new("更新")).clicked() {
-                                    action = Some(entry.id.clone());
-                                }
-                            });
-                        }
-                        MarketStatus::Installed => {
-                            ui.label("已安装");
-                        }
-                        MarketStatus::OtherSource => {
-                            ui.label("已从其他来源安装或保留数据");
-                        }
-                        MarketStatus::Unavailable => {
-                            ui.label("目录中的版本低于已安装版本");
+        let mut show_installed = false;
+        for row in catalog.entries.chunks(columns) {
+            ui.columns(columns, |cells| {
+                for (ui, entry) in cells.iter_mut().zip(row) {
+                    let state = self.market_status(entry);
+                    let clicked = ui
+                        .push_id(&entry.id, |ui| {
+                            self.market_card(ui, catalog, entry, state, columns == 3)
+                        })
+                        .inner;
+                    if clicked {
+                        if state == MarketStatus::Installed {
+                            show_installed = true;
+                        } else {
+                            action = Some(entry.id.clone());
                         }
                     }
-                });
+                }
             });
+            ui.add_space(8.0);
         }
         if let Some(id) = action {
             self.notice = self
@@ -244,6 +484,120 @@ impl LocalPlugins {
                 .unwrap_or_default();
             ui.ctx().request_repaint();
         }
+        show_installed
+    }
+
+    #[cfg(windows)]
+    fn market_card(
+        &self,
+        ui: &mut egui::Ui,
+        catalog: &market::Catalog,
+        entry: &market::Entry,
+        state: MarketStatus,
+        wide_grid: bool,
+    ) -> bool {
+        let fill = color(ui.ctx(), Color32::from_rgb(35, 35, 38), Color32::WHITE);
+        let border = color(
+            ui.ctx(),
+            Color32::from_rgb(52, 52, 58),
+            Color32::from_rgb(218, 221, 229),
+        );
+        egui::Frame::new()
+            .fill(fill)
+            .stroke(egui::Stroke::new(1.0, border))
+            .corner_radius(10.0)
+            .show(ui, |ui| {
+                let key = egui::Id::new(("market", &catalog.path, &entry.sha256));
+                let width = ui.available_width();
+                let has_cover = plugin_cover(
+                    ui,
+                    key,
+                    width,
+                    egui::CornerRadius {
+                        nw: 9,
+                        ne: 9,
+                        sw: 0,
+                        se: 0,
+                    },
+                    "封面不可用",
+                    || catalog.cover_png(entry).ok(),
+                );
+                egui::Frame::new()
+                    .inner_margin(egui::Margin::symmetric(12, 10))
+                    .show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 5.0;
+                        let credit = format!("{} · 信息卡片", entry.author);
+                        let muted = color(
+                            ui.ctx(),
+                            Color32::from_gray(175),
+                            Color32::from_rgb(102, 113, 123),
+                        );
+                        ui.add(
+                            egui::Label::new(egui::RichText::new(&credit).size(11.0).color(muted))
+                                .truncate(),
+                        )
+                        .on_hover_text(credit);
+                        ui.add(
+                            egui::Label::new(egui::RichText::new(&entry.name).size(15.0).strong())
+                                .truncate(),
+                        )
+                        .on_hover_text(&entry.name);
+                        settings_hint(ui, &format!("v{} · 无需外部权限", entry.version));
+                        let (status, button): (std::borrow::Cow<'_, str>, _) = match state {
+                            MarketStatus::Install => ("设置 → 待办与置物".into(), Some("安装")),
+                            MarketStatus::Update => {
+                                let package = self.records[&entry.id].package.as_ref().unwrap();
+                                (
+                                    format!("已安装 v{}", package.manifest.version).into(),
+                                    Some("更新"),
+                                )
+                            }
+                            MarketStatus::Installed => ("设置 → 待办与置物".into(), Some("已安装")),
+                            MarketStatus::OtherSource => {
+                                ("已从其他来源安装或保留数据".into(), None)
+                            }
+                            MarketStatus::Unavailable => {
+                                ("目录中的版本低于已安装版本".into(), None)
+                            }
+                        };
+                        let add_button = |ui: &mut egui::Ui, width| {
+                            if let Some(label) = button {
+                                let installed = state == MarketStatus::Installed;
+                                let button = if installed {
+                                    egui::Button::new(label)
+                                } else {
+                                    market_button(ui, label)
+                                };
+                                let button = button.min_size(egui::vec2(width, 28.0));
+                                ui.add_enabled(
+                                    installed || (!self.market_busy() && has_cover),
+                                    button,
+                                )
+                                .clicked()
+                            } else {
+                                false
+                            }
+                        };
+                        ui.add_space(5.0);
+                        if wide_grid {
+                            settings_hint(ui, &status);
+                            let width = ui.available_width();
+                            add_button(ui, width)
+                        } else {
+                            ui.horizontal(|ui| {
+                                settings_hint(ui, &status);
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| add_button(ui, 0.0),
+                                )
+                                .inner
+                            })
+                            .inner
+                        }
+                    })
+                    .inner
+            })
+            .inner
     }
 
     pub fn manage(
@@ -253,36 +607,6 @@ impl LocalPlugins {
         #[cfg(all(windows, feature = "sdk-material"))] active_material: Option<&str>,
     ) -> Option<usize> {
         let mut jump = None;
-        #[cfg(windows)]
-        {
-            let was_busy = self.market_busy();
-            self.poll_market();
-            if self.market_busy() {
-                ui.ctx().request_repaint_after(Duration::from_millis(32));
-            } else if was_busy {
-                ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
-            }
-            ui.collapsing("测试集市", |ui| self.market(ui));
-        }
-        ui.collapsing("开发者模式", |ui| {
-            #[cfg(windows)]
-            if ui.button("安装本地插件…").clicked() {
-                match crate::system::pick_files_for("选择本地插件的 plugin.json", false) {
-                    Ok(paths) => {
-                        if let Some(path) = paths.first() {
-                            self.notice = match self.install(path) {
-                                Ok(()) => "已安装。启用后开始运行。".into(),
-                                Err(e) => e.to_string(),
-                            };
-                        }
-                    }
-                    Err(e) => self.notice = e.to_string(),
-                }
-            }
-        });
-        if !self.notice.is_empty() {
-            settings_hint(ui, &self.notice);
-        }
         let ids: Vec<_> = self
             .records
             .iter()
@@ -293,83 +617,194 @@ impl LocalPlugins {
             })
             .map(|(id, _)| id.clone())
             .collect();
+        #[cfg(windows)]
+        let (page, show_market) = {
+            let was_busy = self.market_busy();
+            self.poll_market();
+            if self.market_busy() {
+                ui.ctx().request_repaint_after(Duration::from_millis(32));
+            } else if was_busy {
+                ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
+            }
+            let page = egui::Id::new("settings-plugins-market");
+            let previous = ui
+                .data(|data| data.get_temp::<bool>(page))
+                .unwrap_or(ids.is_empty());
+            let mut show_market = previous;
+            plugin_tabs(ui, &mut show_market, ids.len());
+            if show_market != previous {
+                ui.data_mut(|data| data.insert_temp(page, show_market));
+            }
+            (page, show_market)
+        };
+        if !self.notice.is_empty() {
+            settings_hint(ui, &self.notice);
+            ui.add_space(4.0);
+        }
+        #[cfg(windows)]
+        if show_market {
+            if self.market(ui) {
+                ui.data_mut(|data| data.insert_temp(page, false));
+            }
+            return None;
+        }
         for id in &self.invalid {
             ui.label(format!("{id} · 需要重新安装"));
         }
         if ids.is_empty() && self.invalid.is_empty() {
-            ui.label("尚未安装插件");
+            settings_card(ui, |ui| {
+                ui.strong("还没有安装插件");
+                settings_hint(ui, "装好后可以在这里管理。");
+                #[cfg(windows)]
+                if ui.add(market_button(ui, "去插件集市")).clicked() {
+                    ui.data_mut(|data| data.insert_temp(page, true));
+                }
+            });
         }
         for id in ids {
             ui.push_id(&id, |ui| {
                 settings_card(ui, |ui| {
                     let r = &self.records[&id];
-                    let manifest = &r.package.as_ref().unwrap().manifest;
-                    if manifest.is_material() {
-                        #[cfg(all(windows, feature = "sdk-material"))]
-                        {
-                            let selected = self.selected_material_id() == Some(id.as_str());
-                            ui.label(
-                                material_name(
-                                    ui,
-                                    &manifest.name,
-                                    selected,
-                                    active_material == Some(id.as_str()),
-                                )
-                                .strong(),
+                    let package = r.package.as_ref().unwrap();
+                    let manifest = &package.manifest;
+                    let material = manifest.is_material();
+                    let on = r.enabled;
+                    let has_settings = !manifest.settings.is_empty();
+                    let title = egui::RichText::new(&manifest.name);
+                    #[cfg(all(windows, feature = "sdk-material"))]
+                    let selected = self.selected_material_id() == Some(id.as_str());
+                    #[cfg(all(windows, feature = "sdk-material"))]
+                    let title = if material {
+                        material_name(
+                            ui,
+                            &manifest.name,
+                            selected,
+                            active_material == Some(id.as_str()),
+                        )
+                    } else {
+                        title
+                    };
+                    ui.horizontal_top(|ui| {
+                        ui.spacing_mut().item_spacing.x = 12.0;
+                        let key = egui::Id::new(("installed", &r.origin, &id, &manifest.version));
+                        let width = (ui.available_width() * 0.27).clamp(80.0, 110.0);
+                        plugin_cover(
+                            ui,
+                            key,
+                            width,
+                            egui::CornerRadius::same(7),
+                            "暂无封面",
+                            || package.cover_png(),
+                        );
+                        ui.vertical(|ui| {
+                            ui.spacing_mut().item_spacing.y = 3.0;
+                            plugin_title(
+                                ui,
+                                title,
+                                &manifest.name,
+                                &manifest.author,
+                                &manifest.version,
                             );
-                            ui.horizontal_wrapped(|ui| {
-                                if ui.button("前往设置").clicked() {
-                                    jump = Some(crate::extras::SETTINGS_TAB_APPEARANCE);
+                            if material {
+                                #[cfg(all(windows, feature = "sdk-material"))]
+                                settings_hint(
+                                    ui,
+                                    if selected {
+                                        "外观材质 · 已选用"
+                                    } else {
+                                        "外观材质 · 已停用"
+                                    },
+                                );
+                            } else {
+                                let (state, tint) = if !on {
+                                    (
+                                        "已停用",
+                                        color(
+                                            ui.ctx(),
+                                            Color32::from_gray(175),
+                                            Color32::from_gray(90),
+                                        ),
+                                    )
+                                } else if !owner {
+                                    (
+                                        "已开启 · 模块已暂停",
+                                        color(
+                                            ui.ctx(),
+                                            Color32::from_rgb(238, 181, 91),
+                                            Color32::from_rgb(139, 88, 12),
+                                        ),
+                                    )
+                                } else {
+                                    (
+                                        "已启用",
+                                        color(
+                                            ui.ctx(),
+                                            Color32::from_rgb(127, 214, 155),
+                                            Color32::from_rgb(29, 122, 60),
+                                        ),
+                                    )
+                                };
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 5.0;
+                                    let (_, rect) = ui.allocate_space(egui::vec2(7.0, 13.0));
+                                    ui.painter().circle_filled(rect.center(), 3.5, tint);
+                                    ui.label(egui::RichText::new(state).size(11.5).color(tint));
+                                });
+                                if let Some(e) = self.errors.get(&id) {
+                                    settings_hint(ui, &format!("刷新失败 · {e}"));
                                 }
-                                if ui.button(if selected { "停用" } else { "启用" }).clicked()
-                                    && self.request_material(ui, (!selected).then_some(id.as_str()))
-                                    && !selected
-                                {
-                                    jump = Some(crate::extras::SETTINGS_TAB_APPEARANCE);
+                            }
+                            ui.add_space(4.0);
+                            ui.horizontal_wrapped(|ui| {
+                                if material {
+                                    #[cfg(all(windows, feature = "sdk-material"))]
+                                    {
+                                        if ui.button("前往设置").clicked() {
+                                            jump = Some(crate::extras::SETTINGS_TAB_APPEARANCE);
+                                        }
+                                        if ui
+                                            .button(if selected { "停用" } else { "启用" })
+                                            .clicked()
+                                            && self.request_material(
+                                                ui,
+                                                (!selected).then_some(id.as_str()),
+                                            )
+                                            && !selected
+                                        {
+                                            jump = Some(crate::extras::SETTINGS_TAB_APPEARANCE);
+                                        }
+                                    }
+                                } else {
+                                    if on
+                                        && owner
+                                        && has_settings
+                                        && ui.button("前往设置").clicked()
+                                    {
+                                        self.focus = Some(id.clone());
+                                        jump = Some(
+                                            crate::app::PAGE_SETTINGS_TABS[crate::app::TODO_PAGE],
+                                        );
+                                    }
+                                    if on && !owner && ui.button("前往页面管理").clicked() {
+                                        jump = Some(crate::extras::SETTINGS_TAB_PAGES);
+                                    }
+                                    if plugin_switch(ui, &id, on) {
+                                        self.notice = self
+                                            .enable(&id, !on)
+                                            .err()
+                                            .map(|e| e.to_string())
+                                            .unwrap_or_default();
+                                        if self.notice.is_empty() {
+                                            ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
+                                        }
+                                    }
                                 }
                                 if ui.button("卸载").clicked() {
                                     self.pending = Some(id.clone());
                                 }
                             });
-                        }
-                    } else {
-                        let on = r.enabled;
-                        ui.strong(&manifest.name);
-                        let has_settings = !manifest.settings.is_empty();
-                        ui.label(format!("{} · v{}", manifest.author, manifest.version));
-                        ui.label(if !on {
-                            "已停用"
-                        } else if !owner {
-                            "已开启 · 模块已暂停"
-                        } else {
-                            "已启用"
                         });
-                        if let Some(e) = self.errors.get(&id) {
-                            ui.label(format!("刷新失败 · {e}"));
-                        }
-                        ui.horizontal_wrapped(|ui| {
-                            if on && owner && has_settings && ui.button("前往设置").clicked() {
-                                self.focus = Some(id.clone());
-                                jump = Some(crate::app::PAGE_SETTINGS_TABS[crate::app::TODO_PAGE]);
-                            }
-                            if on && !owner && ui.button("前往页面管理").clicked() {
-                                jump = Some(crate::extras::SETTINGS_TAB_PAGES);
-                            }
-                            if ui.button(if on { "停用" } else { "启用" }).clicked() {
-                                self.notice = self
-                                    .enable(&id, !on)
-                                    .err()
-                                    .map(|e| e.to_string())
-                                    .unwrap_or_default();
-                                if self.notice.is_empty() {
-                                    ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
-                                }
-                            }
-                            if ui.button("卸载").clicked() {
-                                self.pending = Some(id.clone());
-                            }
-                        });
-                    }
+                    });
                     if self.pending.as_deref() == Some(&id) {
                         ui.label("卸载时如何处理设置和插件数据？");
                         ui.horizontal_wrapped(|ui| {
@@ -381,6 +816,7 @@ impl LocalPlugins {
                                         .map(|e| e.to_string())
                                         .unwrap_or_default();
                                     if self.notice.is_empty() {
+                                        forget_covers(ui);
                                         ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
                                     }
                                     self.pending = None;
@@ -392,6 +828,29 @@ impl LocalPlugins {
                         });
                     }
                 })
+            });
+        }
+        #[cfg(windows)]
+        {
+            ui.add_space(6.0);
+            ui.collapsing("开发者模式", |ui| {
+                if ui.button("安装本地插件…").clicked() {
+                    match crate::system::pick_files_for("选择本地插件的 plugin.json", false)
+                    {
+                        Ok(paths) => {
+                            if let Some(path) = paths.first() {
+                                self.notice = match self.install(path) {
+                                    Ok(()) => {
+                                        forget_covers(ui);
+                                        "已安装。启用后开始运行。".into()
+                                    }
+                                    Err(e) => e.to_string(),
+                                };
+                            }
+                        }
+                        Err(e) => self.notice = e.to_string(),
+                    }
+                }
             });
         }
         #[cfg(all(windows, feature = "sdk-material"))]

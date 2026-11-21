@@ -26,6 +26,10 @@ impl Fixture {
             self.0.join("main.js"),
             include_str!("examples/payday/main.js"),
         )?;
+        fs::write(
+            self.0.join(COVER_FILE),
+            include_bytes!("examples/payday/cover.png"),
+        )?;
         Ok(path)
     }
 }
@@ -48,6 +52,10 @@ fn market_author_packages_and_submits_immutable_versions() -> Result<()> {
     let catalog = Catalog::open(&catalog_path)?;
     let original = &catalog.entries[0];
     assert_eq!(catalog.load(original)?.manifest.version, "1.2.9");
+    assert_eq!(
+        catalog.cover_png(original)?.as_slice(),
+        include_bytes!("examples/payday/cover.png")
+    );
     let original_path = original.path_in(&catalog.path);
     let original_bytes = fs::read(&original_path)?;
     assert!(submit(&first, &catalog_path).is_err());
@@ -75,6 +83,7 @@ fn market_author_packages_and_submits_immutable_versions() -> Result<()> {
         .expect("损坏的版本包应被拒绝")
         .to_string()
         .contains("SHA-256"));
+    assert!(catalog.cover_png(entry).is_err());
     Ok(())
 }
 
@@ -84,9 +93,30 @@ fn market_rejects_invalid_archives_and_catalogs() -> Result<()> {
     let manifest = fixture.project("1.0.0")?;
     let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
     zip.start_file("plugin.json", SimpleFileOptions::default())?;
-    zip.write_all(&fs::read(manifest)?)?;
+    zip.write_all(&fs::read(&manifest)?)?;
     zip.add_symlink("main.js", "outside.js", SimpleFileOptions::default())?;
+    zip.start_file(COVER_FILE, SimpleFileOptions::default())?;
+    zip.write_all(include_bytes!("examples/payday/cover.png"))?;
     assert!(decode_zip(&zip.finish()?.into_inner()).is_err());
+
+    let archive = |add_cover: bool, link: bool| -> Result<Vec<u8>> {
+        let options = SimpleFileOptions::default();
+        let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
+        zip.start_file("plugin.json", options)?;
+        zip.write_all(&fs::read(&manifest)?)?;
+        zip.start_file("main.js", options)?;
+        zip.write_all(include_bytes!("examples/payday/main.js"))?;
+        if link {
+            zip.add_symlink(COVER_FILE, "../outside.png", options)?;
+        } else if add_cover {
+            zip.start_file(COVER_FILE, options)?;
+            zip.write_all(b"broken png")?;
+        }
+        Ok(zip.finish()?.into_inner())
+    };
+    for (add_cover, link) in [(false, false), (true, false), (true, true)] {
+        assert!(decode_zip(&archive(add_cover, link)?).is_err());
+    }
 
     let bundle = fixture.0.join("package.zip");
     let catalog = fixture.0.join("catalog.json");

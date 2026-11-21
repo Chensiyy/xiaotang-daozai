@@ -10,7 +10,7 @@ fn frame(
         egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
-                egui::vec2(500., 420.),
+                egui::vec2(500., 550.),
             )),
             events,
             ..Default::default()
@@ -32,6 +32,14 @@ fn click(ctx: &egui::Context, label: &str, mut draw: impl FnMut(&mut egui::Ui)) 
                 Some(text.visual_bounding_rect().center())
             }
             _ => None,
+        })
+        .or_else(|| {
+            if matches!(label, "启用" | "停用") {
+                let id = egui::Id::new(("settings-plugin-switch", "example.payday"));
+                ctx.read_response(id).map(|response| response.rect.center())
+            } else {
+                None
+            }
         })
         .unwrap_or_else(|| panic!("找不到按钮 {label}"));
     click_at(ctx, pos, draw);
@@ -211,7 +219,7 @@ fn market_buttons_install_and_update_an_existing_sample() -> Result<()> {
         }
         assert!(!host.market_busy(), "测试集市操作未完成");
     };
-    click_button(&mut host, "测试集市");
+    click_button(&mut host, "插件集市");
     click_button(&mut host, "安装");
     finish(&mut host);
     assert!(!host.records["example.payday"].enabled);
@@ -223,9 +231,11 @@ fn market_buttons_install_and_update_an_existing_sample() -> Result<()> {
     let updated = files.join("plugin.json");
     fs::write(&updated, serde_json::to_vec(&manifest)?)?;
     fs::copy(sample.with_file_name("main.js"), files.join("main.js"))?;
+    fs::copy(sample.with_file_name("cover.png"), files.join("cover.png"))?;
     let second = files.join("second.zip");
     market::pack(&updated, &second)?;
     market::submit(&second, &catalog)?;
+    click_button(&mut host, "插件集市");
     click_button(&mut host, "刷新目录");
     let available = frame(&ctx, vec![], |ui| draw(&mut host, ui));
     assert!(has_text(&available, "已安装 v1.0.0"));
@@ -257,6 +267,10 @@ fn material_management_waits_for_permission_and_offers_to_enable_compatibility()
     fs::create_dir_all(&package)?;
     let manifest = package.join("plugin.json");
     fs::write(
+        package.join("cover.png"),
+        include_bytes!("examples/payday/cover.png"),
+    )?;
+    fs::write(
         package.join("material.wgsl"),
         "fn material(i: MaterialIn) -> vec4<f32> { return vec4<f32>(i.px, 0.0, 1.0); }",
     )?;
@@ -270,6 +284,7 @@ fn material_management_waits_for_permission_and_offers_to_enable_compatibility()
             "api": 1,
             "runtime": "material",
             "entry": "material.wgsl",
+            "cover": "cover.png",
             "owner": "appearance",
             "capabilities": ["appearance.material", "settings"],
             "dataVersion": 1,

@@ -1,4 +1,6 @@
 //! 本地开发包的安装、状态及卡片执行。每次操作原子保存一个插件的快照。
+#[path = "cover.rs"]
+mod cover;
 #[cfg(windows)]
 #[path = "market.rs"]
 pub(super) mod market;
@@ -8,6 +10,7 @@ mod market_state;
 #[path = "local_ui.rs"]
 mod ui;
 use super::{fail, Result};
+use cover::{CoverPng, COVER_FILE};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::{
@@ -94,6 +97,12 @@ struct Manifest {
     api: u32,
     runtime: String,
     entry: String,
+    #[serde(
+        default,
+        deserialize_with = "present_value",
+        skip_serializing_if = "Option::is_none"
+    )]
+    cover: Option<String>,
     owner: String,
     capabilities: Vec<String>,
     data_version: u32,
@@ -112,6 +121,8 @@ type Values = BTreeMap<String, String>;
 struct Package {
     manifest: Manifest,
     source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cover: Option<CoverPng>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 struct Record {
@@ -132,6 +143,7 @@ impl Record {
             let manifest = &package.manifest;
             manifest.id == id
                 && manifest.validate().is_ok()
+                && manifest.cover.is_some() == package.cover.is_some()
                 && !package.source.trim().is_empty()
                 && package.source.len() as u64 <= manifest.source_limit()
                 && manifest.settings.iter().all(|field| {
@@ -230,6 +242,9 @@ impl Manifest {
         }
         let manifest: Self = serde_json::from_str(contents)?;
         manifest.validate()?;
+        if manifest.cover.is_none() {
+            return Err(fail("请在插件清单中声明 cover: \"cover.png\""));
+        }
         Ok(manifest)
     }
 
@@ -339,6 +354,9 @@ impl Manifest {
         {
             return Err(fail("插件入口文件的类型或路径不符合清单要求"));
         }
+        if m.cover.as_deref().is_some_and(|cover| cover != COVER_FILE) {
+            return Err(fail("清单 cover 必须是根目录文件 cover.png"));
+        }
         Ok(())
     }
 }
@@ -372,8 +390,15 @@ fn validate_material_files(dir: &Path, manifest: &Path, shader: &Path) -> Result
                             "README" | "LICENSE" | "COPYING" | "NOTICE" | "CHANGELOG"
                         )
                     });
-            if !kind.is_file() || (path != shader && path != manifest && !description) {
-                return Err(fail("材质包只能包含 plugin.json、一个 WGSL 入口和说明文件"));
+            if !kind.is_file()
+                || (path != shader
+                    && path != manifest
+                    && path != dir.join(COVER_FILE)
+                    && !description)
+            {
+                return Err(fail(
+                    "材质包只能包含 plugin.json、一个 WGSL 入口、cover.png 和说明文件",
+                ));
             }
         }
     }
@@ -388,6 +413,7 @@ impl Package {
             .parent()
             .ok_or_else(|| fail("缺少包目录"))?
             .canonicalize()?;
+        let cover = CoverPng::read(&base.join(COVER_FILE))?;
         let resolved = base.join(entry).canonicalize()?;
         if !resolved.starts_with(&base) || !resolved.is_file() {
             return Err(fail("入口越出插件目录"));
@@ -402,7 +428,15 @@ impl Package {
         if source.trim().is_empty() {
             return Err(fail("插件入口文件为空"));
         }
-        Ok(Self { source, manifest })
+        Ok(Self {
+            source,
+            manifest,
+            cover: Some(cover),
+        })
+    }
+
+    fn cover_png(&self) -> Option<Vec<u8>> {
+        self.cover.as_ref().map(|cover| cover.bytes().to_vec())
     }
 
     fn settings_values(&self, previous: &Values) -> Values {
