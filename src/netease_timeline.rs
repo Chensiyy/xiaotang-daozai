@@ -339,14 +339,15 @@ fn advancing(old:&[u8],new:&[u8],gap:f64)->Vec<(usize,f64)> {
     }).collect()
 }
 
-/// 连续通过 `LEARN_ROUNDS` 轮后，剩下的候选读数一致（同一进度的多个副本）就取第一个；不一致再多观察几轮。
+/// 连续通过 `LEARN_ROUNDS` 轮后定论：取读数最小的候选（同一读数的多个副本取偏移最小的）。
+/// 同步增长的其他计时只会比播放位置大，例如酷狗紧挨着进度的解码位置总是领先几秒；
+/// 候选太多说明特征不够明确，放弃。
 fn decide(candidates:&[(usize,f64)],rounds:u8)->Learn {
     if candidates.is_empty() {return Learn::Failed("没有找到随播放增长的读数");}
     if rounds<LEARN_ROUNDS {return Learn::Pending;}
-    let (low,high)=candidates.iter().fold((f64::MAX,f64::MIN),|(l,h),(_,v)|(l.min(*v),h.max(*v)));
-    if high-low<=0.5 {return Learn::Found(candidates.iter().map(|(offset,_)|*offset).min().unwrap_or_default());}
-    if rounds>=LEARN_ROUNDS+5 {return Learn::Failed("有多个互不一致的读数");}
-    Learn::Pending
+    if candidates.len()>8 {return Learn::Failed("随播放增长的读数太多，无法确定");}
+    let low=candidates.iter().map(|(_,v)|*v).fold(f64::MAX,f64::min);
+    Learn::Found(candidates.iter().filter(|(_,v)|*v-low<=0.5).map(|(offset,_)|*offset).min().unwrap_or_default())
 }
 
 /// 组件里可写（数据）节的相对位置和大小。
@@ -415,9 +416,11 @@ mod tests {
     fn learning_decides_after_consistent_rounds(){
         assert!(matches!(decide(&[],1),Learn::Failed(_)));
         assert!(matches!(decide(&[(16,10.0)],2),Learn::Pending),"轮数不够先等");
-        assert!(matches!(decide(&[(32,10.0),(16,10.2)],3),Learn::Found(16)),"同一进度的多个副本取第一个");
-        assert!(matches!(decide(&[(16,10.0),(32,40.0)],3),Learn::Pending),"读数不一致再观察");
-        assert!(matches!(decide(&[(16,10.0),(32,40.0)],LEARN_ROUNDS+5),Learn::Failed(_)));
+        assert!(matches!(decide(&[(32,10.0),(16,10.2)],3),Learn::Found(16)),"同一进度的多个副本取偏移最小的");
+        // 酷狗实测：0x3949f0 是领先约 8.7 秒的解码位置，0x3949f8 才是播放进度。
+        assert!(matches!(decide(&[(0x3949f0,162.9),(0x3949f8,154.2)],3),Learn::Found(0x3949f8)),"同步增长的其他计时只会领先，取读数最小的");
+        let many:Vec<_>=(0..9).map(|i|(i*8,10.0)).collect();
+        assert!(matches!(decide(&many,3),Learn::Failed(_)),"候选太多不猜");
     }
 
     #[test]
@@ -455,6 +458,30 @@ mod tests {
         }
         RUN.store(false,Ordering::Relaxed);ticker.join().unwrap();
         assert!(matches!(result,Some(Learn::Found(offset)) if offset==21*8),"应找到偏移 168");
+    }
+
+    #[test]
+    #[ignore="需要本机酷狗正在播放：打印组件数据区与已验证进度位置的关系，排查自动适配"]
+    fn live_kugou_learning_diagnostics(){
+        let (pid,base,stamp,size)=discover_in(KUGOU.exe,KUGOU.module,|_,_|None).err().and_then(|miss|miss.unknown).expect("需要酷狗正在运行");
+        let p=Process::open(pid,KUGOU.exe).unwrap();
+        let sections=writable_sections(p.0,base).unwrap();
+        println!("可写区 {:?}",sections.iter().map(|(r,l)|format!("{r:#x}+{l:#x}")).collect::<Vec<_>>());
+        let known=layout_for(&KUGOU,stamp,size).map(|l|l.position);
+        println!("已验证位置 {known:x?}，在可写区内：{:?}",known.map(|k|sections.iter().any(|(r,l)|k>=*r && k<r+l)));
+        for _ in 0..4 {
+            let v=known.and_then(|k|read_f64(p.0,base+k));
+            println!("已验证位置读数 {v:?}");
+            std::thread::sleep(Duration::from_millis(800));
+        }
+        let mut learner=Learner::new(pid,base,stamp,size,0);
+        for i in 0..12 {
+            std::thread::sleep(Duration::from_millis(800));
+            let r=learner.step(&p,true,Instant::now());
+            let has=known.is_some_and(|k|learner.candidates.iter().any(|(o,_)|*o==k));
+            println!("第{i}步：候选 {:x?}，含已验证位置 {has}，结果 {}",learner.candidates,match r{Learn::Pending=>"等待".into(),Learn::Found(o)=>format!("找到 {o:#x}"),Learn::Failed(e)=>format!("失败 {e}")});
+            if !matches!(r,Learn::Pending){break;}
+        }
     }
 
     #[test]
