@@ -391,7 +391,9 @@ impl App {
                 if let Some(date)=date{self.select_calendar_day(date);}
             }
         }
-        for (i,label) in ["一","二","三","四","五","六","日"].iter().enumerate(){c.centered_text(34.0+i as f32*17.5,98.0,label,9.0,W::Regular,muted,H::Center);}
+        let column_width=17.0;
+        let column_x=|i:usize|43.0+i as f32*column_width;
+        for (i,label) in ["一","二","三","四","五","六","日"].iter().enumerate(){c.centered_text(column_x(i),98.0,label,9.0,W::Regular,muted,H::Center);}
         let grid=calendar::month_grid(self.calendar.view.month);
         let mut dots=HashMap::<NaiveDate,Vec<Source<'_>>>::new();
         for (event,source) in self.calendar_sources(self.calendar.view.month) {
@@ -403,9 +405,9 @@ impl App {
         }
         let dots:std::collections::HashMap<_,_>=dots.into_iter().map(|(date,sources)|(date,marker_colors(&sources))).collect();
         for (i,date) in grid.iter().enumerate() {
-            let x=34.0+(i%7) as f32*17.5;let y=114.0+(i/7) as f32*16.5;
+            let x=column_x(i%7);let y=114.0+(i/7) as f32*16.5;
             let selected=*date==self.calendar.view.day;
-            let hit=c.hit(x-8.75,y-7.0,17.5,16.5,("calendar-day",date));
+            let hit=c.hit(x-column_width/2.0,y-7.0,column_width,16.5,("calendar-day",date));
             if selected || hit.hovered(){c.circle(x,y-0.6,6.3,if selected{accent}else{Color32::from_gray(36)});}
             if *date==today && !selected{c.ring(x,y-0.6,6.3,0.8,accent);}
             let color=if selected{theme::WHITE}else if date.month()!=self.calendar.view.month.month(){Color32::from_gray(82)}else{Color32::from_gray(219)};

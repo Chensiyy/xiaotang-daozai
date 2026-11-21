@@ -84,7 +84,7 @@ fn weather_content_tap_switches_both_ways_with_a_short_transition(){
 #[test]
 fn weather_content_tap_keeps_other_controls_independent(){
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
-    for (x,y,target) in [(375.0,crate::app::WEATHER_H-7.0,8),(394.0,18.0,8),(367.0,18.0,0),(398.0,88.0,0),(20.0,88.0,7)] {
+    for (x,y,target) in [(375.0,crate::app::WEATHER_H-7.0,8),(394.0,18.0,8),(367.0,18.0,0),(398.0,68.0,0),(20.0,68.0,7)] {
         let mut h=H::new();h.app.settings.pet=false;
         h.media=crate::smtc::NowPlaying{source:"cloudmusic.exe".into(),title:"歌曲".into(),artist:"歌手".into(),playing:true,..Default::default()};
         h.app.weather.snapshot=Some(crate::weather::Snapshot{place:"杭州".into(),temp:19.0,..Default::default()});
@@ -3139,7 +3139,7 @@ fn wheel_handles_small_deltas_without_skipping_pages_on_bursts(){
 fn navigation_wraps_between_nine_pages_and_notification_settings_remain_accessible() {
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();
     h.hover(Pos2::new(WIN_W/2.0,12.0),1.0);h.click(H::local(21.0,68.0));assert_eq!(h.app.page,8);
-    h.hover(H::local(300.0,60.0),0.8);h.click(H::local(398.0,88.0));assert_eq!(h.app.page,0);
+    h.hover(H::local(300.0,60.0),0.8);h.click(H::local(398.0,68.0));assert_eq!(h.app.page,0);
     h.app.open_settings_category(3);assert!(h.app.settings_open);assert_eq!(h.app.settings_tab,6);
 }
 
@@ -3582,11 +3582,11 @@ fn quota_page_navigation_tracks_the_taller_panel(){
     }).expect("分页圆点应随加高的面板下移");
     h.click(dot);assert_ne!(h.app.page,6,"新增底部区域中的分页应可点击");
     h.app.show_page(6);h.hover(H::local(300.0,60.0),0.8);
-    h.click(H::local(21.0,88.0));assert_eq!(h.app.page,5);
+    h.click(H::local(21.0,68.0));assert_eq!(h.app.page,5);
     h.hover(H::local(300.0,60.0),0.8);assert_eq!(h.app.expanded_height(),PH);
     h.click(H::local(398.0,68.0));assert_eq!(h.app.page,6);
     h.hover(H::local(300.0,60.0),0.8);
-    h.click(H::local(398.0,88.0));assert_eq!(h.app.page,crate::app::CALENDAR_PAGE);
+    h.click(H::local(398.0,68.0));assert_eq!(h.app.page,crate::app::CALENDAR_PAGE);
 }
 
 #[test]
@@ -5609,6 +5609,10 @@ fn calendar_dates_are_readable_and_source_labels_do_not_take_a_second_line() {
     let (ten,eleven,seventeen)=(date_rect("10"),date_rect("11"),date_rect("17"));
     assert!(eleven.left()-ten.right()>=6.0,"相邻日期需要横向留白：{ten:?} {eleven:?}");
     assert!(seventeen.top()-ten.bottom()>=7.0,"相邻周需要纵向留白：{ten:?} {seventeen:?}");
+    let first_day=crate::calendar::month_grid(h.app.calendar.view.month)[0];
+    let first_cell=h.ctx.read_response(egui::Id::new(("card",true,("calendar-day",first_day)))).unwrap();
+    let previous=h.ctx.read_response(egui::Id::new(("card",true,"nav-l"))).unwrap();
+    assert!(first_cell.interact_rect.left()>previous.interact_rect.right(),"月历首列应给左翻页箭头让出点击空间");
     assert!(!h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t) if t.galley.text()=="飞书" || t.galley.text().starts_with("邮件 · "))),"来源应使用标题前的 Logo，详细文字保留在悬停提示中");
 }
 
@@ -5906,6 +5910,48 @@ fn frame_control_draw(h:&mut H,cursor:Option<Pos2>,events:Vec<egui::Event>) {
         h.app.frame(ui,win,&env);
     });});
     h.shapes=output.shapes;
+}
+
+#[test]
+fn page_arrows_stay_at_same_position_across_pages_and_docks() {
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    use crate::model::Dock;
+
+    for dock in [Dock::Top,Dock::Bottom,Dock::Left,Dock::Right] {
+        let mut h=H::new();
+        h.app.settings.dock=dock;
+        h.app.settings.visible_pages.fill(true);
+        let pages=h.app.settings.page_order;
+        h.app.show_page(pages[0]);
+        for _ in 0..100 {frame_control_draw(&mut h,None,vec![]);}
+
+        let arrow_rects=|h:&H| ["nav-l","nav-r"].map(|id| {
+            let rect=h.ctx.read_response(egui::Id::new(("card",true,id)))
+                .expect("展开后应显示翻页箭头").interact_rect;
+            assert!((rect.size()-Vec2::splat(26.0)).length()<0.01);
+            rect
+        });
+        let fixed=arrow_rects(&h);
+        for (arrow,targets) in [(1,pages[1..].to_vec()),(0,pages[..pages.len()-1].iter().rev().copied().collect())] {
+            let pos=fixed[arrow].center();
+            frame_control_draw(&mut h,Some(pos),vec![egui::Event::PointerMoved(pos)]);
+            for target in targets {
+                for pressed in [true,false] {
+                    frame_control_draw(&mut h,Some(pos),vec![egui::Event::PointerButton {
+                        pos,button:egui::PointerButton::Primary,pressed,modifiers:Default::default(),
+                    }]);
+                }
+                assert_eq!(h.app.page(),target,"{dock:?} 停靠时应能在同一个位置连续点击翻页");
+                for _ in 0..20 {
+                    frame_control_draw(&mut h,Some(pos),vec![]);
+                    for (actual,expected) in arrow_rects(&h).into_iter().zip(fixed) {
+                        assert!((actual.center()-expected.center()).length()<0.01,
+                            "{dock:?} 停靠切到第 {target} 页时，翻页箭头位置发生移动");
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[test]
