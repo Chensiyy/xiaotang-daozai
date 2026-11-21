@@ -10,8 +10,10 @@ fn fallback_ics_uid(event:&crate::mail::Meeting)->String{
 
 impl App {
     pub(crate) fn open_calendar_editor(&mut self,uid:Option<&str>){
+        let view=&self.calendar.view;
+        let day=if self.calendar.agenda {view.month.max(chrono::Local::now().date_naive())}else{view.day};
         let draft=uid.and_then(|uid|self.calendar.local.iter().find(|entry|entry.event.uid==uid)).map(Draft::edit)
-            .unwrap_or_else(||Draft::new(self.calendar.view.day));
+            .unwrap_or_else(||Draft::new(day));
         self.show_page(CALENDAR_PAGE);self.calendar.draft=Some(draft);
     }
     pub(crate) fn save_calendar_editor(&mut self){
