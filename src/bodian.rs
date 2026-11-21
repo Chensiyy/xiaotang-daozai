@@ -96,7 +96,14 @@ impl Target {
                 let mut text=[0u16;260];let n=unsafe{K32GetModuleBaseNameW(process.0,base,text.as_mut_ptr(),260)} as usize;
                 match String::from_utf16_lossy(&text[..n]).as_str(){"media_kit_native_event_loop.dll"=>target.events=base,"libmpv-2.dll"=>target.mpv=base,"hotkey_manager_windows_plugin.dll"=>target.keys=base,_=>{}}
             }
-            if target.events!=0 && target.mpv!=0 && target.verified(&process){return Some(target);}
+            if target.events!=0 && target.mpv!=0 && target.verified(&process){
+                super::music_compat::set("bodian_pc.exe",super::music_compat::Item::Reader,super::music_compat::Support::Ok);
+                return Some(target);
+            }
+            // 波点在运行但播放组件不是已适配的版本：歌名仍可来自系统媒体会话，进度和歌词读不到。
+            if target.events!=0 && target.mpv!=0 {
+                super::music_compat::set("bodian_pc.exe",super::music_compat::Item::Reader,super::music_compat::Support::Unavailable("播放组件版本不在适配表里（已适配波点 1.1.7）".into()));
+            }
         }
         None
     }
