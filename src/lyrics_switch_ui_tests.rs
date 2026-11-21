@@ -143,7 +143,7 @@ fn player_version_without_progress_shows_the_title_instead_of_frozen_lyrics(){
 
 #[test]
 #[cfg(windows)]
-#[ignore="按需导出：设置音乐页的「播放器」「播放器兼容」卡片，以及收起时读不到进度的暖色歌名"]
+#[ignore="按需导出：设置音乐页、收起时读不到进度的歌名，以及播放器版本较旧时的更新提醒"]
 fn music_compat_gallery(){
     use crate::smtc::music_compat::{self as compat,Item,Support};
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
@@ -181,14 +181,17 @@ fn music_compat_gallery(){
         }
     }
     // 岛上：正常同步歌词 与 读不到进度时的暖色歌名。
-    for (name,limited) in [("island-lyrics-normal",false),("island-lyrics-limited",true)] {
+    for (name,limited) in [("island-lyrics-normal",false),("island-lyrics-limited",true),("island-update-notice",true),("island-update-notice-plain",true)] {
         let mut h=H::new();lyrics_on(&mut h);h.app.settings.pet=false;
         compat::set("KuGou.exe",Item::Progress,if limited{Support::Unavailable("版本不在适配表里".into())}else{Support::Ok});
+        if name.starts_with("island-update-notice") {compat::set_version("KuGou.exe",if name.ends_with("plain"){"19.8.3.25813"}else{"19.8.3.25812"});compat::outdated("KuGou.exe");}
+        if name.ends_with("plain") {h.app.settings.island_lyrics=false;}
         let media=song("kugou","七月七日晴","许慧欣",240.0);
         showing(&mut h,&media,"[00:01]第一句\n[00:05]不能哭泣 不能放弃");
         let ppp=2.0;let (w,hgt)=(crate::app::CANVAS_W,WIN_H);
         let mut raster=feature_raster();
-        for f in 0..60 {
+        let frames=if name.starts_with("island-update-notice"){40}else{60};
+        for f in 0..frames {
             h.t+=1.0/60.0;
             let env=Env{t:h.t,clock:"09:41:00".into(),today:"2026-11-21".into(),date:"11月21日 周六".into(),media:h.media.clone(),bt_ready:true,..Default::default()};
             let raw=egui::RawInput{screen_rect:Some(Rect::from_min_size(Pos2::ZERO,Vec2::new(w,hgt))),time:Some(h.t),focused:true,
@@ -196,11 +199,11 @@ fn music_compat_gallery(){
             let app=&mut h.app;
             let output=h.ctx.run(raw,|ctx|{egui::CentralPanel::default().frame(egui::Frame::new()).show(ctx,|ui|{app.frame(ui,Rect::from_min_size(ui.max_rect().min,Vec2::new(WIN_W,WIN_H)),&env);});});
             raster.update_textures(&output.textures_delta);
-            if f==59 {
+            if f+1==frames {
                 raster.buf.fill([0.20,0.24,0.32,1.0]);raster.draw(&h.ctx.tessellate(output.shapes,output.pixels_per_point),output.pixels_per_point);
                 let mut rgba=Vec::new();raster.to_rgba8(&mut rgba);
                 let image=image::RgbaImage::from_raw((w*ppp) as u32,(hgt*ppp) as u32,rgba).unwrap();
-                image::imageops::crop_imm(&image,(WIN_W*ppp/2.0-320.0).max(0.0) as u32,0,640,100).to_image().save(dest.join(format!("{name}.png"))).unwrap();
+                image::imageops::crop_imm(&image,(WIN_W*ppp/2.0-360.0).max(0.0) as u32,0,720,if name.starts_with("island-update-notice"){170}else{100}).to_image().save(dest.join(format!("{name}.png"))).unwrap();
             }
             raster.free_textures(&output.textures_delta);
         }

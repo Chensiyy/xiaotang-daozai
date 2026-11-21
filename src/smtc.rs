@@ -121,9 +121,7 @@ struct ArtworkCache {
     system:Option<(NowPlaying,std::time::Instant)>,
     #[cfg(windows)]
     manager:Option<windows::Media::Control::GlobalSystemMediaTransportControlsSessionManager>,
-    /// 系统事件通知：是否要用（设置开关），以及已登记的事件。
-    #[cfg(windows)]
-    events_wanted:bool,
+    /// 系统事件通知：已登记的事件（登记失败时为空，退回纯定时检查）。
     #[cfg(windows)]
     events:Option<MediaEvents>,
     key: String,
@@ -306,7 +304,8 @@ fn choose_media_for_source(system:Option<NowPlaying>,native:Option<NowPlaying>,p
 }
 
 /// 系统媒体会话的变化通知：切歌、暂停、跳转、播放器开关时立即唤醒采样线程，不必等下一次定时检查。
-/// 登记失败或设置关闭时退回纯定时检查；事件只负责「提前醒来」，读到的数据与定时检查完全相同。
+/// 登记失败时退回纯定时检查；事件只负责「提前醒来」，读到的数据与定时检查完全相同，
+/// 偶尔漏发也只是等下一次定时检查（最多 1 秒）。
 #[cfg(windows)]
 struct MediaEvents {
     wake:std::thread::Thread,
@@ -381,8 +380,7 @@ fn query_system(artwork:&mut ArtworkCache) -> Result<Option<NowPlaying>,()> {
     let mut sessions=current.iter().cloned().collect::<Vec<_>>();
     let all=mgr.GetSessions().map_err(|_|{artwork.manager=None;artwork.events=None;})?;
     for session in all{if !sessions.contains(&session){sessions.push(session);}}
-    if artwork.events_wanted {artwork.events.get_or_insert_with(MediaEvents::new).sync(&mgr,&sessions);}
-    else {artwork.events=None;}
+    artwork.events.get_or_insert_with(MediaEvents::new).sync(&mgr,&sessions);
     if sessions.is_empty(){return Ok(None);}
     // 先比较全部会话；视频不能遮挡音乐，封面只为最终选中的会话读取。
     let previous=artwork.system.as_ref().map(|(media,_)|media.source.clone());
@@ -879,8 +877,6 @@ impl MediaMemory {
 pub struct Poller {
     enabled:Arc<std::sync::atomic::AtomicBool>,stop:Arc<std::sync::atomic::AtomicBool>,worker:Option<std::thread::JoinHandle<()>>,
     interval_ms:Arc<std::sync::atomic::AtomicU32>,
-    /// 设置「系统事件通知」：关闭后注销事件，退回纯定时检查。
-    events:Arc<std::sync::atomic::AtomicBool>,
 }
 /// 看着音乐页或刚点过播放控制时的采样间隔，与改版前一致。
 pub const POLL_FAST:Duration=Duration::from_millis(250);
@@ -892,9 +888,6 @@ pub const POLL_BACKGROUND:Duration=Duration::from_millis(1000);
 fn idle_interval(requested:u32)->u32{requested.saturating_mul(4).clamp(1000,2000)}
 impl Poller {
     pub fn store(&self,enabled:bool,order:std::sync::atomic::Ordering){self.enabled.store(enabled,order);}
-    pub fn set_events(&self,on:bool){
-        if self.events.swap(on,std::sync::atomic::Ordering::Relaxed)!=on {if let Some(worker)=&self.worker{worker.thread().unpark();}}
-    }
     /// 调整采样间隔；变快时立即唤醒采样线程补查一次，展开音乐页或点控制按钮后马上看到最新状态。
     pub fn set_interval(&self,interval:Duration){
         let ms=interval.as_millis().clamp(50,10_000) as u32;
@@ -915,7 +908,6 @@ pub fn spawn_poller(state: Shared,ctx:eframe::egui::Context)->Poller {
     let active=enabled.clone();
     let stop=Arc::new(std::sync::atomic::AtomicBool::new(false));let stopped=stop.clone();
     let interval_ms=Arc::new(std::sync::atomic::AtomicU32::new(POLL_FAST.as_millis() as u32));let requested=interval_ms.clone();
-    let events=Arc::new(std::sync::atomic::AtomicBool::new(true));let use_events=events.clone();
     let worker=crate::resources::POLLER.spawn(move || {
         let _apartment=init_winrt();
         let mut artwork=ArtworkCache::default();
@@ -941,8 +933,6 @@ pub fn spawn_poller(state: Shared,ctx:eframe::egui::Context)->Poller {
                 if let Ok(mut current)=state.lock(){if !current.title.is_empty(){*current=NowPlaying::default();ctx.request_repaint();}}
                 std::thread::park_timeout(Duration::from_millis(250));continue;
             }
-            #[cfg(windows)]
-            {artwork.events_wanted=use_events.load(std::sync::atomic::Ordering::Relaxed);}
             let system=query(&mut artwork);
             #[cfg(windows)]
             let native=netease.poll().into_iter().chain(bodian.poll()).chain(kuwo.poll()).min_by_key(media_rank);
@@ -984,7 +974,7 @@ pub fn spawn_poller(state: Shared,ctx:eframe::egui::Context)->Poller {
             std::thread::park_timeout(Duration::from_millis(wait.into()));
         }
     });
-    Poller{enabled,stop,worker,interval_ms,events}
+    Poller{enabled,stop,worker,interval_ms}
 }
 
 #[cfg(test)]

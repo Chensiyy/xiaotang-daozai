@@ -69,6 +69,9 @@ const NETEASE:Player=Player{exe:"cloudmusic.exe",module:"cloudmusic.dll",window:
 ]};
 fn player(kugou:bool)->&'static Player {if kugou{&KUGOU}else{&NETEASE}}
 
+/// 组件的编译时间早于适配表里所有已验证版本：说明是旧版本，更新播放器即可。
+fn older_than_table(player:&Player,stamp:u32)->bool {player.known.iter().all(|known|stamp<known.stamp)}
+
 /// 读取方式：来自适配表，或自动适配学到的进度位置。
 #[derive(Clone,Copy,PartialEq,Debug)]
 struct Layout {position:usize,duration:Option<usize>,learned:bool}
@@ -140,9 +143,11 @@ fn query(kugou:bool,playing:bool)->Option<(f64,f64)> {
                     return None;
                 }
                 slot.rejected=Some(learner.pid);slot.missed=Some(Instant::now());
-                let reason=format!("{} 版本不在适配表里，自动适配失败（{reason}）",player.module);
+                let older=older_than_table(player,learner.stamp);
+                let reason=format!("{} 版本不在适配表里，自动适配失败（{reason}）{}",player.module,if older{"，比已适配的版本旧，提醒用户更新"}else{"，比已适配的版本新，待补适配"});
                 super::music_log::state(player.topic,&reason);
                 compat::set(player.exe,Item::Progress,Support::Unavailable(reason));
+                if older {compat::outdated(player.exe);}
                 return None;
             }
         }
@@ -387,6 +392,13 @@ mod tests {
         assert!(super::super::player_process::image_is(pid,&exe));
         let layout=Layout{position:8,duration:None,learned:true};
         assert!(discover_in(&exe,"kernel32.dll",|_,_|Some(layout)).is_ok_and(|found|found.layout==layout),"适配表或学到的位置命中即可读取");
+    }
+
+    #[test]
+    fn only_builds_older_than_the_table_ask_users_to_update(){
+        assert!(older_than_table(&KUGOU,0x6ac9ec86-1));
+        assert!(!older_than_table(&KUGOU,0x6ac9ec86+1),"比已适配的新：是岛仔还没适配，不让用户更新");
+        assert!(!older_than_table(&NETEASE,0x6ae94a6a),"#202 里网易云 3.1.43 比适配表新");
     }
 
     #[test]

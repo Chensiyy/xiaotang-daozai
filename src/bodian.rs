@@ -33,6 +33,10 @@ impl Process {
         }
         None
     }
+    fn stamp(&self,base:usize)->Option<u32>{
+        let pe=self.read::<4>(base+60).map(u32::from_le_bytes).filter(|offset|*offset<4096)?;
+        self.read::<4>(base+pe as usize+8).map(u32::from_le_bytes)
+    }
     fn module(&self,base:usize,stamp:u32,size:u32)->bool{
         let Some(pe)=self.read::<4>(base+60).map(u32::from_le_bytes).filter(|offset|*offset<4096)else{return false;};
         self.read::<4>(base+pe as usize+8).map(u32::from_le_bytes)==Some(stamp)
@@ -103,6 +107,7 @@ impl Target {
             // 波点在运行但播放组件不是已适配的版本：歌名仍可来自系统媒体会话，进度和歌词读不到。
             if target.events!=0 && target.mpv!=0 {
                 super::music_compat::set("bodian_pc.exe",super::music_compat::Item::Reader,super::music_compat::Support::Unavailable("播放组件版本不在适配表里（已适配波点 1.1.7）".into()));
+                if process.stamp(target.events).is_some_and(|stamp|stamp<0x69fea10a) {super::music_compat::outdated("bodian_pc.exe");}
             }
         }
         None

@@ -93,6 +93,8 @@ impl Target {
         // 酷我在运行但音频服务不是已适配的版本：读不到歌名、进度和本机歌词。
         super::music_compat::set("kwmusic.exe",super::music_compat::Item::Reader,if valid{super::music_compat::Support::Ok}
             else{super::music_compat::Support::Unavailable("音频服务版本不在适配表里（已适配酷我 9.6）".into())});
+        let stamp=process.number(target.core+60).filter(|pe|*pe<4096).and_then(|pe|process.number(target.core+pe as usize+8));
+        if !valid && target.core!=0 && stamp.is_some_and(|stamp|stamp<0x6a1fa2a8) {super::music_compat::outdated("kwmusic.exe");}
         valid.then_some(target)
     }
     fn snapshot(&self,process:&Process)->Option<NowPlaying>{
