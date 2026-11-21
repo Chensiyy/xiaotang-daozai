@@ -1,6 +1,9 @@
 //! 插件详情和已安装列表共用的反馈入口。
 use eframe::egui;
 
+const PRIVATE_REPORT: &str =
+    "https://github.com/Renly1994/xiaotang-daozai-plugins/security/advisories/new";
+
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 enum Topic {
     #[default]
@@ -44,7 +47,10 @@ impl Feedback {
         )
     }
 
-    fn issue_url(&self) -> url::Url {
+    fn form_url(&self) -> url::Url {
+        if self.topic == Topic::Private {
+            return url::Url::parse(PRIVATE_REPORT).expect("私密报告地址有效");
+        }
         let mut url =
             url::Url::parse("https://github.com/Renly1994/xiaotang-daozai-plugins/issues/new")
                 .expect("插件反馈地址有效");
@@ -89,17 +95,28 @@ pub(super) fn plugin_feedback(ui: &egui::Ui) {
         ui.add_space(4.0);
         let private = feedback.topic == Topic::Private;
         let help = match feedback.topic {
-            Topic::Plugin => "在 GitHub 补充使用场景或复现步骤，确认后提交。问题单公开可见。",
+            Topic::Plugin => {
+                "在 GitHub 补充使用场景或复现步骤，提交后会通知插件维护者。问题单公开可见。"
+            }
             Topic::Install => "在 GitHub 补充遇到的错误和操作步骤，由岛仔维护者跟进。",
-            Topic::Private => "复制插件和版本信息，补充情况后私信岛仔维护者。",
+            Topic::Private => "在 GitHub 私密报告中粘贴插件信息，补充情况后提交给维护者。",
         };
         ui.label(egui::RichText::new(help).weak());
         ui.add_space(7.0);
         let mut close = false;
         ui.horizontal_wrapped(|ui| {
-            if !private && ui.button("打开 GitHub 草稿").clicked() {
+            let open = if private {
+                "复制并打开私密报告"
+            } else {
+                "打开 GitHub 草稿"
+            };
+            if ui.button(open).clicked() {
+                if private {
+                    ui.ctx().copy_text(feedback.draft());
+                    feedback.copied = true;
+                }
                 ui.ctx()
-                    .open_url(egui::OpenUrl::new_tab(feedback.issue_url().to_string()));
+                    .open_url(egui::OpenUrl::new_tab(feedback.form_url().to_string()));
             }
             if ui.button("复制反馈信息").clicked() {
                 ui.ctx().copy_text(feedback.draft());
@@ -136,12 +153,31 @@ mod tests {
             topic: Topic::Install,
             copied: false,
         };
-        let url = feedback.issue_url();
+        let url = feedback.form_url();
         assert_eq!(url.host_str(), Some("github.com"));
         assert!(url.path().ends_with("/xiaotang-daozai-plugins/issues/new"));
         let query = url.query_pairs().collect::<BTreeMap<_, _>>();
         assert_eq!(query.get("title").unwrap(), "[安装与更新] 发薪 & 旅行");
         assert_eq!(query.get("body").unwrap().as_ref(), feedback.draft());
         assert!(feedback.draft().contains("插件 ID：example.payday"));
+    }
+
+    #[test]
+    fn private_feedback_keeps_draft_out_of_url() {
+        let feedback = Feedback {
+            id: "example.payday".into(),
+            name: "发薪倒计时".into(),
+            version: "1.0.1".into(),
+            topic: Topic::Private,
+            copied: false,
+        };
+        let form = feedback.form_url();
+        assert_eq!(form.host_str(), Some("github.com"));
+        assert!(form.path().ends_with("/security/advisories/new"));
+        assert!(form.query().is_none());
+        assert!(feedback
+            .draft()
+            .starts_with("插件：发薪倒计时\n插件 ID：example.payday\n插件版本：1.0.1\n"));
+        assert!(feedback.draft().contains("## 安全或隐私"));
     }
 }

@@ -5,6 +5,9 @@ mod cover;
 #[path = "market.rs"]
 pub(super) mod market;
 #[cfg(windows)]
+#[path = "market_metrics.rs"]
+mod market_metrics;
+#[cfg(windows)]
 #[path = "market_state.rs"]
 mod market_state;
 #[path = "local_ui.rs"]
@@ -514,6 +517,8 @@ pub struct LocalPlugins {
     market_job: Option<market_state::MarketJob>,
     #[cfg(windows)]
     market_favorites: BTreeMap<String, String>,
+    #[cfg(windows)]
+    market_metrics: market_metrics::MarketMetrics,
     invalid: std::collections::BTreeSet<String>,
     dir: PathBuf,
     records: BTreeMap<String, Record>,
@@ -540,6 +545,8 @@ impl LocalPlugins {
             market_job: None,
             #[cfg(windows)]
             market_favorites: Default::default(),
+            #[cfg(windows)]
+            market_metrics: market_metrics::MarketMetrics::open(&dir),
             invalid: Default::default(),
             #[cfg(feature = "sdk-material")]
             selected_material: Self::read_material_id(&dir),

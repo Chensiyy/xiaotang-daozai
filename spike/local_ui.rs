@@ -580,7 +580,12 @@ impl LocalPlugins {
                             );
                             ui.vertical(|ui| {
                                 ui.spacing_mut().item_spacing.y = 3.0;
-                                plugin_title(ui, title, &name, &author, &version);
+                                #[cfg(windows)]
+                                let author =
+                                    market_browse_ui::display_author(&author, official_mark);
+                                #[cfg(not(windows))]
+                                let author = author.as_str();
+                                plugin_title(ui, title, &name, author, &version);
                                 if material {
                                     #[cfg(all(windows, feature = "sdk-material"))]
                                     settings_hint(
