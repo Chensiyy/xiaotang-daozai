@@ -101,6 +101,20 @@ pub(crate) fn has_ended(event:&mail::Meeting,now:i64)->bool {
     end.unwrap_or(event.start.saturating_add(60))<=now
 }
 
+#[cfg(feature="sdk-js")]
+fn draw_calendar_annotation(c:&Card,annotation:&str) {
+    let (label,badge)=annotation.split_once(" · ").unwrap_or((annotation,""));
+    let badge=c.fit(badge,7.6,W::Semibold,30.0);
+    let badge_w=if badge.is_empty() {0.0} else {c.text_w(&badge,7.6,W::Semibold)+10.0};
+    let label=c.fit(label,8.5,W::Regular,113.0-badge_w-5.0);
+    c.centered_text(34.0,75.0,&label,8.5,W::Regular,Color32::from_rgb(168,168,178),H::Left);
+    if badge_w>0.0 {
+        let x=39.0+c.text_w(&label,8.5,W::Regular);
+        c.fill(x,69.5,badge_w,11.0,5.5,Color32::from_rgb(27,45,63));
+        c.centered_text(x+badge_w/2.0,75.0,&badge,7.6,W::Semibold,theme::WHITE,H::Center);
+    }
+}
+
 fn calendar_today(env: &Env) -> NaiveDate {
     NaiveDate::parse_from_str(&env.today,"%Y-%m-%d").unwrap_or_else(|_|chrono::Local::now().date_naive())
 }
@@ -387,19 +401,34 @@ impl App {
         let weekday=["星期一","星期二","星期三","星期四","星期五","星期六","星期日"][day.weekday().num_days_from_monday() as usize];
         let date_width=c.text(34.0,65.0,&format!("{}月{}日",day.month(),day.day()),13.0,W::Semibold,theme::WHITE,H::Left);
         c.text(40.0+date_width,65.0,weekday,8.0,W::Regular,accent,H::Left);
+        #[cfg(feature="sdk-js")]
+        let has_annotation=self.plugins.calendar_annotation_enabled();
+        #[cfg(not(feature="sdk-js"))]
+        let has_annotation=false;
+        #[cfg(feature="sdk-js")]
+        if day==today {
+            if let Some(annotation)=self.plugins.calendar_annotation(&env.today) {
+                draw_calendar_annotation(c,annotation);
+            }
+        }
+        let (month_y,weekday_y,grid_y,row_h)=if has_annotation {
+            (89.0,103.0,118.0,15.5)
+        } else {
+            (80.0,98.0,114.0,16.5)
+        };
         let month=self.calendar.view.month;
-        c.centered_text(45.0,80.0,"‹",14.0,W::Regular,muted,H::Center);
-        c.centered_text(87.0,80.0,&format!("{}年{}月",month.year(),month.month()),9.5,W::Regular,theme::GRAY,H::Center);
-        c.centered_text(129.0,80.0,"›",14.0,W::Regular,muted,H::Center);
+        c.centered_text(45.0,month_y,"‹",14.0,W::Regular,muted,H::Center);
+        c.centered_text(87.0,month_y,&format!("{}年{}月",month.year(),month.month()),9.5,W::Regular,theme::GRAY,H::Center);
+        c.centered_text(129.0,month_y,"›",14.0,W::Regular,muted,H::Center);
         for (x,next) in [(38.0,false),(122.0,true)] {
-            if c.hit(x,72.0,14.0,16.0,("calendar-month",next)).clicked(){
+            if c.hit(x,month_y-8.0,14.0,16.0,("calendar-month",next)).clicked(){
                 let date=if next{month.checked_add_months(chrono::Months::new(1))}else{month.checked_sub_months(chrono::Months::new(1))};
                 if let Some(date)=date{self.select_calendar_day(date);}
             }
         }
         let column_width=17.0;
         let column_x=|i:usize|43.0+i as f32*column_width;
-        for (i,label) in ["一","二","三","四","五","六","日"].iter().enumerate(){c.centered_text(column_x(i),98.0,label,9.0,W::Regular,muted,H::Center);}
+        for (i,label) in ["一","二","三","四","五","六","日"].iter().enumerate(){c.centered_text(column_x(i),weekday_y,label,9.0,W::Regular,muted,H::Center);}
         let grid=calendar::month_grid(self.calendar.view.month);
         let mut dots=HashMap::<NaiveDate,Vec<Source<'_>>>::new();
         for (event,source) in self.calendar_sources(self.calendar.view.month) {
@@ -411,9 +440,9 @@ impl App {
         }
         let dots:std::collections::HashMap<_,_>=dots.into_iter().map(|(date,sources)|(date,marker_colors(&sources))).collect();
         for (i,date) in grid.iter().enumerate() {
-            let x=column_x(i%7);let y=114.0+(i/7) as f32*16.5;
+            let x=column_x(i%7);let y=grid_y+(i/7) as f32*row_h;
             let selected=*date==self.calendar.view.day;
-            let hit=c.hit(x-column_width/2.0,y-7.0,column_width,16.5,("calendar-day",date));
+            let hit=c.hit(x-column_width/2.0,y-7.0,column_width,row_h,("calendar-day",date));
             if selected || hit.hovered(){c.circle(x,y-0.6,6.3,if selected{accent}else{Color32::from_gray(36)});}
             if *date==today && !selected{c.ring(x,y-0.6,6.3,0.8,accent);}
             let color=if selected{theme::WHITE}else if date.month()!=self.calendar.view.month.month(){Color32::from_gray(82)}else{Color32::from_gray(219)};

@@ -2,7 +2,7 @@ use super::*;
 fn settle(host: &mut LocalPlugins, today: &str) {
     let end = Instant::now() + Duration::from_secs(5);
     loop {
-        host.tick(true, today);
+        host.tick(true, true, today);
         if host.jobs.is_empty() {
             break;
         }
@@ -129,7 +129,7 @@ mod test_market {
         settle(&mut host, "2026-12-01");
         let saved = host.records[ID].storage.clone();
         assert!(!saved.is_null());
-        host.tick(false, "2026-12-02");
+        host.tick(false, true, "2026-12-02");
         assert!(host.records[ID].enabled && !host.has_card());
 
         // 无封面的旧快照从磁盘恢复，在线更新后随包保存封面。
@@ -156,7 +156,7 @@ mod test_market {
         fixture.publish("1.1.0", false)?;
         host.refresh_market_catalog()?;
         assert_eq!(status(&host), MarketStatus::Update);
-        host.tick(true, "2026-12-02");
+        host.tick(true, true, "2026-12-02");
         host.market_action(false, ID)?;
         settle_market(&mut host);
         assert!(!host.jobs[ID].valid, "上个版本的迟到结果应作废");
@@ -195,6 +195,85 @@ mod test_market {
     }
 
     #[test]
+    fn lunar_update_preserves_state_and_follows_only_the_calendar_switch() -> Result<()> {
+        const LUNAR: &str = "daozai.lunar-today";
+        const TODAY: &str = "2026-11-21";
+        const TOMORROW: &str = "2026-11-22";
+        let fixture = Fixture::new()?;
+        let installed = fixture.root.join("installed");
+        let mut host = LocalPlugins::open(installed.clone());
+        let mut manifest: Value = serde_json::from_slice(&fs::read(&fixture.manifest_path)?)?;
+        manifest["id"] = json!(LUNAR);
+        manifest["name"] = json!("今日农历");
+        fs::write(&fixture.manifest_path, serde_json::to_vec(&manifest)?)?;
+        fs::write(
+            fixture.manifest_path.with_file_name("main.js"),
+            "function refresh(i){return {card:i.today,storage:i.storage}}",
+        )?;
+        fixture.publish("1.0.0", false)?;
+        host.set_market_catalog(&fixture.index)?;
+        host.market_action(false, LUNAR)?;
+        settle_market(&mut host);
+        host.enable(LUNAR, true)?;
+        let mut record = host.installed(LUNAR)?;
+        record.values.insert("title".into(), "自定义标题".into());
+        record.storage = json!({"saved": true});
+        host.put(LUNAR, record.clone())?;
+        host.tick(true, true, TODAY);
+        assert!(host.jobs.is_empty());
+        assert!(host.records[LUNAR].enabled);
+        assert!(!host.has_card() && !host.calendar_annotation_enabled());
+
+        manifest["owner"] = json!("calendar");
+        fs::write(&fixture.manifest_path, serde_json::to_vec(&manifest)?)?;
+        fixture.publish("1.0.1", false)?;
+        host.refresh_market_catalog()?;
+        assert_eq!(status(&host), MarketStatus::Update);
+        host.market_action(false, LUNAR)?;
+        settle_market(&mut host);
+        assert_eq!(status(&host), MarketStatus::Installed);
+        let mut host = LocalPlugins::open(installed);
+        let migrated = host.installed(LUNAR)?;
+        assert!(migrated.enabled);
+        assert_eq!(migrated.origin, record.origin);
+        assert_eq!(migrated.values, record.values);
+        assert_eq!(migrated.storage, record.storage);
+        assert_eq!(migrated.package.unwrap().manifest.owner, "calendar");
+
+        host.tick(true, false, TODAY);
+        assert!(host.jobs.is_empty());
+        assert!(host.calendar_annotation_enabled());
+        assert_eq!(host.calendar_annotation(TODAY), None);
+        settle(&mut host, TODAY);
+        assert_eq!(host.calendar_annotation(TODAY), Some(TODAY));
+        assert!(!host.has_card());
+
+        let sample =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("spike/examples/payday/plugin.json");
+        host.install(&sample)?;
+        host.enable(ID, true)?;
+        settle(&mut host, TODAY);
+        assert!(host.has_card());
+        host.pause_owner("calendar");
+        assert!(host.has_card() && host.calendar_annotation_enabled());
+        assert_eq!(host.calendar_annotation(TODAY), None);
+        settle(&mut host, TODAY);
+        host.tick(false, true, TODAY);
+        assert!(!host.has_card());
+        assert_eq!(host.calendar_annotation(TODAY), Some(TODAY));
+
+        assert_eq!(host.calendar_annotation(TOMORROW), None);
+        host.tick(false, true, TOMORROW);
+        assert_eq!(host.calendar_annotation(TODAY), None);
+        settle(&mut host, TOMORROW);
+        assert_eq!(host.calendar_annotation(TOMORROW), Some(TOMORROW));
+        host.enable(LUNAR, false)?;
+        assert!(!host.calendar_annotation_enabled());
+        assert_eq!(host.calendar_annotation(TOMORROW), None);
+        Ok(())
+    }
+
+    #[test]
     fn market_bad_or_cancelled_update_never_replaces_installed_record() -> Result<()> {
         let fixture = Fixture::new()?;
         let mut host = LocalPlugins::open(fixture.root.join("installed"));
@@ -229,6 +308,16 @@ mod test_market {
         assert!(host.notice.contains("插件状态已变化"));
         assert_eq!(fs::read(host.path(ID))?, disabled);
         assert!(!host.records[ID].enabled);
+
+        let mut manifest: Value = serde_json::from_slice(&fs::read(&fixture.manifest_path)?)?;
+        manifest["owner"] = json!("calendar");
+        fs::write(&fixture.manifest_path, serde_json::to_vec(&manifest)?)?;
+        fixture.publish("1.3.0", false)?;
+        host.refresh_market_catalog()?;
+        host.market_action(false, ID)?;
+        settle_market(&mut host);
+        assert!(host.notice.contains("更新失败"));
+        assert_eq!(fs::read(host.path(ID))?, disabled);
         Ok(())
     }
 
@@ -496,11 +585,11 @@ fn two_packages_survive_disable_restart_and_both_uninstall_choices() -> Result<(
     assert_eq!(host.cards[a], "距离发薪还有 2 天");
     assert_eq!(host.cards[b], "旅行");
     host.enable(b, false)?;
-    host.tick(false, "");
+    host.tick(false, false, "");
     assert!(host.cards.is_empty());
     drop(host);
     let mut host = LocalPlugins::open(dir.clone());
-    host.tick(false, "");
+    host.tick(false, false, "");
     assert!(host.cards.is_empty());
     settle(&mut host, "2026-12-02");
     assert_eq!(host.cards[a], "距离发薪还有 1 天");
@@ -543,11 +632,11 @@ fn deadline_work_never_blocks_frames_or_starts_twice() -> Result<()> {
         .source = "function refresh(){while(true){}}".into();
     host.enable(id, true)?;
     let start = Instant::now();
-    host.tick(true, "2026-11-19");
+    host.tick(true, true, "2026-11-19");
     let worker = host.jobs[id].result.thread().id();
     assert_ne!(worker, std::thread::current().id());
     for _ in 0..10 {
-        host.tick(true, "2026-11-19");
+        host.tick(true, true, "2026-11-19");
         assert_eq!(host.jobs[id].result.thread().id(), worker);
     }
     assert!(
@@ -568,7 +657,7 @@ fn delayed_result_discarded_after_disable_uninstall_and_restart_validation() -> 
     let id = "example.payday";
     host.install(&sample)?;
     host.enable(id, true)?;
-    host.tick(true, "2026-11-19");
+    host.tick(true, true, "2026-11-19");
     host.enable(id, false)?;
     settle(&mut host, "2026-11-19");
     assert!(host.cards.is_empty());
@@ -577,7 +666,7 @@ fn delayed_result_discarded_after_disable_uninstall_and_restart_validation() -> 
         .storage
         .is_null());
     host.enable(id, true)?;
-    host.tick(true, "2026-11-19");
+    host.tick(true, true, "2026-11-19");
     host.uninstall(id, true)?;
     host.install(&sample)?;
     settle(&mut host, "2026-11-19");
@@ -592,7 +681,7 @@ fn delayed_result_discarded_after_disable_uninstall_and_restart_validation() -> 
     host.put(id, broken)?;
     drop(host);
     let mut host = LocalPlugins::open(dir.clone());
-    host.tick(true, "2026-11-19");
+    host.tick(true, true, "2026-11-19");
     assert!(host.invalid.contains(id));
     assert!(host.jobs.is_empty());
     assert!(host.cards.is_empty());
@@ -941,7 +1030,7 @@ mod material_tests {
         assert!(host.set_material_parameter(b, "strength", 121.0).is_err());
         host.set_material_parameter(b, "blur", 2.5)?;
         assert_eq!(host.active_material().unwrap().params[..2], [48.0, 2.5]);
-        host.tick(true, "2026-11-21");
+        host.tick(true, true, "2026-11-21");
         assert!(host.jobs.is_empty());
 
         let mut host = LocalPlugins::open(storage.clone());

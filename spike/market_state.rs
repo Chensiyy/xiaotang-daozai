@@ -436,8 +436,12 @@ fn prepare_record(mut record: Record, package: Package) -> Result<Record> {
     let manifest = &package.manifest;
     if let Some(old) = &record.package {
         let old = &old.manifest;
+        let lunar_relocation = old.is_retired_lunar_preview()
+            && manifest.id == old.id
+            && manifest.version == "1.0.1"
+            && manifest.owner == "calendar";
         if old.runtime != manifest.runtime
-            || old.owner != manifest.owner
+            || (old.owner != manifest.owner && !lunar_relocation)
             || old.permissions != manifest.permissions
             || old.data_version != manifest.data_version
             || old
