@@ -9306,6 +9306,49 @@ fn performance_custom_selection_controls_both_docks_and_persists() {
 
 #[cfg(windows)]
 #[test]
+#[ignore="导出六种性能常驻样式在左侧停靠时的画面，拼成一张对照图"]
+fn performance_side_gallery() {
+    use crate::{model::Dock,performance::BarStyle};
+    let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let dir=std::path::PathBuf::from(std::env::var_os("DAOZAI_PERFORMANCE_PREVIEW_DIR").unwrap());
+    std::fs::create_dir_all(&dir).unwrap();
+    let (w,hgt)=(crate::side_dock::SIDE_W,crate::side_dock::SIDE_H);
+    let mut shots=Vec::new();
+    for style in BarStyle::ALL {
+        let mut h=H::new();h.app.settings.dock=Dock::Left;h.app.settings.pet=false;
+        h.app.set_page_visible(crate::app::PERFORMANCE_PAGE,true);
+        h.app.settings.performance_bar=style;
+        h.app.settings.performance_metrics=0b1_1000_0101;
+        let start=std::time::Instant::now();
+        while start.elapsed().as_secs()<4 {h.app.performance.tick(true,true,false,&h.ctx);std::thread::sleep(std::time::Duration::from_millis(50));}
+        let mut raster=feature_raster_sized(w,hgt);
+        for frame in 0..60 {
+            h.t+=1.0/60.0;
+            let env=Env{t:h.t,clock:"09:41:00".into(),today:"2026-11-11".into(),date:"11月11日 周三".into(),cursor:Some(Pos2::new(400.0,590.0)),bt_ready:true,..Default::default()};
+            let raw=egui::RawInput{screen_rect:Some(Rect::from_min_size(Pos2::ZERO,Vec2::new(w,hgt))),time:Some(h.t),focused:true,
+                viewports:std::iter::once((egui::ViewportId::ROOT,egui::ViewportInfo{native_pixels_per_point:Some(2.0),..Default::default()})).collect(),..Default::default()};
+            let output=h.ctx.run(raw,|ctx|{egui::CentralPanel::default().frame(egui::Frame::new()).show(ctx,|ui|{
+                h.app.frame(ui,Rect::from_min_size(ui.max_rect().min,Vec2::new(w,hgt)),&env);
+            });});
+            raster.update_textures(&output.textures_delta);
+            if frame==59 {
+                raster.buf.fill([0.20,0.24,0.32,1.0]);raster.draw(&h.ctx.tessellate(output.shapes,output.pixels_per_point),output.pixels_per_point);
+                let mut rgba=Vec::new();raster.to_rgba8(&mut rgba);
+                let image=image::RgbaImage::from_raw((w*2.0)as u32,(hgt*2.0)as u32,rgba).unwrap();
+                let rect=h.app.island_rect(Rect::from_min_size(Pos2::ZERO,Vec2::new(w,hgt)),h.app.w.pos,h.app.h.pos);
+                shots.push(image::imageops::crop_imm(&image,0,((rect.top()-12.0).max(0.0)*2.0)as u32,120,((rect.height()+24.0)*2.0)as u32).to_image());
+            }
+            raster.free_textures(&output.textures_delta);
+        }
+    }
+    let tall=shots.iter().map(|s|s.height()).max().unwrap();
+    let mut sheet=image::RgbaImage::from_pixel(130*shots.len() as u32,tall,image::Rgba([51,61,82,255]));
+    for (i,shot) in shots.iter().enumerate() {image::imageops::replace(&mut sheet,shot,130*i as i64,0);}
+    sheet.save(dir.join("side-styles.png")).unwrap();
+}
+
+#[cfg(windows)]
+#[test]
 #[ignore="导出综合监测常驻下展开、收起的逐帧画面"]
 fn performance_morph_film() {
     let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
