@@ -670,14 +670,21 @@ impl LocalPlugins {
                     let material = manifest.is_material();
                     let on = r.enabled;
                     let has_settings = !manifest.settings.is_empty();
-                    let title = egui::RichText::new(&manifest.name);
+                    let key = egui::Id::new(("installed", &r.origin, &id, &manifest.version));
+                    let cover = package.cover.clone();
+                    let (name, author, version) = (
+                        manifest.name.clone(),
+                        manifest.author.clone(),
+                        manifest.version.clone(),
+                    );
+                    let title = egui::RichText::new(&name);
                     #[cfg(all(windows, feature = "sdk-material"))]
                     let selected = self.selected_material_id() == Some(id.as_str());
                     #[cfg(all(windows, feature = "sdk-material"))]
                     let title = if material {
                         material_name(
                             ui,
-                            &manifest.name,
+                            &name,
                             selected,
                             active_material == Some(id.as_str()),
                         )
@@ -686,7 +693,6 @@ impl LocalPlugins {
                     };
                     ui.horizontal_top(|ui| {
                         ui.spacing_mut().item_spacing.x = 12.0;
-                        let key = egui::Id::new(("installed", &r.origin, &id, &manifest.version));
                         let width = (ui.available_width() * 0.27).clamp(80.0, 110.0);
                         plugin_cover(
                             ui,
@@ -694,17 +700,11 @@ impl LocalPlugins {
                             width,
                             egui::CornerRadius::same(7),
                             "暂无封面",
-                            || package.cover_png(),
+                            || cover.as_ref().map(|cover| cover.bytes().to_vec()),
                         );
                         ui.vertical(|ui| {
                             ui.spacing_mut().item_spacing.y = 3.0;
-                            plugin_title(
-                                ui,
-                                title,
-                                &manifest.name,
-                                &manifest.author,
-                                &manifest.version,
-                            );
+                            plugin_title(ui, title, &name, &author, &version);
                             if material {
                                 #[cfg(all(windows, feature = "sdk-material"))]
                                 settings_hint(
