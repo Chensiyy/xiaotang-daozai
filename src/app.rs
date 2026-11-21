@@ -1760,7 +1760,13 @@ impl App {
             && self.settings.visible_pages[page] { return; }
         self.settings.visible_pages[page]=visible;
         #[cfg(feature="sdk-js")]
-        if page==TODO_PAGE && !visible{self.plugins.tick(false,"");}
+        if !visible {
+            match page {
+                TODO_PAGE=>self.plugins.pause_owner("tasks"),
+                CALENDAR_PAGE=>self.plugins.pause_owner("calendar"),
+                _=>{}
+            }
+        }
         if page==SHELF_PAGE {self.clipboard.set_enabled(self.clipboard_active());}
         if !visible {
             match page {
@@ -3752,7 +3758,7 @@ impl App {
         let now = format!("{} {}", env.today, env.clock.get(..5).unwrap_or("00:00"));
         let todo_on=self.module_on(TODO_PAGE);
         #[cfg(feature="sdk-js")]
-        self.plugins.tick(todo_on,&env.today);
+        self.plugins.tick(todo_on,self.module_on(CALENDAR_PAGE),&env.today);
         let due: Vec<_> = self.todos.items.iter().enumerate().filter(|(_, item)| todo_on && item.reminder_due(&now)).map(|(i,item)| (i,item.text.clone())).collect();
         for (i,text) in due { self.todos.items[i].mark_reminded(&now); self.todos.save(); self.alert("待办到时间了", text, 4, true); }
         // v0.5.5 会议提醒：.ics 里的开始时间，默认提前 15 分钟（可设 5/15/30）。

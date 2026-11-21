@@ -339,12 +339,15 @@ fn material_error(ui: &mut egui::Ui) {
 
 impl LocalPlugins {
     pub fn card(&mut self, c: &Card) -> bool {
-        let count = self.cards.len();
+        let mut cards = self.cards.iter().filter(|(id, _)| {
+            self.records[*id].package.as_ref().unwrap().manifest.owner == "tasks"
+        });
+        let count = cards.clone().count();
         if count == 0 {
             return false;
         }
         self.card_index %= count;
-        let (id, body) = self.cards.iter().nth(self.card_index).unwrap();
+        let (id, body) = cards.nth(self.card_index).unwrap();
         c.fill(42., 130., 335., 40., 9., theme::CARD);
         let manifest = &self.records[id].package.as_ref().unwrap().manifest;
         let has_settings = !manifest.settings.is_empty();
@@ -422,7 +425,8 @@ impl LocalPlugins {
     pub fn manage(
         &mut self,
         ui: &mut egui::Ui,
-        owner: bool,
+        tasks_on: bool,
+        calendar_on: bool,
         #[cfg(all(windows, feature = "sdk-material"))] active_material: Option<&str>,
     ) -> Option<usize> {
         let mut jump = None;
@@ -525,6 +529,9 @@ impl LocalPlugins {
                         let package = r.package.as_ref().unwrap();
                         let manifest = &package.manifest;
                         let material = manifest.is_material();
+                        let calendar = manifest.owner == "calendar";
+                        let retired = manifest.is_retired_lunar_preview();
+                        let owner = if calendar { calendar_on } else { tasks_on };
                         let on = r.enabled;
                         let has_settings = !manifest.settings.is_empty();
                         let key = egui::Id::new(("installed", &r.origin, &id, &manifest.version));
@@ -592,7 +599,16 @@ impl LocalPlugins {
                                         },
                                     );
                                 } else {
-                                    let (state, tint) = if !on {
+                                    let (state, tint) = if retired {
+                                        (
+                                            "已撤回 · 等待更新",
+                                            color(
+                                                ui.ctx(),
+                                                Color32::from_gray(175),
+                                                Color32::from_gray(90),
+                                            ),
+                                        )
+                                    } else if !on {
                                         (
                                             "已停用",
                                             color(
@@ -681,13 +697,22 @@ impl LocalPlugins {
                                         ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
                                     }
                                 }
-                                if on && owner && has_settings && ui.button("前往设置").clicked()
+                                if !retired
+                                    && on
+                                    && owner
+                                    && has_settings
+                                    && ui.button("前往设置").clicked()
                                 {
                                     self.focus = Some(id.clone());
-                                    jump =
-                                        Some(crate::app::PAGE_SETTINGS_TABS[crate::app::TODO_PAGE]);
+                                    let page = if calendar {
+                                        crate::app::CALENDAR_PAGE
+                                    } else {
+                                        crate::app::TODO_PAGE
+                                    };
+                                    jump = Some(crate::app::PAGE_SETTINGS_TABS[page]);
                                 }
-                                if on && !owner && ui.button("前往页面管理").clicked() {
+                                if !retired && on && !owner && ui.button("前往页面管理").clicked()
+                                {
                                     jump = Some(crate::extras::SETTINGS_TAB_PAGES);
                                 }
                             }
@@ -972,8 +997,8 @@ impl LocalPlugins {
         restart
     }
 
-    pub fn settings(&mut self, ui: &mut egui::Ui, owner: bool) {
-        if !owner {
+    pub fn settings(&mut self, ui: &mut egui::Ui, owner: &str, module_on: bool) {
+        if !module_on {
             return;
         }
         let ids: Vec<_> = self
@@ -982,7 +1007,7 @@ impl LocalPlugins {
             .filter(|(_, r)| {
                 r.enabled
                     && r.package.as_ref().is_some_and(|p| {
-                        !p.manifest.is_material() && !p.manifest.settings.is_empty()
+                        p.manifest.owner == owner && !p.manifest.settings.is_empty()
                     })
             })
             .map(|(id, _)| id.clone())

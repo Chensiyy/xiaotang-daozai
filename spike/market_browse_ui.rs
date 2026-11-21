@@ -502,9 +502,9 @@ impl LocalPlugins {
                     .presentation
                     .as_ref()
                     .and_then(|details| details.description.as_deref())
-                    .unwrap_or("在待办与置物中显示信息卡片。");
+                    .unwrap_or("在岛上显示信息。");
                 ui.label(description);
-                settings_hint(ui, "设置 → 待办与置物 · 无需外部权限");
+                settings_hint(ui, "无需外部权限");
                 manage
             })
             .inner

@@ -94,6 +94,7 @@ fn management_buttons_jump_disable_and_confirm_uninstall() -> Result<()> {
         host.manage(
             ui,
             true,
+            true,
             #[cfg(all(windows, feature = "sdk-material"))]
             None,
         );
@@ -104,6 +105,7 @@ fn management_buttons_jump_disable_and_confirm_uninstall() -> Result<()> {
         click(&ctx, label, |ui| {
             jumped |= host.manage(
                 ui,
+                true,
                 true,
                 #[cfg(all(windows, feature = "sdk-material"))]
                 None,
@@ -140,12 +142,14 @@ fn management_module_pause_and_plugin_switch_keep_their_own_choices() -> Result<
     host.install(&Path::new(env!("CARGO_MANIFEST_DIR")).join("spike/examples/payday/plugin.json"))?;
     let ctx = egui::Context::default();
     crate::theme::load_fonts(&ctx);
-    let settings =
-        |host: &mut LocalPlugins, owner| frame(&ctx, vec![], |ui| host.settings(ui, owner));
+    let settings = |host: &mut LocalPlugins, owner| {
+        frame(&ctx, vec![], |ui| host.settings(ui, "tasks", owner))
+    };
     let manage = |host: &mut LocalPlugins, ui: &mut egui::Ui, owner| {
         host.manage(
             ui,
             owner,
+            true,
             #[cfg(all(windows, feature = "sdk-material"))]
             None,
         )
@@ -221,6 +225,7 @@ fn market_buttons_install_and_update_an_existing_sample() -> Result<()> {
     let draw = |host: &mut LocalPlugins, ui: &mut egui::Ui| {
         host.manage(
             ui,
+            true,
             true,
             #[cfg(all(windows, feature = "sdk-material"))]
             None,
@@ -333,7 +338,7 @@ fn material_management_waits_for_permission_and_offers_to_enable_compatibility()
     let manage_click = |host: &mut LocalPlugins, label: &str| {
         let mut jump = None;
         click(&ctx, label, |ui| {
-            jump = host.manage(ui, true, None).or(jump)
+            jump = host.manage(ui, true, true, None).or(jump)
         });
         jump
     };

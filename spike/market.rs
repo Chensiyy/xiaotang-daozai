@@ -448,7 +448,7 @@ fn read_catalog_zip(path: &Path) -> Result<Vec<u8>> {
 
 fn supported(manifest: &Manifest) -> Result<()> {
     if manifest.runtime != "js" || manifest.entry.contains('/') {
-        return Err(fail("集市仅接受根目录含一个 JavaScript 入口的待办插件"));
+        return Err(fail("集市仅接受根目录含一个 JavaScript 入口的卡片插件"));
     }
     Ok(())
 }

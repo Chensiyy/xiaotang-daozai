@@ -269,6 +269,10 @@ impl Manifest {
         }
     }
 
+    fn is_retired_lunar_preview(&self) -> bool {
+        self.id == "daozai.lunar-today" && self.version == "1.0.0" && self.owner == "tasks"
+    }
+
     fn validate(&self) -> Result<()> {
         let m = self;
         if !valid_id(&m.id)
@@ -318,7 +322,7 @@ impl Manifest {
                 ));
             }
         } else if m.runtime != "js"
-            || m.owner != "tasks"
+            || !matches!(m.owner.as_str(), "tasks" | "calendar")
             || m.material.is_some()
             || !m.permissions.is_empty()
             || !m.capabilities.iter().any(|c| c == "card")
@@ -327,7 +331,9 @@ impl Manifest {
                 .iter()
                 .all(|c| matches!(c.as_str(), "card" | "settings" | "timer" | "storage"))
         {
-            return Err(fail("仅支持本地 v1 待办卡片和材质插件，请核对清单"));
+            return Err(fail(
+                "仅支持本地 v1 待办卡片、日程卡片和材质插件，请核对清单",
+            ));
         }
         let mut keys = std::collections::BTreeSet::new();
         if m.settings.len() > 32
@@ -518,6 +524,7 @@ pub struct LocalPlugins {
     dir: PathBuf,
     records: BTreeMap<String, Record>,
     cards: BTreeMap<String, String>,
+    calendar_day: String,
     next: BTreeMap<String, Instant>,
     errors: BTreeMap<String, String>,
     notice: String,
@@ -546,6 +553,7 @@ impl LocalPlugins {
             dir,
             records: BTreeMap::new(),
             cards: BTreeMap::new(),
+            calendar_day: String::new(),
             next: BTreeMap::new(),
             errors: BTreeMap::new(),
             notice: String::new(),
@@ -813,14 +821,33 @@ impl LocalPlugins {
         self.forget_view(id);
         Ok(())
     }
-    pub fn tick(&mut self, owner: bool, today: &str) {
+    pub fn pause_owner(&mut self, owner: &str) {
+        let records = &self.records;
+        let belongs = |id: &str| {
+            records
+                .get(id)
+                .and_then(|record| record.package.as_ref())
+                .is_some_and(|package| package.manifest.owner == owner)
+        };
+        self.cards.retain(|id, _| !belongs(id));
+        self.next.retain(|id, _| !belongs(id));
+        for (id, job) in &mut self.jobs {
+            if belongs(id) {
+                job.valid = false;
+            }
+        }
+    }
+
+    pub fn tick(&mut self, tasks_on: bool, calendar_on: bool, today: &str) {
         #[cfg(windows)]
         self.poll_market();
-        if !owner {
-            self.cards.clear();
-            self.next.clear();
-            for job in self.jobs.values_mut() {
-                job.valid = false;
+        if !tasks_on {
+            self.pause_owner("tasks");
+        }
+        if !calendar_on || self.calendar_day != today {
+            self.pause_owner("calendar");
+            if calendar_on {
+                self.calendar_day = today.to_owned();
             }
         }
         let finished: Vec<_> = self
@@ -857,7 +884,7 @@ impl LocalPlugins {
                 }
             }
         }
-        if !owner || self.jobs.len() >= 2 {
+        if (!tasks_on && !calendar_on) || self.jobs.len() >= 2 {
             return;
         }
         let now = Instant::now();
@@ -868,7 +895,12 @@ impl LocalPlugins {
                 !self.jobs.contains_key(*id)
                     && r.enabled
                     && r.package.as_ref().is_some_and(|pkg| {
-                        !pkg.manifest.is_material()
+                        let owner_on = match pkg.manifest.owner.as_str() {
+                            "tasks" => tasks_on && !pkg.manifest.is_retired_lunar_preview(),
+                            "calendar" => calendar_on,
+                            _ => false,
+                        };
+                        owner_on
                             && self.next.get(*id).is_none_or(|t| {
                                 *t <= now && pkg.manifest.capabilities.iter().any(|c| c == "timer")
                             })
@@ -916,7 +948,32 @@ impl LocalPlugins {
         }
     }
     pub fn has_card(&self) -> bool {
-        !self.cards.is_empty()
+        self.cards.keys().any(|id| {
+            self.records[id]
+                .package
+                .as_ref()
+                .is_some_and(|package| package.manifest.owner == "tasks")
+        })
+    }
+
+    pub fn calendar_annotation_enabled(&self) -> bool {
+        self.records.values().any(|record| {
+            record.enabled
+                && record
+                    .package
+                    .as_ref()
+                    .is_some_and(|package| package.manifest.owner == "calendar")
+        })
+    }
+
+    pub fn calendar_annotation(&self, today: &str) -> Option<&str> {
+        if self.calendar_day != today {
+            return None;
+        }
+        self.cards.iter().find_map(|(id, text)| {
+            let package = self.records[id].package.as_ref()?;
+            (package.manifest.owner == "calendar").then_some(text.as_str())
+        })
     }
 }
 

@@ -5897,13 +5897,36 @@ fn calendar_layout_gallery() {
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     let dest=std::path::PathBuf::from(std::env::var_os("DAOZAI_CALENDAR_PREVIEW_DIR").expect("需指定预览目录"));
     std::fs::create_dir_all(&dest).unwrap();
-    for mode in ["agenda","agenda-list","dingtalk","wecom","empty","loading","failed","disconnected","local-editor","local","local-all-day","mixed"] {
+    let modes=["agenda","agenda-list","dingtalk","wecom","empty","loading","failed","disconnected","local-editor","local","local-all-day","mixed"];
+    #[cfg(feature="sdk-js")]
+    let lunar_manifest=std::env::var_os("DAOZAI_LUNAR_PREVIEW_PLUGIN");
+    #[cfg(feature="sdk-js")]
+    let modes=if lunar_manifest.is_some() {&["lunar","lunar-term","lunar-term-cream"][..]} else {&modes[..]};
+    #[cfg(not(feature="sdk-js"))]
+    let modes=&modes[..];
+    for &mode in modes {
         let mut h=H::new();
-        let day=chrono::NaiveDate::from_ymd_opt(2026,11,2).unwrap();
+        let day_number=match mode {"lunar"=>21,"lunar-term"|"lunar-term-cream"=>22,_=>2};
+        let day=chrono::NaiveDate::from_ymd_opt(2026,11,day_number).unwrap();
         h.app.calendar.view.day=day;h.app.calendar.view.month=crate::calendar::month_start(day);
         h.app.open_calendar(None);
+        #[cfg(feature="sdk-js")]
+        if let Some(path)=&lunar_manifest {
+            use std::time::{Duration,Instant};
+            h.app.plugins.install(std::path::Path::new(path)).unwrap();
+            h.app.plugins.enable("daozai.lunar-today",true).unwrap();
+            let today=day.to_string();
+            let deadline=Instant::now()+Duration::from_secs(3);
+            loop {
+                h.app.plugins.tick(true,true,&today);
+                if h.app.plugins.calendar_annotation(&today).is_some(){break;}
+                assert!(Instant::now()<deadline,"农历预览插件加载超时");
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            if mode=="lunar-term-cream"{h.app.settings.skin=crate::model::Skin::Cream;}
+        }
         let provider=match mode{"dingtalk"=>crate::calendar::Provider::DingTalk,"wecom"=>crate::calendar::Provider::WeCom,_=>crate::calendar::Provider::Feishu};
-        if !["disconnected","local-editor","local","local-all-day"].contains(&mode){h.app.calendar.config=Some(crate::calendar::Config{provider,username:"demo".into(),href:None,server:None});h.app.calendar.connected=true;}
+        if !["disconnected","local-editor","local","local-all-day","lunar","lunar-term","lunar-term-cream"].contains(&mode){h.app.calendar.config=Some(crate::calendar::Config{provider,username:"demo".into(),href:None,server:None});h.app.calendar.connected=true;}
         h.app.calendar.view.loaded=Some(crate::calendar::month_start(day));
         if ["agenda","agenda-list","dingtalk","wecom","mixed"].contains(&mode) {
             for (i,(hour,minute,title)) in [(14,30,"产品方案评审"),(16,0,"下一阶段的设计方案与开发排期对齐"),(17,0,"项目进度同步")].into_iter().enumerate(){
@@ -5937,10 +5960,19 @@ fn calendar_layout_gallery() {
         for f in 0..90 {
             let t=f as f64/60.0;
             let raw=egui::RawInput{screen_rect:Some(Rect::from_min_size(Pos2::ZERO,egui::vec2(WIN_W,WIN_H))),time:Some(t),viewports:std::iter::once((egui::ViewportId::ROOT,egui::ViewportInfo{native_pixels_per_point:Some(2.0),..Default::default()})).collect(),..Default::default()};
-            let env=Env{t,today:"2026-11-02".into(),date:"11月2日 周一".into(),clock:"14:15:00".into(),battery:Some(76),charging:true,cursor:Some(H::local(300.0,40.0)),..Default::default()};
+            let day_label=match day_number {21=>"11月21日 周六",22=>"11月22日 周日",_=>"11月2日 周一"};
+            let env=Env{t,today:day.to_string(),date:day_label.into(),clock:"14:15:00".into(),battery:Some(76),charging:true,cursor:Some(H::local(300.0,40.0)),..Default::default()};
             let out=h.ctx.run(raw,|ctx|{egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx,|ui|{let win=ui.max_rect();h.app.frame(ui,win,&env);});});
             raster.update_textures(&out.textures_delta);
             if f==89 {
+                if mode.starts_with("lunar") {
+                    let texts=out.shapes.iter().filter_map(|shape|match &shape.shape {
+                        egui::Shape::Text(t)=>Some(t.galley.text()),
+                        _=>None,
+                    }).collect::<Vec<_>>();
+                    assert!(texts.contains(&if day_number==21 {"农历十月十三"} else {"农历十月十四"}));
+                    assert_eq!(texts.contains(&"小雪"),day_number==22);
+                }
                 if mode=="local-all-day" {
                     assert!(out.shapes.iter().any(|shape|matches!(&shape.shape,egui::Shape::Text(t) if t.galley.text()=="散步与读书")),"只有全天日程时也必须显示普通日程行");
                 }

@@ -1752,7 +1752,8 @@ impl App {
                     #[cfg(feature="sdk-js")]
                     SETTINGS_TAB_PLUGINS=>{
                         let on=self.module_on(crate::app::TODO_PAGE);
-                        if let Some(tab)=self.plugins.manage(ui,on,
+                        let calendar_on=self.module_on(crate::app::CALENDAR_PAGE);
+                        if let Some(tab)=self.plugins.manage(ui,on,calendar_on,
                             #[cfg(all(windows,feature="sdk-material"))] self.material_active_id.as_deref().filter(|_| self.material_capture_forced),
                         ){self.settings_tab=tab;}
                     }
@@ -2122,7 +2123,7 @@ impl App {
                     4=>{
                         let on=self.settings_feature_header(ui,crate::app::TODO_PAGE,"任务清单与到期提醒",|_,_|{});
                         let _=on;
-                        #[cfg(feature="sdk-js")] self.plugins.settings(ui,on);
+                        #[cfg(feature="sdk-js")] self.plugins.settings(ui,"tasks",on);
                         ui.add_space(12.0);
                         let on=self.settings_feature_header(ui,crate::app::SHELF_PAGE,"临时收纳文件与剪贴板",|_,_|{});
                         ui.add_enabled_ui(on,|ui|{
@@ -2419,6 +2420,7 @@ impl App {
                             setting_choices(ui,"会议提前",&mut self.settings.mail_ics,[5,15,30],"分钟");
                             settings_hint(ui,"与邮件中的会议邀请共用提醒，同一场会议只提醒一次。");
                         });
+                        #[cfg(feature="sdk-js")] self.plugins.settings(ui,"calendar",on);
                         settings_label(ui,"日历账号");
                         let mut import=false;
                         settings_card(ui,|ui|{
