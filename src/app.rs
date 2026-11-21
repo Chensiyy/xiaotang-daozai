@@ -3380,7 +3380,13 @@ impl App {
     fn nav(&mut self, c: &Card) {
         let pages: Vec<_>=self.settings.page_order.iter().copied().filter(|page|self.settings.visible_pages[*page]).collect();
         if pages.len()<2 { return; }
-        let arrow_y=if self.page==6||self.page==8{88.0}else{68.0};
+        // 停靠方式决定箭头的锚点，切页改变面板高度时仍可原地点击。
+        let anchor_y=68.0;
+        let arrow_y=match self.dock() {
+            model::Dock::Top=>anchor_y,
+            model::Dock::Bottom=>c.to_local(c.painter.clip_rect().center_bottom()).y-(PH-anchor_y),
+            model::Dock::Left|model::Dock::Right=>anchor_y+(self.page_height.pos-PH)/2.0,
+        };
         for (x, direction, id) in [(21.0,-1.0,"nav-l"),(398.0,1.0,"nav-r")] {
             let arrow_card=if self.side() {c.edge_control(x-13.0,arrow_y-13.0,26.0,26.0)} else {Some(c.clone())};
             let Some(arrow_card)=arrow_card else {continue};
