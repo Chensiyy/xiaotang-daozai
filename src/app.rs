@@ -646,6 +646,8 @@ pub(crate) struct CalendarState {
     /// 未来 24 小时的日程（提醒也读这里）。
     pub events: Vec<mail::Meeting>,
     pub view: crate::calendar_ui::State,
+    pub agenda: bool,
+    pub agenda_first: usize,
     pub connected: bool,
     pub last_sync: String,
     /// 连续失败次数；>= 2 才在设置页显示红字。
@@ -2181,15 +2183,13 @@ impl App {
                     if self.wheel_delta.abs()>=8.0 {
                         let next=self.wheel_delta<0.0;
                         self.wheel_delta=0.0;
-                        let calendar_max=if self.page==CALENDAR_PAGE {self.calendar_scroll_max(env)}else{0};
-                        let calendar_body=self.page==CALENDAR_PAGE && Rect::from_min_max(Pos2::new(163.0,52.0),Pos2::new(378.0,208.0)).contains(cursor);
                         // 性能 CPU、内存详情的程序列表：滚轮在列表上只滚列表，滚到头也不翻页。
                         let performance_list=self.page==PERFORMANCE_PAGE && crate::performance_ui::list_area().contains(cursor);
                         let performance_max=if performance_list {self.performance_list_max()}else{0};
                         let clipboard_tab=self.page==3 && self.shelf_tab==1;
                         let clipboard_body=clipboard_tab && Rect::from_min_max(Pos2::new(42.0,31.0),Pos2::new(377.0,124.0)).contains(cursor);
                         let list=match self.page {
-                            CALENDAR_PAGE if calendar_body=>Some((&mut self.calendar.view.first,calendar_max)),
+                            CALENDAR_PAGE=>self.calendar_scroll(cursor,env),
                             4 if Rect::from_min_max(Pos2::new(196.0,31.0),Pos2::new(377.0,124.0)).contains(cursor)
                                 =>Some((&mut self.todo_first,self.todos.items.len().saturating_sub(3))),
                             3 if clipboard_body
