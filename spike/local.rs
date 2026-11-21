@@ -15,6 +15,7 @@ use std::{
 const MATERIAL_SOURCE_LIMIT: u64 = 64 * 1024;
 const SCRIPT_SOURCE_LIMIT: u64 = 256 * 1024;
 const BACKDROP_PERMISSION: &str = "screen.backdrop";
+const API_VERSION: u32 = 1;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -30,6 +31,18 @@ struct Field {
     max: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     step: Option<f32>,
+    #[serde(
+        default,
+        deserialize_with = "present_value",
+        skip_serializing_if = "Option::is_none"
+    )]
+    unit: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "present_value",
+        skip_serializing_if = "Option::is_none"
+    )]
+    precision: Option<u8>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -38,7 +51,7 @@ struct Material {
     spring: MaterialSpring,
     #[serde(
         default,
-        deserialize_with = "material_shadow",
+        deserialize_with = "present_value",
         skip_serializing_if = "Option::is_none"
     )]
     shadow: Option<f32>,
@@ -46,10 +59,10 @@ struct Material {
     foreground: MaterialForeground,
 }
 
-fn material_shadow<'de, D: serde::Deserializer<'de>>(
+fn present_value<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
     input: D,
-) -> std::result::Result<Option<f32>, D::Error> {
-    f32::deserialize(input).map(Some)
+) -> std::result::Result<Option<T>, D::Error> {
+    T::deserialize(input).map(Some)
 }
 
 #[derive(Clone, Copy, Default, Serialize, Deserialize)]
@@ -168,6 +181,9 @@ fn valid_id(id: &str) -> bool {
         })
 }
 fn valid_field(f: &Field, v: &str) -> bool {
+    if f.kind != "number" && (f.unit.is_some() || f.precision.is_some()) {
+        return false;
+    }
     match f.kind.as_str() {
         "text" if f.min.is_none() && f.max.is_none() && f.step.is_none() => {
             !v.trim().is_empty() && v.chars().count() <= 80
@@ -183,6 +199,8 @@ fn valid_field(f: &Field, v: &str) -> bool {
             width.is_finite()
                 && step > 0.0
                 && step <= width
+                && f.unit.as_ref().is_none_or(|unit| unit.chars().count() <= 4)
+                && f.precision.is_none_or(|precision| precision <= 3)
                 && v.parse::<f32>()
                     .is_ok_and(|number| number.is_finite() && (min..=max).contains(&number))
         }
@@ -206,7 +224,7 @@ impl Manifest {
         let m = self;
         if !valid_id(&m.id)
             || !(60..=86400).contains(&m.refresh_seconds)
-            || m.api != 1
+            || m.api != API_VERSION
             || m.data_version != 1
             || m.name.trim().is_empty()
             || m.name.chars().count() > 80
@@ -278,7 +296,7 @@ impl Manifest {
                     && keys.insert(&f.key)
             })
         {
-            return Err(fail("设置项名称、类型或默认值无效"));
+            return Err(fail("设置项名称、类型、默认值或显示格式无效"));
         }
         let entry = Path::new(&m.entry);
         let allowed_name = |s: &str| {
@@ -339,7 +357,19 @@ fn validate_material_files(dir: &Path, manifest: &Path, shader: &Path) -> Result
 
 impl Package {
     fn read(path: &Path) -> Result<Self> {
-        let manifest: Manifest = serde_json::from_str(&bounded(path, 32 * 1024)?)?;
+        #[derive(Deserialize)]
+        struct ApiHeader {
+            api: u64,
+        }
+        let contents = bounded(path, 32 * 1024)?;
+        // 先检查版本，使未来清单新增的字段能够得到明确的升级提示。
+        let ApiHeader { api } = serde_json::from_str(&contents)?;
+        if api > u64::from(API_VERSION) {
+            return Err(fail(&format!(
+                "需要更新岛仔。此插件需要 API v{api}，当前支持 v{API_VERSION}"
+            )));
+        }
+        let manifest: Manifest = serde_json::from_str(&contents)?;
         manifest.validate()?;
         let entry = Path::new(&manifest.entry);
         let base = path

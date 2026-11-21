@@ -28,8 +28,8 @@ fn rr_sdf(p : vec2<f32>, b : vec2<f32>, r : f32) -> f32 {
     return min(max(q.x, q.y), 0.0) + length(max(q, vec2<f32>(0.0))) - r;
 }
 
-fn notch_sdf(p : vec2<f32>, b : vec2<f32>, r : f32, flare : f32, fh : f32) -> f32 {
-    let t = clamp((p.y + b.y) / max(fh, 1.0), 0.0, 1.0);
+fn daozai_notch_sdf(p : vec2<f32>, b : vec2<f32>, r : f32, flare : f32, fh : f32) -> f32 {
+    let t = clamp((p.y + b.y) / fh, 0.0, 1.0);
     let wing = flare * pow(1.0 - t, 2.4);
     let hx = b.x + wing;
     if (p.y > b.y - r) {
@@ -40,10 +40,12 @@ fn notch_sdf(p : vec2<f32>, b : vec2<f32>, r : f32, flare : f32, fh : f32) -> f3
     return max(abs(p.x) - hx, abs(p.y) - b.y);
 }
 
-fn body_sdf(p : vec2<f32>) -> f32 {
-    // 沿用原玻璃轮廓的内缩，给窗口区域内的羽化和描边留出空间。
-    let inset = 3.0;
-    var half_size = max(frame.body.zw * 0.5 - vec2<f32>(inset), vec2<f32>(2.0));
+fn notch_sdf(p : vec2<f32>, b : vec2<f32>, r : f32, flare : f32, fh : f32) -> f32 {
+    return daozai_notch_sdf(p, b, r, flare, max(fh, 1.0));
+}
+
+fn daozai_body_sdf(p : vec2<f32>, inset : f32, minimum : f32) -> f32 {
+    var half_size = max(frame.body.zw * 0.5 - vec2<f32>(inset), vec2<f32>(minimum));
     var local = p - frame.body.xy - frame.body.zw * 0.5;
     let radius = max(min(frame.shape.x - inset, min(half_size.x, half_size.y)), 0.0);
     if (frame.notch.z > 0.5) {
@@ -57,9 +59,22 @@ fn body_sdf(p : vec2<f32>) -> f32 {
         } else if (frame.count.y == 3u) {
             local.y = -local.y;
         }
+        if (inset == 0.0) {
+            // 按宿主 shape::sections 的逻辑点限幅，保证展开过程中的肩部位置一致。
+            let fh = max(min(frame.notch.y, half_size.y), 0.5 * frame.env.z);
+            return daozai_notch_sdf(local, half_size, radius, frame.notch.x, max(fh, 0.0001));
+        }
         return notch_sdf(local, half_size, radius, frame.notch.x, frame.notch.y);
     }
     return rr_sdf(local, half_size, radius);
+}
+
+fn body_sdf(p : vec2<f32>) -> f32 {
+    return daozai_body_sdf(p, 3.0, 2.0);
+}
+
+fn body_sdf_exact(p : vec2<f32>) -> f32 {
+    return daozai_body_sdf(p, 0.0, 0.0);
 }
 
 fn sample_backdrop(px : vec2<f32>) -> vec3<f32> {

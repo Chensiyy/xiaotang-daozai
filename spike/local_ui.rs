@@ -375,12 +375,21 @@ impl LocalPlugins {
             let (Some(min), Some(max), Some(step)) = (field.min, field.max, field.step) else {
                 continue;
             };
+            let precision = field.precision.map_or_else(
+                || {
+                    step.to_string()
+                        .split_once('.')
+                        .map_or(0, |(_, fraction)| fraction.len())
+                },
+                usize::from,
+            );
             let mut value = record
                 .values
                 .get(&field.key)
                 .unwrap_or(&field.default)
                 .parse::<f32>()
                 .unwrap_or(min);
+            let original = f64::from(value);
             let changed = ui
                 .push_id((&id, &field.key), |ui| {
                     ui.horizontal(|ui| {
@@ -392,8 +401,27 @@ impl LocalPlugins {
                         .on_hover_text(&field.label);
                         ui.spacing_mut().slider_width =
                             (ui.available_width() - 65.0).clamp(54.0, 135.0);
-                        ui.add(egui::Slider::new(&mut value, min..=max).step_by(f64::from(step)))
-                            .changed()
+                        ui.add(
+                            egui::Slider::new(&mut value, min..=max)
+                                .clamping(egui::SliderClamping::Edits)
+                                .step_by(f64::from(step))
+                                .suffix(field.unit.as_deref().unwrap_or_default())
+                                .custom_formatter(move |number, _| format!("{number:.precision$}"))
+                                .custom_parser(move |input| {
+                                    if input == format!("{original:.precision$}") {
+                                        Some(original)
+                                    } else {
+                                        input
+                                            .chars()
+                                            .filter(|c| !c.is_whitespace())
+                                            .map(|c| if c == '−' { '-' } else { c })
+                                            .collect::<String>()
+                                            .parse()
+                                            .ok()
+                                    }
+                                }),
+                        )
+                        .changed()
                     })
                     .inner
                 })

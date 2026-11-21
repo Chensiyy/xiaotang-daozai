@@ -22,7 +22,7 @@ function refresh({ settings, today }) {
 | 能力与进度 | 作者怎么写 | 用户在哪里用 |
 | --- | --- | --- |
 | 文本、日期设置 · 已实现 | 清单的 settings 列出字段，在上例读取 settings.title 和 settings.target | 待办与置物的插件设置 |
-| 材质数字参数 · 已实现 | 清单声明 `type: "number"`、`min`、`max`、`step` 和字符串形式的 `default`。着色器按清单顺序用 `param(index)` 取值，最多 32 项 | 「设置 → 外观 → 材质」，拖动滑块实时应用 |
+| 材质数字参数 · 已实现 | 清单声明 `type: "number"`、`min`、`max`、`step` 和字符串形式的 `default`，可选 `unit` 和 `precision`。着色器按清单顺序用 `param(index)` 取值，最多 32 项 | 「设置 → 外观 → 材质」，拖动滑块实时应用 |
 | 脚本插件的开关、分段、数字 · 待宿主实现 | 清单字段示意 `{key:"minutes",type:"number",min:5,max:180,default:45,label:"提醒间隔"}`。开关用 switch，选项用 segment 和 choices。函数读取 settings.minutes | 唯一归属设置页 |
 | 文字卡、私有存储 · 已实现 | 上例返回 card 和 storage。首次的 storage 为 null，之后可用 `storage?.lastDays` 读回天数 | 展开待办页，重启后接着用 |
 | 周期刷新 · 已实现 | 两个样例在清单声明 `"refreshSeconds":60` 和 timer 能力。到期由岛仔调用 refresh | 卡片按期更新 |
@@ -88,11 +88,11 @@ QuickJS 每次计算限时 30 毫秒，脚本可分配的内存上限为 4 MiB�
 
 从[示例清单](../../spike/examples/payday/plugin.json)开始，复制同目录的 main.js。清单中的 entry 指向包内脚本。ID 使用小写作者名与插件名，以点分隔，最长 64 个字符。
 
-version 是插件版本，api 是需要的接口主版本，dataVersion 是存储格式版本。owner 决定设置归属，capabilities 列出使用的能力，permissions 列出授权事项。字段类型和可选值见[清单格式检查表](sdk-v1.schema.json)。该表也描述设计中的能力，本地试用目前接受的组合见[本地安装说明](local-install.md)。
+version 是插件版本，api 是需要的接口主版本，dataVersion 是存储格式版本。`api` 高于宿主支持的版本时，安装会提示「需要更新岛仔」。owner 决定设置归属，capabilities 列出使用的能力，permissions 列出授权事项。字段类型和可选值见[清单格式检查表](sdk-v1.schema.json)。该表也描述设计中的能力，本地试用目前接受的组合见[本地安装说明](local-install.md)。
 
 宿主安装时检查字段、ID、默认值、版本、入口位置与大小，并拒绝越出包目录的脚本。重启时重新检查安装快照，出现无效记录提示重新安装。分发压缩包时还需在临时目录检查路径、链接、文件数与大小，再安装。无代码资源包只装允许的本地素材，缺少表情帧时回到内置表情。声明独立模块要同时填写 self 和 module。发布前还需检查授权与能力是否匹配、数字和选项默认值是否有效，确认包中没有可执行的外部程序。
 
-材质包包含 `plugin.json`、一个大小不超过 64 KiB 的 `.wgsl` 入口，以及可选的文本说明文件。默认值必须是范围内的有限数字，步长为正且不大于范围宽度。控件弹簧刚度范围为 0.2 至 3，阻尼范围为 0.1 至 1。
+材质包包含 `plugin.json`、一个大小不超过 64 KiB 的 `.wgsl` 入口，以及可选的文本说明文件。默认值必须是范围内的有限数字，步长为正且不大于范围宽度。`unit` 最多 4 个字符，仅显示在滑块数值后。`precision` 为 0 至 3 的整数，省略时按 `step` 的小数位数显示。显示格式不改变参数值。控件弹簧刚度范围为 0.2 至 3，阻尼范围为 0.1 至 1。
 
 ## 9. 岛仔升级后还能用吗
 

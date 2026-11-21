@@ -127,7 +127,7 @@ fn control_glass(p : vec2<f32>, hit : ControlHit, mat : f32, light : vec2<f32>, 
 fn material(i : MaterialIn) -> vec4<f32> {
     let p = i.px;
     let distance = body_sdf(p);
-    if (distance > 2.75) { return vec4<f32>(0.0); }
+    if (distance > 2.75 || body_sdf_exact(p) > 2.0) { return vec4<f32>(0.0); }
     let edge_bg = sample_backdrop(p);
 
     // 位置和法线使用物理像素，清单的长度参数使用逻辑点。
@@ -147,8 +147,8 @@ fn material(i : MaterialIn) -> vec4<f32> {
         smoothstep(3.0, 48.0, pointer_distance)
     ) + vec2<f32>(1e-6));
 
-    // 展开和收起都按速度增强折射，静止时形变归零。
-    let morph = max(param(6u), 0.0) * min(abs(frame.motion.x) * 0.30, 1.0);
+    // 展开和收起都按宿主平滑后的速度增强折射。
+    let morph = max(param(6u), 0.0) * clamp(frame.motion.z, 0.0, 1.0);
     let band = max(param(3u) * ppp, 1.0) * (1.0 + morph * 0.08);
     let t = clamp(-distance / band, 0.0, 1.0);
     let k = pow(1.0 - pow(t, 0.30), 2.0);

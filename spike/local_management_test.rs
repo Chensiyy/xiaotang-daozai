@@ -124,7 +124,11 @@ fn material_management_waits_for_permission_and_offers_to_enable_compatibility()
             "dataVersion": 1,
             "permissions": {"screen.backdrop": true},
             "material": {"controls": true, "spring": {"stiffness": 1.0, "damping": 0.5}},
-            "settings": [{"key": "tint", "label": "着色量", "type": "number", "min": 0, "max": 1, "step": 0.1, "default": "0.5"}]
+            "settings": [
+                {"key": "tint", "label": "着色量", "type": "number", "min": 0, "max": 1, "step": 0.1, "default": "0.5", "unit": "px", "precision": 2},
+                {"key": "blur", "label": "模糊", "type": "number", "min": 0, "max": 1, "step": 0.005, "default": "0.5"},
+                {"key": "strength", "label": "强度", "type": "number", "min": 0, "max": 1, "step": 0.05, "default": "0.54", "precision": 0}
+            ]
         }))?,
     )?;
     let mut host = LocalPlugins::open(dir.join("installed"));
@@ -157,6 +161,18 @@ fn material_management_waits_for_permission_and_offers_to_enable_compatibility()
     });
     assert!(restart);
     assert_eq!(host.selected_material_id(), Some("example.material"));
+    let settings = frame(&ctx, vec![], |ui| {
+        host.material_settings(ui, None, false);
+    });
+    for expected in ["0.50px", "0.500"] {
+        assert!(
+            settings.shapes.iter().any(|shape| {
+                matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == expected)
+            }),
+            "{expected}"
+        );
+    }
+    assert_eq!(host.records["example.material"].values["strength"], "0.54");
     fs::remove_dir_all(dir)?;
     Ok(())
 }
