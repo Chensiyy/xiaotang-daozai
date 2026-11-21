@@ -6,7 +6,7 @@ use crate::theme::{self, size, W};
 use eframe::egui::{self, Color32, Rect};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum AlertSource { Internal, Messenger(crate::app::Messenger), External(String) }
+pub(crate) enum AlertSource { Internal, MailCode(String,u32), Messenger(crate::app::Messenger), External(String) }
 
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub(crate) enum HealthReminder {Water,Sit}
@@ -266,6 +266,17 @@ impl App {
             page, at: self.t, duration: 12.0, bluetooth: None, meeting: Some((meeting, source)), unread: None,
         }, true);
     }
+    pub(crate) fn new_mail_alert(&mut self, body: String) {
+        self.alert("新邮件",body,crate::app::MAIL_PAGE,false);
+        self.notification_bell_at = self.t;
+        self.notification_bell_until = self.t + 6.0;
+    }
+    pub(crate) fn mail_code_alert(&mut self, account: String, uid: u32, body: String) {
+        self.enqueue_alert(Alert {
+            source: AlertSource::MailCode(account,uid), title: "新邮件".into(), body,
+            page: crate::app::MAIL_PAGE, at: self.t, duration: 8.0, bluetooth: None, meeting: None, unread: None,
+        }, false);
+    }
     pub(crate) fn bluetooth_alert(&mut self, device: &crate::bt::Device, connected: bool) {
         if !self.settings.bluetooth_notifications { return; }
         if connected && matches!(device.kind,crate::bt::DeviceKind::Bone|crate::bt::DeviceKind::Earbuds|crate::bt::DeviceKind::Headphones|crate::bt::DeviceKind::Speaker) {
@@ -285,7 +296,9 @@ impl App {
     }
     fn enqueue_alert(&mut self, a: Alert, system: bool) {
         // 通知仅保存在本次运行的内存中。
-        if a.source==AlertSource::Internal {self.history.push_front(a.clone());}
+        if matches!(a.source, AlertSource::Internal | AlertSource::MailCode(..)) {
+            self.history.push_front(Alert { source: AlertSource::Internal, ..a.clone() });
+        }
         self.history.truncate(50);
         if self.fullscreen_hidden && a.health().is_some(){return;}
         if self.settings.notifications {
@@ -412,6 +425,7 @@ impl App {
             || self.notification_apps.items.iter().any(|(key,_,on)|key==u.source.adapter().notification_id && *on)));
         let allowed=|a:&Alert|match &a.source {
             AlertSource::Internal=>!self.fullscreen_hidden || a.health().is_none(),
+            AlertSource::MailCode(..)=>!self.fullscreen_hidden,
             AlertSource::Messenger(client)=>client.enabled(&self.settings),
             AlertSource::External(id)=>self.settings.read_notifications && crate::messenger::NotificationFilter::for_settings(&self.settings).allows(id) && self.settings.notifications && !crate::messenger::suppresses_toast(&a.title,id,crate::messenger::toast_suppression(&self.settings)) && self.notification_apps.items.iter().any(|(key,_,on)|key==id && *on),
         };
@@ -442,6 +456,24 @@ impl App {
     }
     pub(crate) fn draw_notice(&mut self, c:&Card,panel:Rect,a:&Alert,_cmds:&mut Vec<Cmd>){
         let nc=c.clipped(0.0,0.0,panel.width(),panel.height());
+        if let AlertSource::MailCode(account,uid)=&a.source {
+            if let Some(item)=self.mail.alert_code_item(account,*uid,self.t,self.settings.mail_code_hide_seconds) {
+                let code=item.code.as_deref().unwrap_or_default();
+                let width=nc.text_w(code,27.0,W::Bold);
+                let size=27.0*(126.0/width).min(1.0);
+                crate::paint::bell(&nc,22.0,30.0,theme::GRAY,0.0);
+                nc.centered_text(135.0,16.0,&nc.fit(&item.from,11.0,W::Regular,126.0),11.0,W::Regular,theme::GRAY,H::Center);
+                nc.centered_text(135.0,39.0,code,size,W::Bold,theme::GREEN,H::Center);
+                let copy_id=format!("mail-code-copy:{account}:{uid}");
+                if notice_button(&nc,204.0,20.0,52.0,"复制",&copy_id) {
+                    let code=code.to_owned();
+                    self.notice=None;
+                    self.code_copied(&code);
+                    _cmds.push(Cmd::Copy(code));
+                }
+            }
+            return;
+        }
         if let Some(source)=a.messenger(){
             messenger_icon(&nc,22.0,22.0,source);
             nc.circle(31.0,14.0,2.6,Color32::from_rgb(255,72,72));
@@ -1769,13 +1801,13 @@ impl App {
                             // 只在所选屏幕断开时说明，平时不占位置。
                             if !self.settings.display_id.is_empty()&&selected.is_none(){settings_hint(ui,"暂时显示在主屏，重新连接所选屏幕后自动恢复。");}
                             ui.separator();
-                            // 停靠边缘：顶部为横向；左右为竖向排列，展开面板从边缘滑出。
+                            // 停靠边缘：上下为横向；左右为竖向排列，展开面板从边缘滑出。
                             let docks:Vec<(crate::model::Dock,&str)>=crate::model::Dock::ALL.iter().map(|d|(*d,d.label())).collect();
                             settings_control_row_right(ui,"停靠",|ui|{
                                 // 换边后偏移的含义变了（水平 ↔ 上下），回到居中。
                                 if settings_segmented(ui,&mut self.settings.dock,&docks,64.0) {self.settings.island_offset=0;}
                             });
-                            if self.settings.dock.is_side() {settings_hint(ui,"左右停靠时竖向排列；吉祥物和岛上歌词只在顶部停靠时显示。");}
+                            if self.settings.dock.is_side() {settings_hint(ui,"左右停靠时竖向排列；吉祥物和岛上歌词在顶部或底部停靠时显示。");}
                             let side=self.settings.dock.is_side();
                             settings_control_row(ui,if side{"上下位置"}else{"水平位置"},56.0,|ui|{
                                 ui.horizontal_wrapped(|ui|{
@@ -2011,6 +2043,10 @@ impl App {
                             setting_row(ui,"仅提醒验证码邮件","所有邮箱共用。其他邮件静默收进列表，可随时查看。",&mut self.settings.mail_code_only_notifications);
                             ui.separator();
                             setting_row(ui,"验证码高亮","识别到验证码时在岛上放大显示，点击即复制",&mut self.settings.mail_code);
+                            ui.separator();
+                            ui.add_enabled_ui(self.settings.mail_code,|ui|{
+                                setting_row(ui,"避让时弹出验证码","自动避让时短暂显示新收到的验证码，点击即可复制",&mut self.settings.mail_code_popup);
+                            });
                             ui.separator();
                             let sync_before=self.settings.mail_sync_operations;
                             ui.add_enabled_ui(self.mail.manage.pending.is_empty(),|ui|{

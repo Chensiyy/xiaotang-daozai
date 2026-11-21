@@ -263,7 +263,9 @@ unsafe extern "system" fn subclass(
     _id: usize,
     _data: usize,
 ) -> LRESULT {
-    if msg==WM_DISPLAYCHANGE {DISPLAY_CHANGED.store(true,Ordering::Relaxed);}
+    if msg==WM_DISPLAYCHANGE || (msg==WM_SETTINGCHANGE && wp.0==SPI_SETWORKAREA.0 as usize) {
+        DISPLAY_CHANGED.store(true,Ordering::Relaxed);
+    }
     if matches!(msg,WM_DWMCOMPOSITIONCHANGED|WM_DISPLAYCHANGE|WM_DWMCOLORIZATIONCOLORCHANGED)
         || (msg==WM_SHOWWINDOW && wp.0!=0) {
         // 隐藏创建到首次显示、隐藏后恢复时也要恢复透明；等框架处理完窗口状态再应用。
@@ -601,7 +603,7 @@ impl Window {
             // 顶部：水平居中 + 水平偏移；左右：贴边 + 竖直偏移，画布换成竖向的大小。
             let origin=if dock.is_side() {
                 crate::display_layout::side_origin(bounds,dock,(crate::side_dock::SIDE_W,crate::side_dock::SIDE_H),crate::side_dock::SIDE_HALF_EXTENT,scale,offset)
-            } else {crate::display_layout::island_origin_offset(bounds,crate::app::WIN_W,scale,offset)};
+            } else {crate::display_layout::horizontal_origin(bounds,dock,scale,offset)};
             let Some((x,y))=origin else{return false;};
             // OLED 像素偏移：只沿不贴边的一轴让开，并按展开面板的余量收窄——位置拉满或屏幕太窄时少挪、不挪，
             // 贴边的一侧也保持严丝合缝，刘海不会和屏幕边缘裂开。

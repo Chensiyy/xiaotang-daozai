@@ -22,6 +22,8 @@ pub(crate) mod relay;
 pub(crate) mod api;
 #[path="kiro_quota.rs"]
 pub(crate) mod kiro;
+#[path="antigravity_quota/mod.rs"]
+pub(crate) mod antigravity;
 #[path="native_auth.rs"]
 mod native_auth;
 
@@ -35,10 +37,10 @@ impl Discovery {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum Provider { #[default] Codex, Claude, Kimi, GrokBot, Gemini, ZCode, WorkBuddy, DeepSeek, OpenCodeGo, MiniMax, Glm, NewApi, OneApi, Sub2Api, Kiro, Doubao, RelayGeneral, RelayCustom }
+pub enum Provider { #[default] Codex, Claude, Kimi, GrokBot, Gemini, ZCode, WorkBuddy, DeepSeek, OpenCodeGo, MiniMax, Glm, NewApi, OneApi, Sub2Api, Kiro, Doubao, RelayGeneral, RelayCustom, Antigravity }
 impl Provider {
-    pub const ALL: [Self; 18] = [Self::Codex, Self::Claude, Self::Kimi, Self::GrokBot, Self::Gemini, Self::ZCode, Self::WorkBuddy, Self::DeepSeek, Self::OpenCodeGo, Self::MiniMax, Self::Glm, Self::NewApi, Self::OneApi, Self::Sub2Api, Self::Kiro, Self::Doubao, Self::RelayGeneral, Self::RelayCustom];
-    pub fn name(self) -> &'static str { match self {Self::Codex=>"Codex",Self::Claude=>"Claude",Self::Kimi=>"Kimi",Self::GrokBot=>"Grok Bot",Self::Gemini=>"Gemini",Self::ZCode=>"ZCode",Self::WorkBuddy=>"WorkBuddy",Self::DeepSeek=>"DeepSeek",Self::OpenCodeGo=>"OpenCode Go",Self::MiniMax=>"MiniMax",Self::Glm=>"GLM",Self::NewApi=>"New API",Self::OneApi=>"One API",Self::Sub2Api=>"Sub2API",Self::Kiro=>"Kiro",Self::Doubao=>"豆包",Self::RelayGeneral=>"通用余额",Self::RelayCustom=>"自定义查询"} }
+    pub const ALL: [Self; 19] = [Self::Codex, Self::Claude, Self::Kimi, Self::GrokBot, Self::Gemini, Self::ZCode, Self::WorkBuddy, Self::DeepSeek, Self::OpenCodeGo, Self::MiniMax, Self::Glm, Self::NewApi, Self::OneApi, Self::Sub2Api, Self::Kiro, Self::Doubao, Self::RelayGeneral, Self::RelayCustom, Self::Antigravity];
+    pub fn name(self) -> &'static str { match self {Self::Codex=>"Codex",Self::Claude=>"Claude",Self::Kimi=>"Kimi",Self::GrokBot=>"Grok Bot",Self::Gemini=>"Gemini",Self::ZCode=>"ZCode",Self::WorkBuddy=>"WorkBuddy",Self::DeepSeek=>"DeepSeek",Self::OpenCodeGo=>"OpenCode Go",Self::MiniMax=>"MiniMax",Self::Glm=>"GLM",Self::NewApi=>"New API",Self::OneApi=>"One API",Self::Sub2Api=>"Sub2API",Self::Kiro=>"Kiro",Self::Doubao=>"豆包",Self::RelayGeneral=>"通用余额",Self::RelayCustom=>"自定义查询",Self::Antigravity=>"Antigravity"} }
     pub fn api_key(self)->bool{matches!(self,Self::OpenCodeGo|Self::MiniMax|Self::Glm)||self.relay()}
     pub fn relay(self)->bool{matches!(self,Self::NewApi|Self::OneApi|Self::Sub2Api|Self::RelayGeneral|Self::RelayCustom)}
     pub fn balance(self)->bool{matches!(self,Self::WorkBuddy|Self::DeepSeek)||self.relay()}
@@ -80,6 +82,7 @@ impl Config {
     pub fn add(&mut self,provider:Provider,alias:String,source:PathBuf)->Result<(),String>{
         if provider.api_key(){return Err("请使用 API Key 连接，无需登录 JSON".into());}
         if provider==Provider::ZCode{return Err(ZCODE_RECONNECT.into());}
+        if provider==Provider::Antigravity{return Err("请从当前 Antigravity CLI 登录连接".into());}
         if provider==Provider::Kiro{return kiro::add(self,&source,&alias);}
         if provider==Provider::WorkBuddy{return Err("请使用浏览器连接 WorkBuddy".into());}
         if provider==Provider::DeepSeek{return Err("请使用 API Key 连接 DeepSeek".into());}
@@ -112,6 +115,32 @@ impl Config {
         }
         let id=format!("WorkBuddy-{slot}");let pinned=true;
         self.selected=id.clone();self.accounts.push(Account{id:id.clone(),provider:Provider::WorkBuddy,alias,source:PathBuf::new(),slot:Some(slot),enabled:true,pinned});id
+    }
+    pub(crate) fn connect_antigravity(&mut self, alias: &str) -> Result<String, String> {
+        let source = antigravity::discover().ok_or(antigravity::CLI_MISSING)?;
+        Ok(self.bind_antigravity(alias, source))
+    }
+    fn bind_antigravity(&mut self, alias: &str, source: PathBuf) -> String {
+        let slot = Some(format!(
+            "cli-{}",
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos()
+        ));
+        if let Some(account) = self.accounts.iter_mut().find(|a| a.provider == Provider::Antigravity) {
+            account.source = source;
+            account.slot = slot;
+            if !alias.trim().is_empty() {
+                account.alias = alias.trim().into();
+            }
+            self.selected = account.id.clone();
+            return account.id.clone();
+        }
+        let id = "Antigravity-CLI".to_owned();
+        let alias = if alias.trim().is_empty() { "Antigravity".into() } else { alias.trim().into() };
+        self.selected = id.clone();
+        self.accounts.push(Account {
+            id: id.clone(), provider: Provider::Antigravity, alias, source, slot, enabled: true, pinned: false,
+        });
+        id
     }
     pub(crate) fn connect_gemini(&mut self,slot:String,alias:String)->String{
         if let Some(a)=self.accounts.iter_mut().find(|a|a.provider==Provider::Gemini && a.slot.as_deref()==Some(&slot)){
@@ -222,13 +251,15 @@ impl Amount {
 fn number_text(v:f64)->String{let digits=if v<1.0{2}else{1};let factor=10f64.powi(digits);let rounded=(v*factor).round()/factor;if rounded>=1000.0||rounded.fract()==0.0{format!("{rounded:.0}")}else{format!("{rounded:.digits$}",digits=digits as usize)}}
 impl Window {
     /// 剩余量的书面写法：数值型额度给出“剩余 / 总额”，其余给出百分比。
-    pub fn value_text(&self)->String{self.amount.as_ref().map(Amount::full).unwrap_or_else(||format!("{:.0}%",self.remaining))}
+    pub fn value_text(&self)->String{self.amount.as_ref().map(Amount::full).unwrap_or_else(||{
+        if self.remaining>0.0 && self.remaining<1.0{"<1%".into()}else{format!("{:.0}%",self.remaining)}
+    })}
     /// 一句话额度摘要，用于小岛提示与设置页。
     pub fn summary(&self)->String{format!("{}剩余 {}",self.label,self.value_text())}
 }
 #[derive(Clone, Debug, Default)]
 #[derive(serde::Serialize,serde::Deserialize)]
-pub struct Snapshot {#[serde(default)]pub kiro:Option<kiro::Details>,pub plan:String,pub windows:Vec<Window>,pub extra:Vec<Window>,pub at:i64,pub wallet:Option<deepseek::Wallet>,pub credits:Option<workbuddy::Credits>,#[serde(default)] pub relay:Option<relay::Quota>}
+pub struct Snapshot {#[serde(default)]pub kiro:Option<kiro::Details>,pub plan:String,pub windows:Vec<Window>,pub extra:Vec<Window>,pub at:i64,pub wallet:Option<deepseek::Wallet>,pub credits:Option<workbuddy::Credits>,#[serde(default)] pub relay:Option<relay::Quota>,#[serde(default,skip_serializing_if="Option::is_none")] pub antigravity:Option<antigravity::Details>}
 impl Account {
     pub(crate) fn can_refresh(&self)->bool{self.enabled&&self.provider!=Provider::ZCode}
 
@@ -236,7 +267,7 @@ impl Account {
         if claude::is_desktop(&self.source){json!(2)}else{json!(true)}
     }
     pub(crate) fn cached_snapshot(&self,cache:&Value)->Option<Snapshot>{
-        if self.provider==Provider::ZCode{return None;}
+        if matches!(self.provider,Provider::ZCode|Provider::Antigravity){return None;}
         let entry=&cache[&self.id];
         if entry["provider"].as_str()!=Some(self.provider.name()) || entry["slot"].as_str()!=self.slot.as_deref(){return None;}
         if self.provider.api_key() && entry["source"].as_str()!=self.source.to_str(){return None;}
@@ -247,7 +278,16 @@ impl Account {
     }
 }
 impl Snapshot {
-    pub fn rings(&self)->Vec<&Window>{let mut all:Vec<_>=self.windows.iter().collect();all.sort_by_key(|w|w.seconds.unwrap_or(i64::MAX));all.truncate(2);all}
+    pub(crate) fn antigravity_windows(&self) -> Vec<&Window> {
+        let mut all: Vec<_> = self.windows.iter().chain(&self.extra).collect();
+        all.sort_by(|a,b| a.remaining.total_cmp(&b.remaining)
+            .then_with(|| a.seconds.unwrap_or(i64::MAX).cmp(&b.seconds.unwrap_or(i64::MAX))));
+        all
+    }
+    pub fn rings(&self)->Vec<&Window>{
+        if self.antigravity.is_some(){return self.antigravity_windows().into_iter().take(2).collect();}
+        let mut all:Vec<_>=self.windows.iter().collect();all.sort_by_key(|w|w.seconds.unwrap_or(i64::MAX));all.truncate(2);all
+    }
 }
 fn number(v:&Value)->Option<f64>{v.as_f64().or_else(||v.as_str()?.parse().ok()).filter(|n|n.is_finite())}
 fn reset(v:&Value)->Option<i64>{v.as_i64().filter(|n|*n>0).or_else(||chrono::DateTime::parse_from_rfc3339(v.as_str()?).ok().map(|d|d.timestamp()))}
@@ -329,7 +369,7 @@ pub struct Event {pub id:String,pub result:Result<Snapshot,String>}
 #[derive(Default)]
 struct Pending {accounts:Option<Vec<Account>>,running:bool,cooldowns:HashMap<(String,Option<String>,PathBuf),(Instant,String)>}
 type PendingAccounts = std::sync::Arc<std::sync::Mutex<Pending>>;
-fn service_group(provider:Provider)->usize{match provider{Provider::DeepSeek=>1,Provider::WorkBuddy=>2,Provider::OpenCodeGo=>3,Provider::MiniMax=>4,Provider::Glm=>5,Provider::NewApi|Provider::RelayGeneral|Provider::RelayCustom=>6,Provider::OneApi=>7,Provider::Sub2Api=>8,Provider::Kiro=>9,_=>0}}
+fn service_group(provider:Provider)->usize{match provider{Provider::DeepSeek=>1,Provider::WorkBuddy=>2,Provider::OpenCodeGo=>3,Provider::MiniMax=>4,Provider::Glm=>5,Provider::NewApi|Provider::RelayGeneral|Provider::RelayCustom=>6,Provider::OneApi=>7,Provider::Sub2Api=>8,Provider::Kiro=>9,Provider::Antigravity=>10,_=>0}}
 struct Worker {pending:PendingAccounts,wake:mpsc::SyncSender<()>}
 pub struct Service {
     workers:HashMap<usize,Worker>,
@@ -340,7 +380,7 @@ impl Service {
     pub fn start()->Self{let(results,rx)=mpsc::channel();Self{workers:HashMap::new(),results,rx}}
     pub fn refresh(&mut self,accounts:Vec<Account>)->bool{self.refresh_with(accounts,fetch)}
     fn refresh_with(&mut self,accounts:Vec<Account>,run:impl Fn(&ureq::Agent,&Account)->Result<Snapshot,(String,u64)>+Clone+Send+'static)->bool{
-        let mut groups:Vec<Vec<Account>>=(0..10).map(|_|Vec::new()).collect();
+        let mut groups:Vec<Vec<Account>>=(0..11).map(|_|Vec::new()).collect();
         for account in accounts.into_iter().filter(Account::can_refresh){groups[service_group(account.provider)].push(account);}
         for (group,accounts) in groups.into_iter().enumerate(){
             if let Some(worker)=self.workers.get(&group){
@@ -429,6 +469,7 @@ fn fetch(agent:&ureq::Agent,account:&Account)->Result<Snapshot,(String,u64)>{
     if account.provider==Provider::Gemini{return gemini::fetch(agent,account);}
     if account.provider==Provider::Kiro{return kiro::fetch(agent,account);}
     if account.provider==Provider::Doubao{return doubao::fetch(agent,account);}
+    if account.provider==Provider::Antigravity{return antigravity::fetch(&account.source);}
     let url=match account.provider{Provider::Codex=>"https://chatgpt.com/backend-api/wham/usage",Provider::Kimi=>"https://api.kimi.com/coding/v1/usages",_=>unreachable!()};
     fetch_subscription_at(agent,account,url)
 }
@@ -456,6 +497,27 @@ fn fetch_subscription_at(agent:&ureq::Agent,account:&Account,url:&str)->Result<S
 
 #[cfg(test)] mod tests {
     use super::*;
+
+    #[test]
+    fn antigravity_reconnect_preserves_preferences_and_refuses_old_cache() {
+        let mut config = Config::default();
+        let id = config.bind_antigravity("当前 CLI", "agy.exe".into());
+        config.accounts[0].pinned = true;
+        config.accounts[0].enabled = false;
+        config.colors.insert(id.clone(), Accent::Blue);
+        config.accounts[0].slot = Some("old-connection".into());
+        assert_eq!(config.bind_antigravity("", "new-path/agy.exe".into()), id);
+        let account = &config.accounts[0];
+        assert_eq!(config.accounts.len(), 1);
+        assert_eq!(account.alias, "当前 CLI");
+        assert!(account.pinned && !account.enabled);
+        assert_ne!(account.slot.as_deref(), Some("old-connection"));
+        assert_eq!(config.colors[&id], Accent::Blue);
+        assert_eq!(Config::from_json(&config.json()), config);
+        let cache = json!({(id): {"provider": "Antigravity", "slot": account.slot, "source": account.source,
+            "snapshot": Snapshot { at: 1, ..Default::default() }}});
+        assert!(account.cached_snapshot(&cache).is_none());
+    }
     #[test]
     fn kimi_expired_login_recovers_on_the_next_poll() {
         use std::io::{BufRead, BufReader, Write};
