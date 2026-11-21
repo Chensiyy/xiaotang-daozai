@@ -3,6 +3,7 @@ mod state;
 pub use state::{Device,DeviceKind,BatterySource,BatteryReading,FRESH_FOR};
 
 mod bas;
+pub mod compat;
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
@@ -99,11 +100,11 @@ pub fn spawn()->Service {
 }
 
 #[cfg(windows)]
-pub fn spawn_receivers(wake:impl Fn()+Send+'static)->Service {
+pub fn spawn_receivers(store:compat::Store,wake:impl Fn()+Send+'static)->Service {
     let (tx,rx)=std::sync::mpsc::sync_channel(1);
     let stop=std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let stopped=stop.clone();
-    let _=std::thread::Builder::new().name("daozai-usb-receivers".into()).spawn(move||receivers::run(tx,stopped,wake));
+    let _=std::thread::Builder::new().name("daozai-usb-receivers".into()).spawn(move||receivers::run(tx,stopped,store,wake));
     Service{rx,stop}
 }
 #[cfg(test)]

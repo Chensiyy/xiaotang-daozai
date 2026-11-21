@@ -370,8 +370,8 @@ fn wireless_settings_controls_are_in_their_own_page() {
     });
     let mut raster=crate::preview_raster::Raster::new(690,560);
     for (tab,name,visible,hidden) in [
-        (10,"wireless-page-management",vec!["无线设备电量"],vec!["常驻样式","常驻设备","电量提醒"]),
-        (crate::extras::SETTINGS_TAB_WIRELESS,"wireless-settings",vec!["岛上常驻","常驻样式","常驻设备","电量提醒"],vec!["蓝牙设备连接"]),
+        (10,"wireless-page-management",vec!["无线设备电量"],vec!["常驻样式","常驻设备","电量提醒","安装或更新…"]),
+        (crate::extras::SETTINGS_TAB_WIRELESS,"wireless-settings",vec!["岛上常驻","常驻样式","常驻设备","电量提醒","安装或更新…","反馈设备适配"],vec!["蓝牙设备连接"]),
         (6,"wireless-notifications",vec!["蓝牙设备连接"],vec!["无线设备电量","电量提醒"]),
     ] {
         h.app.settings_tab=tab;
