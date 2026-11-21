@@ -140,3 +140,70 @@ fn player_version_without_progress_shows_the_title_instead_of_frozen_lyrics(){
     assert!(!h.app.music_lyrics_limited());
     compat::clear("KuGou.exe",Item::Progress);
 }
+
+#[test]
+#[cfg(windows)]
+#[ignore="按需导出：设置音乐页的「播放器」「播放器兼容」卡片，以及收起时读不到进度的暖色歌名"]
+fn music_compat_gallery(){
+    use crate::smtc::music_compat::{self as compat,Item,Support};
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let dest=std::path::PathBuf::from(std::env::var_os("DAOZAI_MUSIC_COMPAT_PREVIEW").expect("设置导出目录"));
+    std::fs::create_dir_all(&dest).unwrap();
+    compat::set_version("QQMusic.exe","21.10.0.0");
+    compat::set_version("bodian_pc.exe","1.2.0");compat::set("bodian_pc.exe",Item::Reader,Support::Unavailable("播放组件版本不在适配表里（已适配波点 1.1.7）".into()));
+    compat::set_version("cloudmusic.exe","3.1.43.9019");compat::set("cloudmusic.exe",Item::Progress,Support::Learned);
+    compat::set_version("KuGou.exe","20.1.61.28014");
+    compat::set("KuGou.exe",Item::Progress,Support::Ok);compat::set("KuGou.exe",Item::Duration,Support::Ok);compat::set("KuGou.exe",Item::Seek,Support::Ok);
+    // 设置页：深色、浅色。
+    for (name,theme) in [("settings-music-dark",crate::settings_theme::SettingsTheme::Dark),("settings-music-light",crate::settings_theme::SettingsTheme::Light)] {
+        let mut h=H::new();h.app.settings.island_lyrics=true;h.app.settings.settings_theme=theme;h.app.settings_tab=1;h.app.open_settings();h.ctx.set_embed_viewports(false);
+        let size=egui::vec2(740.0,1180.0);let scale=1.5;
+        let mut raster=crate::preview_raster::Raster::new((size.x*scale)as usize,(size.y*scale)as usize);
+        for frame in 0..4 {
+            let children=std::sync::Arc::new(Mutex::new(Vec::new()));let capture=children.clone();h.t+=0.02;let time=h.t;
+            egui::Context::set_immediate_viewport_renderer(move|ctx,mut viewport|{
+                let id=viewport.ids.this;
+                let raw=egui::RawInput{viewport_id:id,screen_rect:Some(Rect::from_min_size(Pos2::ZERO,size)),time:Some(time),
+                    viewports:std::iter::once((id,egui::ViewportInfo{native_pixels_per_point:Some(scale),..Default::default()})).collect(),..Default::default()};
+                let out=ctx.run(raw,|ctx|(viewport.viewport_ui_cb)(ctx));capture.lock().unwrap().push((id,out));
+            });
+            let root=h.ctx.run(egui::RawInput{time:Some(time),..Default::default()},|ctx|h.app.settings_ui(ctx,false));
+            raster.update_textures(&root.textures_delta);
+            let children=std::mem::take(&mut *children.lock().unwrap());
+            for (_,out) in &children{raster.update_textures(&out.textures_delta);}
+            let out=&children.iter().find(|(id,_)|*id==egui::ViewportId::from_hash_of("daozai-settings")).unwrap().1;
+            if frame==3 {
+                raster.buf.fill([0.10,0.10,0.11,1.0]);raster.draw(&h.ctx.tessellate(out.shapes.clone(),out.pixels_per_point),out.pixels_per_point);
+                let mut rgba=Vec::new();raster.to_rgba8(&mut rgba);
+                image::save_buffer(dest.join(format!("{name}.png")),&rgba,(size.x*scale)as u32,(size.y*scale)as u32,image::ColorType::Rgba8).unwrap();
+            }
+            for (_,out) in &children{raster.free_textures(&out.textures_delta);}
+        }
+    }
+    // 岛上：正常同步歌词 与 读不到进度时的暖色歌名。
+    for (name,limited) in [("island-lyrics-normal",false),("island-lyrics-limited",true)] {
+        let mut h=H::new();lyrics_on(&mut h);h.app.settings.pet=false;
+        compat::set("KuGou.exe",Item::Progress,if limited{Support::Unavailable("版本不在适配表里".into())}else{Support::Ok});
+        let media=song("kugou","七月七日晴","许慧欣",240.0);
+        showing(&mut h,&media,"[00:01]第一句\n[00:05]不能哭泣 不能放弃");
+        let ppp=2.0;let (w,hgt)=(crate::app::CANVAS_W,WIN_H);
+        let mut raster=feature_raster();
+        for f in 0..60 {
+            h.t+=1.0/60.0;
+            let env=Env{t:h.t,clock:"09:41:00".into(),today:"2026-11-21".into(),date:"11月21日 周六".into(),media:h.media.clone(),bt_ready:true,..Default::default()};
+            let raw=egui::RawInput{screen_rect:Some(Rect::from_min_size(Pos2::ZERO,Vec2::new(w,hgt))),time:Some(h.t),focused:true,
+                viewports:std::iter::once((egui::ViewportId::ROOT,egui::ViewportInfo{native_pixels_per_point:Some(ppp),..Default::default()})).collect(),..Default::default()};
+            let app=&mut h.app;
+            let output=h.ctx.run(raw,|ctx|{egui::CentralPanel::default().frame(egui::Frame::new()).show(ctx,|ui|{app.frame(ui,Rect::from_min_size(ui.max_rect().min,Vec2::new(WIN_W,WIN_H)),&env);});});
+            raster.update_textures(&output.textures_delta);
+            if f==59 {
+                raster.buf.fill([0.20,0.24,0.32,1.0]);raster.draw(&h.ctx.tessellate(output.shapes,output.pixels_per_point),output.pixels_per_point);
+                let mut rgba=Vec::new();raster.to_rgba8(&mut rgba);
+                let image=image::RgbaImage::from_raw((w*ppp) as u32,(hgt*ppp) as u32,rgba).unwrap();
+                image::imageops::crop_imm(&image,(WIN_W*ppp/2.0-320.0).max(0.0) as u32,0,640,100).to_image().save(dest.join(format!("{name}.png"))).unwrap();
+            }
+            raster.free_textures(&output.textures_delta);
+        }
+    }
+    for exe in ["KuGou.exe","cloudmusic.exe","bodian_pc.exe"] {for item in [Item::Progress,Item::Duration,Item::Seek,Item::Reader]{compat::clear(exe,item);}}
+}
