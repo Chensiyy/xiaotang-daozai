@@ -291,6 +291,62 @@ mod material_tests {
     }
 
     #[test]
+    fn material_manifest_accepts_optional_units_and_display_precision() -> Result<()> {
+        let mut valid = manifest("example.material");
+        serde_json::from_value::<Manifest>(valid.clone())?.validate()?;
+        for (unit, precision) in [("px", 0), ("毫秒单位", 3)] {
+            valid["settings"][0]["unit"] = json!(unit);
+            valid["settings"][0]["precision"] = json!(precision);
+            serde_json::from_value::<Manifest>(valid.clone())?.validate()?;
+        }
+        for (key, value) in [
+            ("unit", json!("毫秒单位符")),
+            ("unit", json!(3)),
+            ("unit", Value::Null),
+            ("precision", json!(-1)),
+            ("precision", json!(4)),
+            ("precision", json!(1.5)),
+            ("precision", Value::Null),
+        ] {
+            let mut invalid = valid.clone();
+            invalid["settings"][0][key] = value;
+            assert!(
+                serde_json::from_value::<Manifest>(invalid)
+                    .ok()
+                    .is_none_or(|manifest| manifest.validate().is_err()),
+                "{key}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn future_material_api_prompts_to_update_daozai_at_installation() -> Result<()> {
+        let root = root();
+        let path = package(&root.join("package"), "example.material")?;
+        let mut host = LocalPlugins::open(root.join("installed"));
+        let mut future = manifest("example.material");
+        future["unexpectedFutureField"] = json!(true);
+        fs::write(&path, serde_json::to_vec(&future)?)?;
+        assert!(!host
+            .install(&path)
+            .unwrap_err()
+            .to_string()
+            .contains("需要更新岛仔"));
+
+        future["api"] = json!(2);
+        fs::write(&path, serde_json::to_vec(&future)?)?;
+        assert!(host
+            .install(&path)
+            .unwrap_err()
+            .to_string()
+            .contains("需要更新岛仔"));
+        assert!(!host.records.contains_key("example.material"));
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
     fn material_manifest_validates_optional_shadow_and_foreground() -> Result<()> {
         let mut value = manifest("example.material");
         let old = serde_json::from_value::<Manifest>(value.clone())?

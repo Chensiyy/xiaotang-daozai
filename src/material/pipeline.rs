@@ -32,6 +32,15 @@ pub(super) struct Frame {
 
 const FRAME_SIZE: u64 = size_of::<Frame>() as u64;
 
+impl Frame {
+    fn uniform_bytes(&mut self) -> &[u8] {
+        self.notch[3] = 0.0;
+        self.count[2..].fill(0);
+        self.motion[3] = 0.0;
+        bytemuck::bytes_of(self)
+    }
+}
+
 pub(super) struct Pipeline {
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -210,7 +219,7 @@ impl Pipeline {
                 );
             }
             self.queue
-                .write_buffer(&self.uniform, 0, bytemuck::bytes_of(&frame));
+                .write_buffer(&self.uniform, 0, frame.uniform_bytes());
         })?;
         backdrop.revision = Some(plate.revision);
         Ok(egui::Shape::Callback(Callback::new_paint_callback(
@@ -273,13 +282,14 @@ fn validate_shader(source: &str) -> Result<wgpu::naga::Module, String> {
     use wgpu::naga::{front::wgsl, valid};
 
     let module = wgsl::parse_str(source).map_err(|error| error.emit_to_string(source))?;
+    if module.entry_points.len() != 2 {
+        return Err("材质不得声明 @vertex、@fragment 或 @compute 入口".into());
+    }
     // 检查所有声明，未被入口使用的资源也必须符合材质接口。
-    for (_, variable) in module.global_variables.iter() {
+    for (handle, variable) in module.global_variables.iter() {
         if let Some(binding) = &variable.binding {
-            if !matches!(
-                (binding.group, binding.binding, variable.name.as_deref()),
-                (0, 0, Some("frame")) | (0, 1, Some("backdrop")) | (0, 2, Some("backdrop_sampler"))
-            ) {
+            let span = module.global_variables.get_span(handle).to_range();
+            if span.is_none_or(|span| span.end > PRELUDE.len()) {
                 return Err(format!(
                     "材质声明了接口以外的 @group({}) @binding({})",
                     binding.group, binding.binding
@@ -398,46 +408,72 @@ mod tests {
 
     #[test]
     fn material_rejects_binding_outside_the_interface_even_when_unused() {
-        for result in ["extra", "vec4<f32>(0.0)"] {
-            let source = format!(
-                "{PRELUDE}\n@group(0) @binding(3) var<uniform> extra : vec4<f32>;\n\
-                fn material(i : MaterialIn) -> vec4<f32> {{ return {result}; }}"
-            );
-            let error = validate_shader(&source).expect_err("接口外的资源声明应被拒绝");
-            assert!(error.contains("@group(0) @binding(3)"), "{error}");
+        for (group, binding) in [(0, 3), (1, 0), (0, 0)] {
+            for result in ["extra", "vec4<f32>(0.0)"] {
+                let source = format!(
+                    "{PRELUDE}\n@group({group}) @binding({binding}) var<uniform> extra : vec4<f32>;\n\
+                    fn material(i : MaterialIn) -> vec4<f32> {{ return {result}; }}"
+                );
+                let error = validate_shader(&source).expect_err("接口外的资源声明应被拒绝");
+                assert!(
+                    error.contains(&format!("@group({group}) @binding({binding})")),
+                    "{error}"
+                );
+            }
         }
     }
 
     #[test]
-    #[ignore = "需要本机 Direct3D 12，显式运行离屏像素检查"]
-    fn dx12_material_pixels_and_shader_error_scope() {
-        const SIDE: u32 = 64;
+    fn material_rejects_plugin_entry_points() {
+        for entry in [
+            "@vertex fn extra() -> @builtin(position) vec4<f32> { return vec4<f32>(0.0); }",
+            "@fragment fn extra() -> @location(0) vec4<f32> { return vec4<f32>(0.0); }",
+            "@compute @workgroup_size(1) fn extra() {}",
+        ] {
+            let error = validate_shader(&format!("{PRELUDE}\n{DEBUG_SHADER}\n{entry}"))
+                .expect_err("插件入口应被拒绝");
+            assert!(error.contains("材质不得声明"), "{error}");
+        }
+        validate_shader(&format!(
+            "{PRELUDE}\n{DEBUG_SHADER}\n/* @vertex @binding(3) */"
+        ))
+        .unwrap();
+    }
+
+    #[test]
+    fn material_uniform_reserved_fields_are_zero_on_upload() {
+        let mut frame = Frame {
+            notch: [4.0, 8.0, 1.0, 99.0],
+            count: [7, 3, 13, 15],
+            motion: [-1.0, 0.75, 0.36, 31.0],
+            ..Default::default()
+        };
+        let uploaded = bytemuck::from_bytes::<Frame>(frame.uniform_bytes());
+        assert_eq!(uploaded.notch, [4.0, 8.0, 1.0, 0.0]);
+        assert_eq!(uploaded.count, [7, 3, 0, 0]);
+        assert_eq!(uploaded.motion, [-1.0, 0.75, 0.36, 0.0]);
+    }
+
+    const SIDE: u32 = 64;
+
+    fn dx12_state() -> egui_wgpu::RenderState {
         let mut config = egui_wgpu::WgpuConfiguration::default();
         let egui_wgpu::WgpuSetup::CreateNew(setup) = &mut config.wgpu_setup else {
             unreachable!();
         };
         setup.instance_descriptor.backends = wgpu::Backends::DX12;
         let instance = wgpu::Instance::new(&setup.instance_descriptor);
-        let state = pollster::block_on(egui_wgpu::RenderState::create(
+        pollster::block_on(egui_wgpu::RenderState::create(
             &config, &instance, None, None, 1, false,
         ))
-        .unwrap();
+        .unwrap()
+    }
 
-        // WGSL 本身合法，实际建立管线时缺失常量值的错误由作用域收集。
-        let missing_constant = "
-            override required_value : f32;
-            fn material(i : MaterialIn) -> vec4<f32> { return vec4<f32>(required_value); }
-        ";
-        assert!(validate_shader(&format!("{PRELUDE}\n{missing_constant}")).is_ok());
-        assert!(Pipeline::new(&state, missing_constant).is_err());
-        Pipeline::new(&state, LIQUID_GLASS_SHADER).unwrap();
-        let mut pipeline = Pipeline::new(&state, DEBUG_SHADER).unwrap();
-
-        let rect = |x, y, w, h| egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(w, h));
-        let capture = rect(0.0, 0.0, SIDE as f32, SIDE as f32);
-        let pixels: Vec<u8> = (0..SIDE as u8)
-            .flat_map(|y| (0..SIDE as u8).flat_map(move |x| [97, y, x, 255]))
-            .collect();
+    fn render_pixels(
+        state: &egui_wgpu::RenderState,
+        capture: egui::Rect,
+        shape: egui::Shape,
+    ) -> Vec<u8> {
         let size = wgpu::Extent3d {
             width: SIDE,
             height: SIDE,
@@ -461,9 +497,87 @@ mod tests {
             mapped_at_creation: false,
         });
 
+        let mut encoder = state.device.create_command_encoder(&Default::default());
+        // 让 egui 的实际 paint 回调负责设置 viewport、绑定和绘制。
+        let paint = [egui::ClippedPrimitive {
+            clip_rect: capture,
+            primitive: match shape {
+                egui::Shape::Callback(callback) => egui::epaint::Primitive::Callback(callback),
+                _ => unreachable!(),
+            },
+        }];
+        let screen = egui_wgpu::ScreenDescriptor {
+            size_in_pixels: [SIDE, SIDE],
+            pixels_per_point: 1.0,
+        };
+        let mut renderer = state.renderer.write();
+        renderer.update_buffers(&state.device, &state.queue, &mut encoder, &paint, &screen);
+        let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            ..Default::default()
+        });
+        renderer.render(&mut pass.forget_lifetime(), &paint, &screen);
+        encoder.copy_texture_to_buffer(
+            target.as_image_copy(),
+            wgpu::TexelCopyBufferInfo {
+                buffer: &staging,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(SIDE * 4),
+                    rows_per_image: Some(SIDE),
+                },
+            },
+            size,
+        );
+        state.queue.submit([encoder.finish()]);
+        let (send, receive) = std::sync::mpsc::channel();
+        let slice = staging.slice(..);
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            send.send(result).unwrap();
+        });
+        let _ = state.device.poll(wgpu::Maintain::Wait);
+        receive.recv().unwrap().unwrap();
+        let pixels = slice.get_mapped_range().to_vec();
+        staging.unmap();
+        pixels
+    }
+
+    #[test]
+    #[ignore = "需要本机 Direct3D 12，显式运行离屏像素检查"]
+    fn dx12_material_pixels_and_shader_error_scope() {
+        let state = dx12_state();
+
+        // WGSL 本身合法，实际建立管线时缺失常量值的错误由作用域收集。
+        let missing_constant = "
+            override required_value : f32;
+            fn material(i : MaterialIn) -> vec4<f32> { return vec4<f32>(required_value); }
+        ";
+        assert!(validate_shader(&format!("{PRELUDE}\n{missing_constant}")).is_ok());
+        assert!(Pipeline::new(&state, missing_constant).is_err());
+        Pipeline::new(&state, LIQUID_GLASS_SHADER).unwrap();
+        let mut pipeline = Pipeline::new(&state, DEBUG_SHADER).unwrap();
+
+        let rect = |x, y, w, h| egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(w, h));
+        let capture = rect(0.0, 0.0, SIDE as f32, SIDE as f32);
+        let pixels: Vec<u8> = (0..SIDE as u8)
+            .flat_map(|y| (0..SIDE as u8).flat_map(move |x| [97, y, x, 255]))
+            .collect();
+
         for (dock, body, [x, y], [outside_x, outside_y]) in [
             (Dock::Top, rect(20.0, 0.0, 24.0, 44.0), [17, 4], [17, 18]),
-            (Dock::Bottom, rect(20.0, 20.0, 24.0, 44.0), [17, 59], [17, 45]),
+            (
+                Dock::Bottom,
+                rect(20.0, 20.0, 24.0, 44.0),
+                [17, 59],
+                [17, 45],
+            ),
             (Dock::Left, rect(0.0, 20.0, 44.0, 24.0), [4, 17], [18, 17]),
             (
                 Dock::Right,
@@ -490,65 +604,109 @@ mod tests {
             frame.ctl_rect[0] = [29.0, 18.0, 12.0, 10.0];
             frame.ctl_shape[0][1] = 1.0;
             let shape = pipeline.callback(capture, frame, &plate, dock).unwrap();
-            let mut encoder = state.device.create_command_encoder(&Default::default());
-            // 让 egui 的实际 paint 回调负责设置 viewport、绑定和绘制。
-            let paint = [egui::ClippedPrimitive {
-                clip_rect: capture,
-                primitive: match shape {
-                    egui::Shape::Callback(callback) => egui::epaint::Primitive::Callback(callback),
-                    _ => unreachable!(),
-                },
-            }];
-            let screen = egui_wgpu::ScreenDescriptor {
-                size_in_pixels: [SIDE, SIDE],
-                pixels_per_point: 1.0,
-            };
-            let mut renderer = state.renderer.write();
-            renderer.update_buffers(&state.device, &state.queue, &mut encoder, &paint, &screen);
-            let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                ..Default::default()
-            });
-            renderer.render(&mut pass.forget_lifetime(), &paint, &screen);
-            encoder.copy_texture_to_buffer(
-                target.as_image_copy(),
-                wgpu::TexelCopyBufferInfo {
-                    buffer: &staging,
-                    layout: wgpu::TexelCopyBufferLayout {
-                        offset: 0,
-                        bytes_per_row: Some(SIDE * 4),
-                        rows_per_image: Some(SIDE),
-                    },
-                },
-                size,
-            );
-            state.queue.submit([encoder.finish()]);
-            let (send, receive) = std::sync::mpsc::channel();
-            let slice = staging.slice(..);
-            slice.map_async(wgpu::MapMode::Read, move |result| {
-                send.send(result).unwrap();
-            });
-            let _ = state.device.poll(wgpu::Maintain::Wait);
-            receive.recv().unwrap().unwrap();
-            let mapped = slice.get_mapped_range();
+            let pixels = render_pixels(&state, capture, shape);
             let pixel = |x, y| {
                 let offset = 4 * (y * SIDE as usize + x);
-                &mapped[offset..offset + 4]
+                &pixels[offset..offset + 4]
             };
             assert_eq!(pixel(x, y), &[x as u8, y as u8, 97, 255], "{dock:?}");
             assert_eq!(pixel(outside_x, outside_y), &[0; 4], "{dock:?}");
             if dock == Dock::Top {
                 assert!(pixel(29, 22)[1] > 180, "控件边框应清晰可见");
             }
-            drop(mapped);
-            staging.unmap();
+        }
+    }
+
+    #[test]
+    #[ignore = "需要本机 Direct3D 12，显式运行离屏像素检查"]
+    fn dx12_material_exact_outline_and_transparent_edge() {
+        let state = dx12_state();
+        let mask = "
+            fn material(i : MaterialIn) -> vec4<f32> {
+                return vec4<f32>(0.0, 0.0, 0.0, select(0.0, 1.0, body_sdf_exact(i.px) < 0.0));
+            }
+        ";
+        let mut exact = Pipeline::new(&state, mask).unwrap();
+        let mut glass = Pipeline::new(&state, LIQUID_GLASS_SHADER).unwrap();
+        let capture = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::splat(SIDE as f32));
+
+        // 使用同一宿主几何，对比收起、变化途中与展开三种尺寸。
+        for (expansion, width, height, radius, flare, flare_h) in [
+            (0.0, 26.0, 12.0, 5.0, 5.0, 8.0),
+            (0.5, 32.0, 23.0, 8.0, 8.0, 9.0),
+            (1.0, 40.0, 32.0, 12.0, 9.0, 14.0),
+        ] {
+            for dock in [Dock::Top, Dock::Left, Dock::Right, Dock::Bottom] {
+                let size = if dock.is_side() {
+                    egui::vec2(height, width)
+                } else {
+                    egui::vec2(width, height)
+                };
+                let body = egui::Rect::from_center_size(capture.center(), size);
+                let geometry =
+                    super::super::Geometry::from_rects(body, capture, (0, 0), 1.0).unwrap();
+                let plate = CleanPlate {
+                    geometry,
+                    bgra: [71, 89, 104, 255].repeat((SIDE * SIDE) as usize),
+                    brightness: 0.4,
+                    revision: 1,
+                };
+                let mut frame = Frame {
+                    capture: [0.0, 0.0, SIDE as f32, SIDE as f32],
+                    body: geometry.body,
+                    shape: [radius, expansion, -1.0, -1.0],
+                    notch: [flare, flare_h, 1.0, 0.0],
+                    env: [0.0, 0.4, 1.0, 1.0],
+                    ..Default::default()
+                };
+                frame.params[0] = [48.0, 8.0, 1.5, 87.0];
+                frame.params[1] = [1.5, 0.9, 1.0, 0.0];
+                let exact_shape = exact.callback(capture, frame, &plate, dock).unwrap();
+                let exact_pixels = render_pixels(&state, capture, exact_shape);
+                let glass_shape = glass.callback(capture, frame, &plate, dock).unwrap();
+                let glass_pixels = render_pixels(&state, capture, glass_shape);
+                let outline = crate::shape::outline_docked(body, dock, flare, flare_h, radius);
+
+                assert_eq!(
+                    glass_pixels[4 * (SIDE * (SIDE / 2) + SIDE / 2) as usize + 3],
+                    255
+                );
+                for y in 0..SIDE {
+                    for x in 0..SIDE {
+                        let point = egui::pos2(x as f32 + 0.5, y as f32 + 0.5);
+                        let mut inside = false;
+                        let mut distance_sq = f32::INFINITY;
+                        let mut previous = *outline.last().unwrap();
+                        for &next in &outline {
+                            let edge = next - previous;
+                            let offset = point - previous;
+                            if (next.y > point.y) != (previous.y > point.y)
+                                && point.x < previous.x + edge.x * offset.y / edge.y
+                            {
+                                inside = !inside;
+                            }
+                            let projection = (offset.dot(edge) / edge.length_sq()).clamp(0.0, 1.0);
+                            distance_sq = distance_sq.min((offset - edge * projection).length_sq());
+                            previous = next;
+                        }
+                        let alpha = 4 * (y * SIDE + x) as usize + 3;
+                        // 宿主曲线按折线离散，边缘的半个像素留作采样容差。
+                        if distance_sq > 0.5 * 0.5 {
+                            assert_eq!(
+                                exact_pixels[alpha],
+                                if inside { 255 } else { 0 },
+                                "{dock:?}，展开 {expansion}，像素 ({x}, {y})"
+                            );
+                        }
+                        if !inside && distance_sq > 4.0 {
+                            assert_eq!(
+                                glass_pixels[alpha], 0,
+                                "{dock:?}，展开 {expansion}，轮廓外像素 ({x}, {y})"
+                            );
+                        }
+                    }
+                }
+            }
         }
     }
 }

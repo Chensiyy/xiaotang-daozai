@@ -193,6 +193,7 @@ impl Budget {
 struct Motion {
     expansion: Option<f32>,
     light: f32,
+    morph: f32,
 }
 
 impl Default for Motion {
@@ -200,15 +201,20 @@ impl Default for Motion {
         Self {
             expansion: None,
             light: 1.0,
+            morph: 0.0,
         }
     }
 }
 
 impl Motion {
-    fn expansion_speed(&mut self, expansion: f32, dt: f32) -> f32 {
-        self.expansion
+    fn sample_expansion(&mut self, expansion: f32, dt: f32) -> (f32, f32) {
+        let speed = self
+            .expansion
             .replace(expansion)
-            .map_or(0.0, |previous| (expansion - previous) / dt.max(0.001))
+            .map_or(0.0, |previous| (expansion - previous) / dt.max(0.001));
+        // 沿用 #235：取本帧速度贡献和上一帧衰减值中的较大者。
+        self.morph = (self.morph * 0.74).max((speed.abs() * 0.30).min(1.0));
+        (speed, self.morph)
     }
 
     fn update_light(&mut self, brightness: f32, dt: f32) -> bool {
@@ -322,6 +328,7 @@ impl Runtime {
             self.budget = Budget::default();
             self.last_frame = None;
             self.motion.expansion = None;
+            self.motion.morph = 0.0;
             self.pointer = None;
         }
     }
@@ -372,8 +379,9 @@ impl Runtime {
             .last_frame
             .replace(started)
             .map_or(1.0 / 60.0, |at| (started - at).as_secs_f32());
-        let speed = self.motion.expansion_speed(layer.expansion, dt);
+        let (speed, morph) = self.motion.sample_expansion(layer.expansion, dt);
         let moving = out.animating
+            || morph > 0.01
             || moved
             || pointer_in_island.is_some()
                 && ctx.input(|i| i.pointer.any_down() || i.pointer.any_released());
@@ -425,7 +433,7 @@ impl Runtime {
             ];
             frame.env = [time as f32, plate.brightness, ppp, 1.0];
             // 前景与着色器使用同一帧的明暗值，下一帧再应用平滑后的值。
-            frame.motion = [speed, self.motion.light, 0.0, 0.0];
+            frame.motion = [speed, self.motion.light, morph, 0.0];
             light_changing = self.motion.update_light(plate.brightness, dt);
             if let Some((id, image)) = layer.artwork {
                 if !self.tint.is_some_and(|(known, _)| known == id) {
@@ -547,11 +555,16 @@ mod tests {
     }
 
     #[test]
-    fn material_expansion_speed_is_signed_and_zero_at_rest() {
+    fn material_expansion_keeps_signed_speed_and_decays_morph_like_the_preview() {
         let mut motion = Motion::default();
-        assert_eq!(motion.expansion_speed(0.0, 0.125), 0.0);
-        assert_eq!(motion.expansion_speed(0.5, 0.125), 4.0);
-        assert_eq!(motion.expansion_speed(0.25, 0.125), -2.0);
-        assert_eq!(motion.expansion_speed(0.25, 0.125), 0.0);
+        assert_eq!(motion.sample_expansion(0.0, 0.125), (0.0, 0.0));
+        assert_eq!(motion.sample_expansion(0.25, 0.125), (2.0, 0.6));
+        assert_eq!(motion.sample_expansion(0.75, 0.125), (4.0, 1.0));
+        assert_eq!(motion.sample_expansion(0.5, 0.125), (-2.0, 0.74));
+        assert_eq!(motion.sample_expansion(0.5, 0.125), (0.0, 0.74 * 0.74));
+        for _ in 0..14 {
+            assert_eq!(motion.sample_expansion(0.5, 0.125).0, 0.0);
+        }
+        assert!(motion.morph < 0.01);
     }
 }
