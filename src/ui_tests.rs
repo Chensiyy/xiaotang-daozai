@@ -5637,6 +5637,61 @@ fn calendar_first_schedule_has_a_large_time_and_keeps_the_lower_list_scrollable(
 }
 
 #[test]
+fn calendar_agenda_starts_today_and_lists_only_days_with_events() {
+    let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=H::new();
+    let today=chrono::NaiveDate::from_ymd_opt(2026,10,28).unwrap();
+    let days=chrono::Duration::days;
+    let yesterday=today-days(1);
+    let make_event=|date:chrono::NaiveDate,hour,title:&str,all_day|{
+        let start=date.and_hms_opt(hour,0,0).unwrap().and_local_timezone(chrono::Local).earliest().unwrap().timestamp();
+        crate::mail::Meeting{uid:title.into(),title:title.into(),start,end:Some(start+if all_day{86400}else{3600}),all_day,at:String::new()}
+    };
+    let mut overnight=make_event(yesterday,23,"跨夜日程",false);
+    overnight.end=Some(overnight.start+7200);
+    h.app.calendar.local=[
+        make_event(yesterday,23,"昨晚结束",false),overnight,
+        make_event(today,8,"上午已结束",false),make_event(today,0,"全天安排",true),
+        make_event(today,10,"上午安排",false),make_event(today,12,"中午安排",false),
+        make_event(today+days(2),9,"周五早会",false),make_event(today+days(2),10,"周五安排",false),
+        make_event(today+days(3),11,"月底安排",false),
+    ].into_iter().map(|event|crate::local_calendar::Entry{event,reminder:None}).collect();
+    h.app.open_calendar(None);
+    h.app.select_calendar_day(yesterday);
+    h.hover(H::local(245.0,80.0),1.0);
+    assert!(!h.app.calendar.agenda);
+    h.click_text("列表");
+    let visible=|h:&H,label:&str|h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t) if t.galley.text()==label));
+    assert!(h.app.calendar.agenda);
+    for label in ["今天","全天安排","跨夜日程","上午已结束","10月30日","周五早会"] {
+        assert!(visible(&h,label),"列表应显示 {label}");
+    }
+    for label in ["昨晚结束","10月29日","月底安排"] {
+        assert!(!visible(&h,label),"列表首屏不应显示 {label}");
+    }
+    h.hover(H::local(60.0,155.0),0.2);
+    h.wheel(-40.0);
+    assert_eq!(h.app.page,crate::app::CALENDAR_PAGE);
+    assert!(visible(&h,"月底安排"));
+    assert!(visible(&h,"10月28日"),"滚进同一天的后续行时仍应显示日期");
+
+    let config=crate::calendar::Config{provider:crate::calendar::Provider::Feishu,username:"demo".into(),href:None,server:None};
+    h.app.calendar.config=Some(config.clone());
+    h.click(H::local(269.0,42.0));
+    let next_month=today+days(4);
+    assert!(h.cmds.iter().any(|cmd|matches!(cmd,crate::app::Cmd::CalendarMonth(month) if *month==next_month)));
+    h.app.calendar_event(crate::calendar::Event::MonthLoaded {
+        config,month:next_month,result:Ok(vec![make_event(next_month,10,"下个月安排",false)]),
+    });
+    h.frame(vec![]);
+    assert!(visible(&h,"下个月安排"));
+    assert_eq!(h.app.calendar.agenda_first,0);
+    h.click_text("日历");
+    assert!(!h.app.calendar.agenda);
+    assert_eq!(h.app.calendar.view.day,yesterday);
+}
+
+#[test]
 fn calendar_month_navigation_and_today_select_the_right_day() {
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();
     h.app.open_calendar(None);
@@ -5672,6 +5727,10 @@ fn calendar_month_results_preserve_reminders_and_ignore_old_requests() {
     assert!(h.app.calendar.view.loading,"其他账号的旧结果应被忽略");
     h.app.calendar_event(crate::calendar::Event::MonthLoaded{config,month:next,result:Err("连接暂不可用".into())});
     assert!(!h.app.calendar.view.loading);assert!(!h.app.calendar.view.error.is_empty());
+    h.app.pending.clear();
+    h.app.select_calendar_day(month);
+    assert!(h.app.pending.iter().any(|cmd|matches!(cmd,crate::app::Cmd::CalendarMonth(date) if *date==month)),
+        "返回缓存月份时，后台同步也应切回该月");
 }
 
 #[test]
@@ -5691,7 +5750,7 @@ fn calendar_layout_gallery() {
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     let dest=std::path::PathBuf::from(std::env::var_os("DAOZAI_CALENDAR_PREVIEW_DIR").expect("需指定预览目录"));
     std::fs::create_dir_all(&dest).unwrap();
-    for mode in ["agenda","dingtalk","wecom","empty","loading","failed","disconnected","local-editor","local","local-all-day","mixed"] {
+    for mode in ["agenda","agenda-list","dingtalk","wecom","empty","loading","failed","disconnected","local-editor","local","local-all-day","mixed"] {
         let mut h=H::new();
         let day=chrono::NaiveDate::from_ymd_opt(2026,11,2).unwrap();
         h.app.calendar.view.day=day;h.app.calendar.view.month=crate::calendar::month_start(day);
@@ -5699,7 +5758,7 @@ fn calendar_layout_gallery() {
         let provider=match mode{"dingtalk"=>crate::calendar::Provider::DingTalk,"wecom"=>crate::calendar::Provider::WeCom,_=>crate::calendar::Provider::Feishu};
         if !["disconnected","local-editor","local","local-all-day"].contains(&mode){h.app.calendar.config=Some(crate::calendar::Config{provider,username:"demo".into(),href:None,server:None});h.app.calendar.connected=true;}
         h.app.calendar.view.loaded=Some(crate::calendar::month_start(day));
-        if ["agenda","dingtalk","wecom","mixed"].contains(&mode) {
+        if ["agenda","agenda-list","dingtalk","wecom","mixed"].contains(&mode) {
             for (i,(hour,minute,title)) in [(14,30,"产品方案评审"),(16,0,"下一阶段的设计方案与开发排期对齐"),(17,0,"项目进度同步")].into_iter().enumerate(){
                 let at=day.and_hms_opt(hour,minute,0).unwrap().and_local_timezone(chrono::Local).earliest().unwrap();
                 h.app.calendar.view.events.push(crate::mail::Meeting{ all_day:false,end:Some(at.timestamp()+2700),title:title.into(),start:at.timestamp(),at:at.format("%m-%d %H:%M").to_string(),uid:format!("sample-{i}")});
@@ -5721,6 +5780,10 @@ fn calendar_layout_gallery() {
             h.app.calendar.view.events.push(crate::mail::Meeting{all_day:false,title:"早上的会议".into(),start,end:Some(start+3600),at:String::new(),uid:"past".into()});
         }
         if mode=="local-editor"{h.app.open_calendar_editor(None);}
+        if mode=="agenda-list" {
+            h.app.calendar.agenda=true;
+            h.app.settings.skin=crate::model::Skin::Cream;
+        }
         if mode=="loading"{h.app.calendar.view.loaded=None;h.app.calendar.view.loading=true;}
         if mode=="failed"{h.app.calendar.view.loaded=None;h.app.calendar.view.error="连不上服务器，检查网络".into();}
         let mut raster=crate::preview_raster::Raster::new(1280,600);
