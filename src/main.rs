@@ -486,7 +486,7 @@ impl eframe::App for Shell {
             if let Some(service)=&self.bt_rx {
                 while let Ok(found)=service.rx.try_recv(){ self.bt=found; self.bt_ready=true; }
             }
-            if wireless_on&&self.app.wireless_compat.enabled() {
+            if wireless_on {
                 let service=self.receiver_rx.get_or_insert_with(||{
                     let ctx=ctx.clone();
                     daozai::bt::spawn_receivers(self.app.wireless_compat.clone(),move||ctx.request_repaint())

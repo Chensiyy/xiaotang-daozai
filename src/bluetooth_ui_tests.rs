@@ -125,8 +125,6 @@ fn wireless_detail_explains_which_battery_data_is_missing() {
 fn wireless_receiver_shows_presence_and_stays_out_of_resident_controls() {
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     let mut h=H::new();
-    h.app.wireless_compat.test_install_builtin();
-    h.app.wireless_compat.set_enabled(true).unwrap();
     h.bt=vec![fixture().remove(0)];
     h.app.settings.bluetooth_resident_custom=true;
     h.app.settings.bluetooth_pinned=vec!["usb:test".into(),"device-0".into()];
@@ -163,24 +161,27 @@ fn wireless_receiver_shows_presence_and_stays_out_of_resident_controls() {
 }
 
 #[test]
-fn wireless_compat_lifecycle_preserves_bluetooth_devices() {
+fn wireless_compat_lifecycle_preserves_bluetooth_and_builtin_receivers() {
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     let mut h=H::new();
     let bluetooth=fixture().remove(0);
-    let receiver=receiver_fixture();
+    let builtin=receiver_fixture();
+    let extension=Device{id:"usb:extension".into(),name:"扩展接收器".into(),..builtin.clone()};
     h.bt=vec![bluetooth.clone()];
-    h.receivers=vec![receiver.clone()];
+    h.receivers=vec![builtin.clone()];
     open_page(&mut h);
     let check=|h:&mut H,enabled:bool|{
-        h.frame(vec![]);
+        // USB 工作线程始终返回内置型号，仅在启用时追加兼容包识别出的型号。
+        h.receivers=vec![builtin.clone()];
         if enabled {
-            assert_eq!(h.app.wireless_devices,[bluetooth.clone(),receiver.clone()]);
-        } else {
-            assert_eq!(h.app.wireless_devices,[bluetooth.clone()]);
+            h.receivers.push(extension.clone());
         }
+        h.frame(vec![]);
+        let expected:Vec<_>=std::iter::once(&bluetooth).chain(h.receivers.iter()).collect();
+        assert_eq!(h.app.wireless_devices.iter().collect::<Vec<_>>(),expected);
         let labels=texts(h);
         assert!(labels.iter().any(|s|s=="82%"));
-        assert_eq!(labels.iter().any(|s|s=="2.4G"),enabled);
+        assert_eq!(labels.iter().filter(|s|s.as_str()=="2.4G").count(),h.receivers.len());
     };
     assert!(h.app.wireless_compat.version().is_none());
     check(&mut h,false);
@@ -191,7 +192,7 @@ fn wireless_compat_lifecycle_preserves_bluetooth_devices() {
 
     h.app.wireless_compat.set_enabled(true).unwrap();
     check(&mut h,true);
-    h.app.wireless_focus=Some(receiver.id.clone());
+    h.app.wireless_focus=Some(extension.id.clone());
     h.app.wireless_compat.set_enabled(false).unwrap();
     check(&mut h,false);
     assert!(h.app.wireless_focus.is_none());
@@ -304,11 +305,7 @@ fn wireless_native_preview(){
         if !resident {h.app.show_page(BLUETOOTH_PAGE);}
         if name.starts_with("native-detail") {h.app.wireless_focus=Some(h.bt[2].id.clone());}
         if name=="native-detail-unknown.png" {h.bt[2].reading.as_mut().unwrap().charging=None;}
-        if name.starts_with("native-receiver") {
-            h.app.wireless_compat.test_install_builtin();
-            h.app.wireless_compat.set_enabled(true).unwrap();
-            h.receivers.push(receiver_fixture());
-        }
+        if name.starts_with("native-receiver") {h.receivers.push(receiver_fixture());}
         if name=="native-receiver-detail.png" {h.app.wireless_focus=Some(h.receivers[0].id.clone());}
         let height=if resident{50}else{210};
         let mut raster=crate::preview_raster::Raster::new(640,height);

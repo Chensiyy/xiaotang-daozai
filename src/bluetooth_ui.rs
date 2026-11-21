@@ -355,8 +355,7 @@ impl App {
         if devices.is_empty(){
             crate::extras::device_icon(c,DeviceKind::Other,191.5,51.0,36.0);
             c.text(209.5,112.0,if env.bt_ready{"还没有连接的设备"}else{"正在读取无线设备"},13.0,W::Semibold,theme::WHITE,H::Center);
-            let hint=if self.wireless_compat.enabled() {"连接蓝牙设备或插入支持的 2.4G 接收器"} else {"连接蓝牙设备后，在这里查看电量"};
-            c.text(209.5,135.0,hint,10.5,W::Regular,theme::DIM,H::Center);return;
+            c.text(209.5,135.0,"连接蓝牙设备或插入支持的 2.4G 接收器",10.5,W::Regular,theme::DIM,H::Center);return;
         }
         let per_page=if devices.len()<=6 {devices.len()} else {4};
         let pages=devices.len().div_ceil(per_page);self.wireless_offset=self.wireless_offset.min(pages-1);
