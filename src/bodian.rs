@@ -120,8 +120,9 @@ fn snapshot(values:&serde_json::Value)->Option<(String,u64,f64,f64,bool)>{
         || !(0.0..86400.0).contains(&duration) || duration<=0.0 || position>duration+0.5{return None;}
     let current=&values["playlist"];
     if current["current"].as_bool()!=Some(true){return None;}
-    let title=current["title"].as_str()?.trim();
-    if title.is_empty() || title.len()>4096{return None;}
+    // 有些歌（实测《明月夜》）播放列表里没有标题：先返回空歌名，由运行日志按时长补齐。
+    let title=current["title"].as_str().unwrap_or_default().trim();
+    if title.len()>4096{return None;}
     let playing=!values["pause"].as_bool()? && !values["core-idle"].as_bool()? && !values["idle-active"].as_bool()?;
     Some((title.into(),current["id"].as_u64()?,position.min(duration),duration,playing))
 }
@@ -188,7 +189,7 @@ fn metadata(value:&serde_json::Value,title:&str,duration:f64)->Option<(NowPlayin
 }
 /// 波点要等歌曲播完或被切走才写入本机歌曲库；开始播放时它会在运行日志里记一行完整歌曲信息。
 /// 只读日志末尾，只取歌曲 ID、歌名、专辑、歌手和封面，不读取或保存日志里的其他内容（播放地址、设备号等）。
-fn log_metadata(title:&str,duration:f64)->Option<(NowPlaying,String)>{
+fn log_metadata(title:Option<&str>,duration:f64)->Option<(NowPlaying,String)>{
     use std::io::{Seek,SeekFrom};
     const TAIL:u64=1024*1024;
     let mut file=std::fs::File::open(data_root()?.join("bdlog/log_0.log")).ok()?;
@@ -197,14 +198,17 @@ fn log_metadata(title:&str,duration:f64)->Option<(NowPlaying,String)>{
     let mut bytes=Vec::new();file.take(TAIL).read_to_end(&mut bytes).ok()?;
     parse_log_metadata(&String::from_utf8_lossy(&bytes),title,duration)
 }
-fn parse_log_metadata(log:&str,title:&str,duration:f64)->Option<(NowPlaying,String)>{
+/// `title` 为空时（播放列表没有标题）只取日志里最近开播的那一首，且时长要一致。
+fn parse_log_metadata(log:&str,title:Option<&str>,duration:f64)->Option<(NowPlaying,String)>{
     static LINE:std::sync::OnceLock<regex::Regex>=std::sync::OnceLock::new();
     let line=LINE.get_or_init(||regex::Regex::new(r"歌曲的完整参数信息:\{id: (\d+), name: (.*?), albumId: -?\d+, album: (.*?), albumPic: [^,]*, albumPic120: ([^,]*), artist: (.*?), artistId: .*?duration: (\d+)").unwrap());
     // 最近的一条在最后；同名歌按时长区分。
-    line.captures_iter(log).filter_map(|c|{
+    let entries=line.captures_iter(log).filter(|c|title.is_none_or(|title|&c[2]==title));
+    let entries:Vec<_>=if title.is_some(){entries.collect()}else{entries.last().into_iter().collect()};
+    entries.into_iter().filter_map(|c|{
         let (id,name,album,cover,artist,length)=(c[1].parse::<u64>().ok()?,&c[2],&c[3],&c[4],&c[5],c[6].parse::<f64>().ok()?);
-        if name!=title || (length-duration).abs()>2.0 || id==0 || artist.is_empty() || artist.len()>4096 || album.len()>4096 {return None;}
-        Some((NowPlaying{source:"bodian_pc.exe".into(),title:title.into(),artist:artist.into(),album:album.into(),song_id:Some(id),
+        if name.trim().is_empty() || name.len()>4096 || (length-duration).abs()>2.0 || id==0 || artist.is_empty() || artist.len()>4096 || album.len()>4096 {return None;}
+        Some((NowPlaying{source:"bodian_pc.exe".into(),title:name.trim().into(),artist:artist.into(),album:album.into(),song_id:Some(id),
             playback_type:MediaKind::Music,..Default::default()},cover_url(cover).unwrap_or_default()))
     }).last()
 }
@@ -258,10 +262,20 @@ impl Reader {
         let process=Process::open(target.pid).filter(|process|target.verified(process));
         let Some(process)=process else{self.target=None;self.key=None;self.metadata=None;return None;};
         let (title,id,position,duration,playing)=playback(&process,target,&mut self.playlist_cursor)?;let sampled_at=Instant::now();
+        if title.is_empty() {
+            // 播放列表没有标题：用运行日志里最近开播、时长一致的那首。
+            let key=(String::new(),id);
+            if self.key.as_ref()!=Some(&key) || self.metadata.is_none() && self.lookup.is_none_or(|at|at.elapsed()>=Duration::from_secs(1)) {
+                self.key=Some(key);self.lookup=Some(Instant::now());self.metadata=log_metadata(None,duration);
+            }
+            let (mut media,url)=self.metadata.clone()?;
+            media.position=position;media.duration=duration;media.playing=playing;media.sampled_at=Some(sampled_at);
+            media.artwork=self.cover.get_with(&url,fetch_cover);return Some(media);
+        }
         let key=(title.clone(),id);
         if self.key.as_ref()!=Some(&key){self.key=Some(key);self.metadata=None;self.lookup=None;}
         if self.metadata.is_none() && self.lookup.is_none_or(|at|at.elapsed()>=Duration::from_secs(1)) {
-            self.lookup=Some(Instant::now());self.metadata=read_metadata(&title,duration).or_else(||log_metadata(&title,duration));
+            self.lookup=Some(Instant::now());self.metadata=read_metadata(&title,duration).or_else(||log_metadata(Some(&title),duration));
         }
         // 波点要播放一会儿才把新歌写进本机歌曲库：查到之前先只显示歌名，查到后补上歌手、封面和歌曲 ID（换歌后不再整段空白）。
         let (mut media,url)=self.metadata.clone().unwrap_or_else(||pending(&title));
@@ -327,6 +341,9 @@ mod tests {
         value["pause"]=true.into();assert!(!snapshot(&value).unwrap().4);
         value["time-pos"]=999.into();assert!(snapshot(&value).is_none());
         value["time-pos"]=0.into();value["playlist"]["current"]=false.into();assert!(snapshot(&value).is_none());
+        // 实测《明月夜》：当前项没有标题，仍返回进度，歌名由运行日志补齐。
+        value["playlist"]=serde_json::json!({"id":103,"current":true,"playing":true});
+        assert_eq!(snapshot(&value).map(|t|(t.0,t.1)),Some((String::new(),103)));
     }
     #[test]
     fn long_native_playlist_finds_current_track_after_the_first_64(){
@@ -442,7 +459,7 @@ fn live_bodian_trace(){
                 println!("   播放引擎：{pb:?}");
                 if let Some((title,_,_,duration,_))=&pb {
                     println!("   本机歌曲库：{}",read_metadata(title,*duration).map_or("没找到".into(),|(m,_)|format!("{} - {}",m.title,m.artist)));
-                    let t=Instant::now();let found=log_metadata(title,*duration);
+                    let t=Instant::now();let found=log_metadata(Some(title),*duration);
                     println!("   运行日志：{} 用时{:?}",found.map_or("没找到".into(),|(m,c)|format!("{} - {} ID={:?} 封面{}",m.title,m.artist,m.song_id,!c.is_empty())),t.elapsed());
                 }
             }
@@ -466,9 +483,45 @@ fn song_info_is_taken_from_the_play_log_before_the_library_is_written(){
         2026-11-21 17:12:17.146 [I] play/getPlayInfo [Song.getPlayInfo:1011] 490335784:虞美人听雨 quality=2 format=ogg bitrate=300 uri: https://bd-api.kuwo.cn/api?devId=secret&sign=secret
         2026-11-21 17:13:16.939 [I] 歌曲的完整参数信息:{id: 490335784, name: 虞美人听雨, albumId: 67585850, album: 春满未夏, albumPic: https://img4.kuwo.cn/a.webp, albumPic120: http://img4.kuwo.cn/star/albumcover/240/x.webp, artist: 李奕灼, artistId: 16889471, artistPic: x, artists: [{id: 16889471, name: 李奕灼, pic: x}], duration: 229, releaseDate: 2025-08-09
 ";
-    let (media,cover)=parse_log_metadata(log,"虞美人听雨",229.4).expect("应从日志里找到");
+    let (media,cover)=parse_log_metadata(log,Some("虞美人听雨"),229.4).expect("应从日志里找到");
     assert_eq!((media.artist.as_str(),media.album.as_str(),media.song_id),("李奕灼","春满未夏",Some(490335784)),"同名歌按时长取对的那条");
     assert_eq!(cover,"https://img4.kuwo.cn/star/albumcover/240/x.webp","封面只认酷我域名并改为 https");
-    assert!(parse_log_metadata(log,"别的歌",229.0).is_none());
-    assert!(parse_log_metadata(log,"虞美人听雨",300.0).is_none(),"时长对不上不用");
+    assert!(parse_log_metadata(log,Some("别的歌"),229.0).is_none());
+    assert!(parse_log_metadata(log,Some("虞美人听雨"),300.0).is_none(),"时长对不上不用");
+    // 播放列表没有标题：只认最近开播的那一首，时长一致才用。
+    assert_eq!(parse_log_metadata(log,None,229.0).map(|(m,_)|m.title),Some("虞美人听雨".into()));
+    assert!(parse_log_metadata(log,None,180.0).is_none(),"更早的那首时长虽然一致，也不是正在播的");
+}
+
+#[test]
+#[ignore="需要本机波点正在播放：逐步打印播放引擎读取，定位哪一步失败"]
+fn live_bodian_playback_steps(){
+    let target=Target::discover().expect("需要波点");let process=Process::open(target.pid).unwrap();
+    let head=process.pointer(target.events+0xa1d8).unwrap();let mut node=process.pointer(head).unwrap();
+    for _ in 0..8 {
+        if node==head{println!("链表结束");break;}
+        let client=process.pointer(node+16).unwrap();let name=process.string(client);
+        println!("客户端 {name:?}");
+        if name.as_deref()==Some("main") {
+            let properties=process.pointer(client+0x148).unwrap();
+            let count=u32::from_le_bytes(process.read(client+0x150).unwrap()) as usize;
+            println!("属性 {count} 个");
+            for i in 0..count.min(64) {
+                let property=process.pointer(properties+i*8).unwrap();
+                let pname=process.pointer(property+8).and_then(|p|process.string(p));
+                let bytes=process.read::<104>(property).unwrap();
+                let format=u32::from_le_bytes(bytes[40..44].try_into().unwrap());
+                let extra=if pname.as_deref()==Some("playlist") {
+                    let address=property+88;let node=process.read::<16>(address).unwrap();
+                    let list=u64::from_le_bytes(node[..8].try_into().unwrap()) as usize;
+                    let count=i32::from_le_bytes(process.read(list).unwrap());
+                    let entries=process.pointer(list+8).unwrap();
+                    let current=(0..count.max(0) as usize).find_map(|i|process.node(entries+i*16,0).filter(|e|e["current"].as_bool()==Some(true)).map(|e|(i,e)));
+                    format!(" 列表{count}项 当前{current:?} 前3项{:?}",(0..3.min(count.max(0) as usize)).map(|i|process.node(entries+i*16,0)).collect::<Vec<_>>())
+                } else if format==5 {format!(" 值{}",f64::from_le_bytes(bytes[88..96].try_into().unwrap()))} else if format==3 {format!(" 值{}",u32::from_le_bytes(bytes[88..92].try_into().unwrap()))} else {String::new()};
+                println!("  {pname:?} 有效标记{} 格式{format}{extra}",bytes[80]);
+            }
+        }
+        node=process.pointer(node).unwrap();
+    }
 }
