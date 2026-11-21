@@ -24,7 +24,9 @@ use zip::{write::SimpleFileOptions, CompressionMethod, ZipArchive, ZipWriter};
 const MANIFEST_LIMIT: u64 = 32 * 1024;
 const ZIP_LIMIT: u64 = 576 * 1024;
 const CATALOG_LIMIT: u64 = 64 * 1024;
+const AVATAR_LIMIT: u64 = 64 * 1024;
 const CATALOG_FORMAT: u32 = 1;
+const GITEE_REPOSITORY: &str = "xiaotangtoken/xiaotang-daozai-plugins";
 
 #[cfg(not(test))]
 pub(super) fn official_index_url() -> Result<Url> {
@@ -34,7 +36,7 @@ pub(super) fn official_index_url() -> Result<Url> {
         "stable"
     };
     Ok(Url::parse(&format!(
-        "https://gitee.com/api/v5/repos/xiaotangtoken/xiaotang-daozai-plugins/contents/{channel}/catalog.json?ref=master"
+        "https://gitee.com/api/v5/repos/{GITEE_REPOSITORY}/contents/{channel}/catalog.json?ref=master"
     ))?)
 }
 
@@ -54,6 +56,8 @@ pub(super) struct Entry {
     pub(super) version: String,
     pub(super) size: u64,
     pub(super) sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) presentation: Option<Presentation>,
 }
 
 impl Entry {
@@ -71,6 +75,61 @@ impl Entry {
     fn path_in(&self, catalog: &Path) -> PathBuf {
         catalog.with_file_name(self.zip_name())
     }
+
+    pub(super) fn avatar_name(&self) -> Option<&str> {
+        self.presentation.as_ref()?.author_avatar.as_deref()
+    }
+}
+
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub(super) struct Presentation {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) updated_on: Option<String>,
+    #[serde(skip_serializing_if = "super::is_false")]
+    pub(super) official: bool,
+    #[serde(skip_serializing_if = "super::is_false")]
+    pub(super) sample: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) maintainer: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) author_avatar: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) downloads: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) favorites: Option<u64>,
+}
+
+impl Presentation {
+    fn valid(&self) -> bool {
+        self.description.as_deref().is_none_or(|description| {
+            !description.trim().is_empty() && description.chars().count() <= 1000
+        }) && self.updated_on.as_deref().is_none_or(|date| {
+            chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")
+                .is_ok_and(|parsed| parsed.to_string() == date)
+        }) && self.maintainer.as_deref().is_none_or(|login| {
+            (1..=39).contains(&login.len())
+                && login.starts_with(|c: char| c.is_ascii_alphanumeric())
+                && login.ends_with(|c: char| c.is_ascii_alphanumeric())
+                && !login.contains("--")
+                && login
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        }) && self.author_avatar.as_deref().is_none_or(valid_avatar_name)
+    }
+}
+
+fn valid_avatar_name(name: &str) -> bool {
+    name.strip_prefix("avatar-")
+        .and_then(|name| name.strip_suffix(".png"))
+        .is_some_and(|stem| {
+            (1..=64).contains(&stem.len())
+                && stem
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        })
 }
 
 #[derive(Serialize, Deserialize)]
@@ -130,6 +189,10 @@ impl Catalog {
                     .sha256
                     .bytes()
                     .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
+                || entry
+                    .presentation
+                    .as_ref()
+                    .is_some_and(|presentation| !presentation.valid())
                 || !seen.insert(&entry.id)
             {
                 return Err(fail("集市目录包含无效或重复的插件条目"));
@@ -144,11 +207,7 @@ impl Catalog {
 
     pub(super) fn load(&self, entry: &Entry) -> Result<Package> {
         let raw = match &self.official_index {
-            Some(index) => {
-                let mut package = index.join(&entry.zip_name())?;
-                package.set_query(index.query());
-                download(&package, ZIP_LIMIT)?
-            }
+            Some(index) => download_catalog_asset(index, &entry.zip_name(), ZIP_LIMIT)?,
             None => read_catalog_zip(&entry.path_in(&self.path))?,
         };
         if raw.len() as u64 != entry.size || sha256(&raw) != entry.sha256 {
@@ -166,6 +225,27 @@ impl Catalog {
             .cover_png()
             .ok_or_else(|| fail("插件 ZIP 缺少封面"))
     }
+
+    pub(super) fn avatar_png(&self, name: &str) -> Option<CoverPng> {
+        let source = self.official_index.as_ref()?;
+        if !valid_avatar_name(name) {
+            return None;
+        }
+        let bytes = download_catalog_asset(source, name, AVATAR_LIMIT).ok()?;
+        CoverPng::decode(bytes).ok()
+    }
+
+    pub(super) fn has_image(&self, key: &str) -> bool {
+        self.entries
+            .iter()
+            .any(|entry| entry.sha256 == key || entry.avatar_name() == Some(key))
+    }
+}
+
+fn download_catalog_asset(index: &Url, name: &str, limit: u64) -> Result<Vec<u8>> {
+    let mut asset = index.join(name)?;
+    asset.set_query(index.query());
+    download(&asset, limit)
 }
 
 fn version(value: &str) -> Option<[u32; 3]> {
@@ -208,21 +288,24 @@ fn download(url: &Url, limit: u64) -> Result<Vec<u8>> {
         .path()
         .split_once("/contents/")
         .ok_or_else(|| fail("集市下载地址无效"))?;
-    let response = ureq::AgentBuilder::new()
+    let agent = ureq::AgentBuilder::new()
         .try_proxy_from_env(url.scheme() == "https")
         .redirects(0)
         .timeout_connect(Duration::from_secs(6))
         .timeout(Duration::from_secs(15))
-        .build()
-        .get(url.as_str())
-        .set("User-Agent", concat!("Daozai/", env!("CARGO_PKG_VERSION")))
-        .set("Accept", "application/json")
-        .set("Cache-Control", "no-cache")
-        .call()
-        .map_err(|error| match error {
-            ureq::Error::Status(status, _) => fail(&format!("集市服务返回 HTTP {status}")),
-            _ => fail("无法连接集市，请检查网络后重试"),
-        })?;
+        .build();
+    let response = match market_request(&agent, url, "application/json").call() {
+        Ok(response) => response,
+        Err(ureq::Error::Status(status, response)) => {
+            if gitee_rate_limited(status, response.into_reader()) {
+                if let Some(raw) = gitee_raw_url(url) {
+                    return download_gitee_raw(&agent, &raw, limit);
+                }
+            }
+            return Err(fail(&format!("集市服务返回 HTTP {status}")));
+        }
+        Err(_) => return Err(fail("无法连接集市，请检查网络后重试")),
+    };
     if response.status() != 200 {
         return Err(fail("集市下载地址发生非预期跳转"));
     }
@@ -233,6 +316,91 @@ fn download(url: &Url, limit: u64) -> Result<Vec<u8>> {
         encoded_limit + encoded_limit / 8 + 16 * 1024,
     )?;
     decode_gitee_file(&body, path, limit)
+}
+
+fn market_request(agent: &ureq::Agent, url: &Url, accept: &str) -> ureq::Request {
+    agent
+        .get(url.as_str())
+        .set("User-Agent", concat!("Daozai/", env!("CARGO_PKG_VERSION")))
+        .set("Accept", accept)
+        .set("Cache-Control", "no-cache")
+}
+
+fn gitee_rate_limited(status: u16, body: impl Read) -> bool {
+    const MESSAGE: &[u8] = b"Rate Limit Exceeded";
+    status == 429
+        || (status == 403
+            && read_limited(body, 4096)
+                .is_ok_and(|body| body.windows(MESSAGE.len()).any(|part| part == MESSAGE)))
+}
+
+fn is_https_host(url: &Url, host: &str) -> bool {
+    url.scheme() == "https"
+        && url.host_str() == Some(host)
+        && url.port().is_none()
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.fragment().is_none()
+}
+
+fn gitee_raw_url(source: &Url) -> Option<Url> {
+    if !is_https_host(source, "gitee.com") || source.query() != Some("ref=master") {
+        return None;
+    }
+    let prefix = format!("/api/v5/repos/{GITEE_REPOSITORY}/contents/");
+    let (channel, name) = source
+        .path()
+        .strip_prefix(prefix.as_str())?
+        .split_once('/')?;
+    let plugin_zip = name
+        .strip_prefix("plugin-")
+        .and_then(|name| name.strip_suffix(".zip"))
+        .and_then(|name| name.rsplit_once('-'))
+        .is_some_and(|(id, version_name)| valid_id(id) && version(version_name).is_some());
+    if !matches!(channel, "preview" | "stable")
+        || !(name == "catalog.json" || valid_avatar_name(name) || plugin_zip)
+    {
+        return None;
+    }
+    Url::parse(&format!(
+        "https://gitee.com/{GITEE_REPOSITORY}/raw/master/{channel}/{name}"
+    ))
+    .ok()
+}
+
+fn gitee_signed_location(raw: &Url, location: &str) -> Option<Url> {
+    let url = Url::parse(location).ok()?;
+    (is_https_host(&url, "raw.giteeusercontent.com")
+        && url.path() == raw.path()
+        && url
+            .query_pairs()
+            .any(|(key, value)| key == "signature" && !value.is_empty()))
+    .then_some(url)
+}
+
+fn download_gitee_raw(agent: &ureq::Agent, raw: &Url, limit: u64) -> Result<Vec<u8>> {
+    let request = |url: &Url| {
+        market_request(agent, url, "*/*")
+            .call()
+            .map_err(|error| match error {
+                ureq::Error::Status(status, _) => fail(&format!("集市镜像返回 HTTP {status}")),
+                _ => fail("无法连接集市，请检查网络后重试"),
+            })
+    };
+    let response = request(raw)?;
+    let response = if response.status() == 302 {
+        let target = response
+            .header("Location")
+            .and_then(|location| gitee_signed_location(raw, location))
+            .ok_or_else(|| fail("集市下载地址发生非预期跳转"))?;
+        request(&target)?
+    } else {
+        response
+    };
+    if response.status() != 200 {
+        return Err(fail("集市下载地址发生非预期跳转"));
+    }
+    read_limited(response.into_reader(), limit)
 }
 
 fn decode_gitee_file(body: &[u8], expected_path: &str, limit: u64) -> Result<Vec<u8>> {
@@ -457,13 +625,14 @@ pub(super) fn submit(input: &Path, path: &Path) -> Result<()> {
     let package = decode_zip(&raw)?;
     smoke(&package)?;
     let manifest = package.manifest;
-    let entry = Entry {
+    let mut entry = Entry {
         id: manifest.id,
         name: manifest.name,
         author: manifest.author,
         version: manifest.version,
         size: raw.len() as u64,
         sha256: sha256(&raw),
+        presentation: None,
     };
     let path = target_path(path)?;
     let lock = OpenOptions::new()
@@ -485,6 +654,7 @@ pub(super) fn submit(input: &Path, path: &Path) -> Result<()> {
         if compare_versions(&entry.version, &old.version) != Some(Ordering::Greater) {
             return Err(fail("提交版本必须高于测试集市已有版本"));
         }
+        entry.presentation = old.presentation.take();
         *old = entry;
     } else {
         plugins.push(entry);
