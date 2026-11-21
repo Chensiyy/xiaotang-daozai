@@ -103,6 +103,9 @@ fn cover_thumbnail(encoded: &str) -> Result<image::RgbaImage, &'static str> {
     if png.len() > MAX_COVER_BYTES {
         return Err("兼容包封面超过 256 KiB");
     }
+    if !png.ends_with(b"\0\0\0\0IEND\xaeB`\x82") {
+        return Err("兼容包封面必须是完整的 PNG 图片");
+    }
     let mut reader = image::ImageReader::with_format(Cursor::new(png), image::ImageFormat::Png);
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(1920);
@@ -497,10 +500,13 @@ mod tests {
         store.install(&files.write(&Files::external())).unwrap();
         store.set_enabled(true).unwrap();
         let expected = fs::read(files.dir.join(FILE_NAME)).unwrap();
+        let mut truncated = STANDARD.decode(fixtures::cover_png(16, 9)).unwrap();
+        truncated.truncate(truncated.len() - 12);
         for cover in [
             String::new(),
             "非 base64".to_owned(),
             "bm90IGEgcG5n".to_owned(),
+            STANDARD.encode(truncated),
             fixtures::cover_png(1921, 1),
             fixtures::cover_png(1, 1081),
             STANDARD.encode(vec![0; MAX_COVER_BYTES + 1]),
