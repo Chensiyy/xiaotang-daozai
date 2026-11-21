@@ -1630,7 +1630,9 @@ impl App {
                     ui.set_width((ui.available_width()-12.0).max(240.0));
                     match tab {
                     SETTINGS_TAB_WIRELESS=>{
-                        let on=self.settings_feature_header(ui,crate::app::BLUETOOTH_PAGE,"查看蓝牙电量和 2.4G 接收器状态",|_,_|{});
+                        let compat_enabled=self.wireless_compat.enabled();
+                        let description=if compat_enabled {"查看蓝牙电量和 2.4G 接收器状态"} else {"查看蓝牙设备电量和充电状态"};
+                        let on=self.settings_feature_header(ui,crate::app::BLUETOOTH_PAGE,description,|_,_|{});
                         ui.add_enabled_ui(on,|ui|{
                             settings_label(ui,"岛上常驻");
                             settings_card(ui,|ui|{
@@ -1644,17 +1646,14 @@ impl App {
                             settings_card(ui,|ui|{
                                 setting_row(ui,"岛上提示","接上电源、充满或电量偏低时提醒",&mut self.settings.bluetooth_battery_notifications);
                             });
-                            settings_label(ui,"设备兼容");
-                            settings_card(ui,|ui|{
-                                settings_control_row_right(ui,"兼容包",|ui|{
-                                    ui.label(format!("v{}",self.wireless_compat.version()));
-                                    if ui.button("安装或更新…").clicked(){self.pending.push(Cmd::WirelessCompatInstall);}
+                            if compat_enabled {
+                                settings_label(ui,"设备兼容");
+                                settings_card(ui,|ui|{
                                     if ui.link("反馈设备适配").clicked(){
                                         self.pending.push(Cmd::OpenUrl("https://github.com/Renly1994/xiaotang-daozai/issues/267".into()));
                                     }
                                 });
-                                if let Some(error)=&self.wireless_compat_error {settings_hint(ui,error);}
-                            });
+                            }
                         });
                     }
                     12=>{
@@ -1762,6 +1761,24 @@ impl App {
                             if a!=autostart{self.pending.push(Cmd::ToggleAutostart);}
                             ui.separator();
                             setting_row(ui,"全屏时隐藏","全屏隐藏岛仔，健康提醒静默保留",&mut self.settings.hide_fullscreen);
+                        });
+                        settings_label(ui,"本地插件");
+                        settings_card(ui,|ui|{
+                            if let Some(version)=self.wireless_compat.version() {
+                                let was_enabled=self.wireless_compat.enabled();
+                                let mut enabled=was_enabled;
+                                setting_row(ui,"启用兼容包",&format!("无线设备兼容包 v{version}"),&mut enabled);
+                                if enabled!=was_enabled {
+                                    self.wireless_compat_error=self.wireless_compat.set_enabled(enabled).err();
+                                }
+                                ui.horizontal(|ui|{
+                                    if ui.button("更新…").clicked(){self.pending.push(Cmd::WirelessCompatInstall);}
+                                    if ui.button("卸载").clicked(){self.wireless_compat_error=self.wireless_compat.uninstall().err();}
+                                });
+                            } else if ui.button("安装兼容包…").clicked() {
+                                self.pending.push(Cmd::WirelessCompatInstall);
+                            }
+                            if let Some(error)=&self.wireless_compat_error {settings_hint(ui,error);}
                         });
                         self.avoidance.settings(ui,&mut self.settings);
                         ui.add_space(8.0);

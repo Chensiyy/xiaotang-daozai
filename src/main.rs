@@ -486,7 +486,7 @@ impl eframe::App for Shell {
             if let Some(service)=&self.bt_rx {
                 while let Ok(found)=service.rx.try_recv(){ self.bt=found; self.bt_ready=true; }
             }
-            if wireless_on {
+            if wireless_on&&self.app.wireless_compat.enabled() {
                 let service=self.receiver_rx.get_or_insert_with(||{
                     let ctx=ctx.clone();
                     daozai::bt::spawn_receivers(self.app.wireless_compat.clone(),move||ctx.request_repaint())
@@ -751,7 +751,7 @@ impl eframe::App for Shell {
                     }
                 },
                 Cmd::WirelessCompatInstall=>{
-                    #[cfg(windows)] if self.app.module_on(app::BLUETOOTH_PAGE) {
+                    #[cfg(windows)] {
                         self.app.wireless_compat_error=match daozai::system::pick_files_for("选择无线设备兼容包（.json）",false) {
                             Ok(files)=>files.first().and_then(|path|self.app.wireless_compat.install(path).err()),
                             Err(_)=>Some("无法打开文件选择窗口".into()),

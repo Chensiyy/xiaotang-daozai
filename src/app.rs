@@ -1508,7 +1508,7 @@ impl App {
         if !(self.open&&self.page==BLUETOOTH_PAGE) {self.wireless_enter_at=None;}
         self.track_wireless_changes(&env.bt);
         self.wireless_devices=env.bt.clone();
-        if self.module_on(BLUETOOTH_PAGE) {
+        if self.module_on(BLUETOOTH_PAGE)&&self.wireless_compat.enabled() {
             self.wireless_devices.extend(env.receivers.iter().cloned());
         }
         if self.wireless_focus.as_ref().is_some_and(|id|!self.wireless_devices.iter().any(|d|&d.id==id)) {
