@@ -212,6 +212,12 @@ fn parse_log_metadata(log:&str,title:Option<&str>,duration:f64)->Option<(NowPlay
             playback_type:MediaKind::Music,..Default::default()},cover_url(cover).unwrap_or_default()))
     }).last()
 }
+/// 播放引擎给的「歌名」像音频文件里的曲目编号（字母前缀 + 下划线分段 + 数字），而不是真正的歌名。
+fn track_code(title:&str)->bool {
+    static CODE:std::sync::OnceLock<regex::Regex>=std::sync::OnceLock::new();
+    CODE.get_or_init(||regex::Regex::new(r"^[A-Za-z]{1,8}_[A-Za-z0-9]+(?:_[A-Za-z0-9]+)*$").unwrap()).is_match(title)
+        && title.chars().any(|c|c.is_ascii_digit())
+}
 /// 播放引擎的时长与歌曲信息的时长是否对得上：相差 2 秒内；或是 VIP 试听片段（引擎只放约 30 秒，最长 60 秒，短于整首）。
 fn same_length(engine:f64,full:f64)->bool {
     (engine-full).abs()<=2.0 || engine>0.0 && engine<=60.0 && engine+1.0<full
@@ -279,7 +285,10 @@ impl Reader {
         let key=(title.clone(),id);
         if self.key.as_ref()!=Some(&key){self.key=Some(key);self.metadata=None;self.lookup=None;}
         if self.metadata.is_none() && self.lookup.is_none_or(|at|at.elapsed()>=Duration::from_secs(1)) {
-            self.lookup=Some(Instant::now());self.metadata=read_metadata(&title,duration).or_else(||log_metadata(Some(&title),duration));
+            self.lookup=Some(Instant::now());
+            self.metadata=read_metadata(&title,duration).or_else(||log_metadata(Some(&title),duration))
+                // 有些歌的「歌名」是音频文件里的曲目编号（实测 trk_KM0019393_1_6）：按时长取最近开播的那首。
+                .or_else(||track_code(&title).then(||log_metadata(None,duration)).flatten());
         }
         // 波点要播放一会儿才把新歌写进本机歌曲库：查到之前先只显示歌名，查到后补上歌手、封面和歌曲 ID（换歌后不再整段空白）。
         let (mut media,url)=self.metadata.clone().unwrap_or_else(||pending(&title));
@@ -538,4 +547,17 @@ fn vip_preview_clips_still_match_the_full_song_info(){
     let log="2026-11-21 18:01:55.021 [I] 歌曲的完整参数信息:{id: 1245780, name: 幻听, albumId: 114741, album: 梦游计, albumPic: x, albumPic120: x, artist: 许嵩, artistId: 1887, artistPic: x, artists: [{id: 1887, name: 许嵩}], duration: 211, releaseDate: 2009-01-01
 ";
     assert_eq!(parse_log_metadata(log,Some("幻听"),29.05).map(|(m,_)|m.artist),Some("许嵩".into()));
+}
+
+#[test]
+fn track_codes_are_not_taken_as_song_titles(){
+    assert!(track_code("trk_KM0019393_1_6"));
+    for title in ["TRUE","Letting Go","幻听","Track_One","so_what","10%"] {assert!(!track_code(title),"{title}");}
+    // 实测：歌名是曲目编号时，按时长取运行日志最近开播的《TRUE》，专辑名里带逗号和括号也能完整取出。
+    let log="2026-11-21 22:49:55.627 [I] 歌曲的完整参数信息:{id: 336017166, name: TRUE, albumId: 46573218, album: 마이데몬 OST Special All Track (MY DEMON (Original Sound Track) Special), albumPic: x, albumPic120: x, artist: 요아리, artistId: 8686, artistPic: x, artists: [{id: 8686, name: 요아리}], duration: 211, releaseDate: 2024-01-01
+";
+    assert!(parse_log_metadata(log,Some("trk_KM0019393_1_6"),211.3).is_none());
+    let (media,_)=parse_log_metadata(log,None,211.3).unwrap();
+    assert_eq!((media.title.as_str(),media.artist.as_str(),media.song_id),("TRUE","요아리",Some(336017166)));
+    assert_eq!(media.album,"마이데몬 OST Special All Track (MY DEMON (Original Sound Track) Special)");
 }
