@@ -1781,8 +1781,14 @@ impl App {
     /// 换句、分段和展开高亮共用时间调整；正数延后，负数提前。
     pub(crate) fn lyric_position(&self)->f32 {(self.media.position-self.settings.lyric_delay_ms as f64/1000.0)as f32}
 
+    /// 当前播放器的版本读不到播放进度：歌词无法同步，岛上改显示歌名，不显示停住的歌词。
+    pub(crate) fn music_lyrics_limited(&self)->bool {
+        #[cfg(windows)] {crate::smtc::music_compat::lyrics_limited(&self.media.source)}
+        #[cfg(not(windows))] {false}
+    }
+
     pub(crate) fn island_lyric(&self) -> Option<(usize,&str)> {
-        if !self.island_lyrics_active(){return None;}
+        if !self.island_lyrics_active() || self.music_lyrics_limited(){return None;}
         if !lyric_key_matches(&self.ly.key,&self.media) {return None;}
         let lyrics=self.ly.lyrics.as_ref().filter(|lyrics|lyrics.synced)?;
         let index=lyrics.index_at(self.lyric_position())?;
@@ -1793,7 +1799,8 @@ impl App {
     fn update_island_lyric_layout(&mut self,ctx:&egui::Context) {
         if !self.island_lyrics_active(){self.island_lyric_layout=None;return;}
         let current=self.island_lyric();
-        let lyrics=self.ly.lyrics.as_ref().filter(|lyrics|lyric_key_matches(&self.ly.key,&self.media)
+        let limited=self.music_lyrics_limited();
+        let lyrics=self.ly.lyrics.as_ref().filter(|lyrics|!limited && lyric_key_matches(&self.ly.key,&self.media)
             && lyrics.synced && lyrics.lines.iter().any(|line|!line.text.trim().is_empty()));
         let title=lyrics.is_none();
         let text=if let Some((_,line))=current {line}
@@ -3563,6 +3570,9 @@ impl App {
         let other_song=matches!((self.media.song_id,np.song_id),(Some(old),Some(new)) if old!=new);
         if self.media.source != np.source || other_song { self.ly=LyricsState::default(); }
         self.media = np;
+        // 播放器版本比已适配的旧、歌词无法同步：岛下浮出一句提示（与网易云不支持跳转的提示同一样式），同一播放器版本只提醒一次。
+        #[cfg(windows)]
+        if let Some(message)=crate::smtc::music_compat::take_update_notice() {self.say(message);self.toast_below=true;}
         if let Some(image)=&self.media.artwork {
             if !self.music_artwork.as_ref().is_some_and(|(old,_)|std::sync::Arc::ptr_eq(old,image)) {
                 self.music_artwork=Some((image.clone(),ctx.load_texture("music-artwork",image.clone(),egui::TextureOptions::LINEAR)));
