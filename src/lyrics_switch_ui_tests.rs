@@ -210,3 +210,20 @@ fn music_compat_gallery(){
     }
     for exe in ["KuGou.exe","cloudmusic.exe","bodian_pc.exe"] {for item in [Item::Progress,Item::Duration,Item::Seek,Item::Reader]{compat::clear(exe,item);}}
 }
+
+#[test]
+fn artist_filled_in_later_requeries_lyrics_with_the_full_credit(){
+    // 波点：换歌后本机歌曲库约 30 秒才写入，先只有歌名，随后补上歌手和歌曲 ID。
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();lyrics_on(&mut h);
+    let (release,_)=busy(&mut h);
+    let bare=song("bodian_pc.exe","微风细雨","",229.3);
+    h.media=bare.clone();h.frame(vec![]);
+    let first=h.app.ly.pending.is_some().then(||h.app.ly.song.as_ref().map(|song|(song.title.clone(),song.artist.clone()))).flatten();
+    println!("只有歌名时排队的查询：{first:?}，key={}",h.app.ly.key);
+    let mut full=bare.clone();full.artist="邓丽君".into();full.song_id=Some(27148558);
+    h.media=full;h.frame(vec![]);
+    let second=h.app.ly.pending.is_some().then(||h.app.ly.song.as_ref().map(|song|(song.title.clone(),song.artist.clone()))).flatten();
+    println!("补上歌手后排队的查询：{second:?}，key={}",h.app.ly.key);
+    assert_eq!(second,Some(("微风细雨".into(),"邓丽君".into())),"补上歌手后要按完整署名重新查询");
+    finish(&mut h,release);
+}

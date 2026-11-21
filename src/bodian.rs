@@ -186,6 +186,28 @@ fn metadata(value:&serde_json::Value,title:&str,duration:f64)->Option<(NowPlayin
     Some((NowPlaying{source:"bodian_pc.exe".into(),title:title.into(),artist:artist.into(),album:album.into(),song_id:Some(song_id),
         playback_type:MediaKind::Music,..Default::default()},cover))
 }
+/// 波点要等歌曲播完或被切走才写入本机歌曲库；开始播放时它会在运行日志里记一行完整歌曲信息。
+/// 只读日志末尾，只取歌曲 ID、歌名、专辑、歌手和封面，不读取或保存日志里的其他内容（播放地址、设备号等）。
+fn log_metadata(title:&str,duration:f64)->Option<(NowPlaying,String)>{
+    use std::io::{Seek,SeekFrom};
+    const TAIL:u64=1024*1024;
+    let mut file=std::fs::File::open(data_root()?.join("bdlog/log_0.log")).ok()?;
+    let size=file.metadata().ok()?.len();
+    file.seek(SeekFrom::Start(size.saturating_sub(TAIL))).ok()?;
+    let mut bytes=Vec::new();file.take(TAIL).read_to_end(&mut bytes).ok()?;
+    parse_log_metadata(&String::from_utf8_lossy(&bytes),title,duration)
+}
+fn parse_log_metadata(log:&str,title:&str,duration:f64)->Option<(NowPlaying,String)>{
+    static LINE:std::sync::OnceLock<regex::Regex>=std::sync::OnceLock::new();
+    let line=LINE.get_or_init(||regex::Regex::new(r"歌曲的完整参数信息:\{id: (\d+), name: (.*?), albumId: -?\d+, album: (.*?), albumPic: [^,]*, albumPic120: ([^,]*), artist: (.*?), artistId: .*?duration: (\d+)").unwrap());
+    // 最近的一条在最后；同名歌按时长区分。
+    line.captures_iter(log).filter_map(|c|{
+        let (id,name,album,cover,artist,length)=(c[1].parse::<u64>().ok()?,&c[2],&c[3],&c[4],&c[5],c[6].parse::<f64>().ok()?);
+        if name!=title || (length-duration).abs()>2.0 || id==0 || artist.is_empty() || artist.len()>4096 || album.len()>4096 {return None;}
+        Some((NowPlaying{source:"bodian_pc.exe".into(),title:title.into(),artist:artist.into(),album:album.into(),song_id:Some(id),
+            playback_type:MediaKind::Music,..Default::default()},cover_url(cover).unwrap_or_default()))
+    }).last()
+}
 /// 本机歌曲库还没有这首歌时的临时信息：只有歌名，没有歌手、封面和歌曲 ID。
 fn pending(title:&str)->(NowPlaying,String){
     (NowPlaying{source:"bodian_pc.exe".into(),title:title.into(),playback_type:MediaKind::Music,..Default::default()},String::new())
@@ -239,7 +261,7 @@ impl Reader {
         let key=(title.clone(),id);
         if self.key.as_ref()!=Some(&key){self.key=Some(key);self.metadata=None;self.lookup=None;}
         if self.metadata.is_none() && self.lookup.is_none_or(|at|at.elapsed()>=Duration::from_secs(1)) {
-            self.lookup=Some(Instant::now());self.metadata=read_metadata(&title,duration);
+            self.lookup=Some(Instant::now());self.metadata=read_metadata(&title,duration).or_else(||log_metadata(&title,duration));
         }
         // 波点要播放一会儿才把新歌写进本机歌曲库：查到之前先只显示歌名，查到后补上歌手、封面和歌曲 ID（换歌后不再整段空白）。
         let (mut media,url)=self.metadata.clone().unwrap_or_else(||pending(&title));
@@ -412,13 +434,17 @@ fn discovery_without_a_window_hint_falls_back_to_a_slow_check(){
 fn live_bodian_trace(){
     let mut reader=Reader::default();
     let started=Instant::now();
-    while started.elapsed()<Duration::from_secs(45) {
+    while started.elapsed()<Duration::from_secs(2) {
         let media=reader.poll();
         if let Some(target)=reader.target {
             if let Some(process)=Process::open(target.pid) {
                 let mut cursor=0;let pb=playback(&process,target,&mut cursor);
                 println!("   播放引擎：{pb:?}");
-                if let Some((title,_,_,duration,_))=&pb {println!("   本机歌曲库：{}",read_metadata(title,*duration).map_or("没找到".into(),|(m,_)|format!("{} - {}",m.title,m.artist)));}
+                if let Some((title,_,_,duration,_))=&pb {
+                    println!("   本机歌曲库：{}",read_metadata(title,*duration).map_or("没找到".into(),|(m,_)|format!("{} - {}",m.title,m.artist)));
+                    let t=Instant::now();let found=log_metadata(title,*duration);
+                    println!("   运行日志：{} 用时{:?}",found.map_or("没找到".into(),|(m,c)|format!("{} - {} ID={:?} 封面{}",m.title,m.artist,m.song_id,!c.is_empty())),t.elapsed());
+                }
             }
         }
         println!("{:>5.1}s 窗口线索{} 已找到{} → {}",started.elapsed().as_secs_f32(),window_hint(),reader.target.is_some(),
@@ -432,4 +458,17 @@ fn a_song_not_yet_in_the_local_library_still_shows_its_title(){
     let (media,cover)=pending("一剪梅");
     assert_eq!((media.title.as_str(),media.artist.as_str(),media.song_id,cover.as_str()),("一剪梅","",None,""));
     assert!(media.is_music(),"只有歌名也按歌曲显示");
+}
+
+#[test]
+fn song_info_is_taken_from_the_play_log_before_the_library_is_written(){
+    let log="2026-11-21 17:12:16.939 [I] 歌曲的完整参数信息:{id: 1, name: 虞美人听雨, albumId: 2, album: 旧专辑, albumPic: https://img4.kuwo.cn/a.webp, albumPic120: https://img4.kuwo.cn/old.webp, artist: 别人, artistId: 3, artistPic: x, artists: [{id: 3, name: 别人}], duration: 180, releaseDate: 2025-08-09
+        2026-11-21 17:12:17.146 [I] play/getPlayInfo [Song.getPlayInfo:1011] 490335784:虞美人听雨 quality=2 format=ogg bitrate=300 uri: https://bd-api.kuwo.cn/api?devId=secret&sign=secret
+        2026-11-21 17:13:16.939 [I] 歌曲的完整参数信息:{id: 490335784, name: 虞美人听雨, albumId: 67585850, album: 春满未夏, albumPic: https://img4.kuwo.cn/a.webp, albumPic120: http://img4.kuwo.cn/star/albumcover/240/x.webp, artist: 李奕灼, artistId: 16889471, artistPic: x, artists: [{id: 16889471, name: 李奕灼, pic: x}], duration: 229, releaseDate: 2025-08-09
+";
+    let (media,cover)=parse_log_metadata(log,"虞美人听雨",229.4).expect("应从日志里找到");
+    assert_eq!((media.artist.as_str(),media.album.as_str(),media.song_id),("李奕灼","春满未夏",Some(490335784)),"同名歌按时长取对的那条");
+    assert_eq!(cover,"https://img4.kuwo.cn/star/albumcover/240/x.webp","封面只认酷我域名并改为 https");
+    assert!(parse_log_metadata(log,"别的歌",229.0).is_none());
+    assert!(parse_log_metadata(log,"虞美人听雨",300.0).is_none(),"时长对不上不用");
 }

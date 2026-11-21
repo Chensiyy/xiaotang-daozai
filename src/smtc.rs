@@ -1796,3 +1796,17 @@ fn live_discovery_cost(){
     let mut cache=kugou_metadata::Cache::default();
     let t=std::time::Instant::now();for _ in 0..20{let _=cache.get("x","y",false);}println!("酷狗窗口核对: {:?}/次",t.elapsed()/20);
 }
+#[cfg(all(test,windows))]
+#[test]
+#[ignore="本机实测：同时打印系统会话与各播放器本机读取的结果，以及最终选中的那一路"]
+fn live_media_sources(){
+    let _apartment=init_winrt();
+    let mut artwork=ArtworkCache::default();let mut bodian=bodian::Reader::default();
+    for _ in 0..3 {
+        let system=query(&mut artwork);let native=bodian.poll();
+        let show=|m:&Option<NowPlaying>|m.as_ref().map_or("无".into(),|m|format!("{} · {} - {} ID={:?} 播放{} 类型{:?}",m.source,m.title,m.artist,m.song_id,m.playing,m.playback_type));
+        println!("系统会话：{}",show(&system));println!("波点本机：{}",show(&native));
+        println!("最终选中：{}",show(&choose_media(system.clone(),native.clone())));
+        std::thread::sleep(Duration::from_millis(800));
+    }
+}
