@@ -489,7 +489,7 @@ impl eframe::App for Shell {
             if wireless_on {
                 let service=self.receiver_rx.get_or_insert_with(||{
                     let ctx=ctx.clone();
-                    daozai::bt::spawn_receivers(move||ctx.request_repaint())
+                    daozai::bt::spawn_receivers(self.app.wireless_compat.clone(),move||ctx.request_repaint())
                 });
                 while let Ok(found)=service.rx.try_recv(){self.receivers=found;}
             } else {
@@ -748,6 +748,15 @@ impl eframe::App for Shell {
                 Cmd::OpenUrl(url)=>{
                     if let Some(url)=daozai::mail::web_url(&url) {
                         if open_path(std::path::Path::new(&url)).is_err(){self.app.say("无法打开默认浏览器，请检查 Windows 默认应用设置");}
+                    }
+                },
+                Cmd::WirelessCompatInstall=>{
+                    #[cfg(windows)] if self.app.module_on(app::BLUETOOTH_PAGE) {
+                        self.app.wireless_compat_error=match daozai::system::pick_files_for("选择无线设备兼容包（.json）",false) {
+                            Ok(files)=>files.first().and_then(|path|self.app.wireless_compat.install(path).err()),
+                            Err(_)=>Some("无法打开文件选择窗口".into()),
+                        };
+                        ctx.request_repaint();
                     }
                 },
                 Cmd::CalendarImport=>{

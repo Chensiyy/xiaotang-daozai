@@ -1644,6 +1644,17 @@ impl App {
                             settings_card(ui,|ui|{
                                 setting_row(ui,"岛上提示","接上电源、充满或电量偏低时提醒",&mut self.settings.bluetooth_battery_notifications);
                             });
+                            settings_label(ui,"设备兼容");
+                            settings_card(ui,|ui|{
+                                settings_control_row_right(ui,"兼容包",|ui|{
+                                    ui.label(format!("v{}",self.wireless_compat.version()));
+                                    if ui.button("安装或更新…").clicked(){self.pending.push(Cmd::WirelessCompatInstall);}
+                                    if ui.link("反馈设备适配").clicked(){
+                                        self.pending.push(Cmd::OpenUrl("https://github.com/Renly1994/xiaotang-daozai/issues/267".into()));
+                                    }
+                                });
+                                if let Some(error)=&self.wireless_compat_error {settings_hint(ui,error);}
+                            });
                         });
                     }
                     12=>{
