@@ -179,7 +179,7 @@ struct Statement(*mut c_void);
 impl Drop for Statement {fn drop(&mut self){unsafe{sqlite3_finalize(self.0);}}}
 fn data_root()->Option<PathBuf>{Some(PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("cn.wenyu.bodian/bodian_pc"))}
 fn metadata(value:&serde_json::Value,title:&str,duration:f64)->Option<(NowPlaying,String)>{
-    if value["name"].as_str()?!=title || (value["duration"].as_f64()?-duration).abs()>2.0{return None;}
+    if value["name"].as_str()?!=title || !same_length(duration,value["duration"].as_f64()?){return None;}
     let artist=value["artist"].as_str()?;let album=value["album"].as_str().unwrap_or_default();
     if artist.is_empty() || artist.len()>4096 || album.len()>4096{return None;}
     let song_id=value["id"].as_u64().filter(|id|*id>0)?;
@@ -207,10 +207,14 @@ fn parse_log_metadata(log:&str,title:Option<&str>,duration:f64)->Option<(NowPlay
     let entries:Vec<_>=if title.is_some(){entries.collect()}else{entries.last().into_iter().collect()};
     entries.into_iter().filter_map(|c|{
         let (id,name,album,cover,artist,length)=(c[1].parse::<u64>().ok()?,&c[2],&c[3],&c[4],&c[5],c[6].parse::<f64>().ok()?);
-        if name.trim().is_empty() || name.len()>4096 || (length-duration).abs()>2.0 || id==0 || artist.is_empty() || artist.len()>4096 || album.len()>4096 {return None;}
+        if name.trim().is_empty() || name.len()>4096 || !same_length(duration,length) || id==0 || artist.is_empty() || artist.len()>4096 || album.len()>4096 {return None;}
         Some((NowPlaying{source:"bodian_pc.exe".into(),title:name.trim().into(),artist:artist.into(),album:album.into(),song_id:Some(id),
             playback_type:MediaKind::Music,..Default::default()},cover_url(cover).unwrap_or_default()))
     }).last()
+}
+/// 播放引擎的时长与歌曲信息的时长是否对得上：相差 2 秒内；或是 VIP 试听片段（引擎只放约 30 秒，最长 60 秒，短于整首）。
+fn same_length(engine:f64,full:f64)->bool {
+    (engine-full).abs()<=2.0 || engine>0.0 && engine<=60.0 && engine+1.0<full
 }
 /// 本机歌曲库还没有这首歌时的临时信息：只有歌名，没有歌手、封面和歌曲 ID。
 fn pending(title:&str)->(NowPlaying,String){
@@ -524,4 +528,14 @@ fn live_bodian_playback_steps(){
         }
         node=process.pointer(node).unwrap();
     }
+}
+
+#[test]
+fn vip_preview_clips_still_match_the_full_song_info(){
+    assert!(same_length(229.4,229.0));
+    assert!(same_length(29.05,211.0),"试听片段约 30 秒");
+    assert!(!same_length(120.0,211.0),"正常播放时长差很多是别的版本");
+    let log="2026-11-21 18:01:55.021 [I] 歌曲的完整参数信息:{id: 1245780, name: 幻听, albumId: 114741, album: 梦游计, albumPic: x, albumPic120: x, artist: 许嵩, artistId: 1887, artistPic: x, artists: [{id: 1887, name: 许嵩}], duration: 211, releaseDate: 2009-01-01
+";
+    assert_eq!(parse_log_metadata(log,Some("幻听"),29.05).map(|(m,_)|m.artist),Some("许嵩".into()));
 }
