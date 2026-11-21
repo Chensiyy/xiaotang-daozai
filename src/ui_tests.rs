@@ -9208,7 +9208,7 @@ fn performance_keeps_sampling_across_hidden_and_open_views() {
 #[test]
 #[ignore="读取一分钟实际性能数据，导出常驻与展开预览"]
 fn performance_gallery() {
-    use crate::performance::{View,BarStyle};
+    use crate::performance::{View,BarStyle,Metric};
     let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     let dir=std::path::PathBuf::from(std::env::var_os("DAOZAI_PERFORMANCE_PREVIEW_DIR").unwrap());
     std::fs::create_dir_all(&dir).unwrap();
@@ -9237,7 +9237,8 @@ fn performance_gallery() {
     h.app.performance.view=Some(View::Overview);
     shoot_feature(&mut h,&mut raster,&dir,"overview-hover",40,Some(H::local(80.,90.)),&today);
     h.app.performance.view=None;
-    h.app.settings.performance_metrics=crate::performance::Metric::ALL.iter().fold(0,|bits,m|bits|m.bit());
+    let all_metrics=Metric::ALL.iter().fold(0,|bits,m|bits|m.bit());
+    h.app.settings.performance_metrics=all_metrics;
     for style in BarStyle::ALL {
         h.app.settings.performance_bar=style;
         shoot_feature(&mut h,&mut raster,&dir,style.key(),240,None,&today);
@@ -9256,7 +9257,7 @@ fn performance_gallery() {
         ("settings-light",crate::settings_theme::SettingsTheme::Light,BarStyle::Gauges),
         ("settings-custom",crate::settings_theme::SettingsTheme::Dark,BarStyle::Custom)] {
         h.app.settings.settings_theme=theme;h.app.settings.performance_bar=style;
-        h.app.settings.performance_metrics=if style==BarStyle::Custom {0b1_1000_0101} else {7};
+        h.app.settings.performance_metrics=if style==BarStyle::Custom {all_metrics & !Metric::GpuTemp.bit()} else {7};
         for frame in 0..3 {
             let root=h.ctx.run(Default::default(),|ctx|h.app.settings_ui(ctx,false));
             let child=output.lock().unwrap().take().unwrap();
@@ -9283,12 +9284,22 @@ fn performance_custom_selection_controls_both_docks_and_persists() {
     let mut h=H::new();
     h.app.set_page_visible(crate::app::PERFORMANCE_PAGE,true);
     h.app.settings.performance_bar=BarStyle::Custom;
-    for metrics in [vec![], vec![Metric::Ram], vec![Metric::Upload],
-                    vec![Metric::Ram,Metric::Upload,Metric::Write], Metric::ALL.to_vec()] {
+    for (metrics, width, height) in [
+        (vec![], 0., 0.),
+        (vec![Metric::Ram], 52., 23.),
+        (vec![Metric::Upload], 66., 23.),
+        (vec![Metric::Write], 66., 23.),
+        (vec![Metric::Ram, Metric::Upload, Metric::Write], 184., 69.),
+        (vec![Metric::GpuTemp, Metric::Download, Metric::Upload, Metric::Read, Metric::Write], 200., 69.),
+        (Metric::ALL.to_vec(), 320., 161.),
+    ] {
         let mask=metrics.iter().fold(0,|bits,m|bits|m.bit());
         h.app.settings.performance_metrics=mask;
-        let shown=BarStyle::columns(mask).flat_map(|(m,n,_)|std::iter::once(m).chain(n)).collect::<Vec<_>>();
+        let shown=BarStyle::value_columns(mask).flat_map(|(m,n,_)|std::iter::once(m).chain(n))
+            .chain(BarStyle::rate_columns(mask).flatten().flatten()).collect::<Vec<_>>();
         assert_eq!(shown,metrics);
+        assert_eq!(BarStyle::Custom.width(mask),width);
+        assert_eq!(BarStyle::Custom.side_height(mask),height);
         assert_eq!(h.app.performance_on_bar(),!metrics.is_empty());
         h.frame(vec![]);
         let w=h.app.resident.current();
@@ -9297,7 +9308,7 @@ fn performance_custom_selection_controls_both_docks_and_persists() {
         let side=h.app.side_items().into_iter().find_map(|item|match item {
             crate::side_dock::SideItem::Performance(h)=>Some(h), _=>None,
         });
-        assert_eq!(side,(!metrics.is_empty()).then_some(metrics.len() as f32*23.));
+        assert_eq!(side,(!metrics.is_empty()).then_some(height));
         h.app.settings.save();
         let loaded=crate::model::Settings::load();
         assert_eq!((loaded.performance_bar,loaded.performance_metrics),(BarStyle::Custom,mask));
