@@ -229,6 +229,10 @@ fn execute(args: &[String]) -> Result<()> {
 }
 
 pub fn command() -> Option<std::process::ExitCode> {
+    #[cfg(all(windows, feature = "sdk-js"))]
+    if let Some(code) = local::market::author_command(&env::args_os().collect::<Vec<_>>()) {
+        return Some(code);
+    }
     let args: Vec<_> = env::args().collect();
     if args.get(1).map(String::as_str) != Some("--sdk-spike") {
         return None;
