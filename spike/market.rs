@@ -1,9 +1,10 @@
-//! 本机测试集市的作者工具和包校验。
+//! 插件集市的目录读取、作者工具与包校验。
 
 use super::{
     bounded, cover::COVER_LIMIT, fail, valid_id, CoverPng, Manifest, Package, Result, Values,
     COVER_FILE, SCRIPT_SOURCE_LIMIT,
 };
+use base64::{engine::general_purpose::STANDARD, Engine};
 use ring::digest::{digest, SHA256};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -15,13 +16,34 @@ use std::{
     io::{self, Cursor, Read, Write},
     path::{Path, PathBuf},
     process::ExitCode,
+    time::Duration,
 };
+use url::Url;
 use zip::{write::SimpleFileOptions, CompressionMethod, ZipArchive, ZipWriter};
 
 const MANIFEST_LIMIT: u64 = 32 * 1024;
 const ZIP_LIMIT: u64 = 576 * 1024;
 const CATALOG_LIMIT: u64 = 64 * 1024;
 const CATALOG_FORMAT: u32 = 1;
+
+#[cfg(not(test))]
+pub(super) fn official_index_url() -> Result<Url> {
+    let channel = if option_env!("DAOZAI_TEST_BUILD").is_some() {
+        "preview"
+    } else {
+        "stable"
+    };
+    Ok(Url::parse(&format!(
+        "https://gitee.com/api/v5/repos/xiaotangtoken/xiaotang-daozai-plugins/contents/{channel}/catalog.json?ref=master"
+    ))?)
+}
+
+pub(super) fn official_cache_path(dir: &Path, index: &Url) -> PathBuf {
+    dir.join(format!(
+        "official-market-{}.json",
+        sha256(index.as_str().as_bytes())
+    ))
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -42,8 +64,12 @@ impl Entry {
             && self.author == manifest.author
     }
 
+    fn zip_name(&self) -> String {
+        format!("plugin-{}-{}.zip", self.id, self.version)
+    }
+
     fn path_in(&self, catalog: &Path) -> PathBuf {
-        catalog.with_file_name(format!("plugin-{}-{}.zip", self.id, self.version))
+        catalog.with_file_name(self.zip_name())
     }
 }
 
@@ -58,15 +84,37 @@ struct CatalogFile {
 pub(super) struct Catalog {
     pub(super) path: PathBuf,
     pub(super) entries: Vec<Entry>,
+    official_index: Option<Url>,
 }
 
 impl Catalog {
     pub(super) fn open(path: &Path) -> Result<Self> {
         let path = path.canonicalize()?;
-        let file: CatalogFile = serde_json::from_str(&bounded(&path, CATALOG_LIMIT)?)
-            .map_err(|error| fail(&format!("测试集市目录格式无效：{error}")))?;
+        let bytes = bounded(&path, CATALOG_LIMIT)?;
+        Self::parse(path, None, bytes.as_bytes())
+    }
+
+    pub(super) fn restore_official(path: PathBuf, index: Url) -> Result<Self> {
+        let bytes = bounded(&path, CATALOG_LIMIT)?;
+        Self::parse(path, Some(index), bytes.as_bytes())
+    }
+
+    pub(super) fn sync_official(path: PathBuf, index: Url) -> Result<Self> {
+        let bytes = download(&index, CATALOG_LIMIT)?;
+        let catalog = Self::parse(path, Some(index), &bytes)?;
+        crate::model::atomic_write(&catalog.path, &bytes)?;
+        Ok(catalog)
+    }
+
+    pub(super) fn is_official(&self) -> bool {
+        self.official_index.is_some()
+    }
+
+    fn parse(path: PathBuf, official_index: Option<Url>, bytes: &[u8]) -> Result<Self> {
+        let file: CatalogFile = serde_json::from_slice(bytes)
+            .map_err(|error| fail(&format!("集市目录格式无效：{error}")))?;
         if file.format != CATALOG_FORMAT {
-            return Err(fail("当前岛仔不支持此测试集市目录版本"));
+            return Err(fail("当前岛仔不支持此集市目录版本"));
         }
         let mut seen = BTreeSet::new();
         for entry in &file.plugins {
@@ -84,24 +132,31 @@ impl Catalog {
                     .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
                 || !seen.insert(&entry.id)
             {
-                return Err(fail("测试集市目录包含无效或重复的插件条目"));
+                return Err(fail("集市目录包含无效或重复的插件条目"));
             }
         }
         Ok(Self {
             path,
             entries: file.plugins,
+            official_index,
         })
     }
 
     pub(super) fn load(&self, entry: &Entry) -> Result<Package> {
-        let path = entry.path_in(&self.path);
-        let raw = read_catalog_zip(&path)?;
+        let raw = match &self.official_index {
+            Some(index) => {
+                let mut package = index.join(&entry.zip_name())?;
+                package.set_query(index.query());
+                download(&package, ZIP_LIMIT)?
+            }
+            None => read_catalog_zip(&entry.path_in(&self.path))?,
+        };
         if raw.len() as u64 != entry.size || sha256(&raw) != entry.sha256 {
-            return Err(fail("插件包大小或 SHA-256 与测试集市目录不一致"));
+            return Err(fail("插件包大小或 SHA-256 与集市目录不一致"));
         }
         let package = decode_zip(&raw)?;
         if !entry.matches(&package.manifest) {
-            return Err(fail("插件清单与测试集市目录不一致"));
+            return Err(fail("插件清单与集市目录不一致"));
         }
         Ok(package)
     }
@@ -143,7 +198,75 @@ fn read_limited(reader: impl Read, limit: u64) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
     reader.take(limit + 1).read_to_end(&mut bytes)?;
     if bytes.len() as u64 > limit {
-        return Err(fail("插件包文件超过大小限制"));
+        return Err(fail("集市文件超过大小限制"));
+    }
+    Ok(bytes)
+}
+
+fn download(url: &Url, limit: u64) -> Result<Vec<u8>> {
+    let (_, path) = url
+        .path()
+        .split_once("/contents/")
+        .ok_or_else(|| fail("集市下载地址无效"))?;
+    let response = ureq::AgentBuilder::new()
+        .try_proxy_from_env(url.scheme() == "https")
+        .redirects(0)
+        .timeout_connect(Duration::from_secs(6))
+        .timeout(Duration::from_secs(15))
+        .build()
+        .get(url.as_str())
+        .set("User-Agent", concat!("Daozai/", env!("CARGO_PKG_VERSION")))
+        .set("Accept", "application/json")
+        .set("Cache-Control", "no-cache")
+        .call()
+        .map_err(|error| match error {
+            ureq::Error::Status(status, _) => fail(&format!("集市服务返回 HTTP {status}")),
+            _ => fail("无法连接集市，请检查网络后重试"),
+        })?;
+    if response.status() != 200 {
+        return Err(fail("集市下载地址发生非预期跳转"));
+    }
+    let encoded_limit = limit.div_ceil(3) * 4;
+    // 为 JSON 元数据和 Base64 换行留出空间，读取前仍有固定上限。
+    let body = read_limited(
+        response.into_reader(),
+        encoded_limit + encoded_limit / 8 + 16 * 1024,
+    )?;
+    decode_gitee_file(&body, path, limit)
+}
+
+fn decode_gitee_file(body: &[u8], expected_path: &str, limit: u64) -> Result<Vec<u8>> {
+    #[derive(Deserialize)]
+    struct Content {
+        #[serde(rename = "type")]
+        kind: String,
+        encoding: String,
+        path: String,
+        size: u64,
+        content: String,
+    }
+    let file: Content = serde_json::from_slice(body).map_err(|_| fail("集市接口未返回有效文件"))?;
+    if file.kind != "file" || file.encoding != "base64" || file.path != expected_path {
+        return Err(fail("集市返回的文件信息与请求不一致"));
+    }
+    if file.size > limit {
+        return Err(fail("集市文件超过大小限制"));
+    }
+    let expected_encoded = (file.size.div_ceil(3) * 4) as usize;
+    let encoded: Vec<_> = file
+        .content
+        .bytes()
+        .filter(|byte| !matches!(byte, b'\r' | b'\n'))
+        .take(expected_encoded + 1)
+        .collect();
+    if encoded.len() != expected_encoded {
+        return Err(fail("集市返回的文件大小不一致"));
+    }
+    let bytes = STANDARD
+        .decode(encoded)
+        .map_err(|_| fail("集市返回的文件编码无效"))?;
+    if bytes.len() as u64 != file.size {
+        return Err(fail("集市返回的文件大小不一致"));
     }
     Ok(bytes)
 }
@@ -157,7 +280,7 @@ fn read_catalog_zip(path: &Path) -> Result<Vec<u8>> {
 
 fn supported(manifest: &Manifest) -> Result<()> {
     if manifest.runtime != "js" || manifest.entry.contains('/') {
-        return Err(fail("测试集市仅接受根目录含一个 JavaScript 入口的待办插件"));
+        return Err(fail("集市仅接受根目录含一个 JavaScript 入口的待办插件"));
     }
     Ok(())
 }

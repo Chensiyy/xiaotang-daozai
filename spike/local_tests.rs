@@ -65,7 +65,7 @@ mod test_market {
         fn install(&self, host: &mut LocalPlugins) -> Result<()> {
             self.publish("1.0.0", false)?;
             host.set_market_catalog(&self.index)?;
-            host.market_action(ID)?;
+            host.market_action(false, ID)?;
             settle_market(host);
             assert_eq!(status(host), MarketStatus::Installed);
             assert!(!host.records[ID].enabled);
@@ -81,7 +81,7 @@ mod test_market {
 
     fn settle_market(host: &mut LocalPlugins) {
         let deadline = Instant::now() + Duration::from_secs(5);
-        while host.market_busy() {
+        while host.market_pending() {
             host.poll_market();
             assert!(Instant::now() < deadline);
             std::thread::sleep(Duration::from_millis(1));
@@ -89,7 +89,8 @@ mod test_market {
     }
 
     fn status(host: &LocalPlugins) -> MarketStatus {
-        host.market_status(&host.market_catalog.as_ref().unwrap().entries[0])
+        let catalog = host.market_catalog(false).unwrap();
+        host.market_status(&catalog, &catalog.entries[0])
     }
 
     #[test]
@@ -134,7 +135,7 @@ mod test_market {
         host.refresh_market_catalog()?;
         assert_eq!(status(&host), MarketStatus::Update);
         host.tick(true, "2026-12-02");
-        host.market_action(ID)?;
+        host.market_action(false, ID)?;
         settle_market(&mut host);
         assert!(!host.jobs[ID].valid, "上个版本的迟到结果应作废");
         assert_eq!(host.records[ID].storage, saved);
@@ -158,7 +159,7 @@ mod test_market {
             Some(include_bytes!("examples/payday/cover.png").as_slice())
         );
         host.uninstall(ID, true)?;
-        host.market_action(ID)?;
+        host.market_action(false, ID)?;
         settle_market(&mut host);
         assert_eq!(host.records[ID].values, values);
         assert_eq!(host.records[ID].storage, saved);
@@ -167,7 +168,7 @@ mod test_market {
         fs::write(&fixture.index, previous_index)?;
         host.refresh_market_catalog()?;
         assert_eq!(status(&host), MarketStatus::Unavailable);
-        assert!(host.market_action(ID).is_err());
+        assert!(host.market_action(false, ID).is_err());
         Ok(())
     }
 
@@ -187,25 +188,168 @@ mod test_market {
         bytes[0] ^= 1;
         fs::write(&zip, bytes)?;
         host.refresh_market_catalog()?;
-        host.market_action(ID)?;
+        host.market_action(false, ID)?;
         settle_market(&mut host);
         assert!(host.notice.contains("更新失败"));
         assert_eq!(fs::read(host.path(ID))?, previous);
 
         fixture.publish("1.2.0", true)?;
         host.refresh_market_catalog()?;
-        host.market_action(ID)?;
+        host.market_action(false, ID)?;
         settle_market(&mut host);
         assert!(host.notice.contains("字段类型"));
         assert_eq!(fs::read(host.path(ID))?, previous);
 
-        host.market_action(ID)?;
+        host.market_action(false, ID)?;
         host.enable(ID, false)?;
         let disabled = fs::read(host.path(ID))?;
         settle_market(&mut host);
         assert!(host.notice.contains("插件状态已变化"));
         assert_eq!(fs::read(host.path(ID))?, disabled);
         assert!(!host.records[ID].enabled);
+        Ok(())
+    }
+
+    #[test]
+    fn official_market_updates_from_its_mirror_and_keeps_verified_state_on_failure() -> Result<()> {
+        use base64::{engine::general_purpose::STANDARD, Engine};
+        use std::{
+            io::{BufRead, BufReader, Write},
+            net::TcpListener,
+        };
+
+        let fixture = Fixture::new()?;
+        fixture.publish("1.0.0", false)?;
+        let first = fs::read(&fixture.index)?;
+        let first_name = format!("plugin-{ID}-1.0.0.zip");
+        let first_zip = fs::read(fixture.index.with_file_name(&first_name))?;
+        fixture.publish("1.1.0", false)?;
+        let second = fs::read(&fixture.index)?;
+        let second_name = format!("plugin-{ID}-1.1.0.zip");
+        let second_zip = fs::read(fixture.index.with_file_name(&second_name))?;
+        let mut corrupt = second_zip.clone();
+        corrupt[0] ^= 1;
+
+        let listener = TcpListener::bind(("127.0.0.1", 0))?;
+        let index_url = url::Url::parse(&format!(
+            "http://{}/api/v5/repos/owner/plugins/contents/preview/catalog.json?ref=master",
+            listener.local_addr()?
+        ))?;
+        let replies = [
+            ("catalog.json", first, false),
+            (first_name.as_str(), first_zip.clone(), false),
+            (first_name.as_str(), first_zip, false),
+            ("catalog.json", second.clone(), false),
+            (second_name.as_str(), corrupt, false),
+            (second_name.as_str(), second_zip, false),
+            ("catalog.json", Vec::new(), true),
+        ]
+        .map(|(name, body, redirect)| {
+            let path = format!("preview/{name}");
+            let expected =
+                format!("GET /api/v5/repos/owner/plugins/contents/{path}?ref=master HTTP/1.1");
+            let wrapper = json!({
+                "type": "file", "encoding": "base64", "path": path,
+                "size": body.len(), "content": STANDARD.encode(&body)
+            });
+            (expected, serde_json::to_vec(&wrapper).unwrap(), redirect)
+        });
+        let server = std::thread::spawn(move || {
+            for (expected, body, redirect) in replies {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(2)))
+                    .unwrap();
+                let mut request = BufReader::new(&stream);
+                let mut line = String::new();
+                request.read_line(&mut line).unwrap();
+                assert_eq!(line.trim_end(), expected);
+                loop {
+                    line.clear();
+                    if request.read_line(&mut line).unwrap() == 0 || line == "\r\n" {
+                        break;
+                    }
+                }
+                if redirect {
+                    write!(
+                        stream,
+                        "HTTP/1.1 302 Found\r\nLocation: https://example.invalid/outside\r\n"
+                    )
+                    .unwrap();
+                } else {
+                    write!(stream, "HTTP/1.1 200 OK\r\n").unwrap();
+                }
+                write!(
+                    stream,
+                    "Content-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                )
+                .unwrap();
+                stream.write_all(&body).unwrap();
+            }
+        });
+
+        let storage = fixture.root.join("installed");
+        let mut host = LocalPlugins::open(storage.clone());
+        host.set_market_catalog(&fixture.index)?;
+        host.set_official_test_index(index_url.clone());
+        host.ensure_official_catalog();
+        settle_market(&mut host);
+        let remote = host.market_catalog(true).unwrap();
+        assert_eq!(remote.entries[0].version, "1.0.0");
+        assert_eq!(
+            host.market_catalog(false).unwrap().entries[0].version,
+            "1.1.0"
+        );
+        assert!(host.official_cover(&remote, &remote.entries[0]).is_none());
+        settle_market(&mut host);
+        assert!(matches!(
+            host.official_cover(&remote, &remote.entries[0]),
+            Some(Ok(_))
+        ));
+        host.market_action(true, ID)?;
+        settle_market(&mut host);
+        assert!(host.records[ID].official_market);
+        assert!(!host.records[ID].enabled);
+        assert_eq!(status(&host), MarketStatus::OtherSource);
+        host.enable(ID, true)?;
+        let mut values = host.records[ID].values.clone();
+        values.insert("title".into(), "我的发薪日".into());
+        host.save(ID, values.clone())?;
+        let installed = fs::read(host.path(ID))?;
+
+        host.refresh_official_catalog();
+        settle_market(&mut host);
+        let remote = host.market_catalog(true).unwrap();
+        assert_eq!(
+            host.market_status(&remote, &remote.entries[0]),
+            MarketStatus::Update
+        );
+        host.market_action(true, ID)?;
+        settle_market(&mut host);
+        assert!(host.notice.contains("SHA-256"));
+        assert_eq!(fs::read(host.path(ID))?, installed);
+        host.market_action(true, ID)?;
+        settle_market(&mut host);
+        assert_eq!(
+            host.market_status(&remote, &remote.entries[0]),
+            MarketStatus::Installed
+        );
+        assert_eq!(host.records[ID].values, values);
+        assert!(host.records[ID].enabled);
+
+        let mut host = LocalPlugins::open(storage);
+        host.set_official_test_index(index_url);
+        host.ensure_official_catalog();
+        settle_market(&mut host);
+        let remote = host.market_catalog(true).unwrap();
+        assert!(host
+            .official_catalog_error()
+            .unwrap()
+            .contains("非预期跳转"));
+        assert_eq!(remote.entries[0].version, "1.1.0");
+        assert_eq!(fs::read(&remote.path)?, second);
+        server.join().unwrap();
         Ok(())
     }
 }

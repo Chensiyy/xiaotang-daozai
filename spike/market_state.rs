@@ -1,5 +1,5 @@
 use super::{market, *};
-use std::{cmp::Ordering, thread::JoinHandle};
+use std::{cmp::Ordering, sync::Arc, thread::JoinHandle};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum MarketStatus {
@@ -17,6 +17,18 @@ pub(super) struct MarketJob {
     result: JoinHandle<std::result::Result<Record, String>>,
 }
 
+#[derive(Default)]
+pub(super) struct OfficialMarket {
+    catalog: Option<Arc<market::Catalog>>,
+    last_attempt: Option<Instant>,
+    sync_job: Option<JoinHandle<std::result::Result<market::Catalog, String>>>,
+    error: Option<String>,
+    cover_job: Option<(String, JoinHandle<Option<CoverPng>>)>,
+    covers: BTreeMap<String, Option<CoverPng>>,
+    #[cfg(test)]
+    test_index: Option<url::Url>,
+}
+
 impl LocalPlugins {
     fn saved_market_path(&self) -> Option<PathBuf> {
         let json = bounded(&self.dir.join("market-catalog.json"), 128 * 1024).ok()?;
@@ -24,13 +36,10 @@ impl LocalPlugins {
     }
 
     pub(super) fn restore_market_catalog(&mut self) {
-        if let Some(path) = self.saved_market_path() {
-            match market::Catalog::open(&path) {
-                Ok(catalog) => self.market_catalog = Some(catalog),
-                Err(error) if self.notice.is_empty() => self.notice = error.to_string(),
-                Err(_) => {}
-            }
-        }
+        self.market_catalog = self
+            .saved_market_path()
+            .and_then(|path| market::Catalog::open(&path).ok())
+            .map(Arc::new);
     }
 
     pub(super) fn set_market_catalog(&mut self, path: &Path) -> Result<()> {
@@ -42,7 +51,7 @@ impl LocalPlugins {
             &self.dir.join("market-catalog.json"),
             &serde_json::to_vec(&catalog.path)?,
         )?;
-        self.market_catalog = Some(catalog);
+        self.market_catalog = Some(Arc::new(catalog));
         Ok(())
     }
 
@@ -56,18 +65,104 @@ impl LocalPlugins {
             .map(|catalog| catalog.path.clone())
             .or_else(|| self.saved_market_path())
             .ok_or_else(|| fail("请先选择测试集市目录"))?;
-        self.market_catalog = Some(market::Catalog::open(&path)?);
+        self.market_catalog = Some(Arc::new(market::Catalog::open(&path)?));
         Ok(())
     }
 
-    pub(super) fn market_status(&self, entry: &market::Entry) -> MarketStatus {
-        let Some(catalog) = &self.market_catalog else {
-            return MarketStatus::Unavailable;
+    pub(super) fn ensure_official_catalog(&mut self) {
+        if self
+            .official_market
+            .last_attempt
+            .is_none_or(|last| last.elapsed() >= Duration::from_secs(5 * 60))
+        {
+            self.refresh_official_catalog();
+        }
+    }
+
+    pub(super) fn refresh_official_catalog(&mut self) {
+        let official = &mut self.official_market;
+        if official.sync_job.is_some() {
+            return;
+        }
+        official.last_attempt = Some(Instant::now());
+        #[cfg(not(test))]
+        let index = market::official_index_url().map(Some);
+        #[cfg(test)]
+        let index: Result<_> = Ok(official.test_index.clone());
+        let index = match index {
+            Ok(Some(index)) => index,
+            Ok(None) => return,
+            Err(error) => {
+                official.error = Some(error.to_string());
+                return;
+            }
         };
+        let path = market::official_cache_path(&self.dir, &index);
+        if official.catalog.is_none() {
+            official.catalog = market::Catalog::restore_official(path.clone(), index.clone())
+                .ok()
+                .map(Arc::new);
+        }
+        official.error = None;
+        official.covers.retain(|_, cover| cover.is_some());
+        official.sync_job = Some(std::thread::spawn(move || {
+            market::Catalog::sync_official(path, index).map_err(|error| error.to_string())
+        }));
+    }
+
+    pub(super) fn official_catalog_busy(&self) -> bool {
+        self.official_market.sync_job.is_some()
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_official_test_index(&mut self, index: url::Url) {
+        self.official_market.test_index = Some(index);
+    }
+
+    pub(super) fn official_catalog_error(&self) -> Option<&str> {
+        self.official_market.error.as_deref()
+    }
+
+    pub(super) fn market_catalog(&self, official: bool) -> Option<Arc<market::Catalog>> {
+        if official {
+            self.official_market.catalog.clone()
+        } else {
+            self.market_catalog.clone()
+        }
+    }
+
+    pub(super) fn official_cover(
+        &mut self,
+        catalog: &Arc<market::Catalog>,
+        entry: &market::Entry,
+    ) -> Option<std::result::Result<CoverPng, ()>> {
+        let official = &mut self.official_market;
+        if let Some(cover) = official.covers.get(&entry.sha256) {
+            return Some(cover.clone().ok_or(()));
+        }
+        if official.cover_job.is_none() {
+            let (catalog, entry) = (Arc::clone(catalog), entry.clone());
+            let sha256 = entry.sha256.clone();
+            official.cover_job = Some((
+                sha256,
+                std::thread::spawn(move || catalog.load(&entry).ok()?.cover),
+            ));
+        }
+        None
+    }
+
+    pub(super) fn market_status(
+        &self,
+        catalog: &market::Catalog,
+        entry: &market::Entry,
+    ) -> MarketStatus {
         let Some(record) = self.records.get(&entry.id) else {
             return MarketStatus::Install;
         };
-        if !record.from_market || record.origin != catalog.path {
+        if !record.from_market
+            || record.official_market != catalog.is_official()
+            || record.origin != catalog.path
+        {
             return MarketStatus::OtherSource;
         }
         let Some(package) = &record.package else {
@@ -84,30 +179,35 @@ impl LocalPlugins {
         self.market_job.is_some()
     }
 
+    pub(super) fn market_pending(&self) -> bool {
+        self.market_busy()
+            || self.official_catalog_busy()
+            || self.official_market.cover_job.is_some()
+    }
+
     pub(super) fn cancel_market(&mut self, id: &str) {
         if let Some(job) = self.market_job.as_mut().filter(|job| job.id == id) {
             job.cancelled = true;
         }
     }
 
-    pub(super) fn market_action(&mut self, id: &str) -> Result<()> {
+    pub(super) fn market_action(&mut self, official: bool, id: &str) -> Result<()> {
         if self.market_busy() {
             return Err(fail("请等待当前集市操作完成"));
         }
         let catalog = self
-            .market_catalog
-            .as_ref()
-            .ok_or_else(|| fail("请先选择测试集市目录"))?;
+            .market_catalog(official)
+            .ok_or_else(|| fail("集市目录尚未加载"))?;
         let entry = catalog
             .entries
             .iter()
             .find(|entry| entry.id == id)
-            .ok_or_else(|| fail("测试集市没有这个插件"))?;
-        let update = match self.market_status(entry) {
+            .ok_or_else(|| fail("集市没有这个插件"))?;
+        let update = match self.market_status(&catalog, entry) {
             MarketStatus::Install => false,
             MarketStatus::Update => true,
             MarketStatus::Installed | MarketStatus::Unavailable => {
-                return Err(fail("测试集市没有更高版本"));
+                return Err(fail("集市没有更高版本"));
             }
             MarketStatus::OtherSource => return Err(fail("请从原来源管理这个插件")),
         };
@@ -120,6 +220,7 @@ impl LocalPlugins {
             Record {
                 origin: catalog.path.clone(),
                 from_market: true,
+                official_market: official,
                 package: None,
                 enabled: false,
                 values: Values::new(),
@@ -127,7 +228,7 @@ impl LocalPlugins {
                 material_granted: false,
             }
         };
-        let (catalog, entry) = (catalog.clone(), entry.clone());
+        let entry = entry.clone();
         self.market_job = Some(MarketJob {
             id: id.to_owned(),
             update,
@@ -141,6 +242,7 @@ impl LocalPlugins {
     }
 
     pub(super) fn poll_market(&mut self) {
+        self.poll_official_market();
         if !self
             .market_job
             .as_ref()
@@ -174,6 +276,43 @@ impl LocalPlugins {
             Err(error) if job.update => format!("更新失败，原版本仍可用。{error}"),
             Err(error) => format!("安装失败。{error}"),
         };
+    }
+
+    fn poll_official_market(&mut self) {
+        let official = &mut self.official_market;
+        if official
+            .sync_job
+            .as_ref()
+            .is_some_and(JoinHandle::is_finished)
+        {
+            let job = official.sync_job.take().unwrap();
+            match job
+                .join()
+                .unwrap_or_else(|_| Err("同步集市时出现错误".into()))
+            {
+                Ok(catalog) => {
+                    official
+                        .covers
+                        .retain(|sha, _| catalog.entries.iter().any(|entry| &entry.sha256 == sha));
+                    official.catalog = Some(Arc::new(catalog));
+                }
+                Err(error) => official.error = Some(error),
+            }
+        }
+        if official
+            .cover_job
+            .as_ref()
+            .is_some_and(|(_, job)| job.is_finished())
+        {
+            let (sha, job) = official.cover_job.take().unwrap();
+            if official
+                .catalog
+                .as_ref()
+                .is_some_and(|catalog| catalog.entries.iter().any(|entry| entry.sha256 == sha))
+            {
+                official.covers.insert(sha, job.join().unwrap_or(None));
+            }
+        }
     }
 }
 

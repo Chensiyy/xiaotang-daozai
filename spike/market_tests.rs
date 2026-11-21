@@ -1,6 +1,36 @@
 use super::*;
 use serde_json::json;
 
+#[test]
+fn gitee_contents_accepts_only_the_requested_bounded_file() -> Result<()> {
+    let path = "stable/catalog.json";
+    let valid = json!({
+        "type": "file",
+        "encoding": "base64",
+        "size": 3,
+        "path": path,
+        "content": "YW\r\nJj"
+    });
+    assert_eq!(
+        decode_gitee_file(&serde_json::to_vec(&valid)?, path, 3)?,
+        b"abc"
+    );
+    for (key, value) in [
+        ("type", json!("symlink")),
+        ("encoding", json!("utf8")),
+        ("path", json!("preview/catalog.json")),
+        ("size", json!(4)),
+        ("size", json!(2)),
+        ("content", json!("******")),
+        ("content", json!("****")),
+    ] {
+        let mut invalid = valid.clone();
+        invalid[key] = value;
+        assert!(decode_gitee_file(&serde_json::to_vec(&invalid)?, path, 3).is_err());
+    }
+    Ok(())
+}
+
 struct Fixture(PathBuf);
 
 impl Fixture {
