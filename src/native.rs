@@ -254,8 +254,27 @@ unsafe fn glass_region(key: &[i32]) -> Option<HRGN> {
 
 /// 窗口接管设置成功的区域，设置失败时由调用方释放。
 pub(crate) fn apply_outline(hwnd:HWND,key:&[i32],redraw:bool)->bool {
+    apply_outline_with_feather(hwnd,key,redraw,false)
+}
+
+fn apply_outline_with_feather(hwnd:HWND,key:&[i32],redraw:bool,feather:bool)->bool {
+    use windows::Win32::Graphics::Gdi::{OffsetRgn, RGN_COPY};
     unsafe {
         let Some(rgn)=glass_region(key) else{return false;};
+        if feather {
+            // 常驻窗口仍按形状让出透明留白，边界保留 2 个物理像素给羽化和坐标取整。
+            let edge=CreateRectRgn(0,0,0,0);
+            if !edge.0.is_null() {
+                for (dx,dy) in [(1,0),(-1,0),(0,1),(0,-1)] {
+                    for _ in 0..2 {
+                        let _=CombineRgn(edge,rgn,HRGN::default(),RGN_COPY);
+                        let _=OffsetRgn(edge,dx,dy);
+                        let _=CombineRgn(rgn,rgn,edge,RGN_OR);
+                    }
+                }
+                let _=DeleteObject(edge);
+            }
+        }
         if SetWindowRgn(hwnd,rgn,redraw)!=0 {return true;}
         let _=DeleteObject(rgn);
         false
@@ -794,9 +813,11 @@ impl Window {
         }
         // 不可靠的透明合成路径按真实轮廓裁剪，避免圆角外侧和透明画布留下黑底。
         let outline_clip=self.opaque_surface && !hold_startup && !matches!(self.layering,Layering::Active(_));
+        // 可靠的透明合成直接绘制软边，分层显示和不透明兜底仍使用原有的输入轮廓。
+        let feather=resident_key.is_some() && !self.opaque_surface;
         match resident_key.or_else(||glass.filter(|_|outline_clip).map(|shapes|glass_key(shapes,ppp))) {
             Some(key) => {
-                if self.glass.as_ref()!=Some(&key) && apply_outline(self.hwnd,&key,true) {
+                if self.glass.as_ref()!=Some(&key) && apply_outline_with_feather(self.hwnd,&key,true,feather) {
                     self.glass=Some(key);
                     // 回到矩形区域时必须重新设置。
                     self.region=(i32::MIN,0,0,0);
@@ -1032,23 +1053,39 @@ mod tests {
     }
 
     #[test]
-    fn long_resident_edges_do_not_own_the_window_below() {
+    fn resident_region_preserves_antialiasing_without_capturing_transparent_space() {
         use windows::Win32::Graphics::Gdi::{GetWindowRgn,PtInRegion};
         let _guard=NATIVE_STATE_LOCK.lock().unwrap_or_else(|e|e.into_inner());
         unsafe {
             let hwnd=CreateWindowExW(WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE,windows::core::w!("STATIC"),windows::core::w!(""),WS_POPUP,-10000,-10000,1000,200,None,None,None,None).unwrap();
             let mut native=Window{hwnd,capture_exclusion:Default::default(),layering:Layering::Pending,region:(0,0,0,0),expanded:false,hook:HWINEVENTHOOK::default(),page_wheel_hook:None,browser_state:(None,PollClock::now()),drag_capture:DragCapture::default(),glass:None,backdrop:None,blur:false,blur_unavailable:true,opaque_surface:false,outline:ShapeAlpha::default()};
-            let bar=(64.0,0.0,500.0,30.0);
-            let shapes=[crate::app::GlassShape::Notch{rect:eframe::egui::Rect::from_min_size(eframe::egui::pos2(bar.0,bar.1),eframe::egui::vec2(bar.2,bar.3)),flare:5.0,flare_h:8.0,radius:12.5}];
-            for ppp in [1.0,1.75] {
-                native.update((32.0,0.0,564.0,48.0),bar,None,None,None,ppp,false,false,Some(&shapes));
-                let rgn=CreateRectRgn(0,0,0,0);
-                let _=GetWindowRgn(hwnd,rgn);
-                let owns=|x:f32,y:f32|PtInRegion(rgn,(x*ppp).round() as i32,(y*ppp).round() as i32).as_bool();
-                let visible=owns(65.0,15.0)&&owns(563.0,15.0);
-                let outside=owns(62.0,15.0)||owns(566.0,15.0)||owns(65.0,29.0);
-                let _=DeleteObject(rgn);
-                assert!(visible && !outside,"缩放 {ppp}，实体命中 {visible}，透明边缘命中 {outside}");
+            use eframe::egui::{pos2,vec2,Rect};
+            use crate::app::GlassShape;
+            for width in [180.0,500.0] {
+                let bar=(64.0,7.0,width,30.0);
+                let rect=Rect::from_min_size(pos2(bar.0,bar.1),vec2(bar.2,bar.3));
+                for shape in [GlassShape::Round(rect,15.0),GlassShape::Notch{rect,flare:5.0,flare_h:8.0,radius:12.5}] {
+                    for ppp in [1.0,1.25,1.75] {
+                        let shapes=std::slice::from_ref(&shape);
+                        let raw=glass_region(&glass_key(shapes,ppp)).unwrap();
+                        native.update((32.0,0.0,width+64.0,48.0),bar,None,None,None,ppp,false,false,Some(shapes));
+                        let rgn=CreateRectRgn(0,0,0,0);
+                        let _=GetWindowRgn(hwnd,rgn);
+                        for y in [(8.0*ppp).round() as i32,(22.0*ppp).round() as i32,(35.0*ppp).round() as i32] {
+                            let center=((bar.0+width/2.0)*ppp).round() as i32;
+                            let left=(0..center).find(|&x|PtInRegion(raw,x,y).as_bool()).unwrap();
+                            let right=(center..1000).rev().find(|&x|PtInRegion(raw,x,y).as_bool()).unwrap();
+                            assert!(PtInRegion(rgn,left-1,y).as_bool() && PtInRegion(rgn,right+1,y).as_bool(),
+                                "{width} / {ppp}：窗口不能裁掉轮廓外的抗锯齿像素");
+                            let outside_left=((bar.0-8.0)*ppp).round() as i32;
+                            let outside_right=((bar.0+width+8.0)*ppp).round() as i32;
+                            assert!(!PtInRegion(rgn,outside_left,y).as_bool() && !PtInRegion(rgn,outside_right,y).as_bool(),
+                                "{width} / {ppp}：轮廓两端的留白仍应交给下层窗口");
+                        }
+                        let _=DeleteObject(raw);
+                        let _=DeleteObject(rgn);
+                    }
+                }
             }
             drop(native);
             DestroyWindow(hwnd).unwrap();
