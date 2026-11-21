@@ -7,6 +7,7 @@
   "runtime": "js",
   "refreshSeconds": 60,
   "entry": "main.js",
+  "cover": "cover.png",
   "owner": "tasks",
   "capabilities": [
     "settings",

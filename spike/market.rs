@@ -1,6 +1,9 @@
 //! 本机测试集市的作者工具和包校验。
 
-use super::{bounded, fail, valid_id, Manifest, Package, Result, Values, SCRIPT_SOURCE_LIMIT};
+use super::{
+    bounded, cover::COVER_LIMIT, fail, valid_id, CoverPng, Manifest, Package, Result, Values,
+    COVER_FILE, SCRIPT_SOURCE_LIMIT,
+};
 use ring::digest::{digest, SHA256};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -16,7 +19,7 @@ use std::{
 use zip::{write::SimpleFileOptions, CompressionMethod, ZipArchive, ZipWriter};
 
 const MANIFEST_LIMIT: u64 = 32 * 1024;
-const ZIP_LIMIT: u64 = 512 * 1024;
+const ZIP_LIMIT: u64 = 576 * 1024;
 const CATALOG_LIMIT: u64 = 64 * 1024;
 const CATALOG_FORMAT: u32 = 1;
 
@@ -102,6 +105,12 @@ impl Catalog {
         }
         Ok(package)
     }
+
+    pub(super) fn cover_png(&self, entry: &Entry) -> Result<Vec<u8>> {
+        self.load(entry)?
+            .cover_png()
+            .ok_or_else(|| fail("插件 ZIP 缺少封面"))
+    }
 }
 
 fn version(value: &str) -> Option<[u32; 3]> {
@@ -154,14 +163,17 @@ fn supported(manifest: &Manifest) -> Result<()> {
 }
 
 fn decode_zip(raw: &[u8]) -> Result<Package> {
+    if raw.len() as u64 > ZIP_LIMIT {
+        return Err(fail("插件 ZIP 超过 576 KiB"));
+    }
     let mut zip = ZipArchive::new(Cursor::new(raw))
         .map_err(|error| fail(&format!("插件 ZIP 格式无效：{error}")))?;
-    if zip.len() != 2
+    if zip.len() > 3
         || zip.has_duplicate_names()
         || zip.offset() != 0
         || zip.has_overlapping_entries()?
     {
-        return Err(fail("插件 ZIP 只能包含两个不重复的根目录文件"));
+        return Err(fail("插件 ZIP 只能包含清单、入口和封面三个根目录文件"));
     }
     let manifest = Manifest::decode(&zip_text(&mut zip, "plugin.json", MANIFEST_LIMIT)?)?;
     supported(&manifest)?;
@@ -169,10 +181,20 @@ fn decode_zip(raw: &[u8]) -> Result<Package> {
     if source.trim().is_empty() {
         return Err(fail("插件入口文件为空"));
     }
-    Ok(Package { manifest, source })
+    let cover = CoverPng::decode(zip_bytes(&mut zip, COVER_FILE, COVER_LIMIT)?)?;
+    Ok(Package {
+        manifest,
+        source,
+        cover: Some(cover),
+    })
 }
 
 fn zip_text(zip: &mut ZipArchive<Cursor<&[u8]>>, name: &str, limit: u64) -> Result<String> {
+    String::from_utf8(zip_bytes(zip, name, limit)?)
+        .map_err(|_| fail(&format!("插件 ZIP 中的 {name} 必须使用 UTF-8")))
+}
+
+fn zip_bytes(zip: &mut ZipArchive<Cursor<&[u8]>>, name: &str, limit: u64) -> Result<Vec<u8>> {
     let file = zip
         .by_name(name)
         .map_err(|_| fail(&format!("插件 ZIP 缺少 {name}")))?;
@@ -187,8 +209,7 @@ fn zip_text(zip: &mut ZipArchive<Cursor<&[u8]>>, name: &str, limit: u64) -> Resu
             "插件 ZIP 中的 {name} 必须是大小合规的普通文件"
         )));
     }
-    String::from_utf8(read_limited(file, limit)?)
-        .map_err(|_| fail(&format!("插件 ZIP 中的 {name} 必须使用 UTF-8")))
+    read_limited(file, limit)
 }
 
 fn smoke(package: &Package) -> Result<()> {
@@ -298,6 +319,9 @@ pub(super) fn pack(manifest_path: &Path, output: &Path) -> Result<()> {
     zip.write_all(&serde_json::to_vec(&package.manifest)?)?;
     zip.start_file(&package.manifest.entry, options)?;
     zip.write_all(package.source.as_bytes())?;
+    zip.start_file(COVER_FILE, options)?;
+    let cover = package.cover.as_ref().ok_or_else(|| fail("缺少插件封面"))?;
+    zip.write_all(cover.bytes())?;
     let raw = zip.finish()?.into_inner();
     decode_zip(&raw)?;
     write_new(output, &raw)

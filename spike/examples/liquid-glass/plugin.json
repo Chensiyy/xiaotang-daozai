@@ -6,6 +6,7 @@
   "api": 1,
   "runtime": "material",
   "entry": "material.wgsl",
+  "cover": "cover.png",
   "owner": "appearance",
   "capabilities": ["appearance.material", "settings"],
   "dataVersion": 1,

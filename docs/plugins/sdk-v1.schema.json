@@ -38,6 +38,10 @@
       "type": "string",
       "pattern": "^(?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_-]+\\.[A-Za-z0-9]+$"
     },
+    "cover": {
+      "const": "cover.png",
+      "description": "包根目录的 PNG 封面，最大 256 KiB，宽高不超过 1920×1080，建议 16:9。"
+    },
     "owner": {
       "enum": [
         "self",
@@ -348,6 +352,7 @@
     "version",
     "api",
     "runtime",
+    "cover",
     "owner",
     "capabilities",
     "dataVersion",

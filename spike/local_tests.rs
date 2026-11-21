@@ -41,6 +41,7 @@ mod test_market {
             let manifest_path = source.join("plugin.json");
             fs::copy(sample.join("plugin.json"), &manifest_path)?;
             fs::copy(sample.join("main.js"), source.join("main.js"))?;
+            fs::copy(sample.join(COVER_FILE), source.join(COVER_FILE))?;
             Ok(Self {
                 root,
                 manifest_path,
@@ -108,6 +109,27 @@ mod test_market {
         host.tick(false, "2026-12-02");
         assert!(host.records[ID].enabled && !host.has_card());
 
+        // 无封面的旧快照从磁盘恢复，在线更新后随包保存封面。
+        let mut old: Value = serde_json::from_slice(&fs::read(host.path(ID))?)?;
+        let snapshot = old["package"].as_object_mut().unwrap();
+        snapshot.remove("cover");
+        snapshot
+            .get_mut("manifest")
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .remove("cover");
+        fs::write(host.path(ID), serde_json::to_vec(&old)?)?;
+        let mut host = LocalPlugins::open(storage.clone());
+        assert!(host.records[ID]
+            .package
+            .as_ref()
+            .unwrap()
+            .cover_png()
+            .is_none());
+        assert!(host.records[ID].enabled);
+        assert_eq!(host.records[ID].values, values);
+
         fixture.publish("1.1.0", false)?;
         host.refresh_market_catalog()?;
         assert_eq!(status(&host), MarketStatus::Update);
@@ -126,6 +148,15 @@ mod test_market {
         assert_eq!(host.records[ID].values, values);
         assert_eq!(host.records[ID].storage, saved);
         assert!(host.records[ID].enabled);
+        assert_eq!(
+            host.records[ID]
+                .package
+                .as_ref()
+                .unwrap()
+                .cover_png()
+                .as_deref(),
+            Some(include_bytes!("examples/payday/cover.png").as_slice())
+        );
         host.uninstall(ID, true)?;
         host.market_action(ID)?;
         settle_market(&mut host);
@@ -180,6 +211,61 @@ mod test_market {
 }
 
 #[test]
+fn local_cover_requires_a_bounded_png_inside_the_package() -> Result<()> {
+    use image::{codecs::png::PngEncoder, ExtendedColorType, ImageEncoder};
+
+    let root = std::env::temp_dir().join(format!("daozai-cover-test-{}", std::process::id()));
+    let package = root.join("package");
+    fs::create_dir_all(&package)?;
+    let path = package.join("plugin.json");
+    let cover = package.join(COVER_FILE);
+    let mut manifest: Value = serde_json::from_str(include_str!("examples/payday/plugin.json"))?;
+    fs::write(
+        package.join("main.js"),
+        include_str!("examples/payday/main.js"),
+    )?;
+    fs::write(&path, serde_json::to_vec(&manifest)?)?;
+    assert!(Package::read(&path).is_err());
+    fs::write(&cover, b"broken")?;
+    assert!(Package::read(&path).is_err());
+    fs::write(&cover, vec![0; cover::COVER_LIMIT as usize + 1])?;
+    assert!(Package::read(&path)
+        .err()
+        .unwrap()
+        .to_string()
+        .contains("256 KiB"));
+
+    let mut too_wide = Vec::new();
+    PngEncoder::new(&mut too_wide).write_image(&[0; 1921], 1921, 1, ExtendedColorType::L8)?;
+    fs::write(&cover, too_wide)?;
+    assert!(Package::read(&path).is_err());
+
+    let png = include_bytes!("examples/payday/cover.png");
+    let outside = root.join("outside.png");
+    fs::write(&outside, png)?;
+    fs::remove_file(&cover)?;
+    fs::hard_link(&outside, &cover)?;
+    assert!(Package::read(&path).is_err());
+    fs::remove_file(&cover)?;
+    fs::write(&cover, png)?;
+
+    manifest["cover"] = json!("../outside.png");
+    fs::write(&path, serde_json::to_vec(&manifest)?)?;
+    assert!(Package::read(&path).is_err());
+    manifest.as_object_mut().unwrap().remove("cover");
+    fs::write(&path, serde_json::to_vec(&manifest)?)?;
+    assert!(Package::read(&path).is_err());
+    manifest["cover"] = json!(COVER_FILE);
+    fs::write(&path, serde_json::to_vec(&manifest)?)?;
+    assert_eq!(
+        Package::read(&path)?.cover_png().as_deref(),
+        Some(png.as_slice())
+    );
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
 fn two_packages_survive_disable_restart_and_both_uninstall_choices() -> Result<()> {
     let root = std::env::temp_dir().join(format!(
         "daozai-local-{}-{}",
@@ -203,6 +289,7 @@ fn two_packages_survive_disable_restart_and_both_uninstall_choices() -> Result<(
         trip.join("main.js"),
         "function refresh(i){return {card:i.settings.title,storage:(i.storage||0)+1}}",
     )?;
+    fs::copy(sample.with_file_name(COVER_FILE), trip.join(COVER_FILE))?;
     let (a, b) = ("example.payday", "example.trip");
     host.install(&sample)?;
     host.install(&second)?;
@@ -369,7 +456,8 @@ mod material_tests {
     fn manifest(id: &str) -> Value {
         json!({
             "id": id, "name": "测试材质", "author": "测试", "version": "1.0.0", "api": 1,
-            "runtime": "material", "entry": "shaders/material.wgsl", "owner": "appearance",
+            "runtime": "material", "entry": "shaders/material.wgsl", "cover": COVER_FILE,
+            "owner": "appearance",
             "capabilities": ["appearance.material", "settings"], "dataVersion": 1,
             "permissions": {"screen.backdrop": true},
             "material": {"controls": true, "spring": {"stiffness": 1.0, "damping": 0.5}},
@@ -384,6 +472,10 @@ mod material_tests {
         let shader_dir = dir.join("shaders");
         fs::create_dir_all(&shader_dir)?;
         fs::write(shader_dir.join("material.wgsl"), SHADER)?;
+        fs::write(
+            dir.join(COVER_FILE),
+            include_bytes!("examples/liquid-glass/cover.png"),
+        )?;
         fs::create_dir_all(dir.join("docs"))?;
         fs::write(dir.join("docs/README.md"), "材质说明")?;
         let path = dir.join("plugin.json");
