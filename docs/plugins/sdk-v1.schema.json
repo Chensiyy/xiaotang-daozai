@@ -139,7 +139,9 @@
           },
           "required": ["stiffness", "damping"],
           "additionalProperties": false
-        }
+        },
+        "shadow": {"type": "number", "minimum": 0, "maximum": 1.5},
+        "foreground": {"enum": ["skin", "glass"], "default": "skin"}
       },
       "required": ["controls", "spring"],
       "additionalProperties": false

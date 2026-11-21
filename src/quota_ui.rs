@@ -1,5 +1,7 @@
 //! 同心额度环、账号选择及账号设置。
 use crate::{app::{App,Cmd},extras::{settings_control_row},paint::{Card,H},quota::{self,Accent,Account,Amount,Config,Provider,Snapshot},theme::{self,W}};
+#[cfg(all(windows, feature = "sdk-material"))]
+use crate::material::ControlRole;
 use eframe::egui::{self,Color32};
 use std::collections::{HashMap,HashSet};
 use chrono::Datelike;
@@ -281,6 +283,11 @@ fn claude_disclaimer(ui:&mut egui::Ui){
     ui.add(egui::Label::new(egui::RichText::new("岛仔为非官方辅助工具，数据仅供参考，以 Claude 官方显示为准；本地读取不构成账号安全保证。").size(12.0).color(crate::settings_theme::color(ui.ctx(),Color32::from_gray(180),Color32::from_gray(75)))).wrap());
 }
 impl App {
+    fn quota_badge_skin(&self)->crate::model::Skin {
+        use crate::model::Skin;
+        if !self.glassy() { return self.settings.skin; }
+        if self.island_palette().is_some_and(|palette|palette.glass_chrome) {Skin::GlassLight}else{Skin::GlassDark}
+    }
     pub(crate) fn quota_close_connection(&mut self){
         if let Some(connect)=&mut self.quota.kiro_connecting{connect.cancel();}
         self.quota.connect_open=false;self.quota.connect_target=None;
@@ -415,7 +422,7 @@ impl App {
             let snapshot=self.quota.rows.get(&a.id).and_then(|r|r.as_ref().ok());
             if a.provider.balance(){
                 let wide=true;let extra=if wide{layout.widths[crate::bar_layout::quota_slot(position)]-27.0}else{0.0};let icon_x=x-extra/2.0;
-                if a.provider!=Provider::DeepSeek{logo(c,a.provider,icon_x,15.0,22.0);}else{deepseek_badge(c,self.settings.skin,icon_x,15.0,24.0);}
+                if a.provider!=Provider::DeepSeek{logo(c,a.provider,icon_x,15.0,22.0);}else{deepseek_badge(c,self.quota_badge_skin(),icon_x,15.0,24.0);}
                 let loading=self.quota.balance_loading(&a.id);let stale=self.quota.stale.contains_key(&a.id);
                 if stale||(!loading&&snapshot.is_none()){
                     c.circle(icon_x+9.0,24.0,3.8,Color32::BLACK);
@@ -452,7 +459,10 @@ impl App {
         let Some(selected)=self.quota.config.selected_index() else{
             c.text(43.0,61.0,"还没有添加 AI 账号",13.0,W::Bold,theme::WHITE,H::Left);
             c.text(43.0,80.0,"连接 AI 账号，查看剩余额度",10.5,W::Regular,theme::GRAY,H::Left);
-            let(r,b)=crate::paint::material_capsule(c,43.0,92.0,94.0,24.0,"add-quota-account",theme::BTN,theme::BTN_HOVER);b.text(90.0,108.0,"添加账号",10.0,W::Semibold,theme::WHITE,H::Center);if r.clicked(){self.settings_tab=11;self.open_settings();}return;
+            let(r,b)=crate::paint::material_capsule(c,43.0,92.0,94.0,24.0,"add-quota-account",theme::BTN,theme::BTN_HOVER,
+                self.glassy().then_some((self.glass_controls_ready(),0.16,0.42)),
+                #[cfg(all(windows, feature = "sdk-material"))] ControlRole::QuotaAdd);
+            b.text(90.0,108.0,"添加账号",10.0,W::Semibold,theme::WHITE,H::Center);if r.clicked(){self.settings_tab=11;self.open_settings();}return;
         };
         let indices=self.quota.config.ordered_indices(false);
         let pos=indices.iter().position(|i|*i==selected).unwrap_or(0);let start=pos/3*3;let mut picked=None;
@@ -490,7 +500,7 @@ impl App {
             return;
         }
         if a.provider==Provider::DeepSeek{
-            deepseek_badge(c,self.settings.skin,85.0,105.0,50.0);
+            deepseek_badge(c,self.quota_badge_skin(),85.0,105.0,50.0);
             if let Some(s)=snapshot{
                 if let Some(wallet)=&s.wallet{
                     let b=wallet.primary();
@@ -1204,7 +1214,7 @@ impl App {
         let summary;
         if a.provider.balance(){
             let icon_y=mid-7.0;
-            if a.provider!=Provider::DeepSeek{logo(c,a.provider,cx,icon_y,20.0);}else{deepseek_badge(c,self.settings.skin,cx,icon_y,22.0);}
+            if a.provider!=Provider::DeepSeek{logo(c,a.provider,cx,icon_y,20.0);}else{deepseek_badge(c,self.quota_badge_skin(),cx,icon_y,22.0);}
             let loading=self.quota.balance_loading(&a.id);let stale=self.quota.stale.contains_key(&a.id);
             if stale||(!loading&&snapshot.is_none()){
                 c.circle(cx+8.0,icon_y+8.0,3.6,Color32::BLACK);

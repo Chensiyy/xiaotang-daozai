@@ -289,15 +289,15 @@ impl<'a> Card<'a> {
         (h, p)
     }
 
-    pub(crate) fn material_circle(&self, _response: &Response, _x: f32, _y: f32, _r: f32) {
-        #[cfg(all(windows, feature = "sdk-material"))]
-        self.material_control(_response, self.rect(_x - _r, _y - _r, 2.0 * _r, 2.0 * _r), _r);
+    #[cfg(all(windows, feature = "sdk-material"))]
+    pub(crate) fn material_circle_with_role(&self, response: &Response, x: f32, y: f32, radius: f32, role: crate::material::ControlRole) {
+        self.material_control(response, self.rect(x - radius, y - radius, 2.0 * radius, 2.0 * radius), radius, role);
     }
 
     #[cfg(all(windows, feature = "sdk-material"))]
-    fn material_control(&self, response: &Response, rect: Rect, radius: f32) {
+    pub(crate) fn material_control(&self, response: &Response, rect: Rect, radius: f32, role: crate::material::ControlRole) {
         if self.live {
-            crate::material::control(response.id, rect.intersect(self.painter.clip_rect()), radius * self.s);
+            crate::material::control(response.id, rect.intersect(self.painter.clip_rect()), radius * self.s, role);
         }
     }
 }
@@ -429,10 +429,95 @@ pub(crate) fn material_capsule<'a>(
     id: &str,
     base: Color32,
     hover: Color32,
+    glass: Option<(bool, f32, f32)>,
+    #[cfg(all(windows, feature = "sdk-material"))] role: crate::material::ControlRole,
 ) -> (Response, Card<'a>) {
-    let (response, inner) = capsule(c, x, y, w, h, id, base, hover);
+    let glass = glass.map(|(gpu, level, boost)| (gpu && c.live, level, boost));
+    let (response, inner) = match glass {
+        Some((true, _, _)) => {
+            let response = c.hit(x, y, w, h, id);
+            let (hover, press) = c.hover_t(&response);
+            #[cfg(all(windows, feature = "sdk-material"))]
+            let scale = crate::material::control_scale(c.ui.ctx(), response.id).unwrap_or(1.0 + 0.14 * press);
+            #[cfg(not(all(windows, feature = "sdk-material")))]
+            let scale = 1.0 + 0.14 * press;
+            let inner = c.scaled(x + w * 0.5, y + h * 0.5, scale);
+            if hover > 0.01 {
+                let from = chrome_mark(c);
+                inner.fill(x, y, w, h, h * 0.5, Color32::from_white_alpha((12.0 + 16.0 * hover) as u8));
+                chrome_since(c, from);
+            }
+            (response, inner)
+        }
+        Some((false, level, hover_boost)) => glass_capsule(c, x, y, w, h, id, level, hover_boost),
+        None => capsule(c, x, y, w, h, id, base, hover),
+    };
     #[cfg(all(windows, feature = "sdk-material"))]
-    inner.material_control(&response, inner.rect(x, y, w, h), h / 2.0);
+    match glass {
+        Some((true, _, _)) => c.material_control(&response, c.rect(x, y, w, h), h * 0.5, role),
+        None => inner.material_control(&response, inner.rect(x, y, w, h), h * 0.5, role),
+        _ => {}
+    }
+    (response, inner)
+}
+
+pub(crate) fn chrome_mark(c: &Card) -> usize {
+    crate::skin_paint::shape_count(c.ui.ctx(), c.painter.layer_id())
+}
+
+pub(crate) fn chrome_since(c: &Card, from: usize) {
+    crate::skin_paint::tone_since(c.ui.ctx(), c.painter.layer_id(), from,
+                                  crate::skin_paint::keep_glass_chrome);
+}
+
+/// 玻璃片的白边、内高光和凹槽使用固定配色。
+pub(crate) fn glass_chip(c: &Card, x: f32, y: f32, w: f32, h: f32, r: f32, level: f32) {
+    if w < 2.0 || h < 2.0 { return; }
+    let from = chrome_mark(c);
+    let level = level.clamp(0.0, 1.0);
+    let r = r.min(w.min(h) * 0.5);
+    c.fill(x, y, w, h, r, Color32::from_white_alpha((10.0 + 30.0 * level) as u8));
+    c.vgrad(x, y, w, h, r, Color32::from_white_alpha((22.0 + 24.0 * level) as u8), Color32::TRANSPARENT);
+    if h >= 8.0 {
+        let inset = r * 0.8;
+        c.fill(x + inset, y + h - 1.0, (w - inset * 2.0).max(1.0), 1.0, 0.5, Color32::from_black_alpha(28));
+    }
+    c.stroke(x + 0.75, y + 0.75, w - 1.5, h - 1.5, (r - 0.75).max(0.0), 1.5,
+             Color32::from_white_alpha((120.0 + 60.0 * level) as u8));
+    chrome_since(c, from);
+}
+
+/// 圆形按钮的矢量玻璃底。
+pub(crate) fn glass_disc(c: &Card, cx: f32, cy: f32, r: f32, level: f32) {
+    if r < 2.0 { return; }
+    let from = chrome_mark(c);
+    let level = level.clamp(0.0, 1.0);
+    c.circle(cx, cy, r, Color32::from_white_alpha((10.0 + 28.0 * level) as u8));
+    c.arc(cx, cy, r - 0.8, PI * 1.12, PI * 1.88, 1.1, Color32::from_white_alpha((26.0 + 30.0 * level) as u8));
+    c.ring(cx, cy, (r - 0.75).max(0.5), 1.5, Color32::from_white_alpha((110.0 + 60.0 * level) as u8));
+    chrome_since(c, from);
+}
+
+pub(crate) fn glass_groove(c: &Card, x: f32, y: f32, w: f32, h: f32) {
+    if w < 2.0 || h < 1.5 { return; }
+    let from = chrome_mark(c);
+    let r = h * 0.5;
+    let inset = (r * 0.9).min(w * 0.4);
+    c.fill(x, y, w, h, r, Color32::from_black_alpha(46));
+    if h >= 6.0 {
+        c.fill(x + inset, y, (w - inset * 2.0).max(1.0), 1.0, 0.5, Color32::from_black_alpha(56));
+    }
+    c.fill(x + inset, y + h - 1.0, (w - inset * 2.0).max(1.0), 1.0, 0.5, Color32::from_white_alpha(26));
+    chrome_since(c, from);
+}
+
+pub(crate) fn glass_capsule<'a>(
+    c: &Card<'a>, x: f32, y: f32, w: f32, h: f32, id: &str, level: f32, hover_boost: f32,
+) -> (Response, Card<'a>) {
+    let response = c.hit(x, y, w, h, id);
+    let (hover, press) = c.hover_t(&response);
+    let inner = c.scaled(x + w * 0.5, y + h * 0.5, 1.0 - 0.05 * press);
+    glass_chip(&inner, x, y, w, h, h * 0.5, level + hover * hover_boost);
     (response, inner)
 }
 
@@ -449,6 +534,13 @@ pub fn chevron(c: &Card, x: f32, y: f32, dir: f32, hover: f32, press: f32) {
     c.circle(x, y, 9.0, mix(theme::ARROW_BG, Color32::from_rgb(78, 78, 82), hover));
     let nudge = dir * 0.8 * hover;
     let (cx, s) = (x + nudge + dir * 0.6, 2.7);
+    c.path(&[(cx - dir * s * 0.75, y - s), (cx + dir * s * 0.45, y), (cx - dir * s * 0.75, y + s)], 1.6, Color32::WHITE);
+}
+
+pub(crate) fn chevron_glass(c: &Card, x: f32, y: f32, dir: f32, hover: f32, scale: f32, gpu: bool) {
+    let c = c.scaled(x, y, scale);
+    if !gpu { glass_disc(&c, x, y, 12.0, 0.18 + hover * 0.82); }
+    let (cx, s) = (x + dir * (0.8 * hover + 0.6), 2.7);
     c.path(&[(cx - dir * s * 0.75, y - s), (cx + dir * s * 0.45, y), (cx - dir * s * 0.75, y + s)], 1.6, Color32::WHITE);
 }
 

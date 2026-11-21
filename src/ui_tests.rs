@@ -19,6 +19,52 @@ use std::sync::Mutex;
 
 pub(crate) static ENV_LOCK: Mutex<()> = Mutex::new(());
 
+#[cfg(all(windows, feature = "sdk-material"))]
+#[test]
+fn material_foreground_and_shadow_return_to_the_base_skin_when_disabled() {
+    use crate::{material::Appearance, model::{IslandShape, Skin}};
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+    let mut h = H::new();
+    h.app.settings.skin = Skin::Classic;
+    h.app.settings.island_shape = IslandShape::Pill;
+    h.app.settings.pet = false;
+    h.app.show_page(0);
+    for _ in 0..50 { h.frame(Vec::new()); }
+
+    let canvas = Rect::from_min_size(Pos2::ZERO, Vec2::new(WIN_W, WIN_H));
+    let color = egui::Color32::from_rgba_unmultiplied(248, 248, 250, 225);
+    let mut draw = |material_active, shadow| {
+        h.t += 1.0 / 60.0;
+        let env = Env {
+            t: h.t, material_active,
+            material_appearance: Appearance { shadow: Some(shadow), glass_foreground: true, light: true, ..Default::default() },
+            ..Default::default()
+        };
+        h.ctx.run(egui::RawInput { screen_rect: Some(canvas), time: Some(h.t), ..Default::default() }, |ctx| {
+            egui::CentralPanel::default().frame(egui::Frame::new()).show(ctx, |ui| {
+                let out = h.app.frame(ui, canvas, &env);
+                assert_eq!(out.material_layer.is_some(), material_active);
+            });
+        }).shapes
+    };
+    let stats = |shapes: &[egui::epaint::ClippedShape]| {
+        shapes.iter().filter_map(|shape| match &shape.shape {
+            egui::Shape::Rect(rect) if rect.rect.width() > 300.0 && rect.rect.height() > 50.0 => Some(rect.fill),
+            _ => None,
+        }).collect::<Vec<_>>()
+    };
+    let without_shadow = stats(&draw(true, 0.0));
+    let with_shadow = stats(&draw(true, 1.0));
+    let disabled = stats(&draw(false, 0.0));
+    assert!(without_shadow.contains(&color));
+    assert!(with_shadow.len() > without_shadow.len());
+    assert!(!disabled.contains(&color));
+    assert!(disabled.contains(&egui::Color32::BLACK));
+    assert!(disabled.len() > without_shadow.len());
+    assert!(!h.app.glassy());
+    assert_eq!(h.app.settings.skin, Skin::Classic);
+}
+
 #[test]
 fn gemini_connect_form_opens_default_browser_without_claiming_connection(){
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());

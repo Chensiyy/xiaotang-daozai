@@ -27,6 +27,7 @@ pub(super) struct Frame {
     pub ctl_shape: [[f32; 4]; 16],
     pub ctl_spring: [[f32; 4]; 16],
     pub params: [[f32; 4]; 8],
+    pub motion: [f32; 4],
 }
 
 const FRAME_SIZE: u64 = size_of::<Frame>() as u64;
@@ -264,6 +265,7 @@ fn dock_code(dock: Dock) -> u32 {
         Dock::Top => 0,
         Dock::Left => 1,
         Dock::Right => 2,
+        Dock::Bottom => 3,
     }
 }
 
@@ -370,9 +372,11 @@ mod tests {
             ("ctl_shape", offset_of!(Frame, ctl_shape)),
             ("ctl_spring", offset_of!(Frame, ctl_spring)),
             ("params", offset_of!(Frame, params)),
+            ("motion", offset_of!(Frame, motion)),
         ];
         assert_eq!(align_of::<Frame>(), 16);
-        assert_eq!(size_of::<Frame>(), 1024);
+        assert_eq!(offset_of!(Frame, motion), 1024);
+        assert_eq!(size_of::<Frame>(), 1040);
         assert_eq!(*span as usize, size_of::<Frame>());
         assert_eq!(members.len(), rust.len());
         for (member, (name, offset)) in members.iter().zip(rust) {
@@ -459,6 +463,7 @@ mod tests {
 
         for (dock, body, [x, y], [outside_x, outside_y]) in [
             (Dock::Top, rect(20.0, 0.0, 24.0, 44.0), [17, 4], [17, 18]),
+            (Dock::Bottom, rect(20.0, 20.0, 24.0, 44.0), [17, 59], [17, 45]),
             (Dock::Left, rect(0.0, 20.0, 44.0, 24.0), [4, 17], [18, 17]),
             (
                 Dock::Right,

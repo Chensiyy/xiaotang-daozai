@@ -11,6 +11,7 @@ struct Frame {
     ctl_shape : array<vec4<f32>, 16>,
     ctl_spring : array<vec4<f32>, 16>,
     params : array<vec4<f32>, 8>,
+    motion : vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> frame : Frame;
 @group(0) @binding(1) var backdrop : texture_2d<f32>;
@@ -53,6 +54,8 @@ fn body_sdf(p : vec2<f32>) -> f32 {
         } else if (frame.count.y == 2u) {
             local = vec2<f32>(local.y, -local.x);
             half_size = half_size.yx;
+        } else if (frame.count.y == 3u) {
+            local.y = -local.y;
         }
         return notch_sdf(local, half_size, radius, frame.notch.x, frame.notch.y);
     }

@@ -1,5 +1,7 @@
 //! 岛内日程：左侧月历，右侧按时间排列邮件邀请与工作日程。
 use crate::{app::{App, Cmd, Env, CALENDAR_PAGE}, calendar, mail, paint::{self,Card,H}, theme::{self,W}};
+#[cfg(all(windows, feature = "sdk-material"))]
+use crate::material::ControlRole;
 use chrono::{Datelike, NaiveDate};
 use eframe::egui::{self,Color32};
 
@@ -270,7 +272,9 @@ impl App {
         source_icon(header,Source::Calendar(None),43.0,13.0,10.0);
         header.centered_text(69.0,18.0,"日程",10.0,W::Semibold,theme::WHITE,H::Center);
         if header.hit(37.0,9.0,54.0,18.0,"calendar-today").on_hover_text("回到今天").clicked(){self.select_calendar_day(today);}
-        let (add,b)=paint::material_capsule(header,101.0,9.0,46.0,18.0,"calendar-add-local",theme::BTN,theme::BTN_HOVER);
+        let (add,b)=paint::material_capsule(header,101.0,9.0,46.0,18.0,"calendar-add-local",theme::BTN,theme::BTN_HOVER,
+            self.glassy().then_some((self.glass_controls_ready(),0.16,0.42)),
+            #[cfg(all(windows, feature = "sdk-material"))] ControlRole::CalAdd);
         b.centered_text(124.0,18.0,"＋ 新增",9.0,W::Regular,theme::WHITE,H::Center);
         if add.clicked(){self.open_calendar_editor(None);return;}
         c.seg((155.0,36.0),(155.0,208.0),0.6,Color32::from_gray(38));

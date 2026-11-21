@@ -291,6 +291,40 @@ mod material_tests {
     }
 
     #[test]
+    fn material_manifest_validates_optional_shadow_and_foreground() -> Result<()> {
+        let mut value = manifest("example.material");
+        let old = serde_json::from_value::<Manifest>(value.clone())?
+            .material
+            .unwrap();
+        assert_eq!(old.shadow, None);
+        assert!(matches!(old.foreground, MaterialForeground::Skin));
+        for (shadow, foreground) in [(0.0, "skin"), (1.0, "glass"), (1.5, "glass")] {
+            value["material"]["shadow"] = json!(shadow);
+            value["material"]["foreground"] = json!(foreground);
+            serde_json::from_value::<Manifest>(value.clone())?.validate()?;
+        }
+        for (key, invalid) in [
+            ("shadow", json!(-0.001)),
+            ("shadow", json!(1.501)),
+            ("shadow", json!("1.0")),
+            ("shadow", Value::Null),
+            ("foreground", json!("opaque")),
+            ("foreground", json!(true)),
+            ("foreground", Value::Null),
+        ] {
+            let mut invalid_manifest = value.clone();
+            invalid_manifest["material"][key] = invalid;
+            assert!(
+                serde_json::from_value::<Manifest>(invalid_manifest)
+                    .ok()
+                    .is_none_or(|manifest| manifest.validate().is_err()),
+                "{key}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
     fn material_package_allows_only_the_manifest_shader_and_documentation() -> Result<()> {
         let root = root();
         let path = package(&root, "example.material")?;
@@ -338,6 +372,8 @@ mod material_tests {
         assert!(LocalPlugins::startup_material(&root));
         let active = host.active_material().unwrap();
         assert!(active.controls);
+        assert!(active.glass_foreground);
+        assert_eq!(active.shadow, Some(1.0));
         assert_eq!((active.stiffness, active.damping), (1.0, 0.5));
         let mut expected = [48.0, 8.0, 1.5, 87.0, 1.5, 0.9, 1.0];
         assert_eq!(active.params[..expected.len()], expected);

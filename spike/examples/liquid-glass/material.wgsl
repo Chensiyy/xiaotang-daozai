@@ -1,6 +1,8 @@
 // 液态玻璃，移植自轻九九九（@cayww）的 PR #235。
 const LUMA : vec3<f32> = vec3<f32>(0.299, 0.587, 0.114);
 const NEUTRAL_TINT : vec3<f32> = vec3<f32>(0.62, 0.66, 0.74);
+const ROLE_ISLAND_LYRICS : u32 = 7u;
+const ROLE_SEEK : u32 = 10u;
 
 fn hash21(p : vec2<f32>) -> f32 {
     var q = fract(p * vec2<f32>(0.1031, 0.1030));
@@ -85,12 +87,16 @@ fn control_glass(p : vec2<f32>, hit : ControlHit, mat : f32, light : vec2<f32>, 
     let t = clamp(-distance / band, 0.0, 1.0);
     let k = pow(1.0 - pow(t, 0.30), 2.0);
     let size = frame.ctl_rect[hit.index].zw / frame.env.z;
-    let short_side = min(size.x, size.y);
+    let role = u32(frame.ctl_spring[hit.index].w);
+    var lens = 1.12;
+    switch role {
+        case ROLE_ISLAND_LYRICS: { lens = 1.06; }
+        case ROLE_SEEK: { lens = 1.0 + 0.9 * frame.ctl_shape[hit.index].w; }
+        default: {}
+    }
+    let short_side = min(size.x, size.y) / select(1.0, lens, role == ROLE_SEEK);
     let refract = 0.55 * clamp(short_side / 70.0, 0.30, 1.0);
     let chroma = optics.dispersion * refract * corner_weight(local, hs, hit.radius);
-    let narrow = max(size.x, size.y) > 3.0 * short_side;
-    let small = short_side <= 15.0;
-    let lens = select(select(1.12, 1.06, narrow), 1.0 + 0.9 * frame.ctl_shape[hit.index].w, small);
     let bp = p - local * (1.0 - 1.0 / lens) - normal * k * optics.refraction * refract;
 
     var col = tap5(bp, -normal * k * chroma, optics.blur * 0.80 + k * 1.2);
@@ -121,16 +127,13 @@ fn control_glass(p : vec2<f32>, hit : ControlHit, mat : f32, light : vec2<f32>, 
 fn material(i : MaterialIn) -> vec4<f32> {
     let p = i.px;
     let distance = body_sdf(p);
-    if (distance >= 4.5) { return vec4<f32>(0.0); }
+    if (distance > 2.75) { return vec4<f32>(0.0); }
     let edge_bg = sample_backdrop(p);
-    // 把内缩轮廓留下的基础皮肤描边替换为同位置的桌面色。
-    let edge_fill = 1.0 - smoothstep(3.5, 4.5, distance);
-    if (distance > 2.75) { return vec4<f32>(edge_bg * edge_fill, edge_fill); }
 
     // 位置和法线使用物理像素，清单的长度参数使用逻辑点。
     let ppp = frame.env.z;
     let optics = Optics(param(0u) * ppp, param(1u) * ppp, param(2u) * ppp, param(4u) * ppp, param(5u));
-    let mat = smoothstep(0.52, 0.66, frame.env.y);
+    let mat = clamp(frame.motion.y, 0.0, 1.0);
     let center = frame.body.xy + frame.body.zw * 0.5;
     let local = p - center;
     let half_size = max(frame.body.zw * 0.5 - vec2<f32>(3.0), vec2<f32>(2.0));
@@ -144,9 +147,8 @@ fn material(i : MaterialIn) -> vec4<f32> {
         smoothstep(3.0, 48.0, pointer_distance)
     ) + vec2<f32>(1e-6));
 
-    // 展开和收起的稳态为零，过渡期间增强边缘的光学形变。
-    let expansion = clamp(frame.shape.y, 0.0, 1.0);
-    let morph = param(6u) * (4.0 * expansion * (1.0 - expansion));
+    // 展开和收起都按速度增强折射，静止时形变归零。
+    let morph = max(param(6u), 0.0) * min(abs(frame.motion.x) * 0.30, 1.0);
     let band = max(param(3u) * ppp, 1.0) * (1.0 + morph * 0.08);
     let t = clamp(-distance / band, 0.0, 1.0);
     let k = pow(1.0 - pow(t, 0.30), 2.0);
@@ -198,6 +200,5 @@ fn material(i : MaterialIn) -> vec4<f32> {
     let coverage = clamp(max(aa, line * optics.edge_opacity), 0.0, 1.0);
     let dither = (hash21(p) - 0.5) * (1.7 / 255.0);
     let color = mix(edge_bg, col, coverage) + vec3<f32>(dither);
-    let alpha = max(coverage, edge_fill);
-    return vec4<f32>(color * coverage + edge_bg * (alpha - coverage), alpha);
+    return vec4<f32>(color * coverage, coverage);
 }
