@@ -4,6 +4,8 @@
 use crate::anim::{self, lerp, smoothstep, Spring};
 use crate::app::{App, Cmd, Env, Phase};
 use crate::mail;
+#[cfg(all(windows, feature = "sdk-material"))]
+use crate::material::ControlRole;
 use crate::paint::{self, capsule, mix, Card, H};
 use crate::smtc::Transport;
 use crate::theme::{self, size, W};
@@ -41,6 +43,8 @@ impl App {
         let np=self.media.clone();
         let has=!np.title.is_empty();
         let with_lyrics=has && self.show_lyrics;
+        let glassy=self.glassy();
+        let glass_gpu=c.live && self.glass_controls_ready();
         let ctx=c.ui.ctx().clone();
         let playing_t=ctx.animate_bool_with_time(egui::Id::new("np-playing"),np.playing,0.22);
         let art_size=if with_lyrics {44.0}else{62.0};
@@ -58,6 +62,9 @@ impl App {
         } else {
             c.fill(44.0,13.0,62.0,62.0,13.0,Color32::from_rgb(25,25,27));
             paint::note(c,75.0,44.0,26.0,Color32::from_rgb(110,110,114));
+        }
+        if glassy && has {
+            c.stroke(44.0,art_y,art_size,art_size,10.0,1.2,Color32::from_white_alpha(70));
         }
 
         if !has {
@@ -87,8 +94,14 @@ impl App {
             _=>np.position,
         });
         let frac=if np.duration>0.0 {(position/np.duration).clamp(0.0,1.0) as f32}else{0.0};
+        #[cfg(all(windows, feature = "sdk-material"))]
         if has && np.duration>0.0 {
-            c.material_circle(&bar,bx+bw*frac,by,4.5);
+            let x=bx+bw*frac;
+            if glass_gpu {
+                c.material_control(&bar,c.rect(x-14.0,by-10.0,28.0,20.0),10.0,ControlRole::Seek);
+            } else if !glassy {
+                c.material_circle_with_role(&bar,x,by,4.5,ControlRole::Seek);
+            }
         }
         let (time_y,time_size,right)=if with_lyrics {(100.0,10.0,220.0)}else{(97.0,15.0,375.0)};
         c.text(44.0,time_y,&mmss(position),time_size,W::Regular,tc,H::Left);
@@ -97,8 +110,12 @@ impl App {
         let (bh,_)=c.hover_t(&bar);
         let bh=if has {bh}else{0.0};
         let th=lerp(3.5,5.0,bh);
-        c.fill(bx,by-th/2.0,bw,th,th/2.0,if has {Color32::from_gray(90)}else{theme::TRACK});
-        if self.settings.skin==crate::model::Skin::Fluid {
+        if glassy && has {
+            paint::glass_groove(c,bx,by-th/2.0,bw,th);
+        } else {
+            c.fill(bx,by-th/2.0,bw,th,th/2.0,if has {Color32::from_gray(90)}else{theme::TRACK});
+        }
+        if !glassy && self.settings.skin==crate::model::Skin::Fluid {
             let head=bx+bw*frac;
             let hot=if bar.is_pointer_button_down_on(){1.0}else if np.playing{0.62}else{0.45};
             if has && frac>0.0 {
@@ -111,7 +128,7 @@ impl App {
             }
         }else{
         if frac>0.0 {c.fill(bx,by-th/2.0,(bw*frac).max(th),th,th/2.0,theme::WHITE);}
-        if bh>0.01 {c.faded(bh).circle(bx+bw*frac,by,4.5,theme::WHITE);}
+        if !glass_gpu && bh>0.01 {c.faded(bh).circle(bx+bw*frac,by,4.5,theme::WHITE);}
         }
         if bar.clicked() || bar.drag_stopped() {
             if let Some(position)=seek_position {
@@ -123,22 +140,34 @@ impl App {
 
         let y=118.0;
         let ic=if has {theme::WHITE}else{Color32::from_rgb(88,88,92)};
-        let btn=|x:f32,w:f32,id:&str,enabled:bool| {
+        let btn=|x:f32,w:f32,id:&str,enabled:bool,#[cfg(all(windows, feature = "sdk-material"))] role:ControlRole| {
             let response=c.hit(x-w/2.0,y-12.0,w,24.0,id);
             let (hover,pressed)=c.hover_t(&response);
-            if enabled {c.material_circle(&response,x,y,12.5);}
-            if has && hover>0.01 {c.faded(hover).circle(x,y,12.5,Color32::from_white_alpha(20));}
-            (response,c.scaled(x,y,1.0-0.1*pressed))
+            let lens_enabled=enabled || (glassy && has);
+            let radius=if glassy {11.5}else{12.5};
+            #[cfg(all(windows, feature = "sdk-material"))]
+            if lens_enabled && (!glassy || glass_gpu) {
+                c.material_circle_with_role(&response,x,y,radius,role);
+            }
+            let card=c.scaled(x,y,if glassy {self.glass_control_scale(&response,pressed)}else{1.0-0.1*pressed});
+            if lens_enabled && glassy && !glass_gpu {
+                paint::glass_disc(&card,x,y,radius,0.16+hover*0.74);
+            } else if has && hover>0.01 {
+                let from=glass_gpu.then(||paint::chrome_mark(c));
+                c.faded(hover).circle(x,y,radius,Color32::from_white_alpha(if glass_gpu {14}else{20}));
+                if let Some(from)=from {paint::chrome_since(c,from);}
+            }
+            (response,card)
         };
-        let (lyrics_button,lyrics_card)=btn(74.0,26.0,"m-lyr",has);
+        let (lyrics_button,lyrics_card)=btn(74.0,26.0,"m-lyr",has,#[cfg(all(windows, feature = "sdk-material"))] ControlRole::Lyric);
         lyrics_card.text(74.0,y+5.0,"词",14.0,W::Semibold,if !has {ic}else if self.show_lyrics {theme::WHITE}else{theme::GRAY},H::Center);
-        let (previous,previous_card)=btn(162.0,30.0,"m-prev",has);
+        let (previous,previous_card)=btn(162.0,30.0,"m-prev",has,#[cfg(all(windows, feature = "sdk-material"))] ControlRole::Prev);
         paint::skip(&previous_card,162.0,y,-1.0,ic);
-        let (play,play_card)=btn(210.5,30.0,"m-play",has);
-        paint::play_pause(&play_card,211.0,y,15.0,playing_t,ic);
-        let (next,next_card)=btn(258.0,30.0,"m-next",has);
+        let (play,play_card)=btn(210.5,30.0,"m-play",has,#[cfg(all(windows, feature = "sdk-material"))] ControlRole::Play);
+        paint::play_pause(&play_card,211.0,y,if glassy {12.5}else{15.0},playing_t,ic);
+        let (next,next_card)=btn(258.0,30.0,"m-next",has,#[cfg(all(windows, feature = "sdk-material"))] ControlRole::Next);
         paint::skip(&next_card,258.0,y,1.0,ic);
-        let (volume_button,volume_card)=btn(367.0,26.0,"m-volume",has&&self.music_volume_ui.is_some());
+        let (volume_button,volume_card)=btn(367.0,26.0,"m-volume",has&&self.music_volume_ui.is_some(),#[cfg(all(windows, feature = "sdk-material"))] ControlRole::Volume);
         let (volume,muted)=self.music_volume_ui.unwrap_or((0,false));
         paint::speaker(&volume_card,367.0,y,muted,if self.music_volume_ui.is_some(){ic}else{theme::GRAY});
         let hint=if self.music_volume_ui.is_some(){format!("音乐应用音量 {volume}%{} · 点击展开 · 滚轮调节",if muted{"（已静音）"}else{""})}else{"暂无可调节的音乐音频会话".into()};
@@ -167,7 +196,16 @@ impl App {
         }
         // 岛上歌词是横向的，只在顶部停靠时提供。
         if has && !self.side() {
-            let (button,button_card)=paint::material_capsule(c,279.0,108.0,68.0,20.0,"m-island-lyrics",if self.settings.island_lyrics {Color32::from_gray(39)}else{Color32::from_gray(22)},Color32::from_gray(47));
+            let on=self.settings.island_lyrics;
+            let (button,button_card)=paint::material_capsule(c,279.0,108.0,68.0,20.0,"m-island-lyrics",
+                if on {Color32::from_gray(39)}else{Color32::from_gray(22)},Color32::from_gray(47),
+                glassy.then_some((glass_gpu,if on {0.62}else{0.10},if on {0.3}else{0.5})),
+                #[cfg(all(windows, feature = "sdk-material"))] ControlRole::IslandLyrics);
+            if glass_gpu && on {
+                let from=paint::chrome_mark(c);
+                button_card.fill(279.0,108.0,68.0,20.0,10.0,Color32::from_white_alpha(24));
+                paint::chrome_since(c,from);
+            }
             button_card.text(313.0,122.0,"岛上歌词",10.0,W::Semibold,if self.settings.island_lyrics {theme::WHITE}else{theme::GRAY},H::Center);
             if button.on_hover_text(if self.settings.island_lyrics {"关闭收起时的歌词"}else{"收起时显示当前歌词"}).clicked() {
                 self.settings.island_lyrics=!self.settings.island_lyrics;
@@ -206,8 +244,16 @@ impl App {
         let popup=if self.music_volume_open{popup}else{popup.ghost()};
         // 浮条最后绘制并占据整块命中区域，防止点击穿到后面的翻页按钮。
         popup.hit(bounds.min.x,bounds.min.y,bounds.width(),bounds.height(),"m-volume-surface");
-        popup.fill(bounds.min.x,bounds.min.y,bounds.width(),bounds.height(),12.0,Color32::from_gray(36));
-        popup.stroke(bounds.min.x,bounds.min.y,bounds.width(),bounds.height(),12.0,1.0,Color32::from_gray(60));
+        let glassy=self.glassy();
+        if glassy {
+            let (x,y,w,h)=(bounds.min.x,bounds.min.y,bounds.width(),bounds.height());
+            // 浮层覆盖歌词，叠加同色填充补足深色玻璃调色后的透明度。
+            for _ in 0..4 { popup.fill(x,y,w,h,12.0,Color32::from_gray(26)); }
+            paint::glass_chip(&popup,x,y,w,h,12.0,0.0);
+        } else {
+            popup.fill(bounds.min.x,bounds.min.y,bounds.width(),bounds.height(),12.0,Color32::from_gray(36));
+            popup.stroke(bounds.min.x,bounds.min.y,bounds.width(),bounds.height(),12.0,1.0,Color32::from_gray(60));
+        }
         let track=popup.hit_drag(351.0,27.0,32.0,54.0,"m-volume-track");
         let mut command=None;
         if popup.live && (track.clicked() || track.dragged() || track.is_pointer_button_down_on()) {
@@ -225,11 +271,15 @@ impl App {
         let (volume,muted)=self.music_volume_ui.unwrap_or((volume,muted));
         let ink=if muted{theme::GRAY}else{theme::WHITE};
         popup.centered_text(367.0,20.0,&format!("{volume}%"),10.5,W::Semibold,ink,H::Center);
-        popup.fill(364.5,32.0,5.0,43.0,2.5,Color32::from_gray(68));
+        popup.fill(364.5,32.0,5.0,43.0,2.5,if glassy {Color32::from_black_alpha(66)}else{Color32::from_gray(68)});
         let head=75.0-43.0*volume as f32/100.0;
         if volume>0 {popup.fill(364.5,head,5.0,(75.0-head).max(2.5),2.5,ink);}
         popup.circle(367.0,head,if track.dragged(){5.5}else{4.5},ink);
-        popup.fill(353.0,82.0,28.0,20.0,6.0,paint::mix(theme::BTN,theme::BTN_HOVER,if muted{1.0}else{hover}));
+        if glassy {
+            paint::glass_chip(&popup,353.0,82.0,28.0,20.0,6.0,0.12+hover*0.6);
+        } else {
+            popup.fill(353.0,82.0,28.0,20.0,6.0,paint::mix(theme::BTN,theme::BTN_HOVER,if muted{1.0}else{hover}));
+        }
         popup.scaled(367.0,92.0,1.0-0.06*press).centered_text(367.0,92.0,if muted{"恢复"}else{"静音"},9.5,W::Semibold,theme::WHITE,H::Center);
     }
 
@@ -326,11 +376,21 @@ impl App {
             self.reset_spin.target += TAU;
         }
 
+        let glassy=self.glassy();
+        let glass_gpu=c.live && self.glass_controls_ready();
         for (phase,label,x,width,id) in [(Phase::Focus,"专注",148.0,88.0,"f-focus"),(Phase::Rest,"休息",292.0,88.0,"f-rest")] {
             let selected=self.pomo.phase==phase;
             let accent=if phase==Phase::Focus{theme::RED_TOP}else{theme::SOFT_GREEN};
             let background=if selected{mix(theme::BTN,accent,0.22)}else{theme::BTN};
-            let (response,button)=paint::material_capsule(c,x,94.0,width,25.0,id,background,if selected{mix(theme::BTN_HOVER,accent,0.25)}else{theme::BTN_HOVER});
+            let (response,button)=paint::material_capsule(c,x,94.0,width,25.0,id,background,
+                if selected{mix(theme::BTN_HOVER,accent,0.25)}else{theme::BTN_HOVER},
+                glassy.then_some((glass_gpu,if selected {0.55}else{0.10},if selected {0.20}else{0.45})),
+                #[cfg(all(windows, feature = "sdk-material"))] if phase==Phase::Focus {ControlRole::Focus}else{ControlRole::Rest});
+            if glass_gpu && selected {
+                let from=paint::chrome_mark(c);
+                button.fill(x,94.0,width,25.0,12.5,paint::alpha(accent,0.28));
+                paint::chrome_since(c,from);
+            }
             button.text(x+width/2.0,110.0,label,size::BODY,W::Semibold,if selected{mix(accent,theme::WHITE,0.5)}else{theme::WHITE},H::Center);
             if response.clicked(){self.set_phase(phase);}
         }
@@ -399,7 +459,11 @@ impl App {
             }
         }
 
-        let (s, sc) = capsule(c, 111.0, 98.0, 66.0, 25.0, "w-set", theme::BTN, theme::BTN_HOVER);
+        let (s, sc) = if self.glassy() {
+            paint::glass_capsule(c, 111.0, 98.0, 66.0, 25.0, "w-set", 0.14, 0.42)
+        } else {
+            capsule(c, 111.0, 98.0, 66.0, 25.0, "w-set", theme::BTN, theme::BTN_HOVER)
+        };
         paint::sliders(&sc, 126.0, 110.5, theme::WHITE);
         sc.text(149.0, 114.0, "设置", size::BODY, W::Regular, theme::WHITE, H::Center);
         if s.clicked() { self.open_settings_category(1); }
@@ -641,7 +705,8 @@ impl App {
         let font = 12.0;
         let widths: Vec<f32> = labels.iter().map(|l| c.text_w(l, font, W::Bold) + 14.0).collect();
         let total = widths.iter().sum::<f32>() + 4.0;
-        c.fill(x, 9.5, total, 21.0, 10.5, theme::BTN);
+        if self.glassy() { paint::glass_chip(c,x,9.5,total,21.0,10.5,0.12); }
+        else { c.fill(x,9.5,total,21.0,10.5,theme::BTN); }
         let mut left = x + 2.0;
         for (i, (label, w)) in labels.iter().zip(&widths).enumerate() {
             let selected = self.shelf_tab == i;
@@ -688,7 +753,12 @@ impl App {
             let hover = if confirming { Color32::from_rgb(150, 34, 44) } else { theme::BTN_HOVER };
             // 放在右下角：顶栏中间是日期时间，宽度随 12 小时制等设置变化。
             let (x, y) = (377.0 - lw, 109.0);
-            let (r, bc) = capsule(&c.faded(1.0 - drag), x, y, lw, 17.0, "shelf-clear", base, hover);
+            let card=c.faded(1.0-drag);
+            let (r, bc) = if self.glassy() && !confirming {
+                paint::glass_capsule(&card, x, y, lw, 17.0, "shelf-clear", 0.14, 0.42)
+            } else {
+                capsule(&card, x, y, lw, 17.0, "shelf-clear", base, hover)
+            };
             let r = if confirming { r.on_hover_text("再点一次清空置物架（文件本身不动）") } else { r.on_hover_text("清空置物架") };
             bc.text(x + lw / 2.0, y + 12.0, label, size::SMALL, W::Regular, theme::WHITE, H::Center);
             if r.clicked() {
@@ -814,7 +884,11 @@ impl App {
             let base = if confirming { Color32::from_rgb(120, 28, 36) } else { theme::BTN };
             let hover = if confirming { Color32::from_rgb(150, 34, 44) } else { theme::BTN_HOVER };
             let x = 351.0 - lw;
-            let (r, bc) = capsule(header, x, 11.5, lw, 17.0, "clip-clear", base, hover);
+            let (r, bc) = if self.glassy() && !confirming {
+                paint::glass_capsule(header, x, 11.5, lw, 17.0, "clip-clear", 0.14, 0.42)
+            } else {
+                capsule(header, x, 11.5, lw, 17.0, "clip-clear", base, hover)
+            };
             bc.text(x + lw / 2.0, 23.5, label, size::SMALL, W::Regular, theme::WHITE, H::Center);
             let r = r.on_hover_text(if confirming { "再点一次清空未固定的记录" } else { "清空未固定的记录" });
             if r.clicked() {
@@ -926,16 +1000,26 @@ impl App {
         hc.text(42.0 + w, 61.0, &format!("/{total}"), size::HERO, W::Bold, theme::WHITE, H::Left);
         c.text(42.0, 78.0, "已完成", size::SMALL, W::Regular, theme::GRAY, H::Left);
 
-        let (add, ac) = capsule(c, 41.0, 96.0, 74.0, 26.0, "t-add", theme::BTN, theme::BTN_HOVER);
+        let glassy=self.glassy();
+        let (add, ac) = if glassy {
+            paint::glass_capsule(c,41.0,96.0,74.0,26.0,"t-add",0.16,0.42)
+        } else {
+            capsule(c,41.0,96.0,74.0,26.0,"t-add",theme::BTN,theme::BTN_HOVER)
+        };
         paint::plus(&ac, 56.0, 109.0, 6.2, theme::WHITE, Color32::BLACK);
         ac.text(67.0, 112.5, "加一个", size::BODY, W::Regular, theme::WHITE, H::Left);
         let can_edit = !self.todos.items.is_empty() && !self.adding && self.editing.is_none();
         let ec = if can_edit { c.clone() } else { c.faded(0.45) };
-        let (edit, edc) = capsule(&ec, 121.0, 96.0, 68.0, 26.0, "t-edit", theme::BTN, if can_edit { theme::BTN_HOVER } else { theme::BTN });
+        let (edit, edc) = if glassy {
+            paint::glass_capsule(&ec,121.0,96.0,68.0,26.0,"t-edit",if can_edit {0.16}else{0.05},0.42)
+        } else {
+            capsule(&ec,121.0,96.0,68.0,26.0,"t-edit",theme::BTN,if can_edit {theme::BTN_HOVER}else{theme::BTN})
+        };
         if self.todo_choosing{paint::close(&edc,135.0,109.0,3.5,theme::WHITE);}else{paint::pencil(&edc,135.0,109.0,11.0,theme::WHITE);}
         edc.text(145.0, 112.5, if self.todo_choosing{"取消"}else{"改一下"}, size::BODY, W::Regular, theme::WHITE, H::Left);
 
-        c.fill(196.0, 31.0, 181.0, 93.0, 12.0, theme::CARD);
+        if glassy {paint::glass_chip(c,196.0,31.0,181.0,93.0,12.0,0.05);}
+        else {c.fill(196.0,31.0,181.0,93.0,12.0,theme::CARD);}
         let editing = self.adding || self.editing.is_some();
         if count == 0 && !editing {
             paint::checklist(c, 286.5, 64.0, 32.0, Color32::from_gray(150), Color32::from_rgb(52, 54, 58));
@@ -1073,12 +1157,16 @@ impl App {
         Rect::from_min_max(Pos2::new(left,54.0),Pos2::new(380.0,122.0))
     }
     pub(crate) fn page_mail(&mut self, c: &Card, _env: &Env, cmds: &mut Vec<Cmd>) {
+        let glassy=self.glassy();
         if self.mail.accounts.is_empty() {
             c.text(42.0, 60.0, "还没有邮箱", 13.0, W::Bold, theme::WHITE, H::Left);
             let hint = c.fit("在设置 → 邮箱里添加；授权码只存进系统凭据管理器", 10.5, W::Regular, 344.0);
             c.text(42.0, 77.0, &hint, 10.5, W::Regular, theme::GRAY, H::Left);
-            let (go, gc) = paint::material_capsule(c, 42.0, 88.0, 84.0, 26.0, "mail-setup", theme::BTN, theme::BTN_HOVER);
-            gc.text(58.0, 105.0, "去添加", size::BODY, W::Regular, theme::WHITE, H::Left);
+            let (go, gc) = paint::material_capsule(c,42.0,88.0,84.0,26.0,"mail-setup",theme::BTN,theme::BTN_HOVER,
+                glassy.then_some((self.glass_controls_ready(),0.16,0.42)),
+                #[cfg(all(windows, feature = "sdk-material"))] ControlRole::MailSetup);
+            let (x,align)=if glassy {(84.0,H::Center)}else{(58.0,H::Left)};
+            gc.text(x,105.0,"去添加",size::BODY,W::Regular,theme::WHITE,align);
             if go.clicked() {
                 self.open_mail_settings();
             }
@@ -1102,7 +1190,8 @@ impl App {
         }
         let code=self.visible_mail_code().cloned();
         if let Some(raw)=&code {
-            c.fill(36.0,36.0,140.0,86.0,11.0,theme::CARD);
+            if glassy {paint::glass_chip(c,36.0,36.0,140.0,86.0,11.0,0.05);}
+            else {c.fill(36.0,36.0,140.0,86.0,11.0,theme::CARD);}
             let hidden=self.mail_code_hidden(raw);
             let item=self.display_mail(raw);
             let value=item.code.as_deref().unwrap_or("••••••");

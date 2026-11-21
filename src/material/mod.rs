@@ -4,7 +4,7 @@ mod backdrop;
 mod controls;
 mod pipeline;
 pub use backdrop::{Backdrop, CleanPlate, Geometry, ScreenRect};
-pub(crate) use controls::control;
+pub(crate) use controls::{control, control_scale, ControlRole};
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -67,6 +67,8 @@ pub struct Options {
     pub stiffness: f32,
     pub damping: f32,
     pub params: [f32; 32],
+    pub shadow: Option<f32>,
+    pub glass_foreground: bool,
 }
 
 #[cfg(feature = "sdk-js")]
@@ -77,6 +79,8 @@ impl From<&crate::sdk_spike::local::MaterialSpec<'_>> for Options {
             stiffness: spec.stiffness,
             damping: spec.damping,
             params: spec.params,
+            shadow: spec.shadow,
+            glass_foreground: spec.glass_foreground,
         }
     }
 }
@@ -88,8 +92,19 @@ impl Default for Options {
             stiffness: 1.0,
             damping: 0.5,
             params: [0.0; 32],
+            shadow: None,
+            glass_foreground: false,
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Appearance {
+    pub shadow: Option<f32>,
+    pub glass_foreground: bool,
+    pub light: bool,
+    pub controls: bool,
+    pub ready: bool,
 }
 
 pub(crate) struct Layer {
@@ -114,6 +129,7 @@ impl Layer {
         notch: Option<(f32, f32)>,
         dock: Dock,
         artwork: Option<&(Arc<egui::ColorImage>, egui::TextureHandle)>,
+        fallback: egui::Shape,
     ) -> Self {
         let padding = if dock.is_side() {
             egui::vec2(48.0, 64.0)
@@ -122,7 +138,7 @@ impl Layer {
         };
         Self {
             painter: painter.clone(),
-            slot: painter.add(egui::Shape::Noop),
+            slot: painter.add(fallback),
             body,
             capture: body.expand2(padding).intersect(canvas),
             radius,
@@ -174,6 +190,40 @@ impl Budget {
     }
 }
 
+struct Motion {
+    expansion: Option<f32>,
+    light: f32,
+}
+
+impl Default for Motion {
+    fn default() -> Self {
+        Self {
+            expansion: None,
+            light: 1.0,
+        }
+    }
+}
+
+impl Motion {
+    fn expansion_speed(&mut self, expansion: f32, dt: f32) -> f32 {
+        self.expansion
+            .replace(expansion)
+            .map_or(0.0, |previous| (expansion - previous) / dt.max(0.001))
+    }
+
+    fn update_light(&mut self, brightness: f32, dt: f32) -> bool {
+        let target = if brightness > 0.66 {
+            1.0
+        } else if brightness < 0.52 {
+            0.0
+        } else {
+            self.light
+        };
+        self.light += (target - self.light) * (dt.clamp(0.0, 0.1) * 6.0);
+        (target - self.light).abs() > 0.001
+    }
+}
+
 pub struct Runtime {
     pipeline: Pipeline,
     options: Options,
@@ -186,6 +236,8 @@ pub struct Runtime {
     pointer: Option<Pos2>,
     screen: Option<ScreenRect>,
     tint: Option<(egui::TextureId, [f32; 3])>,
+    motion: Motion,
+    ready: bool,
     capture_ready: bool,
     has_drawn: bool,
 }
@@ -212,6 +264,8 @@ impl Runtime {
             pointer: None,
             screen: None,
             tint: None,
+            motion: Motion::default(),
+            ready: false,
             capture_ready: false,
             has_drawn: false,
         })
@@ -231,10 +285,21 @@ impl Runtime {
         self.capture_ready
     }
 
+    pub fn appearance(&self) -> Appearance {
+        Appearance {
+            shadow: self.options.shadow,
+            glass_foreground: self.options.glass_foreground,
+            light: self.motion.light > 0.5,
+            controls: self.options.controls,
+            ready: self.ready,
+        }
+    }
+
     fn clear_backdrop(&mut self) {
         self.backdrop = None;
         self.pipeline.clear_backdrop();
         self.screen = None;
+        self.ready = false;
     }
 
     pub fn draw(&mut self, draw_island: impl FnOnce() -> FrameOut) -> FrameOut {
@@ -256,6 +321,7 @@ impl Runtime {
             self.cadence = Cadence::default();
             self.budget = Budget::default();
             self.last_frame = None;
+            self.motion.expansion = None;
             self.pointer = None;
         }
     }
@@ -288,6 +354,7 @@ impl Runtime {
         let Some((geometry, viewport)) =
             Geometry::for_window(hwnd, layer.body, layer.capture, ppp)?
         else {
+            self.ready = false;
             return Ok(Some(self.cadence.interval(started, out.animating)));
         };
         let [bx, by, bw, bh] = geometry.body;
@@ -305,14 +372,19 @@ impl Runtime {
             .last_frame
             .replace(started)
             .map_or(1.0 / 60.0, |at| (started - at).as_secs_f32());
+        let speed = self.motion.expansion_speed(layer.expansion, dt);
         let moving = out.animating
             || moved
             || pointer_in_island.is_some()
                 && ctx.input(|i| i.pointer.any_down() || i.pointer.any_released());
         let capture_origin = (viewport.min.to_vec2() * ppp).round().to_pos2();
+        let mut registrations = std::mem::take(&mut self.registrations);
+        if self.options.glass_foreground && layer.expansion < 0.985 {
+            registrations.clear();
+        }
         let controls = self.controls.frame(
             ctx,
-            std::mem::take(&mut self.registrations),
+            registrations,
             ppp,
             capture_origin,
             dt,
@@ -331,6 +403,7 @@ impl Runtime {
             backdrop.current(geometry)
         };
 
+        let mut light_changing = false;
         let shape = if let Some(plate) = plate {
             let mut frame = Frame::default();
             let [x, y, w, h] = [
@@ -351,6 +424,9 @@ impl Runtime {
                 0.0,
             ];
             frame.env = [time as f32, plate.brightness, ppp, 1.0];
+            // 前景与着色器使用同一帧的明暗值，下一帧再应用平滑后的值。
+            frame.motion = [speed, self.motion.light, 0.0, 0.0];
+            light_changing = self.motion.update_light(plate.brightness, dt);
             if let Some((id, image)) = layer.artwork {
                 if !self.tint.is_some_and(|(known, _)| known == id) {
                     self.tint = Some((id, crate::fluid::Fluid::tint_from_image(&image)));
@@ -375,6 +451,7 @@ impl Runtime {
         if self.budget.exceeded(started.elapsed()) {
             return Err("材质通道连续 120 帧超过 4 ms".into());
         }
+        self.ready = shape.is_some();
         if let Some(shape) = shape {
             layer.painter.set(layer.slot, shape);
             if !self.has_drawn {
@@ -385,7 +462,12 @@ impl Runtime {
                 ));
             }
         }
-        Ok(Some(self.cadence.remaining(Instant::now(), interval)))
+        let delay = self.cadence.remaining(Instant::now(), interval);
+        Ok(Some(if light_changing {
+            delay.min(Duration::from_secs_f64(1.0 / 60.0))
+        } else {
+            delay
+        }))
     }
 
     pub fn report_failure(error: &str) {
@@ -440,5 +522,36 @@ mod tests {
             assert!(!budget.exceeded(slow));
         }
         assert!(budget.exceeded(slow));
+    }
+
+    #[test]
+    fn material_light_holds_within_the_hysteresis_band() {
+        let mut motion = Motion::default();
+        let dt = 1.0 / 60.0;
+        assert!(motion.update_light(0.51, dt));
+        assert!((motion.light - 0.9).abs() < 1e-5);
+        let light = motion.light;
+        for brightness in [0.52, 0.53, 0.65, 0.66, 0.53] {
+            assert!(!motion.update_light(brightness, dt));
+            assert_eq!(motion.light, light);
+        }
+        assert!(motion.update_light(0.67, dt));
+        assert!(motion.light > light);
+    }
+
+    #[test]
+    fn material_light_still_transitions_after_an_idle_frame() {
+        let mut motion = Motion::default();
+        assert!(motion.update_light(0.40, 1.0));
+        assert!((motion.light - 0.4).abs() < 1e-5);
+    }
+
+    #[test]
+    fn material_expansion_speed_is_signed_and_zero_at_rest() {
+        let mut motion = Motion::default();
+        assert_eq!(motion.expansion_speed(0.0, 0.125), 0.0);
+        assert_eq!(motion.expansion_speed(0.5, 0.125), 4.0);
+        assert_eq!(motion.expansion_speed(0.25, 0.125), -2.0);
+        assert_eq!(motion.expansion_speed(0.25, 0.125), 0.0);
     }
 }

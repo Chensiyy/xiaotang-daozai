@@ -542,6 +542,8 @@ impl Shell {
             },
             #[cfg(all(windows, feature = "sdk-material"))]
             material_active: self.material.is_some() && self.placed && !self.hidden && !screen_locked,
+            #[cfg(all(windows, feature = "sdk-material"))]
+            material_appearance: self.material.as_ref().map_or_else(Default::default, daozai::material::Runtime::appearance),
         }
     }
 }

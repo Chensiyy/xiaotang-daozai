@@ -1,6 +1,6 @@
 # GPU 材质能力：分阶段任务
 
-设计见 [gpu-material.md](gpu-material.md)。四个阶段按顺序做，每个阶段开一个新对话，上一阶段审查通过后再开下一阶段。开新对话时直接发：
+设计见 [gpu-material.md](gpu-material.md)。各阶段按顺序做，每个阶段开一个新对话，上一阶段审查通过后再开下一阶段。开新对话时直接发：
 
 > 按 `D:\A-TangHao\REA\Windows小工具\01-专项工程\GPU材质\docs\plugins\gpu-material-tasks.md` 做第 N 阶段。
 
@@ -125,3 +125,49 @@
    - 参数滑块的类型和范围表达是否够用。
    
    每条写现状、问题和建议，不在本阶段自行改接口。
+
+## 第 5 阶段：补齐与预览版的效果差距
+
+目标：液态玻璃插件与 PR #235 预览版在投影、按钮和文字样式、动态形变、明暗切换、各控件透镜倍率上一致。设计稿已补充 `material.shadow`、`material.foreground`、`Frame.motion` 和控件角色，本阶段按设计稿实现。
+
+1. 先把 `main` 合进 `feat/gpu-material`。`main` 新增了底部停靠，按 `test/acceptance` 上合并 `41e8b6f` 之后的 `prelude.wgsl` 补齐底部停靠的轮廓换算，让功能分支和验收分支一致。
+2. 投影：
+   - 清单校验接受 `material.shadow`（0 至 1.5）；
+   - 宿主绘制岛体投影时，有材质且声明了投影强度就用它，否则沿用基础皮肤。参照 PR `app.rs` 中 `skin_shadow` 和 `shadow_k` 的算法，PR 液态皮肤的系数是 1.0；
+   - 液态玻璃清单写 `"shadow": 1.0`。
+3. 前景样式：
+   - 清单校验接受 `material.foreground`（`"skin"` 或 `"glass"`）；
+   - `"glass"` 时：
+     - 宿主不画基础皮肤底色；
+     - 页面按钮、卡片走玻璃画法。把 PR 中 `glassy()` 为真时各页面的分支（`pages.rs` 约 12 处、`paint.rs` 的 `glass_chip` 等）移植为宿主的通用前景样式，判断条件改为「当前材质声明了 `foreground: "glass"`」，不出现 `Liquid` 字样；
+     - 文字和图标的调色板随 `motion.y` 在 `GLASS_DARK` 和 `GLASS_LIGHT_READABLE` 之间切换，对应 PR 的 `skin_palette`；
+   - 显示器拓扑刚变化、抓屏处于稳定期时，按 PR `paint_body` 的做法临时画纯色玻璃底；
+   - 液态玻璃清单写 `"foreground": "glass"`。
+4. `Frame.motion`：
+   - 末尾追加 `motion`，`Frame` 改为 1040 字节，更新布局测试；
+   - `motion.x` 由宿主根据展开程度逐帧求导得出；
+   - `motion.y` 用 PR `liquid_k` 的滞回和平滑算法计算。原 `liquid_k` 是 `App` 字段，改为材质模块持有。
+5. 控件角色：
+   - 在 `material/controls.rs` 定义角色编号，至少覆盖 PR `Ctl` 枚举的 13 个控件，写入 `ctl_spring.w`；
+   - 控件超过 16 块时按设计稿的优先级保留；
+   - 把编号表作为附录追加到设计稿末尾。
+6. 着色器：按 PR `gpu_glass.rs` 补回第 4 阶段近似处理的部分：
+   - 展开速度驱动的形变（读 `motion.x`）；
+   - 按控件角色区分的透镜放大倍率和折射倍率，取值照 PR `glass_controls` 里各控件的 `mag`、`refract`；
+   - 背景明暗相关的材质深浅（读 `motion.y`）。
+   
+   着色器仍不超过 64 KB。
+7. 效果对比：
+   - 重做第 4 阶段的三态对比（音乐页展开、收起胶囊、按住齿轮），另加两组：
+     - 展开动画中途一帧；
+     - 浅色壁纸下的音乐页，检查文字转为深色。
+   - 对比时基础皮肤任选。`foreground: "glass"` 生效后，结果不应再受基础皮肤影响。
+   - 在回报里附对比图路径，逐项说明是否一致。仍有差异的写明原因。
+8. 测试：
+   - 清单校验覆盖 `shadow`、`foreground` 的合法值和非法值；
+   - `Frame` 布局 1040 字节；
+   - 明暗滞回不在阈值附近来回跳；
+   - 控件超过 16 块时的保留顺序；
+   - 停用材质后前景样式、投影、底色全部回到基础皮肤，沿用第 4 阶段的停用对比；
+   - 完整回归通过。
+9. 出包：合进 `test/acceptance`，编测试版替换桌面测试版。回报里写明液态玻璃插件包需要重新安装（清单有变化）。

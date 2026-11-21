@@ -11,6 +11,7 @@ struct Frame {
     ctl_shape : array<vec4<f32>, 16>,
     ctl_spring : array<vec4<f32>, 16>,
     params : array<vec4<f32>, 8>,
+    motion : vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> frame : Frame;
 @group(0) @binding(1) var backdrop : texture_2d<f32>;

@@ -160,6 +160,8 @@ pub struct Env {
     pub opaque_surface: bool,
     #[cfg(all(windows, feature = "sdk-material"))]
     pub material_active: bool,
+    #[cfg(all(windows, feature = "sdk-material"))]
+    pub material_appearance: crate::material::Appearance,
 }
 
 impl Env {
@@ -752,6 +754,8 @@ pub struct App {
     pub material_capture_forced: bool,
     #[cfg(all(windows, feature = "sdk-material"))]
     pub material_active_id: Option<String>,
+    #[cfg(all(windows, feature = "sdk-material"))]
+    material_appearance: crate::material::Appearance,
     /// 本次运行实际使用兼容渲染（Direct3D 12）；设置里的开关与它不同时提示重启。
     pub render_compat_running: bool,
     pub(crate) todos: model::TodoList,
@@ -989,6 +993,8 @@ impl App {
             material_capture_forced: false,
             #[cfg(all(windows, feature = "sdk-material"))]
             material_active_id: None,
+            #[cfg(all(windows, feature = "sdk-material"))]
+            material_appearance: Default::default(),
             todos: model::TodoList::load(),
             water: model::Water::default(),
             shelf: model::Shelf::load(),
@@ -1995,6 +2001,10 @@ impl App {
     // ---------------------------------------------------------------
     pub fn frame(&mut self, ui: &mut egui::Ui, win: Rect, env: &Env) -> FrameOut {
         let ctx = ui.ctx().clone();
+        #[cfg(all(windows, feature = "sdk-material"))]
+        {
+            self.material_appearance = if env.material_active { env.material_appearance } else { Default::default() };
+        }
         let dt = match self.last_t {
             Some(t0) => (env.t - t0).clamp(0.0, 0.1) as f32,
             None => 0.0,
@@ -2237,13 +2247,15 @@ impl App {
         let radius = if minimal_pill { BAR_H_MIN / 2.0 } else if pill { (w.min(h) * 0.5).min(lerp(thickness * 0.5, 26.0, pc)) } else { lerp(12.5, RAD * k.min(1.0), pc) };
         let flare_h = lerp(8.0, FLARE_H, pc);
         let thick = glass::thickness(PH);
-        let glass_skin = self.settings.skin.is_glass();
+        let glass_skin = self.settings.skin.is_glass() && !self.glassy();
         let layer = painter.layer_id();
-        let palette = self.skin_palette();
+        let palette = self.island_palette();
         // 换色时跳过的图形范围（岛体底色、阴影、吉祥物）。
         let mut keep_colors:Vec<(usize,usize)>=Vec::new();
         // 毛玻璃：真实模糊下保留柔和投影增加层次；无模糊时阴影再减淡一些，保持轻盈。
-        let skin_shadow = if !glass_skin {1.0} else if env.glass_blur {0.75} else {0.7};
+        let skin_shadow = if !self.settings.skin.is_glass() {1.0} else if env.glass_blur {0.75} else {0.7};
+        #[cfg(all(windows, feature = "sdk-material"))]
+        let skin_shadow = self.material_appearance.shadow.unwrap_or(skin_shadow);
         let shadow_k = glass::shadow_alpha(0.0, thick) / 0.12 * skin_shadow;
         let island_shadow=|r:Rect,flare:f32,flare_h:f32,radius:f32,strength:f32| if pill {pill_shadow(&painter,r,radius,strength)} else if dock!=model::Dock::Top {shape::shadow_docked(&painter,r,dock,flare,flare_h,radius,strength)} else {shape::shadow(&painter,r,flare,flare_h,radius,strength)};
         // 拿起时投影加深，像被从屏幕边缘提起来。
@@ -2251,10 +2263,10 @@ impl App {
         island_shadow(body, flare, flare_h, radius, (smoothstep(0.1, 0.9, pc) + lifted * 0.9) * shadow_k);
         if let Some(r)=outside_badge{
             let appear=self.messenger_appear();
-            painter.rect_filled(r,r.width()/2.0,paint::alpha(self.glass_fill(),appear));
+            painter.rect_filled(r,r.width()/2.0,paint::alpha(self.island_overlay_fill(),appear));
             if glass_skin {painter.rect_stroke(r,r.width()/2.0,egui::Stroke::new(1.0_f32,paint::alpha(self.glass_rim(),appear)),egui::StrokeKind::Inside);}
         }
-        if self.settings.skin==model::Skin::Fluid {
+        if !self.glassy() && self.settings.skin==model::Skin::Fluid {
             self.fluid_origin=body.min;
             let art=self.music_artwork.as_ref().map(|(_,texture)|texture.id());
             if art!=self.fluid_art || self.media.title!=self.fluid_title {
@@ -2269,12 +2281,18 @@ impl App {
             if !self.open || self.page!=0 || self.media.title.is_empty(){self.fluid.set_seek(None,0.0);}
             self.fluid.advance(env.t,dt);
         }
-        self.paint_body(&painter, body, flare, flare_h, radius, feather);
+        if !self.glassy() { self.paint_body(&painter, body, flare, flare_h, radius, feather); }
         #[cfg(all(windows, feature = "sdk-material"))]
         let material_layer = env.material_active.then(|| {
             let radius=if pill {radius.min(body.width().min(body.height())*0.5)} else {radius};
             let notch=(!pill).then_some((flare,flare_h));
-            crate::material::Layer::reserve(&painter, ui.max_rect(), body, radius, pc, notch, dock, self.music_artwork.as_ref())
+            let fallback = if self.glassy() {
+                egui::Shape::Rect(egui::epaint::RectShape::new(
+                    body, radius, self.material_glass_fill(225),
+                    egui::Stroke::new(1.0, Color32::from_white_alpha(80)), egui::StrokeKind::Inside,
+                ))
+            } else { egui::Shape::Noop };
+            crate::material::Layer::reserve(&painter, ui.max_rect(), body, radius, pc, notch, dock, self.music_artwork.as_ref(), fallback)
         });
         if lifted > 0.01 {self.paint_lift_halo(&painter, body, flare, flare_h, radius, lifted.min(1.0));}
         let arrival=1.0-smoothstep(0.0,0.12,(self.t-self.crossed_at) as f32);
@@ -2355,7 +2373,7 @@ impl App {
             let radius=if self.hud_notice.as_ref().is_some_and(|a|a.meeting.is_some()){14.0}else{10.0};
             let from=crate::skin_paint::shape_count(&ctx,layer);
             shape::shadow(&painter,rect,0.0,0.0,radius,0.5*shadow_k);
-            painter.rect_filled(rect,radius,self.glass_fill());
+            painter.rect_filled(rect,radius,self.island_overlay_fill());
             if glass_skin {
                 painter.rect_stroke(rect,radius,egui::Stroke::new(1.0_f32,self.glass_rim()),egui::StrokeKind::Inside);
             }
@@ -2368,7 +2386,7 @@ impl App {
             let y=(h.min(self.base_size().1)-BAR_H).max(0.0)/2.0;
             // 吉祥物跟随皮肤换色：浅色底上变成深色版本，保持清晰。
             let fit=if self.island_lyrics_active()||self.notice.is_some(){1.0}else{(self.resident_limit()/self.resident.target.width).min(1.0)*self.resident_squeeze()};
-            self.pet.draw(&base.scaled(cx-origin.x,15.0,fit).shifted(0.0,y).faded(pet_alpha),cx-origin.x+self.resident.position(bar::PET),self.t,self.skin_palette());
+            self.pet.draw(&base.scaled(cx-origin.x,15.0,fit).shifted(0.0,y).faded(pet_alpha),cx-origin.x+self.resident.position(bar::PET),self.t,palette);
         }
         let previous_scroll=self.content_scroll.take();
         let mut page_transition=false;
@@ -2486,7 +2504,7 @@ impl App {
             || self.hud_alpha > 0.003 && self.hud_alpha < 0.997
             || !self.notice_width.settled(1.0);
         let pet_visible=self.pet_a>0.01 && !self.open && !minimal_pill;
-        let ambient=self.settings.skin==model::Skin::Fluid && self.fluid.animating() || self.pomo.running && (self.open && self.page==1 || !self.open && !minimal_pill && self.notice.is_none() && bar::animations_enabled())
+        let ambient=!self.glassy() && self.settings.skin==model::Skin::Fluid && self.fluid.animating() || self.pomo.running && (self.open && self.page==1 || !self.open && !minimal_pill && self.notice.is_none() && bar::animations_enabled())
             || self.media.playing && (self.open && self.page==0 || !self.open && !minimal_pill && self.notice.is_none() && self.media.is_music())
             || self.notice.as_ref().is_some_and(|notice|notice.meeting.is_some())
             || self.wireless_animating();
@@ -2763,7 +2781,49 @@ impl App {
         Some(Rect::from_min_size(Pos2::new(x,if self.dock()==model::Dock::Bottom {badge.top()-height-6.0}else{badge.bottom()+6.0}),Vec2::new(width,height)))
     }
 
-    /// 当前皮肤的换色调色板（经典为 None）。
+    pub(crate) fn glassy(&self) -> bool {
+        #[cfg(all(windows, feature = "sdk-material"))]
+        { self.material_appearance.glass_foreground }
+        #[cfg(not(all(windows, feature = "sdk-material")))]
+        { false }
+    }
+
+    pub(crate) fn glass_controls_ready(&self) -> bool {
+        #[cfg(all(windows, feature = "sdk-material"))]
+        { self.glassy() && self.material_appearance.controls && self.material_appearance.ready && self.open && self.reveal >= 0.6 && self.progress() >= 0.985 }
+        #[cfg(not(all(windows, feature = "sdk-material")))]
+        { false }
+    }
+
+    pub(crate) fn glass_control_scale(&self, _response: &egui::Response, press: f32) -> f32 {
+        #[cfg(all(windows, feature = "sdk-material"))]
+        if self.glass_controls_ready() {
+            if let Some(scale) = crate::material::control_scale(&_response.ctx, _response.id) { return scale; }
+        }
+        1.0 + 0.14 * press
+    }
+
+    #[cfg(all(windows, feature = "sdk-material"))]
+    fn material_glass_fill(&self, alpha: u8) -> Color32 {
+        let (r, g, b) = if self.material_appearance.light { (248, 248, 250) } else { (24, 27, 33) };
+        Color32::from_rgba_unmultiplied(r, g, b, alpha)
+    }
+
+    fn island_overlay_fill(&self) -> Color32 {
+        #[cfg(all(windows, feature = "sdk-material"))]
+        if self.glassy() { return self.material_glass_fill(215); }
+        self.glass_fill()
+    }
+
+    pub(crate) fn island_palette(&self)->Option<crate::skin_paint::Palette> {
+        #[cfg(all(windows, feature = "sdk-material"))]
+        if self.glassy() {
+            return Some(if self.material_appearance.light { crate::skin_paint::GLASS_LIGHT_READABLE } else { crate::skin_paint::GLASS_DARK });
+        }
+        self.skin_palette()
+    }
+
+    /// 基础皮肤的换色调色板，也用于独立设置窗口的预览。
     pub(crate) fn skin_palette(&self)->Option<crate::skin_paint::Palette> {
         match self.settings.skin {model::Skin::Cream=>Some(crate::skin_paint::CREAM),model::Skin::GlassLight=>Some(crate::skin_paint::GLASS_LIGHT),model::Skin::GlassDark=>Some(crate::skin_paint::GLASS_DARK),model::Skin::Classic|model::Skin::Fluid=>None}
     }
@@ -3429,9 +3489,20 @@ impl App {
         if let Some(c)=settings_card {
             let settings=c.hit(380.0,4.0,28.0,28.0,"page-settings").on_hover_text(format!("打开{}设置窗口",PAGE_NAMES[self.page]));
             let (hover,press)=c.hover_t(&settings);
-            c.material_circle(&settings,394.0,18.0,13.0);
-            c.circle(394.0,18.0,13.0,Color32::from_white_alpha((hover*24.0) as u8));
-            paint::gear(&c.scaled(394.0,18.0,0.8*(1.0-press*0.08)),394.0,18.0,paint::mix(theme::GRAY,theme::WHITE,hover));
+            #[cfg(all(windows, feature = "sdk-material"))]
+            if !self.glassy() || self.glass_controls_ready() {
+                c.material_circle_with_role(&settings,394.0,18.0,13.0,crate::material::ControlRole::Gear);
+            }
+            if self.glassy() {
+                let scale=self.glass_control_scale(&settings,press);
+                if !self.glass_controls_ready() {
+                    paint::glass_disc(&c.scaled(394.0,18.0,scale),394.0,18.0,13.0,0.12+hover*0.72);
+                }
+                paint::gear(&c.scaled(394.0,18.0,0.8*scale),394.0,18.0,theme::WHITE);
+            } else {
+                c.circle(394.0,18.0,13.0,Color32::from_white_alpha((hover*24.0) as u8));
+                paint::gear(&c.scaled(394.0,18.0,0.8*(1.0-press*0.08)),394.0,18.0,paint::mix(theme::GRAY,theme::WHITE,hover));
+            }
             if settings.clicked(){self.settings_tab=PAGE_SETTINGS_TABS[self.page];self.open_settings();}
         }
         if self.subpage==Some(self.page) {
@@ -3510,8 +3581,17 @@ impl App {
             let Some(arrow_card)=arrow_card else {continue};
             let button=arrow_card.hit(x-13.0,arrow_y-13.0,26.0,26.0,id);
             let (hover,press)=arrow_card.hover_t(&button);
-            arrow_card.material_circle(&button,x,arrow_y,9.0*(1.0-0.08*press));
-            paint::chevron(&arrow_card,x,arrow_y,direction,hover,press);
+            #[cfg(all(windows, feature = "sdk-material"))]
+            if !self.glassy() || self.glass_controls_ready() {
+                let role=if direction>0.0 {crate::material::ControlRole::NavR} else {crate::material::ControlRole::NavL};
+                let radius=if self.glassy() {12.0} else {9.0*(1.0-0.08*press)};
+                arrow_card.material_circle_with_role(&button,x,arrow_y,radius,role);
+            }
+            if self.glassy() {
+                paint::chevron_glass(&arrow_card,x,arrow_y,direction,hover,self.glass_control_scale(&button,press),self.glass_controls_ready());
+            } else {
+                paint::chevron(&arrow_card,x,arrow_y,direction,hover,press);
+            }
             if button.clicked() {self.navigate_page(direction>0.0);}
         }
         // 页码豆：宽度由弹簧驱动，整行实时居中；当前页是白色长条

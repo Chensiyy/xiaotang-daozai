@@ -2,7 +2,7 @@
   "id": "cayww.liquid-glass",
   "name": "液态玻璃",
   "author": "轻九九九（@cayww）",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "api": 1,
   "runtime": "material",
   "entry": "material.wgsl",
@@ -12,7 +12,9 @@
   "permissions": {"screen.backdrop": true},
   "material": {
     "controls": true,
-    "spring": {"stiffness": 1.0, "damping": 0.5}
+    "spring": {"stiffness": 1.0, "damping": 0.5},
+    "shadow": 1.0,
+    "foreground": "glass"
   },
   "settings": [
     {"key": "refract", "label": "折射", "type": "number", "min": 0, "max": 120, "step": 1, "default": "48"},

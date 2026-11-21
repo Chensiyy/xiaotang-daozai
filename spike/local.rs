@@ -36,6 +36,28 @@ struct Field {
 struct Material {
     controls: bool,
     spring: MaterialSpring,
+    #[serde(
+        default,
+        deserialize_with = "material_shadow",
+        skip_serializing_if = "Option::is_none"
+    )]
+    shadow: Option<f32>,
+    #[serde(default)]
+    foreground: MaterialForeground,
+}
+
+fn material_shadow<'de, D: serde::Deserializer<'de>>(
+    input: D,
+) -> std::result::Result<Option<f32>, D::Error> {
+    f32::deserialize(input).map(Some)
+}
+
+#[derive(Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum MaterialForeground {
+    #[default]
+    Skin,
+    Glass,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -114,6 +136,8 @@ pub struct MaterialSpec<'a> {
     pub controls: bool,
     pub stiffness: f32,
     pub damping: f32,
+    pub shadow: Option<f32>,
+    pub glass_foreground: bool,
     pub params: [f32; 32],
 }
 #[derive(Deserialize)]
@@ -217,9 +241,14 @@ impl Manifest {
                 || !m.material.as_ref().is_some_and(|material| {
                     (0.2..=3.0).contains(&material.spring.stiffness)
                         && (0.1..=1.0).contains(&material.spring.damping)
+                        && material
+                            .shadow
+                            .is_none_or(|shadow| (0.0..=1.5).contains(&shadow))
                 })
             {
-                return Err(fail("请核对材质归属、屏幕底片权限、能力和弹簧参数"));
+                return Err(fail(
+                    "请核对材质归属、屏幕底片权限、能力、弹簧参数和投影强度",
+                ));
             }
         } else if m.runtime != "js"
             || m.owner != "tasks"
@@ -527,6 +556,8 @@ impl LocalPlugins {
             controls: material.controls,
             stiffness: material.spring.stiffness,
             damping: material.spring.damping,
+            shadow: material.shadow,
+            glass_foreground: matches!(material.foreground, MaterialForeground::Glass),
             params,
         })
     }

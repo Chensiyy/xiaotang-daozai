@@ -1,5 +1,7 @@
 //! 岛内本机日程表单。
 use crate::{app::{App,Cmd,CALENDAR_PAGE},local_calendar::{self,Draft},paint::{self,Card,H},theme::{self,W}};
+#[cfg(all(windows, feature = "sdk-material"))]
+use crate::material::ControlRole;
 use eframe::egui::{self,Color32};
 
 fn fallback_ics_uid(event:&crate::mail::Meeting)->String{
@@ -86,6 +88,9 @@ impl App {
         }
     }
     pub(crate) fn draw_calendar_editor(&mut self,c:&Card){
+        let glassy=self.glassy();
+        let glass_gpu=self.glass_controls_ready();
+        let glass=|level|glassy.then_some((glass_gpu,level,0.42));
         let Some(d)=self.calendar.draft.as_mut() else{return;};
         let accent=Color32::from_rgb(82,162,255);
         c.centered_text(43.0,20.0,if d.uid.is_some(){"编辑日程"}else{"新建日程"},13.0,W::Semibold,theme::WHITE,H::Left);
@@ -99,29 +104,50 @@ impl App {
         for (label,y) in [("名称",49.0),("开始",82.0),("结束",114.0),("提醒",147.0)]{c.centered_text(43.0,y,label,10.0,W::Regular,theme::GRAY,H::Left);}
         for (x,y,w) in [(86.0,38.0,284.0),(86.0,71.0,120.0),(86.0,103.0,120.0)]{c.fill(x,y,w,23.0,6.0,theme::CARD);}
         if !d.all_day {for y in [71.0,103.0]{c.fill(214.0,y,66.0,23.0,6.0,theme::CARD);}}
-        let (all_day,b)=paint::material_capsule(c,294.0,72.0,76.0,21.0,"calendar-editor-all-day",if d.all_day{Color32::from_rgb(28,65,100)}else{theme::BTN},theme::BTN_HOVER);
-        b.centered_text(332.0,82.5,if d.all_day{"✓ 全天"}else{"全天"},10.0,W::Regular,theme::WHITE,H::Center);
+        let (all_day,b)=paint::material_capsule(c,294.0,72.0,76.0,21.0,"calendar-editor-all-day",
+            if d.all_day{Color32::from_rgb(28,65,100)}else{theme::BTN},theme::BTN_HOVER,
+            glass(if d.all_day {0.55}else{0.12}),#[cfg(all(windows, feature = "sdk-material"))] ControlRole::CalAllDay);
+        if glass_gpu && d.all_day {
+            let from=paint::chrome_mark(c);
+            b.fill(294.0,72.0,76.0,21.0,10.5,Color32::from_white_alpha(28));
+            paint::chrome_since(c,from);
+        }
+        b.centered_text(332.0,82.5,if d.all_day{"✓ 全天"}else{"全天"},10.0,W::Regular,if glassy && d.all_day {accent}else{theme::WHITE},H::Center);
         if all_day.clicked(){d.all_day=!d.all_day;d.error.clear();}
         if d.all_day {c.centered_text(214.0,114.0,"包含结束当天",8.5,W::Regular,theme::GRAY,H::Left);}
         let options=if d.all_day{vec![(None,"不提醒"),(Some(0),"当天 09:00")]}else{vec![(None,"不提醒"),(Some(0),"准时"),(Some(5),"提前5分"),(Some(15),"提前15分"),(Some(30),"提前30分")]};
         let width=if d.all_day{126.0}else{54.0};
         for (i,(value,label)) in options.into_iter().enumerate(){
             let x=86.0+i as f32*(width+3.0);let on=if d.all_day{d.reminder.is_some()==value.is_some()}else{d.reminder==value};
-            let (r,b)=paint::material_capsule(c,x,136.0,width,21.0,&format!("calendar-editor-reminder-{i}"),if on{Color32::from_rgb(28,65,100)}else{theme::BTN},theme::BTN_HOVER);
-            b.centered_text(x+width/2.0,146.5,label,8.4,W::Regular,theme::WHITE,H::Center);
+            let (r,b)=paint::material_capsule(c,x,136.0,width,21.0,&format!("calendar-editor-reminder-{i}"),
+                if on{Color32::from_rgb(28,65,100)}else{theme::BTN},theme::BTN_HOVER,
+                glass(if on {0.55}else{0.12}),#[cfg(all(windows, feature = "sdk-material"))] ControlRole::CalReminder);
+            if glass_gpu && on {
+                let from=paint::chrome_mark(c);
+                b.fill(x,136.0,width,21.0,10.5,Color32::from_white_alpha(28));
+                paint::chrome_since(c,from);
+            }
+            b.centered_text(x+width/2.0,146.5,label,8.4,W::Regular,if glassy && on {accent}else{theme::WHITE},H::Center);
             if r.clicked(){d.reminder=value;}
         }
         let message=if d.error.is_empty(){"日期 年-月-日 · 时间 时:分"}else{&d.error};
         c.centered_text(86.0,172.0,&c.fit(message,9.0,W::Regular,284.0-68.0*self.hold_slot),9.0,W::Regular,if d.error.is_empty(){theme::GRAY}else{theme::RED},H::Left);
         let mut delete=false;
         if d.uid.is_some(){
-            let (r,b)=paint::material_capsule(c,43.0,188.0,82.0,22.0,"calendar-editor-delete",theme::BTN,theme::BTN_HOVER);
+            let (r,b)=paint::material_capsule(c,43.0,188.0,82.0,22.0,"calendar-editor-delete",theme::BTN,theme::BTN_HOVER,
+                glass(0.16),#[cfg(all(windows, feature = "sdk-material"))] ControlRole::CalDelete);
             b.centered_text(84.0,199.0,if d.confirm_delete{"确认删除"}else{"删除日程"},9.5,W::Regular,theme::RED,H::Center);
             if r.clicked(){if d.confirm_delete{delete=true;}else{d.confirm_delete=true;}}
         }
-        let (cancel,b)=paint::material_capsule(c,224.0,188.0,64.0,22.0,"calendar-editor-cancel",theme::BTN,theme::BTN_HOVER);
+        let (cancel,b)=paint::material_capsule(c,224.0,188.0,64.0,22.0,"calendar-editor-cancel",theme::BTN,theme::BTN_HOVER,
+            glass(0.16),#[cfg(all(windows, feature = "sdk-material"))] ControlRole::CalCancel);
         b.centered_text(256.0,199.0,"取消",10.0,W::Regular,theme::WHITE,H::Center);
-        let (save,b)=paint::material_capsule(c,298.0,188.0,72.0,22.0,"calendar-editor-save",accent,Color32::from_rgb(110,180,255));
+        let (save,b)=paint::material_capsule(c,298.0,188.0,72.0,22.0,"calendar-editor-save",accent,Color32::from_rgb(110,180,255),
+            glass(0.55),#[cfg(all(windows, feature = "sdk-material"))] ControlRole::CalSave);
+        if glassy {
+            let (hover,_)=c.hover_t(&save);
+            b.fill(298.0,188.0,72.0,22.0,11.0,paint::alpha(accent,0.42+hover*0.16));
+        }
         b.centered_text(334.0,199.0,"保存到本机",10.0,W::Semibold,theme::WHITE,H::Center);
         if delete{self.delete_calendar_editor();}else if cancel.clicked(){self.calendar.draft=None;}else if save.clicked(){self.save_calendar_editor();}
     }
