@@ -163,7 +163,8 @@ fn memory_parts(r: &Reading) -> ([(&'static str, u64, Color32); 3], u64) {
     let kernel = r.memory_kernel.unwrap_or(0).min(used);
     let cache = r.memory_cache.unwrap_or(0).min(total.saturating_sub(used));
     let free = total.saturating_sub(used).saturating_sub(cache);
-    ([("程序", used - kernel, RAM), ("内核", kernel, KERNEL), ("缓存", cache, mix(RAM, NET, 0.75))], free)
+    // 缓存属于「可用」：颜色压暗一半，在条上和真正被占用的程序、内核明显区分开。
+    ([("程序", used - kernel, RAM), ("内核", kernel, KERNEL), ("缓存", cache, mix(mix(RAM, NET, 0.75), SURFACE, 0.5))], free)
 }
 fn share(value: Option<(u64, u64)>) -> Option<f32> {
     value.filter(|&(_, total)| total > 0).map(|(used, total)| used as f32 / total as f32)
@@ -738,46 +739,69 @@ impl App {
     // ---------- 常驻：侧边停靠 ----------
 
     pub(crate) fn side_performance(&mut self, c: &Card, x: f32, y: f32, height: f32) {
-        let r = &self.performance.latest;
+        // 和横条用同一套元素：带字母的小圆环、CPU 标签加读数、负载曲线、彩色箭头加白色读数，只是竖着排。
+        let r = self.performance.latest.clone();
+        let top = y - height / 2.;
+        // 一只小圆环：环里是 C / G / M，下面是百分比。
+        let ring = |c: &Card, cy: f32, i: usize| {
+            let value = metric(&r, i);
+            gauge(c, x, cy, 7., 2.2, value, COLORS[i], false);
+            c.centered_text(x, cy, LETTERS[i], 7.5, W::Bold, COLORS[i], H::Center);
+            c.centered_text(x, cy + 14., &percent(value), 9., W::Bold, INK, H::Center);
+        };
+        // 两行读数：左边彩色标签，右边白色数值，数值放不下时缩小字号。
+        let pair = |c: &Card, cy: f32, labels: [&str; 2], values: [Option<f32>; 2], color: Color32| {
+            for i in 0..2 {
+                let row = cy + i as f32 * 11.;
+                let tint = if i == 0 { color } else { secondary(color) };
+                let value = speed(values[i]).replace("B/s", "").replace(' ', "");
+                let size = 8.5 * (22. / c.text_w(&value, 8.5, W::Bold)).min(1.);
+                c.centered_text(x - 15., row, labels[i], 7.5, W::Bold, tint, H::Left);
+                c.centered_text(x + 16., row, &value, size, W::Bold, INK, H::Right);
+            }
+        };
+        let cpu_label = |c: &Card, top: f32| {
+            c.centered_text(x, top + 6., "CPU", 7.5, W::Semibold, CPU_COLOR, H::Center);
+            c.centered_text(x, top + 17., &percent(r.cpu), 10., W::Bold, INK, H::Center);
+        };
         match self.settings.performance_bar {
             BarStyle::Custom => {
-                let mut top = y - height / 2.;
+                let mut top = top;
                 for m in Metric::ALL.into_iter().filter(|m| self.settings.performance_metrics & m.bit() != 0) {
-                    let value = resident_value(m, r).replace(' ', "");
+                    let value = resident_value(m, &r).replace(' ', "");
                     let size = 10. * (30. / c.text_w(&value, 10., W::Bold)).min(1.);
                     c.centered_text(x, top + 6., m.label(), 7.5, W::Semibold, metric_color(m), H::Center);
                     c.centered_text(x, top + 16., &value, size, W::Bold, INK, H::Center);
                     top += 23.;
                 }
             }
-            BarStyle::Dashboard => {
+            BarStyle::Gauges => {
                 for i in 0..3 {
-                    let cy = y - 10. + i as f32 * 10.;
-                    c.circle(x - 12., cy, 2., COLORS[i]);
-                    c.centered_text(x + 14., cy, &percent(metric(r, i)), 9., W::Bold, INK, H::Right);
+                    ring(c, top + 9. + i as f32 * 30., i);
                 }
             }
-            BarStyle::Gauges => {
-                for (i, (dx, dy)) in [(0., -7.), (-7.5, 6.5), (7.5, 6.5)].into_iter().enumerate() {
-                    gauge(c, x + dx, y + dy, 5., 1.8, metric(r, i), COLORS[i], false);
+            BarStyle::Dashboard => {
+                self.plot(c, |s| s.cpu, [x - 14., top + 3., 28., 12.], 16., 100., CPU_COLOR, 1.4, 0.35, false, false);
+                c.seg((x - 12., top + 19.), (x + 12., top + 19.), 1., GRID);
+                for i in 0..3 {
+                    ring(c, top + 31. + i as f32 * 30., i);
                 }
+                c.seg((x - 12., top + 112.), (x + 12., top + 112.), 1., GRID);
+                pair(c, top + 120., ["↓", "↑"], r.network, NET);
+                pair(c, top + 145., ["读", "写"], r.disk, DISK);
             }
             BarStyle::Cores => {
-                c.centered_text(x, y - 9., &percent(r.cpu), 10., W::Bold, INK, H::Center);
-                self.core_bars(c, [x - 13., y - 2., 26., 13.], 6, None);
+                cpu_label(c, top);
+                self.core_bars(c, [x - 13., top + 27., 26., 16.], 6, None);
             }
             BarStyle::Pulse => {
-                c.centered_text(x, y - 7., "CPU", 7.5, W::Semibold, CPU_COLOR, H::Center);
-                c.centered_text(x, y + 5., &percent(r.cpu), 11., W::Bold, INK, H::Center);
-            }
-            BarStyle::Network => {
-                for (i, col) in [NET, secondary(NET)].into_iter().enumerate() {
-                    let raw = speed(r.network[i]).replace("B/s", "").replace(' ', "");
-                    let value = format!("{}{raw}", ["↓", "↑"][i]);
-                    let size = 9.0 * (30.0 / c.text_w(&value, 9., W::Bold)).min(1.);
-                    c.centered_text(x, y - 6. + 12. * i as f32, &value, size, W::Bold, col, H::Center);
+                cpu_label(c, top);
+                c.seg((x - 14., top + 43.), (x + 14., top + 43.), 1., GRID);
+                if let Some(p) = self.plot(c, |s| s.cpu, [x - 14., top + 27., 28., 15.], 16., 100., CPU_COLOR, 1.5, 0.4, false, false) {
+                    c.circle(p.0, p.1, 1.8, CPU_COLOR);
                 }
             }
+            BarStyle::Network => pair(c, top + 11., ["↓", "↑"], r.network, NET),
         }
         if crate::quota_ui::bar_tooltip(c.hit(x - 16., y - height / 2., 32., height, "side-performance"), "打开系统性能".into())
             .clicked()
@@ -1263,25 +1287,27 @@ impl App {
         let focus = if hovered.is_some() { Some(0) } else { focus };
         self.section(c, VIZ_Y - 7., "内存构成", &note, if focus.is_some() { INK } else { FAINT });
         let energy = r.ram().unwrap_or(0.) / 100.;
-        let bar_focus = if span.is_some() { Some(usize::MAX) } else { focus };
+        // 悬停「可用」时条本身不点亮任何一段：可用是余量，只用括号和一圈淡描边圈出来，和点亮某一段区分开。
+        let bar_focus = if span.is_some() { Some(usize::MAX) } else if available_hover { None } else { focus };
         glass_bar(c, bar, &parts.map(|(_, n, col)| (n as f32 / whole, col)), bar_focus, energy, t, 17, "memory");
         if let Some((from, to)) = span {
             glass_span(c, bar, from, to, color, energy, t, 17);
         }
-        // 条下方一道细括号标出「可用」那一整段（缓存 + 空闲），悬停时括号和空闲段的描边一起提亮。
+        // 条下方一道细括号标出「可用」那一整段（缓存 + 空闲）。悬停时已用部分轻轻压暗，
+        // 可用段只描一圈淡淡的边、括号稍微提亮，不发光，比悬停程序、内核那种点亮要安静。
         let [bx, by, bw, bh] = bar;
         let a = bx + bw * used_share.clamp(0., 1.);
         if bx + bw - a > 6. {
             let cache = mix(RAM, NET, 0.75);
-            let ink = if available_hover { mix(cache, INK, 0.4) } else { alpha(cache, 0.55) };
+            let ink = alpha(cache, if available_hover { 0.85 } else { 0.55 });
             let y = by + bh + 5.;
             c.seg((a + 1., y), (bx + bw - 1., y), 1., ink);
             for x in [a + 1., bx + bw - 1.] {
                 c.seg((x, y - 3.), (x, y + 0.5), 1., ink);
             }
             if available_hover {
-                let free_x = bx + bw * ((used + parts[2].1) as f32 / whole).min(1.);
-                c.stroke(free_x + 0.5, by + 0.5, (bx + bw - free_x - 1.).max(0.), bh - 1., 2., 1., alpha(cache, 0.6));
+                c.fill(bx + 1., by + 1., (a - bx - 1.).max(0.), bh - 2., 2., alpha(Color32::BLACK, 0.35));
+                c.stroke(a + 0.5, by + 0.5, (bx + bw - a - 1.).max(0.), bh - 1., 2., 1., alpha(cache, 0.4));
             }
         }
         let rows = parts.iter().copied().chain([("空闲", free, Color32::from_rgb(58, 62, 70))]);
@@ -1443,7 +1469,7 @@ impl App {
                     BarStyle::Gauges => "依次显示 CPU、显卡和内存占用率。",
                     BarStyle::Cores => "显示处理器占用率，每个逻辑处理器一根柱，按负载升高；核心较多时相邻的合成一根。",
                     BarStyle::Pulse => "显示 CPU 占用率和最近 16 秒的负载曲线。",
-                    BarStyle::Dashboard => "横向并排显示负载曲线、三项占用率、网速和磁盘读写；侧边停靠时显示三项占用率。",
+                    BarStyle::Dashboard => "横向并排显示负载曲线、三项占用率、网速和磁盘读写；侧边停靠时同样的内容竖着排。",
                     BarStyle::Network => "分别显示物理网卡的下载与上传速度。",
                 };
                 crate::extras::settings_hint(ui, hint);

@@ -54,10 +54,15 @@ impl BarStyle {
             Some((first, second, width))
         })
     }
+    /// 侧边停靠时占的高度：和横条同样的内容竖着排。
     pub(crate) fn side_height(self, mask: u16) -> f32 {
-        if self == Self::Custom {
-            Metric::ALL.into_iter().filter(|m| mask & m.bit() != 0).count() as f32 * 23.
-        } else { 34. }
+        match self {
+            Self::Custom => Metric::ALL.into_iter().filter(|m| mask & m.bit() != 0).count() as f32 * 23.,
+            Self::Gauges => 90.,
+            Self::Dashboard => 158.,
+            Self::Cores | Self::Pulse => 46.,
+            Self::Network => 34.,
+        }
     }
     pub(crate) const ALL: [Self; 6] = [Self::Custom, Self::Gauges, Self::Cores, Self::Pulse, Self::Network, Self::Dashboard];
     pub(crate) fn width(self, mask: u16) -> f32 {
