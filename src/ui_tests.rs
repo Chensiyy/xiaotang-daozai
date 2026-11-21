@@ -5723,6 +5723,25 @@ fn frame_control_draw(h:&mut H,cursor:Option<Pos2>,events:Vec<egui::Event>) {
 }
 
 #[test]
+fn header_grip_has_uniform_fill_at_fractional_dpi() {
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let bounds=crate::display_layout::Bounds{left:0,top:0,right:1920,bottom:1080};
+    let mut h=H::new();
+    let ppp=1.75;
+    island_drag_header(&mut h,bounds,ppp);
+    let grip=h.shapes.iter().find(|s|matches!(&s.shape,egui::Shape::Rect(r)
+        if (r.rect.height()-2.6).abs()<0.01 && (r.rect.top()-7.5).abs()<0.01)).expect("拖动短条应可见");
+    let egui::Shape::Rect(r)=&grip.shape else {unreachable!()};
+    let mut raster=crate::preview_raster::Raster::new((r.rect.right()*ppp).ceil() as usize+1,32);
+    raster.draw(&h.ctx.tessellate(vec![grip.clone()],ppp),ppp);
+    let row=(r.rect.center().y*ppp).floor() as usize*raster.w;
+    let expected=r.fill.r() as f32/255.0;
+    for x in (r.rect.left()*ppp+3.0).ceil() as usize..(r.rect.right()*ppp-3.0).floor() as usize {
+        assert!((raster.buf[row+x][0]-expected).abs()<0.01,"横条中线像素 {x} 应与填充色一致");
+    }
+}
+
+#[test]
 fn page_resize_quota_calendar_weather_keep_date_and_grip_fixed() {
     use crate::display_layout::Bounds;
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
