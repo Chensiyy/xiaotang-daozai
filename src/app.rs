@@ -586,6 +586,8 @@ pub(crate) struct MailState {
     pub status: HashMap<String, mail::Status>,
     /// 最近邮件，新的在前，最多 60 封。
     pub recent: Vec<mail::Item>,
+    /// 等当前帧确认避让状态后再决定通知样式。
+    code_alerts: Vec<(String, u32, String)>,
     /// 设置页里「测试连接」的结果。
     pub note: String,
     pub testing: Option<String>,
@@ -614,6 +616,12 @@ pub(crate) struct MailForm {
 impl MailState {
     /// 最近一封带验证码的邮件。
     pub fn code_item(&self) -> Option<&mail::Item> {self.recent.iter().find(|m|m.code.is_some())}
+    pub(crate) fn alert_code_item(&self, account: &str, uid: u32, now: f64, hide_seconds: u32) -> Option<&mail::Item> {
+        self.recent.iter().find(|item| {
+            item.uid == uid && item.account.eq_ignore_ascii_case(account) && item.code.is_some()
+                && !self.privacy.hidden(item, now, hide_seconds)
+        })
+    }
     pub fn status_of(&self, email: &str) -> mail::Status {
         self.status
             .get(&email.to_ascii_lowercase())
@@ -1117,6 +1125,32 @@ impl App {
         self.mail.privacy.hidden(item,self.t,self.settings.mail_code_hide_seconds)
     }
     pub(crate) fn reveal_mail_code(&mut self,item:&mail::Item){self.mail.privacy.reveal(item,self.t);}
+    fn update_mail_code_alerts(&mut self, env: &Env) {
+        use crate::extras::AlertSource::MailCode;
+        let enabled = self.settings.mail_code_popup && self.settings.mail_code && self.settings.notifications && self.mail_active();
+        let quiet = env.fullscreen_hidden || env.screen_locked;
+        let avoiding = self.browser_minimal_active && !self.open && !self.hold_open && self.position_drag.is_none();
+        let pending = std::mem::take(&mut self.mail.code_alerts);
+        let mail = &self.mail;
+        let now = self.t;
+        let hide_seconds = self.settings.mail_code_hide_seconds;
+        let allowed = |a: &Alert| match &a.source {
+            MailCode(account, uid) => enabled && !quiet && avoiding && now - a.at < a.duration
+                && mail.alert_code_item(account, *uid, now, hide_seconds).is_some(),
+            _ => true,
+        };
+        self.alerts.retain(&allowed);
+        if self.notice.as_ref().is_some_and(|a| !allowed(a)) { self.notice = None; }
+        if self.hud_notice.as_ref().is_some_and(|a| !allowed(a)) { self.hud_notice = None; }
+        if quiet { return; }
+        for (account, uid, body) in pending {
+            if enabled && avoiding && self.mail.alert_code_item(&account, uid, now, hide_seconds).is_some() {
+                self.mail_code_alert(account, uid, body);
+            } else {
+                self.new_mail_alert(body);
+            }
+        }
+    }
     /// 同一封邮件、同一段正文只解析一次排版，避免每帧重复切分几百个段落。
     pub(crate) fn mail_body_lines(&mut self, item: &mail::Item) -> std::sync::Arc<Vec<crate::mail_format::Line>> {
         // display_mail 每帧只 clone Arc：正文与 HTML 原文的指针都不变就说明是同一封邮件，
@@ -1168,7 +1202,7 @@ impl App {
             mail::Event::Mail { item, new } => {
                 if !watching(&item.account){return;}
                 if !new&&self.mail.manage.data.get(&(item.account.to_ascii_lowercase(),crate::mail_manage::Folder::Inbox)).is_some_and(|s|!s.entries.iter().any(|(uid,_)|*uid==item.uid)){return;}
-                self.mail.privacy.observe(&item,new,self.t,chrono::Utc::now().timestamp());
+                let first_new=self.mail.privacy.observe(&item,new,self.t,chrono::Utc::now().timestamp());
                 if self.mail_locally_removed(&item){
                     self.mail.manage.trash.retain(|m|m.uid!=item.uid||!m.account.eq_ignore_ascii_case(&item.account));self.mail.manage.trash.insert(0,item);self.mail.manage.trash.truncate(60);return;
                 }
@@ -1184,8 +1218,11 @@ impl App {
                     let item=&self.mail.recent[0];
                     let body=format!("{} · {}",item.from,item.subject);
                     let body=item.code.as_ref().map(|code|crate::mail_privacy::mask(&body,code)).unwrap_or(body);
-                    self.alert("新邮件",body,5,false);
-                    self.mail.bell_at=Some(self.t);
+                    if item.code.is_some() && self.settings.mail_code_popup && self.settings.mail_code && self.settings.notifications {
+                        if first_new { self.mail.code_alerts.push((item.account.clone(), item.uid, body)); }
+                    } else {
+                        self.new_mail_alert(body);
+                    }
                 }
             }
             mail::Event::Test { account, ok, note } => {
@@ -1877,6 +1914,7 @@ impl App {
     fn lyric_focus_space(&self)->f32 {if self.pomo.running{crate::focus_bar::LYRIC_WIDTH+10.0}else{0.0}}
     fn lyric_bar_width(&self)->f32 {LYRIC_BAR_W+if self.pet_enabled(){48.0}else{0.0}+self.lyric_focus_space()}
     fn notice_size(&self,a:&Alert)->(f32,f32) {
+        if matches!(a.source, crate::extras::AlertSource::MailCode(..)) { return (270.0,60.0); }
         let (width,height)=if a.meeting.is_some(){(360.0,136.0)}else if a.source==crate::extras::AlertSource::Internal && a.title=="蓝牙设备"{(HUD_W,48.0)}else if a.is_hud(){(HUD_W,38.0)}else{(334.0,44.0)};
         (width,height)
     }
@@ -1984,6 +2022,7 @@ impl App {
 
         self.tick(env, dt, elapsed);
         self.sync_device(env);
+        self.update_mail_code_alerts(env);
         self.tick_alerts();
         let hud_active=self.notice.clone();
         if hud_active.as_ref().map(|a|&a.title)!=self.hud_notice.as_ref().map(|a|&a.title)||hud_active.is_none(){self.notice_details=false;}
