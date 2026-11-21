@@ -681,6 +681,28 @@ fn enlarged_island_preserves_font_resolution_with_a_separate_settings_window(){
 }
 
 #[test]
+fn collapsed_resident_uses_its_outline_with_fewer_components() {
+    let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=H::new();
+    h.app.settings.glass_blur=false;
+    let size=Vec2::new(WIN_W,WIN_H);
+    for frame in 0..90 {
+        let t=frame as f64/60.0;
+        let raw=egui::RawInput{screen_rect:Some(Rect::from_min_size(Pos2::ZERO,size)),time:Some(t),..Default::default()};
+        let _=h.ctx.run(raw,|ctx|{
+            egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx,|ui|{
+                let out=h.app.frame(ui,Rect::from_min_size(ui.max_rect().min,size),&Env{t,..Default::default()});
+                if frame==89 {
+                    assert!(out.hit.width()<crate::app::PW);
+                    assert!(out.resident_clip.is_some(),"收起后透明留白应放行鼠标");
+                    assert!(out.glass.is_none());
+                }
+            });
+        });
+    }
+}
+
+#[test]
 fn opaque_surface_gets_a_contour_with_every_skin_and_dock(){
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     for skin in crate::model::Skin::ALL {for dock in crate::model::Dock::ALL {for island_shape in crate::model::IslandShape::ALL {for opaque_surface in [false,true] {
