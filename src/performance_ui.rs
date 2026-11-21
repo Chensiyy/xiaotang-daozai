@@ -161,8 +161,16 @@ fn link(bits: u64) -> String {
 fn memory_parts(r: &Reading) -> ([(&'static str, u64, Color32); 3], u64) {
     let (used, total) = r.memory.unwrap_or((0, 0));
     let kernel = r.memory_kernel.unwrap_or(0).min(used);
-    let cache = r.memory_cache.unwrap_or(0).min(total.saturating_sub(used));
-    let free = total.saturating_sub(used).saturating_sub(cache);
+    // 可用 = 备用缓存 + 空闲。空闲直接读系统计数器，缓存取差值，三处数字始终对得上；
+    // 读不到计数器时才退回系统缓存的大小（它统计口径不同，可能比可用还大，所以要截住）。
+    let available = total.saturating_sub(used);
+    let (cache, free) = match r.memory_free {
+        Some(free) => (available - free.min(available), free.min(available)),
+        None => {
+            let cache = r.memory_cache.unwrap_or(0).min(available);
+            (cache, available - cache)
+        }
+    };
     // 缓存属于「可用」：颜色压暗一半，在条上和真正被占用的程序、内核明显区分开。
     ([("程序", used - kernel, RAM), ("内核", kernel, KERNEL), ("缓存", cache, mix(mix(RAM, NET, 0.75), SURFACE, 0.5))], free)
 }
@@ -1230,7 +1238,7 @@ impl App {
         self.hero_rows(c, [
             ("已用", r.memory.map_or_else(|| "—".into(), |_| bytes(used)), INK),
             ("可用", r.memory.map_or_else(|| "—".into(), |_| bytes(total.saturating_sub(used))), INK),
-            ("缓存", r.memory_cache.map_or_else(|| "—".into(), bytes), INK),
+            ("缓存", r.memory.map_or_else(|| "—".into(), |_| bytes(memory_parts(r).0[2].1)), INK),
             ("总量", r.memory.map_or_else(|| "—".into(), |_| bytes(total)), INK),
         ]);
         let (parts, free) = memory_parts(r);
@@ -1517,4 +1525,21 @@ fn metric_chip(ui: &mut egui::Ui, label: &str, color: Color32, on: bool) -> egui
     );
     ui.painter().text(rect.left_center() + egui::vec2(20., 0.), egui::Align2::LEFT_CENTER, label, font, ink);
     response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 可用 = 缓存 + 空闲，悬停、图例和左栏三处用的是同一组数，任何读数下都对得上。
+    #[test]
+    fn memory_cache_and_free_always_add_up_to_available() {
+        let gb = 1u64 << 30;
+        for (free, cache) in [(Some(gb), Some(9 * gb)), (Some(20 * gb), None), (None, Some(9 * gb)), (None, Some(gb)), (Some(0), None)] {
+            let r = Reading { memory: Some((12 * gb, 16 * gb)), memory_free: free, memory_cache: cache, memory_kernel: Some(gb), ..Default::default() };
+            let (parts, free) = memory_parts(&r);
+            assert_eq!(parts[2].1 + free, 4 * gb, "缓存 {} + 空闲 {free} 应等于可用", parts[2].1);
+            assert_eq!(parts[0].1 + parts[1].1, 12 * gb);
+        }
+    }
 }
