@@ -1750,16 +1750,96 @@ fn shelf_drop_zone_leaves_normal_hover_and_text_selection_unchanged(){
 
 #[test]
 fn shelf_file_drag_opens_below_the_island_and_cancellation_restores_the_page(){
-    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();
-    h.app.go(1,1.0);for _ in 0..90{h.frame(vec![]);}
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=H::new();
+    let saved=crate::model::config_dir().join("原有文件.txt");
+    std::fs::create_dir_all(saved.parent().unwrap()).unwrap();
+    std::fs::write(&saved,"test").unwrap();
+    h.app.shelf.items.push(saved.clone());
+    h.app.go(1,1.0);
+    for _ in 0..90 {h.frame(vec![]);}
     let point=h.file_drop_zone.unwrap().right_bottom()-Vec2::splat(12.0);
-    assert!(!h.hit.contains(point));h.cursor=Some(point);
+    assert!(!h.hit.contains(point));
+    h.cursor=Some(point);
     h.hovered_files.push(egui::HoveredFile{path:Some(crate::model::config_dir().join("拖入文件.txt")),..Default::default()});
-    h.frame(vec![]);assert!(h.app.open && h.app.page==3 && h.app.drag_hot,"文件进入感应区应立即展开置物架");
-    for _ in 0..60{h.frame(vec![]);}assert!(h.app.open);
-    h.hovered_files.clear();h.cursor=None;for _ in 0..60{h.frame(vec![]);}
-    assert!(!h.app.drag_hot && !h.app.open);assert_eq!(h.app.page,1);
-    assert!(h.app.shelf.items.is_empty(),"取消拖入不应保存文件");
+    h.frame(vec![]);
+    assert!(h.app.open && h.app.page==3 && h.app.drag_hot,"文件进入感应区应立即展开置物架");
+    for _ in 0..60 {h.frame(vec![]);}
+    assert!(h.app.open);
+
+    h.hovered_files.clear();
+    h.cursor=None;
+    let mut saw_overlay_while_closing=false;
+    for _ in 0..90 {
+        h.frame(vec![]);
+        if h.app.open || h.app.progress()>0.02 {
+            assert_eq!(h.app.page,3,"收完前不能恢复原页");
+            for s in &h.shapes {
+                if let egui::Shape::Text(t)=&s.shape {
+                    assert!(!t.galley.text().contains("原有文件"),"收起时闪出了置物架列表");
+                    saw_overlay_while_closing|=!h.app.open && t.galley.text()=="松手放进置物架";
+                }
+            }
+        }
+    }
+    assert!(saw_overlay_while_closing,"虚线放置框应随岛体收回");
+    assert!(!h.app.drag_hot && !h.app.open);
+    assert_eq!(h.app.page,1);
+    assert_eq!(h.app.shelf.items,vec![saved],"取消拖入不应保存文件");
+}
+
+#[test]
+fn shelf_file_drag_reentry_preserves_the_original_page_and_release_still_saves(){
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=H::new();
+    h.app.go(1,1.0);
+    for _ in 0..90 {h.frame(vec![]);}
+    let path=crate::model::config_dir().join("反复拖入.txt");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path,"test").unwrap();
+    let point=h.file_drop_zone.unwrap().right_bottom()-Vec2::splat(12.0);
+    for _ in 0..2 {
+        h.cursor=Some(point);
+        h.hovered_files.push(egui::HoveredFile{path:Some(path.clone()),..Default::default()});
+        for _ in 0..24 {h.frame(vec![]);}
+        assert!(h.app.open && h.app.page==3 && h.app.drag_hot);
+        h.hovered_files.clear();
+        h.cursor=None;
+        for _ in 0..12 {h.frame(vec![]);}
+    }
+    for _ in 0..90 {h.frame(vec![]);}
+    assert_eq!(h.app.page,1,"多次进出仍应回到第一次拖入前的页面");
+
+    h.cursor=Some(point);
+    h.hovered_files.push(egui::HoveredFile{path:Some(path.clone()),..Default::default()});
+    for _ in 0..36 {h.frame(vec![]);}
+    h.hovered_files.clear();
+    h.dropped_files.push(egui::DroppedFile{path:Some(path.clone()),..Default::default()});
+    for _ in 0..90 {h.frame(vec![]);}
+    assert!(h.app.open && h.app.page==3);
+    assert_eq!(h.app.shelf.items,vec![path.clone()]);
+    assert_eq!(crate::model::Shelf::load().items,vec![path],"松手后文件应持久化到置物架");
+}
+
+#[test]
+fn shelf_file_drag_exit_keeps_a_pinned_panel_open(){
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=H::new();
+    h.app.go(3,1.0);
+    h.hover(Pos2::new(WIN_W/2.0,12.0),1.0);
+    let pin=h.ctx.read_response(egui::Id::new(("card",true,"hold-open"))).unwrap();
+    h.click(pin.rect.center());
+    h.app.go(1,1.0);
+    h.cursor=None;
+    for _ in 0..60 {h.frame(vec![]);}
+    assert!(h.app.open);
+    h.hovered_files.push(egui::HoveredFile{path:Some(crate::model::config_dir().join("演示.txt")),..Default::default()});
+    for _ in 0..36 {h.frame(vec![]);}
+    assert!(h.app.open && h.app.page==3 && h.app.drag_hot);
+    h.hovered_files.clear();
+    for _ in 0..60 {h.frame(vec![]);}
+    assert!(h.app.open && h.app.page==1 && !h.app.drag_hot,"取消拖入应恢复原页并保留图钉");
+    assert!(!h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t) if t.galley.text()=="松手放进置物架")));
 }
 
 #[test]

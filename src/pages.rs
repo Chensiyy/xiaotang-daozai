@@ -974,7 +974,7 @@ impl App {
     }
 
     /// 拖入遮罩：流动虚线框 + 跟随光标的柔光 + 上下轻跳的托盘图标。
-    fn drag_overlay(&self, c: &Card) {
+    pub(crate) fn drag_overlay(&self, c: &Card) {
         let (x, y, w, h) = (42.0, 31.0, 335.0, 93.0);
         c.fill(x, y, w, h, 12.0, Color32::from_black_alpha(110));
         if let Some(p) = self.cursor_local {

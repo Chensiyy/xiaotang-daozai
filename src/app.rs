@@ -810,6 +810,7 @@ pub struct App {
 
     // 拖入
     pub(crate) drag_hot: bool,
+    drag_departing: bool,
     pub(crate) drag_a: f32,
     drag_saved: Option<usize>,
 
@@ -1032,6 +1033,7 @@ impl App {
             wheel_at: -1.0,
             wheel_page_at: -1.0,
             drag_hot: false,
+            drag_departing: false,
             drag_a: 0.0,
             drag_saved: None,
             shelf_scroll: Spring::new(0.0, 300.0, 0.9),
@@ -1824,6 +1826,10 @@ impl App {
     /// 带过渡地切到某页。`dir` > 0 表示内容从右侧进入。
     pub(crate) fn go(&mut self, page: usize, dir: f32) {
         if page == self.page || !self.settings.visible_pages[page] { return; }
+        if self.drag_departing {
+            self.drag_departing=false;
+            self.drag_saved=None;
+        }
         self.music_volume_open=false;
         self.subpage=None;
         // 连点：上一段过渡还没结束时，以当前页为起点重新开始，位移速度保留。
@@ -2114,18 +2120,15 @@ impl App {
             self.show_page(3);
         } else if hovering_files && !self.drag_hot {
             self.drag_hot = true;
+            self.drag_departing = false;
             if self.page != 3 {
                 self.drag_saved = Some(self.page);
                 self.go(3, if self.page < 3 { 1.0 } else { -1.0 });
             }
         } else if !hovering_files && self.drag_hot {
-            // 拖到外面松手 / 取消：安静地退回原页
             self.drag_hot = false;
-            if let Some(p) = self.drag_saved.take() {
-                self.go(p, if p < 3 { -1.0 } else { 1.0 });
-            }
+            self.drag_departing = true;
         }
-        self.drag_a = anim::approach(self.drag_a, if self.drag_hot { 1.0 } else { 0.0 }, 16.0, dt);
 
         // ---------- 输入：悬停 ----------
         let p_prev = self.progress();
@@ -2218,6 +2221,22 @@ impl App {
         let volume_dragging=self.music_volume_open && ctx.is_being_dragged(egui::Id::new(("card-drag",true,"m-volume-track")));
         let want = self.hold_open || (page_hover && !self.hover_lock && (self.compact_notices()||self.notice.is_none()||self.open)) || self.open && on_notice || (self.open && self.t<self.forced_open_until) || self.drag_hot || volume_dragging || (self.is_editing() && self.open);
         self.morph(want, inside, env.t, dt);
+        let staying_open = self.open && want;
+        if !self.drag_departing || staying_open {
+            self.drag_a = anim::approach(self.drag_a, if self.drag_hot { 1.0 } else { 0.0 }, 16.0, dt);
+        }
+        if self.drag_departing && (staying_open && self.drag_a <= 0.004
+            || !self.open && self.w.settled(PW) && self.h.settled(self.expanded_height())) {
+            // 先收完外形再静默恢复页面；保持展开时则等放置框淡出。
+            self.drag_departing = false;
+            self.drag_a = 0.0;
+            if let Some(page) = self.drag_saved.take() {
+                self.go(page, if page < SHELF_PAGE { -1.0 } else { 1.0 });
+                self.page_from = self.page;
+                self.page_t0 = self.t - 1.0;
+                self.slide.snap(0.0);
+            }
+        }
         self.hold_slot=ctx.animate_bool_with_time(egui::Id::new("hold-open-slot"),self.shows_hold_open(),0.18);
 
         // ---------- 绘制 ----------
@@ -2393,7 +2412,9 @@ impl App {
         if reveal > 0.004 && !banner && !restoring_lyrics {
             let c = base.shifted(0.0, (1.0 - reveal) * -5.0).faded(reveal);
             let c = if reveal < 0.6 { c.ghost() } else { c };
-            if self.calendar.draft.is_some(){self.draw_calendar_editor(&c);}else if self.task_dialog.is_some(){self.draw_task_editor(&c);}else{page_transition=self.panel_body(&c, env, &mut cmds);}
+            if self.drag_departing {
+                self.drag_overlay(&c.ghost().faded(self.drag_a));
+            } else if self.calendar.draft.is_some(){self.draw_calendar_editor(&c);}else if self.task_dialog.is_some(){self.draw_task_editor(&c);}else{page_transition=self.panel_body(&c, env, &mut cmds);}
             self.draw_hold_open(&c);
             if !self.toast_below {self.toast_layer(&c,106.0);}
         }
@@ -3963,6 +3984,7 @@ impl App {
     pub fn on_drop(&mut self, files: Vec<PathBuf>) {
         if !self.settings.visible_pages[3] || files.is_empty() { return; }
         self.drag_hot = false;
+        self.drag_departing = false;
         self.drag_saved = None;
         if self.page != 3 {
             self.go(3, 1.0);
