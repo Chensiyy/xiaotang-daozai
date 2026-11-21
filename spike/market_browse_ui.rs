@@ -33,8 +33,7 @@ fn market_frame(ui: &egui::Ui) -> egui::Frame {
 
 pub(super) fn show_badge(ui: &mut egui::Ui, official: bool, sample: bool) {
     let label = match (official, sample) {
-        (true, true) => "官方样例",
-        (true, false) => "岛仔官方",
+        (true, _) => "官方",
         (false, true) => "验收样例",
         _ => return,
     };
@@ -55,6 +54,25 @@ pub(super) fn show_badge(ui: &mut egui::Ui, official: bool, sample: bool) {
         });
 }
 
+pub(super) fn display_author(author: &str, official: bool) -> &str {
+    if official && author == "岛仔" {
+        "小唐"
+    } else {
+        author
+    }
+}
+
+fn entry_author<'a>(catalog: &market::Catalog, entry: &'a market::Entry) -> &'a str {
+    display_author(
+        &entry.author,
+        catalog.is_official()
+            && entry
+                .presentation
+                .as_ref()
+                .is_some_and(|details| details.official),
+    )
+}
+
 fn entry_badge(ui: &mut egui::Ui, catalog: &market::Catalog, entry: &market::Entry) {
     if let Some(details) = entry
         .presentation
@@ -65,10 +83,9 @@ fn entry_badge(ui: &mut egui::Ui, catalog: &market::Catalog, entry: &market::Ent
     }
 }
 
-fn counts(ui: &mut egui::Ui, entry: &market::Entry) {
-    let details = entry.presentation.as_ref();
-    let downloads = details.and_then(|details| details.downloads);
-    let favorites = details.and_then(|details| details.favorites);
+fn counts(ui: &mut egui::Ui, stats: Option<market_metrics::Counts>) {
+    let downloads = stats.as_ref().map(|stats| stats.downloads);
+    let favorites = stats.as_ref().map(|stats| stats.favorites);
     let count = |value: Option<u64>| value.map(|n| n.to_string()).unwrap_or_else(|| "—".into());
     ui.horizontal_wrapped(|ui| {
         for (label, value) in [("下载次数", downloads), ("收藏次数", favorites)] {
@@ -93,6 +110,9 @@ impl LocalPlugins {
     pub(super) fn market(&mut self, ui: &mut egui::Ui, official: bool, favorites: bool) -> bool {
         if official {
             self.ensure_official_catalog();
+            if let Some(delay) = self.market_stats_repaint_delay() {
+                ui.ctx().request_repaint_after(delay);
+            }
         }
         let busy = self.market_busy();
         let syncing = official && self.official_catalog_busy();
@@ -356,7 +376,11 @@ impl LocalPlugins {
             ui.painter().text(
                 rect.center(),
                 egui::Align2::CENTER_CENTER,
-                entry.author.trim().chars().next().unwrap_or('·'),
+                entry_author(catalog, entry)
+                    .trim()
+                    .chars()
+                    .next()
+                    .unwrap_or('·'),
                 egui::FontId::proportional(diameter * 0.52),
                 color(
                     ui.ctx(),
@@ -416,16 +440,17 @@ impl LocalPlugins {
                             entry_badge(ui, catalog, entry);
                         });
                         ui.horizontal(|ui| {
+                            let author = entry_author(catalog, entry);
                             self.market_avatar(ui, catalog, entry, 18.0);
                             ui.add(
-                                egui::Label::new(
-                                    egui::RichText::new(&entry.author).weak().size(11.0),
-                                )
-                                .truncate(),
+                                egui::Label::new(egui::RichText::new(author).weak().size(11.0))
+                                    .truncate(),
                             )
-                            .on_hover_text(&entry.author);
+                            .on_hover_text(author);
                         });
-                        counts(ui, entry);
+                        if catalog.is_official() {
+                            counts(ui, self.market_counts(&entry.id));
+                        }
                         ui.add_space(4.0);
                         ui.horizontal_wrapped(|ui| {
                             let manage = self.market_action_button(ui, catalog, entry, cover.inner);
@@ -459,7 +484,7 @@ impl LocalPlugins {
                     });
                     ui.horizontal(|ui| {
                         host.market_avatar(ui, catalog, entry, 28.0);
-                        ui.label(egui::RichText::new(&entry.author).strong());
+                        ui.label(egui::RichText::new(entry_author(catalog, entry)).strong());
                     });
                     ui.horizontal_wrapped(|ui| {
                         settings_hint(ui, &format!("版本 v{}", entry.version));
@@ -471,7 +496,9 @@ impl LocalPlugins {
                             settings_hint(ui, &format!("更新于 {date}"));
                         }
                     });
-                    counts(ui, entry);
+                    if catalog.is_official() {
+                        counts(ui, host.market_counts(&entry.id));
+                    }
                     ui.add_space(5.0);
                     ui.horizontal_wrapped(|ui| {
                         let manage = host.market_action_button(ui, catalog, entry, has_cover);

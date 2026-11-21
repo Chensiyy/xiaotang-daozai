@@ -1,4 +1,4 @@
-use super::{market, *};
+use super::{market, market_metrics, *};
 use std::{cmp::Ordering, sync::Arc, thread::JoinHandle};
 
 const FAVORITES_FILE: &str = "market-favorites.json";
@@ -17,7 +17,7 @@ pub(super) struct MarketJob {
     id: String,
     update: bool,
     cancelled: bool,
-    result: JoinHandle<std::result::Result<Record, String>>,
+    result: JoinHandle<(Option<String>, std::result::Result<Record, String>)>,
 }
 
 #[derive(Default)]
@@ -90,7 +90,27 @@ impl LocalPlugins {
         }
         crate::model::atomic_write(&self.dir.join(FAVORITES_FILE), &contents)?;
         self.market_favorites = favorites;
+        self.sync_market_favorites();
         Ok(())
+    }
+
+    fn sync_market_favorites(&mut self) {
+        let official_ids = self
+            .official_market
+            .catalog
+            .iter()
+            .filter(|catalog| catalog.is_official())
+            .flat_map(|catalog| catalog.entries.iter().map(|entry| entry.id.as_str()));
+        self.market_metrics
+            .sync_favorites(&self.market_favorites, official_ids);
+    }
+
+    pub(super) fn market_counts(&self, id: &str) -> Option<market_metrics::Counts> {
+        self.market_metrics.counts(id)
+    }
+
+    pub(super) fn market_stats_repaint_delay(&self) -> Option<Duration> {
+        self.market_metrics.refresh_delay()
     }
 
     pub(super) fn set_market_catalog(&mut self, path: &Path) -> Result<()> {
@@ -121,6 +141,7 @@ impl LocalPlugins {
     }
 
     pub(super) fn ensure_official_catalog(&mut self) {
+        self.market_metrics.request_refresh(false);
         if self
             .official_market
             .last_attempt
@@ -131,6 +152,7 @@ impl LocalPlugins {
     }
 
     pub(super) fn refresh_official_catalog(&mut self) {
+        self.market_metrics.request_refresh(true);
         let official = &mut self.official_market;
         if official.sync_job.is_some() {
             return;
@@ -159,6 +181,7 @@ impl LocalPlugins {
         official.sync_job = Some(std::thread::spawn(move || {
             market::Catalog::sync_official(path, index).map_err(|error| error.to_string())
         }));
+        self.sync_market_favorites();
     }
 
     pub(super) fn official_catalog_busy(&self) -> bool {
@@ -258,6 +281,7 @@ impl LocalPlugins {
         self.market_busy()
             || self.official_catalog_busy()
             || self.official_market.image_job.is_some()
+            || self.market_metrics.busy()
     }
 
     pub(super) fn cancel_market(&mut self, id: &str) {
@@ -310,13 +334,15 @@ impl LocalPlugins {
             update,
             cancelled: false,
             result: std::thread::spawn(move || {
-                let prepare = || {
-                    let mut record = record;
-                    let package = catalog.load(&entry)?;
-                    record.presentation = entry.presentation.filter(|_| official);
-                    prepare_record(record, package)
+                let package = match catalog.load(&entry) {
+                    Ok(package) => package,
+                    Err(error) => return (None, Err(error.to_string())),
                 };
-                prepare().map_err(|error| error.to_string())
+                let version = catalog.is_official().then_some(entry.version);
+                let mut record = record;
+                record.presentation = entry.presentation.filter(|_| official);
+                let result = prepare_record(record, package).map_err(|error| error.to_string());
+                (version, result)
             }),
         });
         Ok(())
@@ -324,6 +350,9 @@ impl LocalPlugins {
 
     pub(super) fn poll_market(&mut self) {
         self.poll_official_market();
+        if self.market_metrics.poll() {
+            self.sync_market_favorites();
+        }
         if !self
             .market_job
             .as_ref()
@@ -332,25 +361,28 @@ impl LocalPlugins {
             return;
         }
         let job = self.market_job.take().unwrap();
+        let (verified_version, result) = job
+            .result
+            .join()
+            .unwrap_or_else(|_| (None, Err("集市校验线程退出".into())));
+        if let Some(version) = verified_version {
+            self.market_metrics.record_download(&job.id, version);
+        }
         if job.cancelled {
             self.notice = "插件状态已变化，请重新操作".into();
             return;
         }
-        let result = job
-            .result
-            .join()
-            .unwrap_or_else(|_| Err("集市校验线程退出".into()))
-            .and_then(|mut record| {
-                // 校验期间，旧插件可能完成一次后台刷新，保留该次已保存的数据。
-                if let Some(current) = self.records.get(&job.id) {
-                    record.storage = current.storage.clone();
-                }
-                self.put(&job.id, record)
-                    .map_err(|error| error.to_string())?;
-                self.invalid.remove(&job.id);
-                self.forget_view(&job.id);
-                Ok(())
-            });
+        let result = result.and_then(|mut record| {
+            // 校验期间，旧插件可能完成一次后台刷新，保留该次已保存的数据。
+            if let Some(current) = self.records.get(&job.id) {
+                record.storage = current.storage.clone();
+            }
+            self.put(&job.id, record)
+                .map_err(|error| error.to_string())?;
+            self.invalid.remove(&job.id);
+            self.forget_view(&job.id);
+            Ok(())
+        });
         self.notice = match result {
             Ok(()) if job.update => "已更新，设置和数据已保留".into(),
             Ok(()) => "已安装。启用后开始运行".into(),
@@ -361,6 +393,7 @@ impl LocalPlugins {
 
     fn poll_official_market(&mut self) {
         let official = &mut self.official_market;
+        let mut synced = false;
         if official
             .sync_job
             .as_ref()
@@ -374,6 +407,7 @@ impl LocalPlugins {
                 Ok(catalog) => {
                     official.images.retain(|key, _| catalog.has_image(key));
                     official.catalog = Some(Arc::new(catalog));
+                    synced = true;
                 }
                 Err(error) => official.error = Some(error),
             }
@@ -391,6 +425,9 @@ impl LocalPlugins {
             {
                 official.images.insert(key, job.join().unwrap_or(None));
             }
+        }
+        if synced {
+            self.sync_market_favorites();
         }
     }
 }
