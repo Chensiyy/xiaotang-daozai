@@ -3119,7 +3119,9 @@ impl App {
                         let (x,w)=(left-pad,right-left+pad*2.0);
                         if fill_in>0.003 {base.fill(x,5.0,w,26.0,13.0,Color32::from_white_alpha((fill_in*7.0+press*12.0) as u8));}
                         let grip=lerp(14.0,22.0,press)*lerp(0.5,1.0,grip_in);
-                        base.fill(local_cx-grip/2.0,7.5,grip,2.6,1.3,Color32::from_white_alpha((grip_in*60.0+press*60.0) as u8));
+                        // 圆角由绘制器按实际像素高度截到半高，避免小数缩放时两端的抗锯齿边缘重叠。
+                        let height=2.6;
+                        base.fill(local_cx-grip/2.0,7.5,grip,height,height,Color32::from_white_alpha((grip_in*60.0+press*60.0) as u8));
                     }
                     // 开始移动立即拿起；原地按住片刻也会拿起，先给反馈再移动。
                     let held=response.is_pointer_button_down_on() && base.ui.input(|i|i.pointer.primary_down() && i.pointer.press_start_time().is_some_and(|at|i.time-at>=LIFT_HOLD));
