@@ -435,7 +435,7 @@ pub struct FrameOut {
     pub region: Rect,
     /// 毛玻璃 + 系统模糊时，替代 `region` 的贴合轮廓；其余情况为 None。
     pub glass: Option<Vec<GlassShape>>,
-    /// 超长常驻条实际占用的窗口轮廓，透明留白交给下层窗口。
+    /// 常驻条实际占用的窗口轮廓，透明留白交给下层窗口。
     pub resident_clip: Option<Vec<GlassShape>>,
     /// 鼠标命中区（相对 `win` 左上角），区域外点击穿透到下层窗口。
     pub hit: Rect,
@@ -2324,9 +2324,9 @@ impl App {
             shapes.extend(tooltips.iter().map(|r|GlassShape::Round(rel(*r),6.0)));
             shapes
         };
-        // 常驻条宽于展开面板时，两端的动画留白会盖住相邻窗口按钮。
-        let resident_clip=(!side && !self.open && pc<=0.1 && body.width()>PW && lifted<0.001 && self.drag_stretch.pos.abs()<=0.001 && !self.drag_hot
-            && center_guide.is_none() && self.shelf_menu_rect.is_none()).then(&outlines);
+        // 常驻条两端的动画留白不能盖住相邻窗口按钮。
+        let resident_clip=(!side && !self.open && !minimal_strip && pc<=0.1 && lifted<0.001 && self.drag_stretch.pos.abs()<=0.001 && !self.drag_hot
+            && self.w.settled(PW) && self.h.settled(self.expanded_height()) && center_guide.is_none() && self.shelf_menu_rect.is_none()).then(&outlines);
         let glass_region=(glass_skin && self.settings.glass_blur || env.opaque_surface)
             .then(||resident_clip.clone().unwrap_or_else(outlines));
         self.update_position_drag(&ctx,env,dt);
@@ -2421,7 +2421,7 @@ impl App {
             Rect::from_min_size(Pos2::new(cx - PW / 2.0 - 4.0, top), Vec2::new(PW + 8.0, self.expanded_height() + 2.0))
         } else {
             let (bw,bh)=self.base_size();
-            let (hit_w,hit_h)=if bw>PW {(self.w.pos.min(bw),bh)}else{(bw+12.0,bh+4.0)};
+            let (hit_w,hit_h)=(self.w.pos.min(bw),bh+4.0);
             Rect::from_min_size(Pos2::new(cx-hit_w/2.0,top),Vec2::new(hit_w,hit_h))
         }
     }

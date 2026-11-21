@@ -252,6 +252,16 @@ unsafe fn glass_region(key: &[i32]) -> Option<HRGN> {
     out
 }
 
+/// 窗口接管设置成功的区域，设置失败时由调用方释放。
+pub(crate) fn apply_outline(hwnd:HWND,key:&[i32],redraw:bool)->bool {
+    unsafe {
+        let Some(rgn)=glass_region(key) else{return false;};
+        if SetWindowRgn(hwnd,rgn,redraw)!=0 {return true;}
+        let _=DeleteObject(rgn);
+        false
+    }
+}
+
 /// 命中区外 `HTTRANSPARENT`（鼠标投给下层窗口），命中区内 `HTCLIENT`。
 unsafe extern "system" fn subclass(
     hwnd: HWND,
@@ -737,7 +747,9 @@ impl Window {
         let passive=r.2>r.0 && r.3>r.1 && h.2==h.0 && notice_hit.is_none() && !capture;
         if let Some((x,y,w,h))=notice_hit {hits.push((px(x),px(y),px(x+w),px(y+h)));}
         *hit().lock().unwrap_or_else(|e| e.into_inner()) = hits;
-        // 合成引擎的模糊块贴合岛体轮廓。
+        // 收起时主窗口和毛玻璃底板都按可见轮廓向下层进程让出鼠标。
+        let resident_key=resident_clip.filter(|_|!capture && !hold_startup && r.0<r.2 && r.1<r.3)
+            .map(|shapes|glass_key(shapes,ppp));
         // 分层窗口显示的是带真实透明通道的画面时，系统模糊同样能透出来（模糊底板紧贴在岛仔窗口下方，
         // 分层显示窗口在上方）；只有轮廓裁剪或按轮廓补 alpha（内部不透明）时才关掉模糊。
         let layered_alpha=matches!(self.layering,Layering::Active(_)) && !self.outline.active;
@@ -760,7 +772,7 @@ impl Window {
                 let hwnd = self.hwnd;
                 if let Some(backdrop) = &mut self.backdrop {
                     let pieces = crate::app::blur_pieces(shapes, ppp);
-                    match self.capture_exclusion.render(targets, None, || backdrop.show(hwnd, &pieces)) {
+                    match self.capture_exclusion.render(targets, None, || backdrop.show(hwnd, &pieces, resident_key.as_deref())) {
                         Ok(()) => self.blur = true,
                         Err(error) => {
                             glass_diagnostic(&format!("模糊层更新失败：{error:?}"));
@@ -782,23 +794,12 @@ impl Window {
         }
         // 不可靠的透明合成路径按真实轮廓裁剪，避免圆角外侧和透明画布留下黑底。
         let outline_clip=self.opaque_surface && !hold_startup && !matches!(self.layering,Layering::Active(_));
-        // 跨进程输入由系统窗口区域先分派；透明的动画预留区不能只靠 WM_NCHITTEST 放行。
-        let resident_clip=resident_clip.filter(|_|!capture && !hold_startup && r.0<r.2 && r.1<r.3);
-        match resident_clip.or_else(||glass.filter(|_|outline_clip)) {
-            Some(shapes) => {
-                let key=glass_key(shapes,ppp);
-                if self.glass.as_ref()!=Some(&key) {
-                    unsafe {
-                        if let Some(rgn)=glass_region(&key) {
-                            if SetWindowRgn(self.hwnd, rgn, true) != 0 {
-                                self.glass=Some(key);
-                                // 回到矩形区域时必须重新设置。
-                                self.region=(i32::MIN,0,0,0);
-                            } else {
-                                let _ = DeleteObject(rgn);
-                            }
-                        }
-                    }
+        match resident_key.or_else(||glass.filter(|_|outline_clip).map(|shapes|glass_key(shapes,ppp))) {
+            Some(key) => {
+                if self.glass.as_ref()!=Some(&key) && apply_outline(self.hwnd,&key,true) {
+                    self.glass=Some(key);
+                    // 回到矩形区域时必须重新设置。
+                    self.region=(i32::MIN,0,0,0);
                 }
             }
             None if self.region != r || self.glass.is_some() => {
