@@ -5107,6 +5107,8 @@ fn volume_hud_drag_maps_pointer_to_percentage(){
 fn wireless_receiver_presence_updates_without_bluetooth_notices(){
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     let mut h=H::new();
+    h.app.wireless_compat.test_install_builtin();
+    h.app.wireless_compat.set_enabled(true).unwrap();
     h.app.settings.visible_pages[crate::app::BLUETOOTH_PAGE]=true;
     h.app.settings.bluetooth_notifications=true;
     h.frame(vec![]);

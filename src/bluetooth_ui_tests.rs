@@ -125,6 +125,8 @@ fn wireless_detail_explains_which_battery_data_is_missing() {
 fn wireless_receiver_shows_presence_and_stays_out_of_resident_controls() {
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     let mut h=H::new();
+    h.app.wireless_compat.test_install_builtin();
+    h.app.wireless_compat.set_enabled(true).unwrap();
     h.bt=vec![fixture().remove(0)];
     h.app.settings.bluetooth_resident_custom=true;
     h.app.settings.bluetooth_pinned=vec!["usb:test".into(),"device-0".into()];
@@ -157,7 +159,48 @@ fn wireless_receiver_shows_presence_and_stays_out_of_resident_controls() {
     h.receivers.clear();
     h.frame(vec![]);
     assert!(h.app.wireless_focus.is_none());
-    assert!(!texts(&h).iter().any(|s|s=="接收器已插入"));
+    assert!(!texts(&h).iter().any(|s|s=="2.4G"));
+}
+
+#[test]
+fn wireless_compat_lifecycle_preserves_bluetooth_devices() {
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=H::new();
+    let bluetooth=fixture().remove(0);
+    let receiver=receiver_fixture();
+    h.bt=vec![bluetooth.clone()];
+    h.receivers=vec![receiver.clone()];
+    open_page(&mut h);
+    let check=|h:&mut H,enabled:bool|{
+        h.frame(vec![]);
+        if enabled {
+            assert_eq!(h.app.wireless_devices,[bluetooth.clone(),receiver.clone()]);
+        } else {
+            assert_eq!(h.app.wireless_devices,[bluetooth.clone()]);
+        }
+        let labels=texts(h);
+        assert!(labels.iter().any(|s|s=="82%"));
+        assert_eq!(labels.iter().any(|s|s=="2.4G"),enabled);
+    };
+    assert!(h.app.wireless_compat.version().is_none());
+    check(&mut h,false);
+
+    h.app.wireless_compat.test_install_builtin();
+    assert!(h.app.wireless_compat.version().is_some());
+    check(&mut h,false);
+
+    h.app.wireless_compat.set_enabled(true).unwrap();
+    check(&mut h,true);
+    h.app.wireless_focus=Some(receiver.id.clone());
+    h.app.wireless_compat.set_enabled(false).unwrap();
+    check(&mut h,false);
+    assert!(h.app.wireless_focus.is_none());
+
+    h.app.wireless_compat.set_enabled(true).unwrap();
+    check(&mut h,true);
+    h.app.wireless_compat.uninstall().unwrap();
+    assert!(h.app.wireless_compat.version().is_none());
+    check(&mut h,false);
 }
 
 #[test]
@@ -261,7 +304,11 @@ fn wireless_native_preview(){
         if !resident {h.app.show_page(BLUETOOTH_PAGE);}
         if name.starts_with("native-detail") {h.app.wireless_focus=Some(h.bt[2].id.clone());}
         if name=="native-detail-unknown.png" {h.bt[2].reading.as_mut().unwrap().charging=None;}
-        if name.starts_with("native-receiver") {h.receivers.push(receiver_fixture());}
+        if name.starts_with("native-receiver") {
+            h.app.wireless_compat.test_install_builtin();
+            h.app.wireless_compat.set_enabled(true).unwrap();
+            h.receivers.push(receiver_fixture());
+        }
         if name=="native-receiver-detail.png" {h.app.wireless_focus=Some(h.receivers[0].id.clone());}
         let height=if resident{50}else{210};
         let mut raster=crate::preview_raster::Raster::new(640,height);
@@ -351,11 +398,7 @@ fn wireless_legacy_pins_migrate_unless_mode_is_explicit() {
     }
 }
 
-#[test]
-fn wireless_settings_controls_are_in_their_own_page() {
-    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
-    let mut h=H::new();
-    h.app.wireless_devices=fixture();
+fn wireless_settings_capture(h:&mut H,height:f32)->std::sync::Arc<Mutex<Option<egui::FullOutput>>> {
     h.app.open_settings();
     h.ctx.set_embed_viewports(false);
     let output=std::sync::Arc::new(Mutex::new(None));
@@ -363,17 +406,32 @@ fn wireless_settings_controls_are_in_their_own_page() {
     egui::Context::set_immediate_viewport_renderer(move|ctx,mut viewport|{
         let id=viewport.ids.this;
         let raw=egui::RawInput{
-            viewport_id:id,screen_rect:Some(Rect::from_min_size(Pos2::ZERO,egui::vec2(690.0,560.0))),
+            viewport_id:id,screen_rect:Some(Rect::from_min_size(Pos2::ZERO,egui::vec2(690.0,height))),
             viewports:std::iter::once((id,egui::ViewportInfo::default())).collect(),..Default::default()
         };
         *capture.lock().unwrap()=Some(ctx.run(raw,|ctx|(viewport.viewport_ui_cb)(ctx)));
     });
+    output
+}
+
+#[test]
+fn wireless_settings_controls_are_in_their_own_page() {
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=H::new();
+    h.app.wireless_devices=fixture();
+    let output=wireless_settings_capture(&mut h,560.0);
     let mut raster=crate::preview_raster::Raster::new(690,560);
     for (tab,name,visible,hidden) in [
-        (10,"wireless-page-management",vec!["无线设备电量"],vec!["常驻样式","常驻设备","电量提醒","安装或更新…"]),
-        (crate::extras::SETTINGS_TAB_WIRELESS,"wireless-settings",vec!["岛上常驻","常驻样式","常驻设备","电量提醒","安装或更新…","反馈设备适配"],vec!["蓝牙设备连接"]),
+        (10,"wireless-page-management",vec!["无线设备电量"],vec!["常驻样式","常驻设备","电量提醒","安装兼容包…"]),
+        (crate::extras::SETTINGS_TAB_WIRELESS,"wireless-settings",vec!["岛上常驻","常驻样式","常驻设备","电量提醒"],vec!["蓝牙设备连接","设备兼容","反馈设备适配","本地插件"]),
         (6,"wireless-notifications",vec!["蓝牙设备连接"],vec!["无线设备电量","电量提醒"]),
+        (crate::extras::SETTINGS_TAB_WIRELESS,"wireless-settings-compat-enabled",vec!["设备兼容","反馈设备适配"],vec!["本地插件"]),
     ] {
+        if name=="wireless-settings-compat-enabled" {
+            if std::env::var_os("DAOZAI_BLUETOOTH_PREVIEW_DIR").is_none() {continue;}
+            h.app.wireless_compat.test_install_builtin();
+            h.app.wireless_compat.set_enabled(true).unwrap();
+        }
         h.app.settings_tab=tab;
         for _ in 0..3 {
             let _=h.ctx.run(Default::default(),|ctx|h.app.settings_ui(ctx,false));
@@ -393,6 +451,44 @@ fn wireless_settings_controls_are_in_their_own_page() {
             image::save_buffer(dest.join(format!("{name}.png")),&bytes,690,560,image::ColorType::Rgba8).unwrap();
         }
     }
+}
+
+#[test]
+fn wireless_compat_settings_follow_install_and_enable_state() {
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=H::new();
+    let output=wireless_settings_capture(&mut h,920.0);
+    let labels=|h:&mut H,tab|{
+        h.app.settings_tab=tab;
+        for _ in 0..3 {
+            let _=h.ctx.run(Default::default(),|ctx|h.app.settings_ui(ctx,false));
+            h.shapes=output.lock().unwrap().take().unwrap().shapes;
+        }
+        texts(h)
+    };
+    let check=|h:&mut H,installed:bool,enabled:bool|{
+        let wireless=labels(h,crate::extras::SETTINGS_TAB_WIRELESS);
+        for label in ["设备兼容","反馈设备适配"] {
+            assert_eq!(wireless.iter().any(|s|s==label),enabled,"无线设备设置中的 {label}");
+        }
+        assert!(!wireless.iter().any(|s|matches!(s.as_str(),"安装兼容包…"|"更新…"|"卸载")));
+
+        let general=labels(h,0);
+        assert!(general.iter().any(|s|s=="本地插件"));
+        assert_eq!(general.iter().any(|s|s=="安装兼容包…"),!installed);
+        for label in ["启用兼容包","更新…","卸载"] {
+            assert_eq!(general.iter().any(|s|s==label),installed,"本地插件中的 {label}");
+        }
+    };
+    check(&mut h,false,false);
+    h.app.wireless_compat.test_install_builtin();
+    check(&mut h,true,false);
+    h.app.wireless_compat.set_enabled(true).unwrap();
+    check(&mut h,true,true);
+    h.app.wireless_compat.set_enabled(false).unwrap();
+    check(&mut h,true,false);
+    h.app.wireless_compat.uninstall().unwrap();
+    check(&mut h,false,false);
 }
 
 #[test]
