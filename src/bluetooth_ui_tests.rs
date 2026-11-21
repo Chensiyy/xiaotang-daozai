@@ -87,6 +87,10 @@ fn wireless_rings_show_unknown_compact_and_paging(){
     let t=texts(&h);assert!(t.iter().any(|s|s=="···"),"未上报电量用小点占位");assert!(!t.iter().any(|s|s.contains(" / ")),"6 台以内一页放下");
     let boxes:Vec<_>=(0..6).map(|i|h.ctx.read_response(egui::Id::new(("card",true,("wireless-device",format!("device-{i}"))))).unwrap().rect).collect();
     assert!(boxes.windows(2).all(|p|(p[0].top()-p[1].top()).abs()<0.1&&p[0].right()<=p[1].left()+0.1),"紧凑排法仍在同一行且不重叠");
+    for id in ["nav-l","nav-r"] {
+        let arrow=h.ctx.read_response(egui::Id::new(("card",true,id))).unwrap().interact_rect;
+        assert!(boxes.iter().all(|tile|!tile.intersect(arrow).is_positive()),"无线设备的点击区域不能盖住翻页箭头");
+    }
     let mut d=h.bt[1].clone();d.id="device-6".into();h.bt.push(d);h.frame(vec![]);h.frame(vec![]);
     assert!(texts(&h).iter().any(|s|s=="1 / 2"),"7 台以上每页 4 台");
     h.click(H::local(348.0,175.0));assert_eq!(h.app.wireless_offset,1);

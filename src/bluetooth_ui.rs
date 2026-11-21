@@ -363,6 +363,8 @@ impl App {
         let compact=per_page>4;
         let (col_w,gap,r,w,icon,pct,name,ring_y,pct_y,name_y)=if compact {(64.0,4.0,23.0,3.5,19.0,13.0,9.5,78.0,118.0,136.0)} else {(82.0,12.0,29.0,4.0,24.0,15.0,10.0,80.0,127.0,146.0)};
         let count=shown.len() as f32;
+        // 展开页两侧留给翻页箭头，两端的设备也能完整点击。
+        let col_w=f32::min(col_w,(crate::app::PW-72.0-(count-1.0)*gap)/count);
         let start=(crate::app::PW-(count*col_w+(count-1.0)*gap))/2.0;
         for (index,device) in shown.iter().enumerate() {
             let x=start+index as f32*(col_w+gap);let cx=x+col_w/2.0;
