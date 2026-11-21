@@ -1218,14 +1218,23 @@ impl App {
         // 只有悬停构成条本身时突出对应的一段，其余压暗，标题右侧换成这一段的大小；图例只跟着变暗，自己不响应。
         let pointer = c.ui.ctx().pointer_hover_pos().map(|p| c.to_local(p));
         let mut focus = None;
+        // 「可用」= 缓存 + 空闲（缓存随时能让给程序用），在条上是已用之后的整段；悬停这一段时整段一起亮。
+        let available = total.saturating_sub(used);
+        let used_share = if c.live { c.ui.ctx().animate_value_with_time(egui::Id::new("performance-memory-available"), used as f32 / whole, 0.5) } else { used as f32 / whole };
+        let mut available_hover = false;
         if let Some(p) = pointer.filter(|_| c.live) {
             if (bar[1]..bar[1] + bar[3]).contains(&p.y) && (bar[0]..bar[0] + bar[2]).contains(&p.x) {
                 let at = (p.x - bar[0]) / bar[2];
-                let mut acc = 0.;
-                focus = parts.iter().position(|(_, n, _)| {
-                    acc += *n as f32 / whole;
-                    at < acc
-                });
+                if at >= used_share {
+                    available_hover = true;
+                    focus = Some(2);
+                } else {
+                    let mut acc = 0.;
+                    focus = parts.iter().position(|(_, n, _)| {
+                        acc += *n as f32 / whole;
+                        at < acc
+                    });
+                }
             }
         }
         // 悬停下面的某个程序：整条压暗，只点亮「程序」段里属于它的那一小截（按排行顺序从左往右排）。
@@ -1247,8 +1256,9 @@ impl App {
         });
         let note = match (hovered, focus) {
             (Some(i), _) => format!("{} {}", programs[i].name, bytes(programs[i].memory)),
+            (None, _) if available_hover => format!("可用 {}", bytes(available)),
             (None, Some(i)) => format!("{} {}", parts[i].0, bytes(parts[i].1)),
-            (None, None) => format!("空闲 {}", bytes(free)),
+            (None, None) => format!("可用 {}", bytes(available)),
         };
         let focus = if hovered.is_some() { Some(0) } else { focus };
         self.section(c, VIZ_Y - 7., "内存构成", &note, if focus.is_some() { INK } else { FAINT });
@@ -1258,10 +1268,26 @@ impl App {
         if let Some((from, to)) = span {
             glass_span(c, bar, from, to, color, energy, t, 17);
         }
+        // 条下方一道细括号标出「可用」那一整段（缓存 + 空闲），悬停时括号和空闲段的描边一起提亮。
+        let [bx, by, bw, bh] = bar;
+        let a = bx + bw * used_share.clamp(0., 1.);
+        if bx + bw - a > 6. {
+            let cache = mix(RAM, NET, 0.75);
+            let ink = if available_hover { mix(cache, INK, 0.4) } else { alpha(cache, 0.55) };
+            let y = by + bh + 5.;
+            c.seg((a + 1., y), (bx + bw - 1., y), 1., ink);
+            for x in [a + 1., bx + bw - 1.] {
+                c.seg((x, y - 3.), (x, y + 0.5), 1., ink);
+            }
+            if available_hover {
+                let free_x = bx + bw * ((used + parts[2].1) as f32 / whole).min(1.);
+                c.stroke(free_x + 0.5, by + 0.5, (bx + bw - free_x - 1.).max(0.), bh - 1., 2., 1., alpha(cache, 0.6));
+            }
+        }
         let rows = parts.iter().copied().chain([("空闲", free, Color32::from_rgb(58, 62, 70))]);
         for (i, (label, amount, col)) in rows.enumerate() {
             let (x, y) = legend(i);
-            let dim = focus.is_some_and(|f| f != i);
+            let dim = focus.is_some_and(|f| f != i) && !(available_hover && i == 3);
             c.circle(x + 3., y - 3.5, 2.5, if dim { alpha(col, 0.35) } else { col });
             c.text(x + 10., y, label, 9., W::Regular, if dim { FAINT } else { MUTED }, H::Left);
             c.text(x + legend_w - 10., y, &bytes(amount), 9., W::Bold, if dim { FAINT } else { INK }, H::Right);

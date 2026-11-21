@@ -10222,6 +10222,27 @@ fn performance_badge_opens_overview_and_drills_into_details() {
     assert_eq!(h.app.performance.view,None,"离开页面后下次从设置里的页面开始");
 }
 
+#[test]
+fn wide_resident_island_stays_inside_the_window_region_while_morphing() {
+    use crate::performance::{BarStyle,Metric};
+    let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=H::new();
+    h.app.set_page_visible(crate::app::PERFORMANCE_PAGE,true);
+    h.app.settings.performance_bar=BarStyle::Custom;
+    h.app.settings.performance_metrics=Metric::ALL.iter().fold(0,|bits,m|bits|m.bit());
+    for _ in 0..30 {h.frame(vec![]);}
+    assert!(h.app.resident.target.width>PW+20.0,"常驻条要比展开面板宽：{}",h.app.resident.target.width);
+    let mut widest=0.0_f32;
+    for f in 0..160 {
+        h.cursor=Some(if f<70 {Pos2::new(WIN_W/2.0,15.0)} else {Pos2::new(5.0,WIN_H-5.0)});
+        h.frame(vec![]);
+        let island=h.app.current_width();
+        widest=widest.max(island);
+        assert!(h.region.width()>=island,"第 {f} 帧窗口区域 {} 窄于岛宽 {island}，两侧会被系统切掉",h.region.width());
+    }
+    assert!(widest>PW+20.0);
+}
+
 #[cfg(windows)]
 #[test]
 fn performance_program_list_scrolls_under_the_wheel_without_turning_pages() {
@@ -10297,6 +10318,8 @@ fn performance_gallery() {
     // 悬停内存点阵：程序那一段高亮。
     h.app.performance.view=Some(View::Memory);
     shoot_feature(&mut h,&mut raster,&dir,"memory-hover",20,Some(H::local(170.,110.)),&today);
+    // 悬停构成条最右边的空闲段：「可用」整段（缓存 + 空闲）一起亮，标题右侧写可用总量。
+    shoot_feature(&mut h,&mut raster,&dir,"memory-available-hover",20,Some(H::local(374.,110.)),&today);
     // 悬停内存页的第二个程序：构成条里属于它的那一截亮起，其余压暗。
     shoot_feature(&mut h,&mut raster,&dir,"memory-program-hover",20,Some(H::local(230.,268.)),&today);
     // 悬停总览的处理器卡片。
