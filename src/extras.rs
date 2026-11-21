@@ -1274,6 +1274,35 @@ pub(crate) fn settings_card(ui:&mut egui::Ui,add:impl FnOnce(&mut egui::Ui)) {
         .show(ui,|ui|{ui.set_min_width(ui.available_width());ui.spacing_mut().item_spacing.y=8.0;add(ui);});
 }
 
+type WirelessCoverTexture = (std::sync::Arc<image::RgbaImage>, egui::TextureHandle);
+const WIRELESS_COVER_TEXTURE: &str = "wireless-compat-cover";
+
+fn wireless_compat_cover(ui: &mut egui::Ui, cover: Option<std::sync::Arc<image::RgbaImage>>) {
+    let size = egui::vec2(88.0, 49.5);
+    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    let id = egui::Id::new(WIRELESS_COVER_TEXTURE);
+    let Some(cover) = cover else {
+        ui.data_mut(|data| data.remove::<WirelessCoverTexture>(id));
+        ui.painter().rect_filled(rect, 6.0, settings_color(ui.ctx(), Color32::from_gray(49), Color32::from_gray(240)));
+        ui.painter().text(
+            rect.center(), egui::Align2::CENTER_CENTER, "无封面", egui::FontId::proportional(11.0),
+            settings_color(ui.ctx(), Color32::from_gray(170), Color32::from_gray(99)),
+        );
+        return;
+    };
+    let texture = match ui.data(|data| data.get_temp::<WirelessCoverTexture>(id)) {
+        Some((previous, texture)) if std::sync::Arc::ptr_eq(&previous, &cover) => texture,
+        _ => {
+            let size = [cover.width() as usize, cover.height() as usize];
+            let pixels = egui::ColorImage::from_rgba_unmultiplied(size, cover.as_raw());
+            let texture = ui.ctx().load_texture(WIRELESS_COVER_TEXTURE, pixels, egui::TextureOptions::LINEAR);
+            ui.data_mut(|data| data.insert_temp(id, (cover, texture.clone())));
+            texture
+        }
+    };
+    egui::Image::new((texture.id(), size)).corner_radius(6.0).paint_at(ui, rect);
+}
+
 /// 卡片底部的「高级」折叠区：只放内容多的页面里不常改的项，默认收起。整条都可以点，右侧箭头表示展开状态。
 pub(crate) fn settings_advanced(ui:&mut egui::Ui,id:&str,add:impl FnOnce(&mut egui::Ui)){
     let ctx=&ui.ctx().clone();
@@ -1863,7 +1892,12 @@ impl App {
                             if let Some(version)=self.wireless_compat.version() {
                                 let was_enabled=self.wireless_compat.enabled();
                                 let mut enabled=was_enabled;
-                                setting_row(ui,"启用兼容包",&format!("无线设备兼容包 v{version}"),&mut enabled);
+                                ui.horizontal(|ui|{
+                                    wireless_compat_cover(ui,self.wireless_compat.cover());
+                                    ui.vertical(|ui|{
+                                        setting_row(ui,"启用兼容包",&format!("无线设备兼容包 v{version}"),&mut enabled);
+                                    });
+                                });
                                 if enabled!=was_enabled {
                                     self.wireless_compat_error=self.wireless_compat.set_enabled(enabled).err();
                                 }
@@ -1871,8 +1905,11 @@ impl App {
                                     if ui.button("更新…").clicked(){self.pending.push(Cmd::WirelessCompatInstall);}
                                     if ui.button("卸载").clicked(){self.wireless_compat_error=self.wireless_compat.uninstall().err();}
                                 });
-                            } else if ui.button("安装兼容包…").clicked() {
-                                self.pending.push(Cmd::WirelessCompatInstall);
+                            } else {
+                                ui.data_mut(|data|data.remove::<WirelessCoverTexture>(egui::Id::new(WIRELESS_COVER_TEXTURE)));
+                                if ui.button("安装兼容包…").clicked() {
+                                    self.pending.push(Cmd::WirelessCompatInstall);
+                                }
                             }
                             if let Some(error)=&self.wireless_compat_error {settings_hint(ui,error);}
                         });

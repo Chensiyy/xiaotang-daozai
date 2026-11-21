@@ -473,7 +473,7 @@ fn wireless_compat_settings_follow_install_and_enable_state() {
         let general=labels(h,0);
         assert!(general.iter().any(|s|s=="本地插件"));
         assert_eq!(general.iter().any(|s|s=="安装兼容包…"),!installed);
-        for label in ["启用兼容包","更新…","卸载"] {
+        for label in ["无封面","启用兼容包","更新…","卸载"] {
             assert_eq!(general.iter().any(|s|s==label),installed,"本地插件中的 {label}");
         }
     };

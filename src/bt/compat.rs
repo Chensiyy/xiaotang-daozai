@@ -1,9 +1,10 @@
 //! 接收器识别表与用于补充型号的本地兼容包。
+use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
     fs,
-    io::Read,
+    io::{Cursor, Read},
     path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard},
 };
@@ -13,7 +14,9 @@ const API_VERSION: u32 = 1;
 const FILE_NAME: &str = "wireless-receivers.json";
 #[cfg(any(windows, test))]
 const BUILTIN: &[u8] = include_bytes!("../../assets/wireless-receivers.json");
-const MAX_BYTES: usize = 256 * 1024;
+const MAX_COVER_BYTES: usize = 256 * 1024;
+const MAX_ENCODED_COVER_BYTES: usize = MAX_COVER_BYTES.div_ceil(3) * 4;
+const MAX_BYTES: usize = 256 * 1024 + MAX_ENCODED_COVER_BYTES + 32;
 
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -21,6 +24,8 @@ struct Manifest {
     id: String,
     api_version: u32,
     version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cover_png: Option<String>,
     receivers: Vec<Receiver>,
 }
 
@@ -35,6 +40,7 @@ struct Receiver {
 pub(super) struct Package {
     manifest: Manifest,
     receivers: BTreeMap<(u16, u16), usize>,
+    cover: Option<Arc<image::RgbaImage>>,
 }
 
 impl Package {
@@ -66,9 +72,16 @@ impl Package {
                 return Err("兼容包有重复的接收器 VID/PID");
             }
         }
+        let cover = manifest
+            .cover_png
+            .as_deref()
+            .map(cover_thumbnail)
+            .transpose()?
+            .map(Arc::new);
         Ok(Self {
             manifest,
             receivers,
+            cover,
         })
     }
 
@@ -78,6 +91,39 @@ impl Package {
             .get(&(usb_id(vid)?, usb_id(pid)?))
             .map(|&index| self.manifest.receivers[index].name.as_str())
     }
+}
+
+fn cover_thumbnail(encoded: &str) -> Result<image::RgbaImage, &'static str> {
+    if encoded.len() > MAX_ENCODED_COVER_BYTES {
+        return Err("兼容包封面超过 256 KiB");
+    }
+    let png = STANDARD
+        .decode(encoded)
+        .map_err(|_| "兼容包封面必须为 Base64 编码")?;
+    if png.len() > MAX_COVER_BYTES {
+        return Err("兼容包封面超过 256 KiB");
+    }
+    let mut reader = image::ImageReader::with_format(Cursor::new(png), image::ImageFormat::Png);
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(1920);
+    limits.max_image_height = Some(1080);
+    limits.max_alloc = Some(32 * 1024 * 1024);
+    reader.limits(limits);
+    let image = reader
+        .decode()
+        .map_err(|_| "兼容包封面必须是有效的 PNG，尺寸不超过 1920 × 1080")?;
+    let (width, height) = (image.width(), image.height());
+    let crop_width = width.min((height * 16 / 9).max(1));
+    let crop_height = height.min((width * 9 / 16).max(1));
+    Ok(image
+        .crop_imm(
+            (width - crop_width) / 2,
+            (height - crop_height) / 2,
+            crop_width,
+            crop_height,
+        )
+        .resize_exact(192, 108, image::imageops::FilterType::Triangle)
+        .into_rgba8())
 }
 
 #[cfg(windows)]
@@ -178,8 +224,16 @@ impl Store {
             .is_some_and(|record| record.enabled)
     }
 
+    pub(crate) fn cover(&self) -> Option<Arc<image::RgbaImage>> {
+        self.installed().as_ref()?.package.cover.clone()
+    }
+
     pub fn install(&self, source: &Path) -> Result<(), String> {
-        self.install_package(Package::parse(&read_file(source, MAX_BYTES)?)?)
+        let package = Package::parse(&read_file(source, MAX_BYTES)?)?;
+        if package.cover.is_none() {
+            return Err("兼容包缺少封面（cover_png）".into());
+        }
+        self.install_package(package)
     }
 
     fn install_package(&self, package: Package) -> Result<(), String> {
@@ -275,11 +329,26 @@ pub(super) mod fixtures {
             serde_json::from_slice(BUILTIN).unwrap()
         }
 
+        pub(in crate::bt) fn external() -> serde_json::Value {
+            let mut data = Self::builtin();
+            data["cover_png"] = serde_json::Value::String(cover_png(16, 9));
+            data
+        }
+
         pub(in crate::bt) fn write(&self, data: &serde_json::Value) -> PathBuf {
             let path = self.dir.join("install.json");
             fs::write(&path, serde_json::to_vec(data).unwrap()).unwrap();
             path
         }
+    }
+
+    pub(in crate::bt) fn cover_png(width: u32, height: u32) -> String {
+        let source = image::RgbaImage::from_pixel(width, height, image::Rgba([25, 70, 65, 255]));
+        let mut encoded = Cursor::new(Vec::new());
+        source
+            .write_to(&mut encoded, image::ImageFormat::Png)
+            .unwrap();
+        STANDARD.encode(encoded.into_inner())
     }
 
     impl Drop for Files {
@@ -313,10 +382,13 @@ mod tests {
     fn installs_disabled_and_restores_changes_to_enabled_state() {
         let files = Files::new();
         let store = files.store();
-        store.test_install_builtin();
+        store.install(&files.write(&Files::external())).unwrap();
         assert_eq!(store.version().as_deref(), Some("1.0.0"));
         assert!(!files.store().enabled());
         assert!(store.package().is_none());
+        let cover = files.store().cover().unwrap();
+        assert_eq!(cover.dimensions(), (192, 108));
+        assert_eq!(cover.get_pixel(0, 0).0, [25, 70, 65, 255]);
 
         store.set_enabled(true).unwrap();
         let loaded = files.store();
@@ -340,7 +412,7 @@ mod tests {
         let store = files.store();
         store.test_install_builtin();
         store.set_enabled(true).unwrap();
-        let mut update = Files::builtin();
+        let mut update = Files::external();
         update["version"] = json!("1.1.0");
         store.install(&files.write(&update)).unwrap();
         assert!(files.store().enabled());
@@ -372,6 +444,7 @@ mod tests {
         assert_eq!(store.version().as_deref(), Some("1.0.0"));
         assert!(!store.enabled());
         assert!(store.package().is_none());
+        assert!(store.cover().is_none());
         store.set_enabled(true).unwrap();
         assert!(files.store().enabled());
         assert!(files.store().package().is_some());
@@ -381,7 +454,7 @@ mod tests {
     fn invalid_pack_keeps_installed_version_in_memory_and_on_disk() {
         let files = Files::new();
         let store = files.store();
-        let mut valid = Files::builtin();
+        let mut valid = Files::external();
         valid["version"] = json!("1.1.0");
         store.install(&files.write(&valid)).unwrap();
         store.set_enabled(true).unwrap();
@@ -411,11 +484,47 @@ mod tests {
     }
 
     #[test]
+    fn rejects_missing_invalid_and_oversized_covers_before_replacing_an_enabled_pack() {
+        let files = Files::new();
+        let store = files.store();
+        let missing = Files::builtin();
+        assert_eq!(
+            store.install(&files.write(&missing)).unwrap_err(),
+            "兼容包缺少封面（cover_png）"
+        );
+        assert!(store.version().is_none());
+
+        store.install(&files.write(&Files::external())).unwrap();
+        store.set_enabled(true).unwrap();
+        let expected = fs::read(files.dir.join(FILE_NAME)).unwrap();
+        for cover in [
+            String::new(),
+            "非 base64".to_owned(),
+            "bm90IGEgcG5n".to_owned(),
+            fixtures::cover_png(1921, 1),
+            fixtures::cover_png(1, 1081),
+            STANDARD.encode(vec![0; MAX_COVER_BYTES + 1]),
+        ] {
+            let mut update = missing.clone();
+            update["version"] = json!("1.1.0");
+            update["cover_png"] = json!(cover);
+            assert!(store
+                .install(&files.write(&update))
+                .unwrap_err()
+                .contains("封面"));
+            assert_eq!(store.version().as_deref(), Some("1.0.0"));
+            assert!(store.enabled());
+            assert!(store.cover().is_some());
+            assert_eq!(fs::read(files.dir.join(FILE_NAME)).unwrap(), expected);
+        }
+    }
+
+    #[test]
     fn storage_failure_does_not_activate_pack() {
         let files = Files::new();
         let store = files.store();
         fs::create_dir(files.dir.join(FILE_NAME)).unwrap();
-        let mut data = Files::builtin();
+        let mut data = Files::external();
         data["version"] = json!("1.1.0");
         assert!(store.install(&files.write(&data)).is_err());
         assert!(store.version().is_none());
