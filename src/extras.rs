@@ -365,6 +365,19 @@ impl App {
         self.history.truncate(50);
         if self.fullscreen_hidden && a.health().is_some(){return;}
         if self.settings.notifications {
+            const MAX_PENDING_ALERTS: usize = 8;
+            #[cfg(windows)]
+            if let AlertSource::Plugin { source, .. } = &a.source {
+                let pending = self.alerts.iter_mut().find(|alert| {
+                    matches!(&alert.source, AlertSource::Plugin { source: current, .. } if current == source)
+                });
+                if let Some(pending) = pending {
+                    *pending = a;
+                } else if self.alerts.len() < MAX_PENDING_ALERTS {
+                    self.alerts.push_back(a);
+                }
+                return;
+            }
             if system && a.source==AlertSource::Internal && self.settings.system_notify {
                 let sound = if !self.settings.sound { NotificationSound::Silent }
                     else if a.health().is_some() { NotificationSound::Health }
@@ -380,8 +393,21 @@ impl App {
                 self.notice = Some(a);
                 return;
             }
-            self.alerts.push_back(a);
-            while self.alerts.len() > 8 {
+            let index = self.alerts.len();
+            #[cfg(windows)]
+            let index = {
+                if self.notice.as_ref().is_some_and(|alert| matches!(alert.source, AlertSource::Plugin { .. })) {
+                    self.notice = None;
+                }
+                self.alerts.iter().position(|alert| matches!(alert.source, AlertSource::Plugin { .. })).unwrap_or(index)
+            };
+            self.alerts.insert(index, a);
+            while self.alerts.len() > MAX_PENDING_ALERTS {
+                #[cfg(windows)]
+                if let Some(index) = self.alerts.iter().position(|alert| matches!(alert.source, AlertSource::Plugin { .. })) {
+                    self.alerts.remove(index);
+                    continue;
+                }
                 self.alerts.pop_front();
             }
         }

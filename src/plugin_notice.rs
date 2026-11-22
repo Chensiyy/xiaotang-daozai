@@ -1,27 +1,31 @@
 use eframe::egui;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{json, Value};
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{BTreeSet, HashMap, VecDeque},
     fs,
     io::{self, Read, Write},
     net::{Ipv4Addr, SocketAddrV4, TcpListener, TcpStream},
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
     },
     thread,
     time::{Duration, Instant},
 };
 
 const VERSION: u8 = 1;
-const MAX_SOURCES: usize = 16;
+pub(crate) const MAX_SOURCES: usize = 16;
 const MAX_FRAME: usize = 128 * 1024;
 const MAX_MARKDOWN: usize = 32 * 1024;
 const MAX_EVENTS: usize = 64;
-const MAX_RECENT: usize = 256;
+const MAX_SOURCE_EVENTS: usize = MAX_EVENTS / MAX_SOURCES;
+const MAX_SOURCE_RECENT: usize = 32;
 const MAX_OPENS: usize = 16;
+const NOTICE_WINDOW: Duration = Duration::from_secs(1);
+const STATUS_INTERVAL: Duration = Duration::from_millis(250);
+const UPDATE_DELAY: Duration = Duration::from_millis(50);
 const REQUEST_TIMEOUT: Duration = Duration::from_millis(500);
 const OPEN_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -31,18 +35,24 @@ pub(crate) struct Source {
     pub name: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Completion {
     pub source: String,
     pub name: String,
     pub id: String,
     pub session: Option<String>,
     pub markdown: String,
+    pub title: Option<String>,
+    pub action_label: Option<String>,
 }
 
 #[derive(Debug)]
 pub(crate) enum Event {
     Completed(Completion),
+    StatusChanged {
+        source: String,
+        card: Option<Completion>,
+    },
     Opened {
         source: String,
         id: String,
@@ -54,7 +64,7 @@ impl Event {
     fn source(&self) -> &str {
         match self {
             Self::Completed(completion) => &completion.source,
-            Self::Opened { source, .. } => source,
+            Self::Opened { source, .. } | Self::StatusChanged { source, .. } => source,
         }
     }
 }
@@ -77,6 +87,18 @@ enum Action {
         session: Option<String>,
         markdown: Option<String>,
     },
+    Notify {
+        #[serde(flatten)]
+        card: CardInput,
+    },
+    StatusUpdate {
+        #[serde(flatten)]
+        card: CardInput,
+        ttl_seconds: u64,
+    },
+    StatusClear {
+        id: String,
+    },
     PollOpen,
     AckOpen {
         request_id: String,
@@ -84,9 +106,56 @@ enum Action {
     },
 }
 
+#[derive(Deserialize)]
+struct CardInput {
+    id: String,
+    title: String,
+    markdown: Option<String>,
+    session: Option<String>,
+    action_label: Option<String>,
+}
+
+impl CardInput {
+    fn into_card(self, source: &str, name: String) -> Option<Completion> {
+        if !valid_text(&self.id, 128)
+            || !valid_text(&self.title, 120)
+            || self
+                .markdown
+                .as_ref()
+                .is_some_and(|text| text.len() > MAX_MARKDOWN)
+            || self
+                .session
+                .as_ref()
+                .is_some_and(|session| !valid_text(session, 512))
+            || self.action_label.as_ref().is_some_and(|label| {
+                self.session.is_none() || label.chars().count() > 6 || !valid_text(label, 24)
+            })
+        {
+            return None;
+        }
+        Some(Completion {
+            source: source.to_owned(),
+            name,
+            id: self.id,
+            title: Some(self.title),
+            markdown: self.markdown.unwrap_or_default(),
+            session: self.session,
+            action_label: self.action_label,
+        })
+    }
+}
+
 struct Authorized {
     name: String,
     token: String,
+    notice_times: VecDeque<Instant>,
+    next_status: Option<Instant>,
+}
+
+struct LiveStatus {
+    key: String,
+    card: Completion,
+    expires: Instant,
 }
 
 struct Received {
@@ -110,12 +179,120 @@ struct State {
     events: VecDeque<Event>,
     recent: VecDeque<Received>,
     opens: VecDeque<PendingOpen>,
+    statuses: HashMap<String, LiveStatus>,
+    dirty_statuses: BTreeSet<String>,
+    status_serial: u64,
     preview: bool,
+    muted: bool,
 }
 
 impl State {
-    fn has_room(&self) -> bool {
+    fn has_room(&self, source: &str) -> bool {
         self.events.len() + self.opens.len() < MAX_EVENTS
+            && self
+                .events
+                .iter()
+                .filter(|event| event.source() == source)
+                .count()
+                + self
+                    .opens
+                    .iter()
+                    .filter(|open| open.source == source)
+                    .count()
+                < MAX_SOURCE_EVENTS
+    }
+
+    fn pending(&self) -> bool {
+        !self.events.is_empty() || !self.dirty_statuses.is_empty()
+    }
+
+    fn queue_notice(&mut self, mut card: Completion, now: Instant) -> Result<(), &'static str> {
+        let matches_source = |entry: &Received| entry.source == card.source;
+        if self
+            .recent
+            .iter()
+            .any(|entry| matches_source(entry) && entry.id == card.id)
+        {
+            return Ok(());
+        }
+        if !self.has_room(&card.source) {
+            return Err("busy");
+        }
+        let times = &mut self.sources.get_mut(&card.source).unwrap().notice_times;
+        times.retain(|sent| now.saturating_duration_since(*sent) < NOTICE_WINDOW);
+        if times.len() >= MAX_SOURCE_EVENTS {
+            return Err("busy");
+        }
+        times.push_back(now);
+        if self
+            .recent
+            .iter()
+            .filter(|entry| matches_source(entry))
+            .count()
+            >= MAX_SOURCE_RECENT
+        {
+            if let Some(first) = self.recent.iter().position(matches_source) {
+                self.recent.remove(first);
+            }
+        }
+        self.recent.push_back(Received {
+            source: card.source.clone(),
+            id: card.id.clone(),
+            session: card.session.clone(),
+        });
+        if !self.preview {
+            redact(&mut card);
+        }
+        self.events.push_back(Event::Completed(card));
+        Ok(())
+    }
+
+    fn set_status(
+        &mut self,
+        mut card: Completion,
+        now: Instant,
+        ttl: Duration,
+    ) -> Result<(), &'static str> {
+        let allowed = &mut self.sources.get_mut(&card.source).unwrap().next_status;
+        if allowed.is_some_and(|next| now < next) {
+            return Err("busy");
+        }
+        *allowed = Some(now + STATUS_INTERVAL);
+        if !self.preview {
+            redact(&mut card);
+        }
+        let key = std::mem::take(&mut card.id);
+        let expires = now + ttl;
+        let source = card.source.clone();
+        let current = self.statuses.get(&source);
+        if let Some(current) =
+            current.filter(|status| status.key == key && status.card.session == card.session)
+        {
+            card.id.clone_from(&current.card.id);
+            if current.card != card || expires < current.expires {
+                self.dirty_statuses.insert(source.clone());
+            }
+        } else {
+            if let Some(current) = current {
+                self.opens
+                    .retain(|open| open.source != source || open.id != current.card.id);
+            }
+            // 已撤下的卡片再次出现时，旧按钮和回执不能影响新卡片。
+            self.status_serial += 1;
+            card.id = format!("\0{}", self.status_serial);
+            self.dirty_statuses.insert(source.clone());
+        }
+        self.statuses
+            .insert(source, LiveStatus { key, card, expires });
+        Ok(())
+    }
+
+    fn clear_status(&mut self, source: &str) {
+        if let Some(status) = self.statuses.remove(source) {
+            self.opens
+                .retain(|open| open.source != source || open.id != status.card.id);
+            self.dirty_statuses.insert(source.to_owned());
+        }
     }
 
     fn resolve_open(&mut self, index: usize, ok: bool) {
@@ -129,6 +306,15 @@ impl State {
     }
 
     fn expire(&mut self, now: Instant) {
+        let expired: Vec<_> = self
+            .statuses
+            .iter()
+            .filter(|(_, status)| status.expires <= now)
+            .map(|(source, _)| source.clone())
+            .collect();
+        for source in expired {
+            self.clear_status(&source);
+        }
         for index in (0..self.opens.len()).rev() {
             if self.opens[index].expires <= now {
                 self.resolve_open(index, false);
@@ -148,6 +334,13 @@ impl State {
         }
         let preview = self.preview;
         let name = source.name.clone();
+        if self.muted {
+            return match req.action {
+                Action::Status | Action::Complete { .. } => json!({"ok": true, "preview": false}),
+                Action::PollOpen => json!({"ok": true, "preview": false, "open": null}),
+                _ => failure("disabled"),
+            };
+        }
         self.expire(now);
         match req.action {
             Action::Status => {}
@@ -166,35 +359,49 @@ impl State {
                 {
                     return failure("invalid_completion");
                 }
-                if self
-                    .recent
-                    .iter()
-                    .any(|item| item.source == req.source && item.id == id)
-                {
-                    return json!({"ok": true, "preview": preview});
-                }
-                if !self.has_room() {
-                    return failure("busy");
-                }
-                if self.recent.len() == MAX_RECENT {
-                    self.recent.pop_front();
-                }
-                self.recent.push_back(Received {
-                    source: req.source.clone(),
-                    id: id.clone(),
-                    session: session.clone(),
-                });
-                self.events.push_back(Event::Completed(Completion {
+                let card = Completion {
                     source: req.source,
                     name,
                     id,
                     session,
-                    markdown: if preview {
-                        markdown.unwrap_or_default()
-                    } else {
-                        String::new()
-                    },
-                }));
+                    markdown: markdown.unwrap_or_default(),
+                    title: None,
+                    action_label: None,
+                };
+                if let Err(error) = self.queue_notice(card, now) {
+                    return failure(error);
+                }
+            }
+            Action::Notify { card } => {
+                let Some(card) = card.into_card(&req.source, name) else {
+                    return failure("invalid_card");
+                };
+                if let Err(error) = self.queue_notice(card, now) {
+                    return failure(error);
+                }
+            }
+            Action::StatusUpdate { card, ttl_seconds } => {
+                let Some(card) = card.into_card(&req.source, name) else {
+                    return failure("invalid_card");
+                };
+                if !(2..=120).contains(&ttl_seconds) {
+                    return failure("invalid_ttl");
+                }
+                if let Err(error) = self.set_status(card, now, Duration::from_secs(ttl_seconds)) {
+                    return failure(error);
+                }
+            }
+            Action::StatusClear { id } => {
+                if !valid_text(&id, 128) {
+                    return failure("invalid_card");
+                }
+                if self
+                    .statuses
+                    .get(&req.source)
+                    .is_some_and(|status| status.key == id)
+                {
+                    self.clear_status(&req.source);
+                }
             }
             Action::PollOpen => {
                 let open = self
@@ -262,6 +469,8 @@ impl Bridge {
                     Authorized {
                         name: source.name.clone(),
                         token,
+                        notice_times: VecDeque::new(),
+                        next_status: None,
                     },
                 );
                 bridge.sources.push(source);
@@ -320,6 +529,8 @@ impl Bridge {
             Authorized {
                 name: name.to_owned(),
                 token,
+                notice_times: VecDeque::new(),
+                next_status: None,
             },
         );
         drop(state);
@@ -342,6 +553,8 @@ impl Bridge {
         state.events.retain(|event| event.source() != id);
         state.recent.retain(|item| item.source != id);
         state.opens.retain(|open| open.source != id);
+        state.statuses.remove(id);
+        state.dirty_statuses.remove(id);
         drop(state);
         self.sources = sources;
         let _ = fs::remove_file(self.connection_file(id));
@@ -351,36 +564,68 @@ impl Bridge {
         Ok(())
     }
 
-    pub(crate) fn preview(&self, enabled: bool) {
+    pub(crate) fn display(&self, enabled: bool, preview: bool) {
         let mut state = self.state.lock().unwrap();
-        if state.preview && !enabled {
+        if !enabled && !state.muted {
+            state.events.clear();
+            state.recent.clear();
+            state.opens.clear();
+            state.statuses.clear();
+            state.dirty_statuses.clear();
+        }
+        let preview = enabled && preview;
+        if state.preview && !preview {
             for event in &mut state.events {
                 if let Event::Completed(completion) = event {
-                    completion.markdown.clear();
+                    redact(completion);
                 }
             }
+            for status in state.statuses.values_mut() {
+                redact(&mut status.card);
+            }
         }
-        state.preview = enabled;
+        state.preview = preview;
+        state.muted = !enabled;
     }
 
     pub(crate) fn drain(&self) -> Vec<Event> {
         let mut state = self.state.lock().unwrap();
-        state.expire(Instant::now());
-        state.events.drain(..).collect()
+        let now = Instant::now();
+        state.expire(now);
+        let mut events: Vec<_> = state.events.drain(..).collect();
+        for source in std::mem::take(&mut state.dirty_statuses) {
+            let card = state
+                .statuses
+                .get(&source)
+                .map(|status| status.card.clone());
+            events.push(Event::StatusChanged { source, card });
+        }
+        let expires = state.statuses.values().map(|status| status.expires).min();
+        drop(state);
+        if let Some(expires) = expires {
+            self.ctx
+                .request_repaint_after(expires.saturating_duration_since(now));
+        }
+        events
     }
 
     pub(crate) fn open_session(&self, source: &str, id: &str, session: &str) -> Result<(), String> {
         let mut state = self.state.lock().unwrap();
-        if !state.sources.contains_key(source) {
+        if state.muted || !state.sources.contains_key(source) {
             return Err("插件来源未授权".into());
-        }
-        if !state.recent.iter().any(|item| {
-            item.source == source && item.id == id && item.session.as_deref() == Some(session)
-        }) {
-            return Err("这条通知的会话已无法打开".into());
         }
         let now = Instant::now();
         state.expire(now);
+        let status = state.statuses.get(source).is_some_and(|status| {
+            status.card.id == id && status.card.session.as_deref() == Some(session)
+        });
+        if !status
+            && !state.recent.iter().any(|item| {
+                item.source == source && item.id == id && item.session.as_deref() == Some(session)
+            })
+        {
+            return Err("这条通知的会话已无法打开".into());
+        }
         if state
             .opens
             .iter()
@@ -388,7 +633,10 @@ impl Bridge {
         {
             return Ok(());
         }
-        if state.opens.len() == MAX_OPENS || !state.has_room() {
+        if state.opens.len() == MAX_OPENS
+            || state.opens.iter().any(|open| open.source == source)
+            || !state.has_room(source)
+        {
             return Err("会话跳转队列已满，请稍后重试".into());
         }
         state.opens.push_back(PendingOpen {
@@ -438,6 +686,13 @@ fn valid_text(value: &str, max_bytes: usize) -> bool {
     !value.trim().is_empty() && value.len() <= max_bytes && !value.chars().any(char::is_control)
 }
 
+fn redact(card: &mut Completion) {
+    card.markdown.clear();
+    if let Some(title) = &mut card.title {
+        title.clear();
+    }
+}
+
 fn valid_source(id: &str, name: &str) -> bool {
     let first = id.split('.').next().unwrap_or_default();
     let reserved = matches!(first, "con" | "prn" | "aux" | "nul")
@@ -461,7 +716,7 @@ fn valid_source(id: &str, name: &str) -> bool {
 
 fn random_token() -> Result<String, String> {
     use windows::Win32::Security::Cryptography::{
-        BCRYPT_ALG_HANDLE, BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom,
+        BCryptGenRandom, BCRYPT_ALG_HANDLE, BCRYPT_USE_SYSTEM_PREFERRED_RNG,
     };
 
     let mut bytes = [0u8; 32];
@@ -540,12 +795,12 @@ fn serve(mut stream: TcpStream, state: &Mutex<State>, ctx: &egui::Context) -> io
     let response = match serde_json::from_slice(&frame) {
         Ok(request) => {
             let mut state = state.lock().unwrap();
-            let before = state.events.len();
+            let pending = state.pending();
             let response = state.handle(request, Instant::now());
-            let repaint = state.events.len() > before;
+            let repaint = !pending && state.pending();
             drop(state);
             if repaint {
-                ctx.request_repaint();
+                ctx.request_repaint_after(UPDATE_DELAY);
             }
             response
         }
@@ -591,6 +846,10 @@ mod tests {
     use super::*;
     use std::io::{BufRead, BufReader};
 
+    mod isolation {
+        include!("plugin_notice_isolation_tests.rs");
+    }
+
     struct TestDir(PathBuf);
 
     impl TestDir {
@@ -634,6 +893,223 @@ mod tests {
         serde_json::from_str(&line).unwrap()
     }
 
+    fn request_at(state: &mut State, connection: &Value, mut body: Value, now: Instant) -> Value {
+        for name in ["version", "source", "token"] {
+            body[name] = connection[name].clone();
+        }
+        state.handle(serde_json::from_value(body).unwrap(), now)
+    }
+
+    #[test]
+    fn busy_source_cannot_fill_the_shared_queue_or_evict_another_sources_jump() {
+        let dir = TestDir::new();
+        let mut bridge = Bridge::start(&dir.0, egui::Context::default()).unwrap();
+        bridge.authorize("noisy", "高频来源").unwrap();
+        bridge.authorize("other", "其他来源").unwrap();
+        let noisy = descriptor(&bridge, "noisy");
+        let other = descriptor(&bridge, "other");
+        {
+            let mut state = bridge.state.lock().unwrap();
+            let now = Instant::now();
+            for id in 0..MAX_SOURCE_EVENTS {
+                assert_eq!(
+                    request_at(
+                        &mut state,
+                        &noisy,
+                        json!({"method":"notify","id":id.to_string(),"title":"更新"}),
+                        now
+                    )["ok"],
+                    true
+                );
+            }
+            assert_eq!(
+                request_at(
+                    &mut state,
+                    &noisy,
+                    json!({"method":"notify","id":"0","title":"更新"}),
+                    now
+                )["ok"],
+                true
+            );
+            assert_eq!(
+                request_at(
+                    &mut state,
+                    &noisy,
+                    json!({"method":"notify","id":"retry","title":"更新"}),
+                    now
+                )["error"],
+                "busy"
+            );
+            assert_eq!(
+                request_at(
+                    &mut state,
+                    &other,
+                    json!({"method":"complete","id":"turn","session":"session"}),
+                    now
+                )["ok"],
+                true
+            );
+            state.events.clear();
+            assert_eq!(
+                request_at(
+                    &mut state,
+                    &noisy,
+                    json!({"method":"notify","id":"retry","title":"更新"}),
+                    now
+                )["error"],
+                "busy"
+            );
+            assert_eq!(
+                request_at(
+                    &mut state,
+                    &noisy,
+                    json!({"method":"notify","id":"retry","title":"更新"}),
+                    now + NOTICE_WINDOW
+                )["ok"],
+                true
+            );
+            for id in 0..(MAX_SOURCE_RECENT * 2) {
+                state.events.clear();
+                assert_eq!(
+                    request_at(
+                        &mut state,
+                        &noisy,
+                        json!({"method":"notify","id":format!("later-{id}"),"title":"更新"}),
+                        now + Duration::from_secs(2 + id as u64)
+                    )["ok"],
+                    true
+                );
+            }
+        }
+        bridge.open_session("other", "turn", "session").unwrap();
+        assert_eq!(
+            exchange(&other, json!({"method":"poll_open"}))["open"]["session"],
+            "session"
+        );
+    }
+
+    #[test]
+    fn status_updates_coalesce_expire_and_invalidate_old_actions() {
+        let dir = TestDir::new();
+        let mut bridge = Bridge::start(&dir.0, egui::Context::default()).unwrap();
+        bridge.authorize("printer", "打印机").unwrap();
+        let printer = descriptor(&bridge, "printer");
+        bridge.display(true, true);
+        let status = |id, title, ttl_seconds| {
+            json!({"method":"status_update","id":id,"title":title,
+            "session":format!("job-{id}"),"action_label":"查看进度","ttl_seconds":ttl_seconds})
+        };
+        let now = Instant::now();
+        {
+            let mut state = bridge.state.lock().unwrap();
+            assert_eq!(
+                request_at(&mut state, &printer, status("one", "打印 42%", 1), now)["error"],
+                "invalid_ttl"
+            );
+            assert_eq!(
+                request_at(&mut state, &printer, status("one", "打印 42%", 20), now)["ok"],
+                true
+            );
+            assert_eq!(
+                request_at(&mut state, &printer, status("one", "打印 43%", 20), now)["error"],
+                "busy"
+            );
+            assert_eq!(
+                request_at(
+                    &mut state,
+                    &printer,
+                    status("one", "打印 44%", 20),
+                    now + STATUS_INTERVAL
+                )["ok"],
+                true
+            );
+        }
+        let events = bridge.drain();
+        let [Event::StatusChanged {
+            card: Some(first), ..
+        }] = events.as_slice()
+        else {
+            panic!("{events:?}");
+        };
+        assert_eq!(first.title.as_deref(), Some("打印 44%"));
+        bridge
+            .open_session("printer", &first.id, "job-one")
+            .unwrap();
+        let pending = exchange(&printer, json!({"method":"poll_open"}));
+        {
+            let mut state = bridge.state.lock().unwrap();
+            assert_eq!(
+                request_at(
+                    &mut state,
+                    &printer,
+                    status("two", "新任务", 20),
+                    now + STATUS_INTERVAL * 2
+                )["ok"],
+                true
+            );
+        }
+        assert_eq!(
+            exchange(&printer, json!({"method":"status_clear","id":"one"}))["ok"],
+            true
+        );
+        assert_eq!(
+            exchange(
+                &printer,
+                json!({"method":"ack_open",
+            "request_id":pending["open"]["request_id"],"opened":true})
+            )["error"],
+            "unknown_open"
+        );
+        assert!(bridge
+            .open_session("printer", &first.id, "job-one")
+            .is_err());
+        let events = bridge.drain();
+        assert!(
+            matches!(&events[..], [Event::StatusChanged { card: Some(card), .. }]
+            if card.title.as_deref() == Some("新任务"))
+        );
+        bridge
+            .state
+            .lock()
+            .unwrap()
+            .statuses
+            .get_mut("printer")
+            .unwrap()
+            .expires = Instant::now();
+        assert!(
+            matches!(&bridge.drain()[..], [Event::StatusChanged { source, card: None }] if source == "printer")
+        );
+        assert!(bridge.drain().is_empty());
+    }
+
+    #[test]
+    fn disabled_display_drops_work_until_enabled_and_redacts_queued_content() {
+        let dir = TestDir::new();
+        let mut bridge = Bridge::start(&dir.0, egui::Context::default()).unwrap();
+        bridge.authorize("source", "来源").unwrap();
+        let source = descriptor(&bridge, "source");
+        bridge.display(true, true);
+        let notice = json!({"method":"notify","id":"new","title":"私密标题","markdown":"正文","session":"thread"});
+        assert_eq!(exchange(&source, notice.clone())["ok"], true);
+        bridge.display(true, false);
+        let events = bridge.drain();
+        assert!(matches!(&events[..], [Event::Completed(card)]
+            if card.title.as_deref() == Some("") && card.markdown.is_empty()));
+        bridge.open_session("source", "new", "thread").unwrap();
+        bridge.display(false, false);
+        assert_eq!(exchange(&source, notice.clone())["error"], "disabled");
+        assert_eq!(
+            exchange(&source, json!({"method":"poll_open"}))["open"],
+            Value::Null
+        );
+        assert!(bridge.drain().is_empty());
+        bridge.display(true, true);
+        assert_eq!(exchange(&source, notice)["ok"], true);
+        assert!(
+            matches!(&bridge.drain()[..], [Event::Completed(card)] if card.title.as_deref() == Some("私密标题"))
+        );
+    }
+
     #[test]
     fn notice_transport_authorizes_redacts_and_deduplicates() {
         let dir = TestDir::new();
@@ -667,7 +1143,7 @@ mod tests {
         assert_eq!(hidden.session.as_deref(), Some("thread-2"));
         assert!(hidden.markdown.is_empty());
 
-        bridge.preview(true);
+        bridge.display(true, true);
         let completion = json!({"method": "complete", "id": "turn-2", "markdown": "# 正文"});
         assert_eq!(exchange(&codex, completion)["preview"], true);
         let events = bridge.drain();
@@ -679,7 +1155,7 @@ mod tests {
             &codex,
             json!({"method": "complete", "id": "turn-3", "markdown": "忽略"}),
         );
-        bridge.preview(false);
+        bridge.display(true, false);
         let events = bridge.drain();
         let [Event::Completed(scrubbed)] = events.as_slice() else {
             panic!("{events:?}")
