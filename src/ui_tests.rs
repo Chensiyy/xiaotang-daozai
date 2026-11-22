@@ -6256,6 +6256,11 @@ fn bottom_page_shortcuts_share_a_row_with_dots_on_every_dock() {
     let control=|h:&H,kind:&str,page:usize| {
         h.ctx.read_response(egui::Id::new(("card",true,(kind,page)))).map(|r|r.interact_rect)
     };
+    let highlight=|h:&H, area:Rect| h.shapes.iter().find_map(|shape| match &shape.shape {
+        egui::Shape::Rect(rect) if rect.fill.a()>0 && area.contains_rect(rect.rect)
+            && rect.rect.center().distance(area.center())<0.1 => Some(rect.fill),
+        _ => None,
+    }).expect("当前功能应有选中底色");
     let settle=|h:&mut H| {
         for _ in 0..100 {frame_control_draw(h,None,vec![]);}
     };
@@ -6292,9 +6297,12 @@ fn bottom_page_shortcuts_share_a_row_with_dots_on_every_dock() {
             }
         }
 
+        let todo_color=highlight(&h,shortcuts[0]);
         click(&mut h,shortcuts[1].center());
         assert_eq!(h.app.page(),MUSIC_PAGE);
         settle(&mut h);
+        let music=control(&h,"page-shortcut",MUSIC_PAGE).unwrap();
+        assert_ne!(highlight(&h,music),todo_color,"音乐和待办的选中底色应不同");
         let dot=control(&h,"dot",FOCUS_PAGE).unwrap();
         click(&mut h,dot.center());
         assert_eq!(h.app.page(),FOCUS_PAGE);
