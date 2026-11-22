@@ -16,7 +16,7 @@ use std::{
 };
 
 const VERSION: u8 = 1;
-const MAX_SOURCES: usize = 16;
+pub(crate) const MAX_SOURCES: usize = 16;
 const MAX_FRAME: usize = 128 * 1024;
 const MAX_MARKDOWN: usize = 32 * 1024;
 const MAX_EVENTS: usize = 64;

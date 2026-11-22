@@ -1,14 +1,14 @@
 use crate::app::{App, BAR_H, Cmd, Env};
 use crate::extras::{Alert, AlertSource};
 use crate::paint::{self, Card, H};
-use crate::plugin_notice::{Completion, Event};
+use crate::plugin_notice::{Completion, Event, MAX_SOURCES};
 use crate::theme::{self, W, size};
 use eframe::egui::{self, Color32};
 use std::collections::VecDeque;
 
 pub(crate) const DETAIL_HEIGHT: f32 = 204.0;
-const MAX_UNREAD: usize = 32;
 const MAX_UNREAD_PER_SOURCE: usize = 4;
+const MAX_UNREAD: usize = MAX_SOURCES * MAX_UNREAD_PER_SOURCE;
 const COLLAPSED_BADGES: usize = 3;
 const RED_DOT: Color32 = Color32::from_rgb(255, 59, 48);
 const STATUS_DOT: Color32 = Color32::from_rgb(85, 180, 255);
@@ -380,7 +380,11 @@ fn source_icon(c: &Card, x: f32, y: f32, name: &str) {
 
 fn draw_markdown(ui: &mut egui::Ui, text: &str) {
     let mut code = false;
-    for line in text.lines() {
+    for (index, line) in text.lines().enumerate() {
+        if index == 128 {
+            ui.label("其余内容已省略");
+            break;
+        }
         let line = line.trim_end();
         if line.trim_start().starts_with("```") {
             code = !code;
@@ -542,5 +546,21 @@ mod tests {
         assert_eq!(app.alerts.len(), 8);
         assert!(app.alerts.iter().all(|alert| alert.source == AlertSource::Internal));
         assert_eq!(app.alerts.front().unwrap().title, "内置提醒 0");
+
+        for index in 0..MAX_SOURCES - 2 {
+            let source = format!("example.other-{index}");
+            for id in 0..MAX_UNREAD_PER_SOURCE {
+                app.receive_plugin_notice(Event::Completed(notice(&source, &id.to_string())));
+            }
+        }
+        for index in 0..MAX_UNREAD_PER_SOURCE {
+            app.receive_plugin_notice(Event::Completed(notice("example.quiet", &index.to_string())));
+        }
+        assert_eq!(app.plugin_notice_ui.unread.len(), MAX_UNREAD);
+        for index in 0..MAX_SOURCES - 2 {
+            let source = format!("example.other-{index}");
+            assert_eq!(app.plugin_notice_ui.unread.iter().filter(|notice| notice.source == source).count(),
+                MAX_UNREAD_PER_SOURCE);
+        }
     }
 }
