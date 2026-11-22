@@ -11285,3 +11285,7 @@ fn performance_morph_film() {
         sheet.save(dir.join(format!("morph-{n}.png"))).unwrap();
     }
 }
+
+#[cfg(all(windows, feature = "sdk-js"))]
+#[path = "plugin_status_ui_tests.rs"]
+mod plugin_status_ui_tests;

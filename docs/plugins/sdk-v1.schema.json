@@ -53,6 +53,7 @@
         "calendar",
         "music",
         "quota",
+        "status",
         "notifications",
         "weather",
         "wireless"
@@ -68,6 +69,7 @@
           "calendar.source",
           "lyrics.source",
           "quota.source",
+          "status.page",
           "appearance.skin",
           "appearance.material",
           "navigation.shortcuts",
@@ -100,7 +102,7 @@
       "properties": {
         "source.read": {
           "enum": ["file", "loopback"],
-          "description": "Windows 测试版 JS 卡片的单一只读来源，由用户在安装后选择文件或授权完整回环 HTTP 地址。"
+          "description": "Windows 测试版 JS 插件的单一只读来源，由用户在安装后选择文件或授权完整回环 HTTP 地址。"
         },
         "hosts": {
           "type": "array",
@@ -502,6 +504,35 @@
           "settings": {"maxItems": 0}
         },
         "not": {"anyOf": [{"required": ["assets"]}, {"required": ["actions"]}]}
+      }
+    },
+    {
+      "if": {
+        "anyOf": [
+          {"properties": {"owner": {"const": "status"}}},
+          {"properties": {"capabilities": {"contains": {"const": "status.page"}}}}
+        ]
+      },
+      "then": {
+        "required": ["entry", "settings"],
+        "properties": {
+          "runtime": {"const": "js"},
+          "owner": {"const": "status"},
+          "dataVersion": {"const": 1},
+          "entry": {"pattern": "^(?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_-]+\\.js$"},
+          "capabilities": {
+            "items": {"enum": ["status.page", "settings", "timer", "storage"]},
+            "contains": {"const": "status.page"}
+          },
+          "permissions": {
+            "properties": {"source.read": {"enum": ["file", "loopback"]}},
+            "additionalProperties": false
+          },
+          "settings": {"items": {"properties": {"type": {"enum": ["text", "date"]}}}}
+        },
+        "not": {"anyOf": [{"required": ["assets"]}, {"required": ["actions"]}]},
+        "if": {"properties": {"settings": {"minItems": 1}}},
+        "then": {"properties": {"capabilities": {"contains": {"const": "settings"}}}}
       }
     },
     {

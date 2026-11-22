@@ -81,6 +81,67 @@ fn has_text(output: &egui::FullOutput, label: &str) -> bool {
 }
 
 #[test]
+fn status_page_management_opens_and_switches_independently() -> Result<()> {
+    const ID: &str = "example.status-management";
+    const NAME: &str = "模拟状态详情";
+    let dir = std::env::temp_dir().join(format!(
+        "daozai-status-management-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos()
+    ));
+    let mut host = LocalPlugins::open(dir.clone());
+    host.install(&Path::new(env!("CARGO_MANIFEST_DIR")).join("spike/examples/payday/plugin.json"))?;
+    let mut record = host.records["example.payday"].clone();
+    let package = record.package.as_mut().unwrap();
+    package.manifest.id = ID.into();
+    package.manifest.name = NAME.into();
+    package.manifest.owner = "status".into();
+    package.manifest.capabilities = vec!["status.page".into()];
+    package.manifest.settings.clear();
+    package.source = "function refresh() { return {status: null}; }".into();
+    record.values.clear();
+    host.put(ID, record)?;
+    let ctx = egui::Context::default();
+    crate::theme::load_fonts(&ctx);
+    let draw = |ui: &mut egui::Ui, host: &mut LocalPlugins| {
+        let _ = host.status_page_settings(ui);
+    };
+    let disabled = frame(&ctx, vec![], |ui| draw(ui, &mut host));
+    assert!(has_text(&disabled, NAME));
+    assert!(has_text(&disabled, "插件"));
+    assert!(!has_text(&disabled, "打开"));
+
+    host.enable(ID, true)?;
+    let mut opened = None;
+    click(&ctx, "打开", |ui| {
+        if let Some(id) = host.status_page_settings(ui) {
+            opened = Some(id);
+        }
+    });
+    assert_eq!(opened.as_deref(), Some(ID));
+    let switch = ctx
+        .read_response(egui::Id::new(("settings-plugin-switch", ID)))
+        .expect("详情页开关")
+        .rect
+        .center();
+    click_at(&ctx, switch, |ui| draw(ui, &mut host));
+    assert!(host.records[ID].enabled);
+    assert!(host.status_pages().next().is_none());
+    assert!(!has_text(&frame(&ctx, vec![], |ui| draw(ui, &mut host)), "打开"));
+
+    drop(host);
+    let mut host = LocalPlugins::open(dir.clone());
+    host.enable(ID, false)?;
+    host.enable(ID, true)?;
+    assert_eq!(host.status_page_preferences().next(), Some((ID, NAME, true, false)));
+    drop(host);
+    let _ = fs::remove_dir_all(dir);
+    Ok(())
+}
+
+#[test]
 fn management_buttons_jump_disable_and_confirm_uninstall() -> Result<()> {
     let dir = std::env::temp_dir().join(format!(
         "daozai-manage-{}-{}",

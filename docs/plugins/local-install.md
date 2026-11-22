@@ -25,6 +25,8 @@ $env:DAOZAI_DATA_DIR = Join-Path (Get-Location) 'target/local-trial'
 
 重启时岛仔重新核对已安装记录的 ID、清单、脚本入口和设置。看到“需要重新安装”时，在「开发者工具」重新选择可信的原包，或点「移除记录」。未通过检查的记录不会启动；重装会使用原包的默认设置。
 
+需要显示进度、指标和告警的插件可使用[结构化状态页](sdk-v1-design.md#结构化状态卡和详情页)。安装并启用插件后，在「设置 → 页面管理 → 状态详情」可打开或暂停该页。授权文件和本机接口在插件的已安装详情中管理。
+
 ### 快捷切换插件
 
 包根目录放置 `plugin.json`、`shortcuts.json` 和 `cover.png`。清单使用 `runtime: "assets"`、`owner: "pages"`、`entry: "shortcuts.json"`、`capabilities: ["navigation.shortcuts"]`、`permissions: {}` 和 `settings: []`。
