@@ -660,6 +660,53 @@ fn material_error(ui: &mut egui::Ui) {
 }
 
 impl LocalPlugins {
+    #[cfg(windows)]
+    pub(crate) fn wireless_settings(&mut self, ui: &mut egui::Ui) {
+        let Some(record) = self
+            .records
+            .get(WIRELESS_PLUGIN_ID)
+            .filter(|record| record.from_market)
+        else {
+            return;
+        };
+        let Some(package) = record.package.as_ref() else {
+            return;
+        };
+        let enabled = record.enabled;
+        let version = format!("{} v{}", package.manifest.name, package.manifest.version);
+        let error_id = ui.id().with("wireless-compat-enable-error");
+
+        crate::extras::settings_label(ui, "设备兼容");
+        settings_card(ui, |ui| {
+            let clicked = ui
+                .horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.label("启用兼容包");
+                        settings_hint(ui, &version);
+                    });
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        plugin_switch(ui, WIRELESS_PLUGIN_ID, enabled)
+                    })
+                    .inner
+                })
+                .inner;
+            if clicked {
+                let error = self
+                    .enable(WIRELESS_PLUGIN_ID, !enabled)
+                    .err()
+                    .map(|error| error.to_string());
+                if error.is_none() {
+                    ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
+                }
+                ui.data_mut(|data| data.insert_temp(error_id, error));
+            }
+            ui.hyperlink_to("反馈设备适配", WIRELESS_FEEDBACK_URL);
+            if let Some(error) = ui.data(|data| data.get_temp::<Option<String>>(error_id).flatten()) {
+                settings_hint(ui, &error);
+            }
+        });
+    }
+
     pub fn card(&mut self, c: &Card) -> bool {
         let mut cards = self.cards.iter().filter(|(id, _)| {
             self.records[*id].package.as_ref().unwrap().manifest.owner == "tasks"
@@ -985,7 +1032,6 @@ impl LocalPlugins {
         let package = r.package.as_ref().unwrap();
         let manifest = &package.manifest;
         let material = manifest.is_material();
-        let wireless = manifest.is_wireless();
         let owner_key = manifest.owner.clone();
         let retired = manifest.is_retired_lunar_preview();
         let module_on = match owner_key.as_str() {
@@ -1046,6 +1092,7 @@ impl LocalPlugins {
         let settings_tab = match owner_key {
             "calendar" => crate::app::PAGE_SETTINGS_TABS[crate::app::CALENDAR_PAGE],
             "pages" => crate::extras::SETTINGS_TAB_PAGES,
+            "wireless" => crate::extras::SETTINGS_TAB_WIRELESS,
             _ => crate::app::PAGE_SETTINGS_TABS[crate::app::TODO_PAGE],
         };
 
@@ -1096,8 +1143,6 @@ impl LocalPlugins {
                     });
                     if retired {
                         settings_hint(ui, "已撤回 · 等待更新");
-                    } else if wireless {
-                        settings_hint(ui, "扩展 2.4G 接收器型号");
                     } else if owner_key == "pages" && !on {
                         settings_hint(ui, "启用后可在页面管理设置");
                     } else {

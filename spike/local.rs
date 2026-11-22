@@ -36,6 +36,8 @@ const BACKDROP_PERMISSION: &str = "screen.backdrop";
 const SOURCE_PERMISSION: &str = "source.read";
 const API_VERSION: u32 = 1;
 const WIRELESS_PLUGIN_ID: &str = "daozai.wireless-receivers";
+#[cfg(windows)]
+const WIRELESS_FEEDBACK_URL: &str = "https://github.com/Renly1994/xiaotang-daozai/issues/267";
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

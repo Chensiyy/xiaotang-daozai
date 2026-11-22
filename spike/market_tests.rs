@@ -1,4 +1,5 @@
 use super::*;
+use super::super::{LocalPlugins, WIRELESS_PLUGIN_ID};
 use serde_json::json;
 
 #[test]
@@ -221,50 +222,75 @@ fn market_author_packages_and_submits_immutable_versions() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn market_installs_wireless_compatibility_as_a_resource_package() -> Result<()> {
-    use super::super::{market_state::MarketStatus, LocalPlugins};
-
-    const ID: &str = "daozai.wireless-receivers";
-    let fixture = Fixture::new()?;
-    let manifest_path = fixture.0.join("plugin.json");
-    let source_path = fixture.0.join("wireless-receivers.json");
-    let catalog_path = fixture.0.join("catalog.json");
+fn publish_wireless(root: &Path, version: &str, data_version: &str) -> Result<()> {
+    let manifest_path = root.join("plugin.json");
     fs::write(
-        fixture.0.join(COVER_FILE),
+        root.join(COVER_FILE),
         include_bytes!("examples/payday/cover.png"),
     )?;
-    let publish = |version: &str, data_version: &str| -> Result<()> {
-        let manifest = json!({
-             "id": ID,
-             "name": "无线设备兼容包",
-             "author": "岛仔",
-             "version": version,
-             "api": 1,
-             "runtime": "assets",
-             "entry": "wireless-receivers.json",
-             "cover": "cover.png",
-             "owner": "wireless",
-             "capabilities": ["wireless.receivers"],
-             "dataVersion": 1,
-             "permissions": {},
-             "settings": []
-        });
-        let data = json!({
-            "id": ID,
-            "api_version": 1,
-            "version": data_version,
-            "receivers": [{"vid": "046D", "pid": "C542", "name": "罗技 Nano 接收器"}]
-        });
-        fs::write(&manifest_path, serde_json::to_vec(&manifest)?)?;
-        fs::write(&source_path, serde_json::to_vec(&data)?)?;
-        let bundle = fixture.0.join(format!("wireless-{version}.zip"));
-        pack(&manifest_path, &bundle)?;
-        submit(&bundle, &catalog_path)
-    };
+    let manifest = json!({
+        "id": WIRELESS_PLUGIN_ID,
+        "name": "无线设备兼容包",
+        "author": "岛仔",
+        "version": version,
+        "api": 1,
+        "runtime": "assets",
+        "entry": "wireless-receivers.json",
+        "cover": COVER_FILE,
+        "owner": "wireless",
+        "capabilities": ["wireless.receivers"],
+        "dataVersion": 1,
+        "permissions": {},
+        "settings": []
+    });
+    let data = json!({
+        "id": WIRELESS_PLUGIN_ID,
+        "api_version": 1,
+        "version": data_version,
+        "receivers": [{"vid": "046D", "pid": "C542", "name": "罗技 Nano 接收器"}]
+    });
+    fs::write(&manifest_path, serde_json::to_vec(&manifest)?)?;
+    fs::write(root.join("wireless-receivers.json"), serde_json::to_vec(&data)?)?;
+    let bundle = root.join(format!("wireless-{version}.zip"));
+    pack(&manifest_path, &bundle)?;
+    submit(&bundle, &root.join("catalog.json"))
+}
 
-    assert!(publish("1.1.0", "1.0.0").is_err());
-    publish("1.0.0", "1.0.0")?;
+fn apply_wireless_market_action(host: &mut LocalPlugins) -> Result<()> {
+    host.market_action(false, WIRELESS_PLUGIN_ID)?;
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while host.market_busy() {
+        host.poll_market();
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    Ok(())
+}
+
+impl LocalPlugins {
+    pub(crate) fn test_market_install_wireless_compat(&mut self) -> Result<()> {
+        let root = self.dir.join("test-wireless-market");
+        fs::create_dir_all(&root)?;
+        publish_wireless(&root, "1.0.0", "1.0.0")?;
+        self.set_market_catalog(&root.join("catalog.json"))?;
+        apply_wireless_market_action(self)
+    }
+
+    pub(crate) fn test_uninstall_wireless_compat(&mut self) -> Result<()> {
+        self.uninstall(WIRELESS_PLUGIN_ID, true)
+    }
+}
+
+#[test]
+fn market_installs_wireless_compatibility_as_a_resource_package() -> Result<()> {
+    use super::super::market_state::MarketStatus;
+    let fixture = Fixture::new()?;
+    let root = &fixture.0;
+    let id = WIRELESS_PLUGIN_ID;
+    let catalog_path = root.join("catalog.json");
+
+    assert!(publish_wireless(root, "1.1.0", "1.0.0").is_err());
+    publish_wireless(root, "1.0.0", "1.0.0")?;
     let catalog = Catalog::open(&catalog_path)?;
     let entry = &catalog.entries[0];
     assert_eq!(entry.owner(), Some("wireless"));
@@ -274,40 +300,30 @@ fn market_installs_wireless_compatibility_as_a_resource_package() -> Result<()> 
     let mut host = LocalPlugins::open(storage.clone());
     let wireless = host.wireless_store();
     assert!(wireless.package().is_none());
-    assert!(host.install(&manifest_path).is_err());
+    assert!(host.install(&root.join("plugin.json")).is_err());
     host.set_market_catalog(&catalog_path)?;
-    let apply_market_action = |host: &mut LocalPlugins| -> Result<()> {
-        host.market_action(false, ID)?;
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while host.market_busy() {
-            host.poll_market();
-            assert!(std::time::Instant::now() < deadline);
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        Ok(())
-    };
-    apply_market_action(&mut host)?;
+    apply_wireless_market_action(&mut host)?;
     assert_eq!(host.market_status(&catalog, entry), MarketStatus::Installed);
-    assert!(!host.records[ID].enabled);
+    assert!(!host.records[id].enabled);
     assert!(wireless.package().is_none());
-    host.enable(ID, true)?;
+    host.enable(id, true)?;
     assert_eq!(wireless.package().unwrap().version(), "1.0.0");
-    host.enable(ID, false)?;
+    host.enable(id, false)?;
     assert!(wireless.package().is_none());
-    host.enable(ID, true)?;
+    host.enable(id, true)?;
 
-    publish("1.1.0", "1.1.0")?;
+    publish_wireless(root, "1.1.0", "1.1.0")?;
     host.refresh_market_catalog()?;
-    apply_market_action(&mut host)?;
+    apply_wireless_market_action(&mut host)?;
     assert_eq!(wireless.package().unwrap().version(), "1.1.0");
     let mut reopened = LocalPlugins::open(storage);
-    let record = &reopened.records[ID];
+    let record = &reopened.records[id];
     assert!(record.enabled);
     assert_eq!(record.package.as_ref().unwrap().manifest.version, "1.1.0");
     let wireless = reopened.wireless_store();
     assert_eq!(wireless.package().unwrap().version(), "1.1.0");
-    reopened.uninstall(ID, false)?;
-    assert!(!reopened.records.contains_key(ID));
+    reopened.uninstall(id, false)?;
+    assert!(!reopened.records.contains_key(id));
     assert!(wireless.package().is_none());
     Ok(())
 }
