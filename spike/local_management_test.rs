@@ -737,7 +737,7 @@ fn guide_opens_from_the_market_copies_a_prompt_and_stacks_the_template_form() {
     click_in(&ctx, WINDOW, "看教程", |ui| draw(&mut host, ui));
     let guide = frame_in(&ctx, WINDOW, vec![], |ui| draw(&mut host, ui));
     for expected in [
-        "做一个岛仔插件", "当前版本已开放的 SDK 能力", "卡片与标注", "页面快捷切换",
+        "做一个岛仔插件", "当前版本已开放的 SDK 能力", "卡片与标注", "AI 额度", "页面快捷切换",
         #[cfg(windows)]
         "授权取数",
         #[cfg(windows)]
