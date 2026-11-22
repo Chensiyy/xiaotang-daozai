@@ -4,7 +4,7 @@ use super::{market, option_card, settings_control_row, settings_hint};
 use eframe::egui;
 use std::path::PathBuf;
 
-const GUIDE: &str =
+pub(super) const GUIDE: &str =
     "https://github.com/Renly1994/xiaotang-daozai-plugins/blob/main/docs/author-submission.md";
 
 #[derive(Clone, Default)]
@@ -33,6 +33,22 @@ pub(super) enum Action {
 }
 
 impl AuthorTools {
+    /// 直接进入「从模板创建」表单，教程里的按钮用。
+    pub(super) fn template() -> Self {
+        Self {
+            draft: Some(TemplateDraft::default()),
+            notice: None,
+        }
+    }
+
+    /// 刚创建好的插件文件夹。
+    pub(super) fn created_dir(&self) -> Option<&std::path::Path> {
+        match self.notice.as_ref() {
+            Some(Notice::Created(manifest)) => manifest.parent(),
+            _ => None,
+        }
+    }
+
     pub(super) fn creating(&self) -> bool {
         self.draft.is_some()
     }

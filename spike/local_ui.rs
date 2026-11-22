@@ -17,6 +17,9 @@ mod market_browse_ui;
 #[cfg(windows)]
 #[path = "plugin_author_ui.rs"]
 mod plugin_author_ui;
+#[cfg(windows)]
+#[path = "plugin_guide_ui.rs"]
+mod plugin_guide_ui;
 #[path = "plugin_feedback_ui.rs"]
 mod plugin_feedback_ui;
 use plugin_feedback_ui::{plugin_feedback, request_plugin_feedback};
@@ -264,7 +267,12 @@ fn segmented_counts(
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
-                for (index, option) in options.iter().enumerate() {
+                // 放在右对齐的标题行时，egui 会从右往左排；倒着画，保证第一项始终在左边。
+                let mut order: Vec<_> = options.iter().enumerate().collect();
+                if ui.layout().prefer_right_to_left() {
+                    order.reverse();
+                }
+                for (index, option) in order {
                     let on = index == selected;
                     let font = egui::FontId::proportional(size);
                     let text_color = if on {
@@ -832,6 +840,11 @@ impl LocalPlugins {
             if self.market_pending() {
                 ui.ctx().request_repaint_after(Duration::from_millis(32));
             }
+            // 教程里的「从模板创建」「打开开发者工具」在集市页直接弹出，盖在教程上面。
+            self.guide_drawer(ui);
+            if self.developer_dialog(ui) {
+                ui.data_mut(|data| data.insert_temp(page_id, PluginPage::TestMarket));
+            }
             plugin_feedback(ui);
             return None;
         }
@@ -1309,6 +1322,10 @@ impl LocalPlugins {
         let mut opened = false;
         if let Some(action) = author_action {
             author.run(action);
+            if let Some(dir) = author.created_dir() {
+                let dir = dir.to_path_buf();
+                ui.data_mut(|data| data.insert_temp(plugin_guide_ui::template_dir_id(), dir));
+            }
             ctx.request_repaint();
         }
         if local {
