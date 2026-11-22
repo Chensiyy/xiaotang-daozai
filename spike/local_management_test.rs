@@ -726,6 +726,7 @@ fn guide_opens_from_the_market_copies_a_prompt_and_stacks_the_template_form() {
         host.manage(
             ui,
             true,
+            true,
             #[cfg(feature = "sdk-material")]
             None,
         );
