@@ -4,9 +4,10 @@ fn detail_id() -> egui::Id {
     egui::Id::new("plugin-market-details")
 }
 
-fn favorites_only_id() -> egui::Id {
-    egui::Id::new("plugin-market-favorites-only")
+fn filter_id() -> egui::Id {
+    egui::Id::new("plugin-market-filter")
 }
+
 
 pub(super) fn select_detail(ui: &egui::Ui, id: &str) {
     let now = ui.input(|input| input.time);
@@ -92,6 +93,29 @@ fn compact(value: Option<u64>) -> String {
         Some(n) if n >= 10_000 => format!("{:.1}万", n as f64 / 10_000.0),
         Some(n) => n.to_string(),
     }
+}
+
+/// 下载量：小箭头图标加数字。
+fn download_count(ui: &mut egui::Ui, value: &str) -> egui::Response {
+    let tint = muted_color(ui);
+    let galley = ui.fonts(|fonts| {
+        fonts.layout_no_wrap(value.to_owned(), egui::FontId::proportional(11.0), tint)
+    });
+    let size = egui::vec2(14.0 + galley.size().x, galley.size().y.max(14.0));
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::hover());
+    let c = egui::pos2(rect.left() + 5.0, rect.center().y);
+    let stroke = egui::Stroke::new(1.3, tint);
+    let painter = ui.painter();
+    painter.line_segment([c + egui::vec2(0.0, -4.5), c + egui::vec2(0.0, 1.5)], stroke);
+    painter.line_segment([c + egui::vec2(-3.0, -1.2), c + egui::vec2(0.0, 1.8)], stroke);
+    painter.line_segment([c + egui::vec2(3.0, -1.2), c + egui::vec2(0.0, 1.8)], stroke);
+    painter.line_segment([c + egui::vec2(-4.0, 4.5), c + egui::vec2(4.0, 4.5)], stroke);
+    painter.galley(
+        egui::pos2(rect.left() + 14.0, rect.center().y - galley.size().y / 2.0),
+        galley,
+        tint,
+    );
+    response
 }
 
 /// 收藏用的心形图标：收藏后变红，不配文字。
@@ -225,20 +249,45 @@ impl LocalPlugins {
         };
         let has_test = self.market_catalog(false).is_some();
         let favorites_count = self.favorites().len();
-        let mut favorites = official && ui.data(|data| data.get_temp::<bool>(favorites_only_id())).unwrap_or(false);
+        let owners: Vec<_> = OWNERS
+            .iter()
+            .filter(|(key, _)| {
+                catalog
+                    .as_ref()
+                    .is_some_and(|catalog| {
+                        catalog
+                            .entries
+                            .iter()
+                            .any(|entry| self.entry_owner(entry).as_deref() == Some(*key))
+                    })
+            })
+            .copied()
+            .collect();
+        let mut filter = ui
+            .data(|data| data.get_temp::<String>(filter_id()))
+            .filter(|filter| {
+                (filter == "favorites" && official) || owners.iter().any(|(key, _)| key == filter)
+            })
+            .unwrap_or_else(|| "all".to_owned());
         let mut nav = MarketNav::Stay;
 
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 6.0;
-            if official {
-                if chip(ui, "全部", !favorites).clicked() {
-                    favorites = false;
-                }
-                if chip(ui, &format!("收藏 {favorites_count}"), favorites).clicked() {
-                    favorites = true;
-                }
-            } else {
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
+            if !official {
                 ui.label(egui::RichText::new("本地测试集市").strong());
+            }
+            if chip(ui, "全部", filter == "all").clicked() {
+                filter = "all".to_owned();
+            }
+            if official
+                && chip(ui, &format!("收藏 {favorites_count}"), filter == "favorites").clicked()
+            {
+                filter = "favorites".to_owned();
+            }
+            for (key, label) in &owners {
+                if chip(ui, label, filter == *key).clicked() {
+                    filter = (*key).to_owned();
+                }
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if refresh_button(ui, !busy && !syncing, syncing, failure.as_deref()).clicked() {
@@ -260,7 +309,8 @@ impl LocalPlugins {
                 }
             });
         });
-        ui.data_mut(|data| data.insert_temp(favorites_only_id(), favorites));
+        let favorites = filter == "favorites";
+        ui.data_mut(|data| data.insert_temp(filter_id(), filter.clone()));
         if nav != MarketNav::Stay {
             close_detail(ui);
             return nav;
@@ -289,7 +339,11 @@ impl LocalPlugins {
             let entries: Vec<_> = catalog
                 .entries
                 .iter()
-                .filter(|entry| !favorites || self.is_favorite(&entry.id))
+                .filter(|entry| match filter.as_str() {
+                    "all" => true,
+                    "favorites" => self.is_favorite(&entry.id),
+                    owner => self.entry_owner(entry).as_deref() == Some(owner),
+                })
                 .collect();
             if entries.is_empty() && !favorites {
                 settings_card(ui, |ui| {
@@ -348,17 +402,8 @@ impl LocalPlugins {
                 });
             }
         }
-        if let Some(id) = ui.data(|data| data.get_temp::<String>(detail_id())) {
-            let found = catalog.as_ref().and_then(|catalog| {
-                catalog
-                    .entries
-                    .iter()
-                    .find(|entry| entry.id == id)
-                    .map(|entry| (Arc::clone(catalog), entry.clone()))
-            });
-            if self.market_drawer(ui, &id, found, favorites) {
-                nav = MarketNav::Mine;
-            }
+        if self.detail_drawer(ui, official) {
+            nav = MarketNav::Mine;
         }
         if nav == MarketNav::Mine {
             close_detail(ui);
@@ -481,7 +526,27 @@ impl LocalPlugins {
         catalog: &Arc<market::Catalog>,
         entry: &market::Entry,
     ) -> bool {
-        market_frame(ui)
+        let hover_id = ui.id().with("card-hover");
+        let was_hovered = ui.data(|data| data.get_temp::<bool>(hover_id)).unwrap_or(false);
+        let t = ui.ctx().animate_bool_with_time(hover_id, was_hovered, 0.15);
+        let lift = (2.0 * t).round() as i8;
+        let card = market_frame(ui)
+            .stroke(egui::Stroke::new(
+                1.0,
+                paint::mix(line_color(ui), plugin_accent(ui), 0.55 * t),
+            ))
+            .shadow(egui::Shadow {
+                offset: [0, 6],
+                blur: 20,
+                spread: 0,
+                color: Color32::from_black_alpha((60.0 * t) as u8),
+            })
+            .outer_margin(egui::Margin {
+                left: 0,
+                right: 0,
+                top: 2 - lift,
+                bottom: lift,
+            })
             .show(ui, |ui| {
                 let cover = ui.vertical(|ui| {
                     self.market_cover(
@@ -540,7 +605,10 @@ impl LocalPlugins {
                             .on_hover_text(author);
                         });
                         clamped_text(ui, entry_description(entry), 12.0, 2, muted_color(ui));
-                        let place = self.installed_place(&entry.id).unwrap_or("装好后在已安装里管理");
+                        let place = self
+                            .entry_owner(entry)
+                            .and_then(|owner| owner_label(&owner))
+                            .map_or_else(String::new, |label| format!("装到 {label}"));
                         ui.add(
                             egui::Label::new(egui::RichText::new(place).size(11.0).color(muted_color(ui)))
                                 .truncate(),
@@ -550,12 +618,8 @@ impl LocalPlugins {
                             ui.spacing_mut().item_spacing.x = 6.0;
                             if catalog.is_official() {
                                 let downloads = self.market_counts(&entry.id).map(|counts| counts.downloads);
-                                ui.label(
-                                    egui::RichText::new(format!("下载 {}", compact(downloads)))
-                                        .size(11.0)
-                                        .color(muted_color(ui)),
-                                )
-                                .on_hover_text(if downloads.is_some() { "下载次数" } else { "暂无统计数据" });
+                                download_count(ui, &compact(downloads))
+                                    .on_hover_text(if downloads.is_some() { "下载次数" } else { "暂无统计数据" });
                             }
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 let manage = self.market_action_button(ui, catalog, entry, cover.inner);
@@ -569,20 +633,38 @@ impl LocalPlugins {
                         .inner
                     })
                     .inner
-            })
-            .inner
+            });
+        let hovered = ui.rect_contains_pointer(card.response.rect);
+        ui.data_mut(|data| data.insert_temp(hover_id, hovered));
+        card.inner
     }
 
-    /// 右侧详情抽屉：不离开列表，固定写清出现在哪里、设置在哪、要什么权限。
+    /// 打开中的详情抽屉。集市页和已安装页都用它；返回真表示用户点了「已安装」要去管理。
+    pub(super) fn detail_drawer(&mut self, ui: &mut egui::Ui, official_first: bool) -> bool {
+        let Some(id) = ui.data(|data| data.get_temp::<String>(detail_id())) else {
+            return false;
+        };
+        let found = [official_first, !official_first].into_iter().find_map(|official| {
+            let catalog = self.market_catalog(official)?;
+            let entry = catalog.entries.iter().find(|entry| entry.id == id)?.clone();
+            Some((catalog, entry))
+        });
+        let go = self.market_drawer(ui, &id, found);
+        if go {
+            close_detail(ui);
+        }
+        go
+    }
+
+    /// 右侧详情抽屉：盖住整个设置窗口并把背后置灰，不离开原来的列表。
     fn market_drawer(
         &mut self,
         ui: &mut egui::Ui,
         id: &str,
         found: Option<(Arc<market::Catalog>, market::Entry)>,
-        favorites: bool,
     ) -> bool {
         let ctx = ui.ctx().clone();
-        let clip = ui.clip_rect();
+        let clip = ctx.screen_rect();
         let opened = ui
             .data(|data| data.get_temp::<f64>(detail_id().with("opened")))
             .unwrap_or_default();
@@ -604,7 +686,7 @@ impl LocalPlugins {
             .show(&ctx, |ui| {
                 let (rect, response) = ui.allocate_exact_size(clip.size(), egui::Sense::click());
                 ui.painter()
-                    .rect_filled(rect, 0.0, Color32::from_black_alpha((90.0 * t) as u8));
+                    .rect_filled(rect, 0.0, Color32::from_black_alpha((120.0 * t) as u8));
                 response.clicked()
             });
         close |= scrim.inner;
@@ -641,7 +723,7 @@ impl LocalPlugins {
                                         manage = self.market_details(ui, catalog, entry);
                                     }
                                     None => {
-                                        ui.strong(if self.market_catalog(true).is_some() || !favorites {
+                                        ui.strong(if self.market_catalog(true).is_some() {
                                             "此插件已下架"
                                         } else {
                                             "暂时无法查看详情"
@@ -703,15 +785,17 @@ impl LocalPlugins {
             .show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
                 ui.spacing_mut().item_spacing.y = 6.0;
-                let place = self.installed_place(&entry.id);
-                let facts = [
-                    ("设置在", place),
+                let place = self
+                    .entry_owner(entry)
+                    .and_then(|owner| owner_label(&owner))
+                    .map(|label| format!("设置 › {label}"));
+                for (label, value) in [
+                    ("设置在", place.as_deref()),
                     ("新增页面", Some("不会")),
                     ("权限", Some("无需外部权限")),
-                ];
-                for (label, value) in facts
-                    .into_iter()
-                    .filter_map(|(label, value)| value.map(|value| (label, value)))
+                ]
+                .into_iter()
+                .filter_map(|(label, value)| value.map(|value| (label, value)))
                 {
                     ui.horizontal(|ui| {
                         let (rect, _) = ui.allocate_exact_size(egui::vec2(64.0, 16.0), egui::Sense::hover());
@@ -818,13 +902,11 @@ impl LocalPlugins {
         false
     }
 
-    /// 已安装插件的设置位置。集市目录还没有写明归属，没装的插件不显示。
-    fn installed_place(&self, id: &str) -> Option<&'static str> {
-        let manifest = &self.records.get(id)?.package.as_ref()?.manifest;
-        Some(match manifest.owner.as_str() {
-            "calendar" => "设置 › 日程",
-            "appearance" => "设置 › 外观 › 材质",
-            _ => "设置 › 待办与置物",
+    /// 插件的设置归属：先看目录写明的，再看已安装插件自己的清单；都没有就不归类。
+    fn entry_owner(&self, entry: &market::Entry) -> Option<String> {
+        entry.owner().map(str::to_owned).or_else(|| {
+            let manifest = &self.records.get(&entry.id)?.package.as_ref()?.manifest;
+            Some(manifest.owner.clone())
         })
     }
 

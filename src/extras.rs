@@ -1571,14 +1571,18 @@ pub(crate) const SETTINGS_TAB_PAGES: usize = 10;
 pub(crate) const SETTINGS_TAB_WIRELESS: usize = 16;
 #[cfg(feature="sdk-js")]
 pub(crate) const SETTINGS_TAB_PLUGINS: usize = 17;
-/// 侧栏：一项就是一页，不再有页内子标签。专注与健康（2、3）、待办与置物（4、5）各合成一页；关于固定左下角。
+/// 侧栏：一项就是一页，不再有页内子标签。专注与健康（2、3）、待办与置物（4、5）各合成一页；
+/// 插件和关于固定在左下角，上方一条细线和功能页分开。
 /// 第四列是这一项之前的分组标题。
 const SETTINGS_GROUPS: [(&str,usize,usize,&str);15 + cfg!(feature="sdk-js") as usize] = [
     ("通用",0,0,"岛仔"), ("外观",SETTINGS_TAB_APPEARANCE,SETTINGS_TAB_APPEARANCE,""), ("位置",SETTINGS_TAB_POSITION,SETTINGS_TAB_POSITION,""), ("页面管理",SETTINGS_TAB_PAGES,SETTINGS_TAB_PAGES,""),
-    #[cfg(feature="sdk-js")] ("插件",SETTINGS_TAB_PLUGINS,SETTINGS_TAB_PLUGINS,""),
     ("音乐",1,1,"功能"), ("专注与健康",2,3,""), ("待办与置物",4,5,""), ("消息提醒",6,6,""), ("邮箱",7,7,""), ("日程",8,8,""), ("AI 额度",11,11,""), ("天气",12,12,""), ("系统性能",15,15,""), ("无线设备",SETTINGS_TAB_WIRELESS,SETTINGS_TAB_WIRELESS,""),
+    #[cfg(feature="sdk-js")] ("插件",SETTINGS_TAB_PLUGINS,SETTINGS_TAB_PLUGINS,""),
     ("关于",9,9,""),
 ];
+/// 固定在侧栏底部的第一项。
+const SETTINGS_BOTTOM_START:usize=if cfg!(feature="sdk-js"){SETTINGS_TAB_PLUGINS}else{9};
+const SETTINGS_BOTTOM_ROWS:f32=if cfg!(feature="sdk-js"){2.0}else{1.0};
 /// 分页标题；合并页（3→2、5→4）显示合并后的名字。
 fn settings_tab_title(tab:usize)->&'static str{
     SETTINGS_GROUPS.iter().find(|(_,start,end,_)|(*start..=*end).contains(&tab)).map_or("通用",|g|g.0)
@@ -1674,7 +1678,14 @@ impl App {
                         ui.label(egui::RichText::new(section).size(11.0).color(settings_color(ctx,Color32::from_gray(150),Color32::from_gray(105))));
                         ui.add_space(3.0);
                     }
-                    if start==9 {ui.add_space((ui.available_height()-row_h-4.0).max(4.0));}
+                    if start==SETTINGS_BOTTOM_START {
+                        // 底部几项贴底，上方画一条细线和功能页分开。
+                        let bottom=SETTINGS_BOTTOM_ROWS*row_h+(SETTINGS_BOTTOM_ROWS-1.0)*(row_gap+3.0);
+                        ui.add_space((ui.available_height()-bottom-14.0).max(4.0));
+                        let y=ui.cursor().top();
+                        ui.painter().hline(ui.max_rect().x_range().shrink(4.0),y,egui::Stroke::new(1.0,settings_color(ctx,Color32::from_rgb(46,46,51),Color32::from_rgb(218,222,229))));
+                        ui.add_space(9.0);
+                    }
                     let selected=(start..=end).contains(&self.settings_tab);
                     let (rect,response)=ui.allocate_exact_size(egui::vec2(ui.available_width(),row_h),egui::Sense::click());
                     if response.clicked() && !selected{self.settings_tab=start;}
@@ -1709,7 +1720,14 @@ impl App {
             });
             egui::CentralPanel::default().frame(egui::Frame::new().fill(settings_color(ctx,Color32::from_rgb(25,25,27),Color32::from_rgb(246,247,249))).inner_margin(egui::Margin::symmetric(22,16))).show(ctx,|ui|{
                 settings_apply_style(ui);
-                ui.label(egui::RichText::new(settings_tab_title(self.settings_tab)).size(18.0).strong().color(settings_color(ctx,Color32::WHITE,Color32::from_rgb(30,34,41))));
+                ui.horizontal(|ui|{
+                    ui.label(egui::RichText::new(settings_tab_title(self.settings_tab)).size(18.0).strong().color(settings_color(ctx,Color32::WHITE,Color32::from_rgb(30,34,41))));
+                    // 插件页：「集市 / 已安装」切换放在标题同一行的右侧。
+                    #[cfg(feature="sdk-js")]
+                    if self.settings_tab==SETTINGS_TAB_PLUGINS {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|self.plugins.header_tabs(ui));
+                    }
+                });
                 ui.add_space(6.0);
                 // 合并页：健康（3）并入专注（2），置物（4→5）并入待办，旧序号仍能打开对应页面。
                 let tab=match self.settings_tab {3=>2,5=>4,t=>t};

@@ -56,6 +56,9 @@ pub(super) struct Entry {
     pub(super) version: String,
     pub(super) size: u64,
     pub(super) sha256: String,
+    /// 设置归属，打包投稿时从清单的 owner 带入。早期条目没有这一项。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) owner: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) presentation: Option<Presentation>,
 }
@@ -66,6 +69,12 @@ impl Entry {
             && self.version == manifest.version
             && self.name == manifest.name
             && self.author == manifest.author
+            && self.owner.as_deref().is_none_or(|owner| owner == manifest.owner)
+    }
+
+    /// 目录写明的设置归属。早期条目没有这一项，界面不猜测。
+    pub(super) fn owner(&self) -> Option<&str> {
+        self.owner.as_deref()
     }
 
     fn zip_name(&self) -> String {
@@ -705,6 +714,7 @@ pub(super) fn submit(input: &Path, path: &Path) -> Result<()> {
         version: manifest.version,
         size: raw.len() as u64,
         sha256: sha256(&raw),
+        owner: Some(manifest.owner),
         presentation: None,
     };
     let path = target_path(path)?;

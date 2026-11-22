@@ -263,6 +263,7 @@ fn market_buttons_install_and_update_an_existing_sample() -> Result<()> {
     crate::theme::load_fonts(&ctx);
     ctx.style_mut(|style| style.animation_time = 0.);
     let draw = |host: &mut LocalPlugins, ui: &mut egui::Ui| {
+        host.header_tabs(ui);
         host.manage(
             ui,
             true,
@@ -286,7 +287,7 @@ fn market_buttons_install_and_update_an_existing_sample() -> Result<()> {
         .is_some());
     assert!(!has_text(&official, "发薪倒计时"));
     assert!(!has_text(&official, "导入测试集市目录…"));
-    click_button(&mut host, "已安装 0");
+    click_button(&mut host, "已安装");
     click_button(&mut host, "开发者工具");
     let developers = frame(&ctx, vec![], |ui| draw(&mut host, ui));
     assert!(has_text(&developers, "导入测试集市目录…"));
@@ -318,7 +319,6 @@ fn market_buttons_install_and_update_an_existing_sample() -> Result<()> {
     click_button(&mut host, "刷新目录");
     let available = frame(&ctx, vec![], |ui| draw(&mut host, ui));
     assert!(has_text(&available, "更新"));
-    assert!(has_text(&available, "已安装 1"));
     click_button(&mut host, "更新");
     finish(&mut host);
 
@@ -454,6 +454,7 @@ fn official_market_only_requests_uncached_data_or_explicit_refresh() -> Result<(
     crate::theme::load_fonts(&ctx);
     ctx.style_mut(|style| style.animation_time = 0.);
     let draw = |host: &mut LocalPlugins, ui: &mut egui::Ui| {
+        host.header_tabs(ui);
         let _ = host.manage(
             ui,
             true,
@@ -493,7 +494,7 @@ fn official_market_only_requests_uncached_data_or_explicit_refresh() -> Result<(
     );
     click_button(&mut host, "收藏 0");
     click_button(&mut host, "全部");
-    click_button(&mut host, "已安装 0");
+    click_button(&mut host, "已安装");
     click_button(&mut host, "去插件集市");
     click_button(&mut host, "本地测试");
     click_button(&mut host, "官方");
