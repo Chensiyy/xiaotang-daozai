@@ -54,6 +54,10 @@ pub mod otp;
 pub mod quota;
 #[cfg(feature = "sdk-js")]
 mod quota_plugin;
+#[cfg(feature = "sdk-js")]
+mod plugin_status;
+#[cfg(feature = "sdk-js")]
+mod plugin_status_ui;
 mod quota_ui;
 pub mod weather;
 mod weather_ui;

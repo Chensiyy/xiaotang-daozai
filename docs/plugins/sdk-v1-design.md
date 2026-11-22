@@ -4,13 +4,13 @@
 
 SDK 是岛仔提供给插件作者的一组公开约定。宿主指运行插件的岛仔。你提供一份清单和几段函数，岛仔负责调用、画界面和保存结果。
 
-第一版采用**每次调用都从头运行**的写法。函数只根据输入计算并返回结果，需要记住的内容放进返回值的 `storage`。两次调用之间，脚本变量会消失。宿主负责安排刷新、读取已授权的数据源和接收用户点击。当前 Windows 测试版可运行 QuickJS 待办卡片和日程日期标注。[运行环境实测](runtime-spike.md) · [本地安装](local-install.md)
+第一版采用**每次调用都从头运行**的写法。函数只根据输入计算并返回结果，需要记住的内容放进返回值的 `storage`。两次调用之间，脚本变量会消失。宿主负责安排刷新、读取已授权的数据源和接收用户点击。当前 Windows 测试版可运行 QuickJS 待办卡片、日程日期标注、AI 额度来源与独立状态页。[运行环境实测](runtime-spike.md) · [本地安装](local-install.md)
 
 ## 2. 我能写哪些功能
 
 先试[发薪倒计时](../../spike/examples/payday/plugin.json)和它的[完整入口脚本](../../spike/examples/payday/main.js)。复制整个目录，修改清单中的 ID（识别插件的固定名称）和显示名称，就能安装第二份。`plugin.json` 是插件的清单。JSON 用字段名和值来记录设置、刷新间隔和权限。
 
-当前宿主按全局函数名调用 `refresh(input)`。输入是 `{settings, today, storage}`，日期格式为 YYYY-MM-DD，首次调用的存储值为 `null`。当前返回值为 `{card, storage}`，其中 card 为文字，storage 为本次完整的私有数据。下面这段可以直接替换样例的 main.js。
+当前宿主按全局函数名调用 `refresh(input)`。输入是 `{settings, today, storage}`，日期格式为 YYYY-MM-DD，首次调用的存储值为 `null`。待办卡片返回 `{card, storage}`，其中 card 为文字，storage 为本次完整的私有数据。下面这段可以直接替换样例的 main.js。
 
 ```js
 function refresh({ settings, today }) {
@@ -28,7 +28,8 @@ function refresh({ settings, today }) {
 | 日期标注 · 已实现 | `owner: "calendar"` 复用文字卡和周期刷新，`card` 可以返回“日期说明 · 短标签” | 展开「日程 → 日历」查看电脑当天日期下方的标注 |
 | 周期刷新 · 已实现 | 两个样例在清单声明 `"refreshSeconds":60` 和 timer 能力。到期由岛仔调用 refresh | 卡片按期更新 |
 | 常驻、固定、临时卡 · 待宿主实现 | `function refresh(i){return {cards:[{id:"job",mode:"temporary",text:i.settings.title,ttlMs:5000}]}}` | 常驻栏、临时位置，用户自行选择固定 |
-| 独立模块、列表、详情、表单 · 待宿主实现 | 清单声明 module 与按钮 `actions:["save"]`。示意 `function action(i){return {page:{kind:"detail",text:i.form.text},storage:{note:i.form.text}}}` | 岛上功能栏查看、编辑，侧栏调偏好，页面管理启停 |
+| 结构化状态卡和独立详情页 · 测试版 | 清单使用 `"owner":"status"` 和 `"capabilities":["status.page","timer"]`，`refresh` 返回 `status`，由岛仔绘制进度、指标和告警。 | 在岛上翻页查看，在「设置 → 页面管理 → 状态详情」单独启停 |
+| 可编辑独立模块、列表、表单 · 待宿主实现 | 清单声明 module 与按钮 `actions:["save"]`。示意 `function action(i){return {page:{kind:"detail",text:i.form.text},storage:{note:i.form.text}}}` | 岛上功能栏查看、编辑，侧栏调偏好，页面管理启停 |
 | 日程来源 · 待宿主实现 | `function refresh(i){return {calendar:[{id:"anniversary",title:i.settings.title,date:i.settings.target}]}}` | 日程里的来源，按来源和条目 ID 更新 |
 | 歌词来源 · 待宿主实现 | `function refresh(i){return {lyrics:{trackId:i.track.id,lines:i.source.lines}}}`。换歌后宿主只接收当前曲目的结果 | 原音乐页 |
 | AI 额度来源 · 测试版 | 清单使用 `"owner":"quota"` 和 `"capabilities":["quota.source","timer"]`，`refresh` 返回 `quota`。 | 原 AI 额度面板中按插件名称显示来源页签 |
@@ -46,7 +47,7 @@ function refresh({ settings, today }) {
 
 用户要反复编辑便签、管理纪念日，或专门查看打印进度、温度和告警时，可以新增独立模块。作者决定展示哪些内容及其顺序，岛仔负责配色、字体、缩放和点击。正文和一次性输入在功能页编辑，默认排序等偏好在模块设置页修改。
 
-独立模块接入后，清单用 `owner: "self"` 并声明 module。岛仔按照固定 ID 找到模块入口、设置入口和页面管理开关。作者无需填写页面编号。岛上沿用岛仔的小齿轮，与「已安装」里插件下方的路径打开同一处。
+只读状态详情页通过 `owner: "status"` 和 `status.page` 接入，按照插件 ID 找到页面和独立开关。岛上的齿轮与「已安装」里的页面路径都进入页面管理。可编辑独立模块的设计使用 `owner: "self"` 和 `module`。
 
 每个插件只有一个主要设置归属。「已安装」每行统一提供路径（前往设置）、开关和「···」菜单（查看详情、反馈问题、卸载）。列表按设置归属分组，材质组同时只开一个。页面管理控制模块运行。设置页复用岛仔已有的开关、选择、数字、文本行和功能标题卡，保留必要设置与关键提醒，合并重复提示，内容多时才收起低频选项。
 
@@ -82,7 +83,7 @@ JS 卡片可用空权限，或申请一个本地只读数据源。材质插件�
 
 ### 本地只读数据源
 
-一款待办或日程插件可申请一种数据源。安装和启用不自动授权。在「设置 → 插件 → 已安装」为该插件选择一个普通本地文件，或输入完整的本机 HTTP 地址并确认授权。授权可随时撤销，卸载会清除授权。
+一款待办、日程、额度来源或状态详情插件可申请一种数据源。安装和启用不自动授权。在「设置 → 插件 → 已安装」为该插件选择一个普通本地文件，或输入完整的本机 HTTP 地址并确认授权。授权可随时撤销，卸载会清除授权。
 
 - `file` 读取系统选择器选中的一个 UTF-8 文件，拒绝网络盘、目录和重解析路径。数据文件可以在原路径更新。
 - `loopback` 对用户确认的完整地址做 GET，例如 `http://127.0.0.1:8080/status`。支持 `127.0.0.1`、`[::1]` 和 `localhost`，直接连接回环地址，设置 2 秒请求预算，拒绝重定向、URL 账号密码和非回环地址。
@@ -118,6 +119,24 @@ function refresh({ source }) {
 - 每项可填 `period_secs` 和 `reset_at`，分别是周期秒数和重置 Unix 时间戳。整份额度可选 `expires_at`，用于显示到期 Unix 时间戳。到期与重置各自独立。
 - 可返回 `quota: null` 撤下当前读数。申请取数权限的插件，在未授权或读取失败时由宿主管理撤下；其他来源的数据和选中设置可继续使用。暂停额度页或停用插件时，该来源会撤下。面板手动刷新会同时触发已启用的额度插件。
 - 额度输出保留在本次运行中。若插件声明了 `storage`，脚本可额外返回自己的私有存储。打包校验时源状态为 `unconfigured`，入口应能处理该状态。
+
+### 结构化状态卡和详情页
+
+JS 清单使用 `"owner":"status"`，能力列出 `status.page`。可选的 `timer`、`settings` 和 `storage` 沿用现有约定。读取文件或本机接口时使用同一套 `source.read` 授权。宿主会用清单的显示名称和固定插件 ID 注册详情页，无需声明页面编号。
+
+返回 `{status: ...}`，表中所有文字字段填单行可显示文字。
+
+| 字段 | 取值 |
+| --- | --- |
+| `state`、`label` | 必填。状态选 `running`、`paused`、`succeeded`、`error`、`offline` 或 `idle`，标签 1 至 40 字 |
+| `summary`、`alert` | 可选的摘要与告警，各 1 至 120 字 |
+| `progress_pct` | 可选，0 至 100 的数字 |
+| `metrics` | 可选，最多 6 项。每项填 `label`（1 至 28 字）和 `value`（1 至 32 字），数值和单位可放在同一段文字 |
+| `observed_at`、`expires_at` | 可选的 Unix 秒，分别表示观察和过期时间。观察时间须早于或等于过期时间，到了过期时间会撤下旧读数 |
+
+返回 `{status:null}` 时显示等待状态。取数失败会撤下旧读数，在本页显示数据源暂不可用。来源正常返回 `state:"offline"` 时，按插件提供的设备离线状态展示。宿主按插件 ID 分开刷新和撤下状态。
+
+全新的插件默认停用，首次启用后详情页默认出现。可在「页面管理 → 状态详情」保存这个页面自己的开关。关闭详情页后，岛体撤下对应页面和状态卡，后台停止读取该插件的数据源，正在进行的结果作废。再次启用按当前授权重新读取。
 
 ## 6. 数据能留多久
 

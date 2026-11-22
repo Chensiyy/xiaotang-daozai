@@ -1870,6 +1870,8 @@ impl App {
                                 ui.label(egui::RichText::new("至少保留一个页面。").size(11.0).color(settings_color(ctx,Color32::from_gray(180),Color32::from_gray(75))));
                             }
                         });
+                        #[cfg(feature="sdk-js")]
+                        if let Some(id)=self.plugins.status_page_settings(ui) {self.show_status_page(&id);}
                     }
                     0=>{
                         settings_label(ui,"设置页外观");

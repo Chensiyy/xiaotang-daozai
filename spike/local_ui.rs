@@ -564,9 +564,10 @@ fn developer_link(ui: &mut egui::Ui) -> bool {
 }
 
 /// 设置归属在界面上的名字，顺序与设置侧栏一致。
-const OWNERS: [(&str, &str); 6] = [
+const OWNERS: [(&str, &str); 7] = [
     ("appearance", "外观"),
     ("pages", "页面管理"),
+    ("status", "状态详情"),
     ("calendar", "日程"),
     ("tasks", "待办与置物"),
     ("quota", "AI 额度"),
@@ -1068,6 +1069,7 @@ impl LocalPlugins {
         let module_on = match owner_key.as_str() {
             "calendar" => calendar_on,
             "quota" => quota_on,
+            "status" => !r.status_page_disabled,
             "pages" | "wireless" => true,
             _ => tasks_on,
         };
@@ -1113,6 +1115,11 @@ impl LocalPlugins {
         let place = owner_label(owner_key).unwrap_or(owner_key);
         let (path, tip) = if material {
             ("设置 › 外观 › 材质 ›".to_owned(), "前往外观设置".to_owned())
+        } else if owner_key == "status" {
+            (
+                format!("页面管理 › {place} ›"),
+                "管理这个插件的详情页和数据读取".to_owned(),
+            )
         } else if paused {
             (
                 format!("页面管理 › {place} ›"),
@@ -1124,7 +1131,7 @@ impl LocalPlugins {
         let settings_tab = match owner_key {
             "calendar" => crate::app::PAGE_SETTINGS_TABS[crate::app::CALENDAR_PAGE],
             "quota" => crate::app::PAGE_SETTINGS_TABS[crate::app::QUOTA_PAGE],
-            "pages" => crate::extras::SETTINGS_TAB_PAGES,
+            "pages" | "status" => crate::extras::SETTINGS_TAB_PAGES,
             "wireless" => crate::extras::SETTINGS_TAB_WIRELESS,
             _ => crate::app::PAGE_SETTINGS_TABS[crate::app::TODO_PAGE],
         };
@@ -1186,7 +1193,8 @@ impl LocalPlugins {
                                 if path_button(ui, label, false, "管理这个插件可读取的数据源") {
                                     self.open_source_dialog(ui, id);
                                 }
-                                has_settings && path_button(ui, &path, paused, &tip)
+                                (has_settings || owner_key == "status")
+                                    && path_button(ui, &path, paused, &tip)
                             }).inner
                         } else {
                             path_button(ui, &path, paused, &tip)
@@ -1196,6 +1204,9 @@ impl LocalPlugins {
                         if navigate {
                             if material {
                                 *jump = Some(crate::extras::SETTINGS_TAB_APPEARANCE);
+                            } else if owner_key == "status" {
+                                self.focus = Some(id.to_owned());
+                                *jump = Some(settings_tab);
                             } else if paused {
                                 *jump = Some(crate::extras::SETTINGS_TAB_PAGES);
                             } else {
@@ -1764,6 +1775,78 @@ impl LocalPlugins {
         restart
     }
 
+    pub(crate) fn status_page_settings(&mut self, ui: &mut egui::Ui) -> Option<String> {
+        let mut preferences = self.status_page_preferences().peekable();
+        preferences.peek()?;
+
+        ui.add_space(12.0);
+        group_header(ui, "状态详情", "");
+        let mut change = None;
+        let mut open = None;
+        let mut focused = false;
+        plugin_list(ui, |ui| {
+            for (index, (id, name, enabled, page_on)) in preferences.enumerate() {
+                if index > 0 {
+                    row_separator(ui);
+                }
+                let description = if enabled {
+                    "关闭后暂停这个插件的数据读取"
+                } else {
+                    "在「已安装」启用插件后生效"
+                };
+                let row = ui.push_id(("status-page-preference", id), |ui| {
+                    ui.horizontal(|ui| {
+                        ui.vertical(|ui| {
+                            ui.set_max_width((ui.available_width() - 112.0).max(80.0));
+                            ui.horizontal(|ui| {
+                                ui.scope(|ui| {
+                                    ui.set_max_width((ui.available_width() - 44.0).max(20.0));
+                                    ui.add(egui::Label::new(name).truncate()).on_hover_text(name);
+                                });
+                                plugin_tag(ui);
+                            });
+                            settings_hint(ui, description);
+                        });
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let switched = plugin_switch(ui, id, page_on, name);
+                            let jumped = enabled && page_on && ui.button("打开").clicked();
+                            (switched, jumped)
+                        })
+                        .inner
+                    })
+                    .inner
+                });
+                if self.focus.as_deref() == Some(id) {
+                    row.response.scroll_to_me(Some(egui::Align::Center));
+                    focused = true;
+                }
+                if row.inner.0 {
+                    change = Some((id.to_owned(), !page_on));
+                }
+                if row.inner.1 {
+                    open = Some(id.to_owned());
+                }
+            }
+        });
+        if focused {
+            self.focus = None;
+        }
+        let error_id = ui.make_persistent_id("status-page-preference-error");
+        if let Some((id, on)) = change {
+            let error = self.set_status_page_enabled(&id, on)
+                .err()
+                .map(|e| e.to_string())
+                .unwrap_or_default();
+            ui.data_mut(|data| data.insert_temp(error_id, error));
+            ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
+        }
+        if let Some(error) = ui.data(|data| data.get_temp::<String>(error_id)).filter(|s| !s.is_empty()) {
+            settings_hint(ui, &error);
+        }
+        self.settings(ui, "status", true);
+        open
+    }
+
     /// 插件设置显示在所属设置页，标题旁带「插件」小标。从「已安装」点路径过来时，
     /// 滚到这张卡并用描边闪一下。
     pub fn settings(&mut self, ui: &mut egui::Ui, owner: &str, module_on: bool) {
@@ -1775,6 +1858,7 @@ impl LocalPlugins {
             .iter()
             .filter(|(_, r)| {
                 r.enabled
+                    && (owner != "status" || !r.status_page_disabled)
                     && r.package.as_ref().is_some_and(|p| {
                         p.manifest.owner == owner && !p.manifest.settings.is_empty()
                     })

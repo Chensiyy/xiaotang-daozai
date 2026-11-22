@@ -807,6 +807,8 @@ pub struct App {
     // 切页
     pub(crate) page: usize,
     page_from: usize,
+    #[cfg(feature="sdk-js")]
+    status_pages: Vec<(String, String)>,
     page_from_offset: f32,
     page_from_elapsed: f32,
     page_scroll_area: Option<Rect>,
@@ -1035,6 +1037,8 @@ impl App {
             grip_hover_since: None,
             page: initial_page,
             page_from: initial_page,
+            #[cfg(feature="sdk-js")]
+            status_pages: Vec::new(),
             page_from_offset: 0.0,
             page_from_elapsed: PAGE_TURN_DURATION,
             page_scroll_area: None,
@@ -1705,8 +1709,8 @@ impl App {
     }
 
     pub fn show_page(&mut self,page:usize) {
-        if !self.settings.visible_pages[page] {
-            self.settings_tab=PAGE_SETTINGS_TABS[page];
+        if !self.module_on(page) {
+            self.settings_tab=self.page_settings_tab(page);
             self.open_settings();
             return;
         }
@@ -1756,7 +1760,9 @@ impl App {
     // ---------- 功能模块：页面开关即模块开关，关闭后页面隐藏、后台同步和提醒一并停止 ----------
 
     /// 模块是否开启（与「页面管理」里的页面开关一致）。
-    pub fn module_on(&self,page:usize)->bool {self.settings.visible_pages.get(page).copied().unwrap_or(false)}
+    pub fn module_on(&self,page:usize)->bool {
+        self.settings.visible_pages.get(page).copied().unwrap_or_else(||page-PAGE_NAMES.len()<self.status_page_count())
+    }
     /// 收信线程是否应运行：邮箱模块开启且打开了「新邮件提醒」。
     pub fn mail_active(&self)->bool {self.module_on(MAIL_PAGE) && self.settings.mail_enabled}
     /// 剪贴板监听是否应运行：置物架模块开启且打开了「记录剪贴板」。
@@ -1813,20 +1819,78 @@ impl App {
             }
             self.clear_module_reminders(page);
         }
-        if !self.settings.visible_pages[self.page] {
+        if !self.module_on(self.page) {
             if let Some(first)=self.settings.page_order.iter().copied().find(|page|self.settings.visible_pages[*page]) { self.go(first,1.0); }
         }
     }
 
-    fn navigate_page(&mut self,next:bool) {
-        let position=self.settings.page_order.iter().position(|page|*page==self.page).unwrap();
-        for offset in 1..=PAGE_NAMES.len() {
-            let page=self.settings.page_order[(position+if next {offset}else{PAGE_NAMES.len()-offset})%PAGE_NAMES.len()];
-            if self.settings.visible_pages[page] {
-                self.go(page,if next {1.0}else{-1.0});
-                break;
-            }
+    fn status_page_count(&self) -> usize {
+        #[cfg(feature="sdk-js")]
+        { self.status_pages.len() }
+        #[cfg(not(feature="sdk-js"))]
+        { 0 }
+    }
+
+    fn navigation_pages(&self) -> impl Iterator<Item=usize> + '_ {
+        self.settings.page_order.iter().copied()
+            .filter(|page|self.settings.visible_pages[*page])
+            .chain(PAGE_NAMES.len()..PAGE_NAMES.len()+self.status_page_count())
+    }
+
+    fn navigation_page_name(&self, page: usize) -> &str {
+        if let Some(name)=PAGE_NAMES.get(page) {return name;}
+        #[cfg(feature="sdk-js")]
+        if let Some((_,name))=self.status_pages.get(page-PAGE_NAMES.len()) {return name;}
+        "页面管理"
+    }
+
+    fn page_settings_tab(&self, page: usize) -> usize {
+        PAGE_SETTINGS_TABS.get(page).copied().unwrap_or(crate::extras::SETTINGS_TAB_PAGES)
+    }
+
+    #[cfg(feature="sdk-js")]
+    fn sync_status_pages(&mut self) {
+        if self.status_pages.iter().map(|(id,name)|(id.as_str(),name.as_str())).eq(self.plugins.status_pages()) {
+            return;
         }
+        let pages:Vec<_>=self.plugins.status_pages().map(|(id,name)|(id.to_owned(),name.to_owned())).collect();
+        // 数字页码只用于绘制和翻页，安装或停用其他插件时按 ID 找回原来的页面。
+        let remap=|page:usize| {
+            if page<PAGE_NAMES.len() {return Some(page);}
+            let (id,_)=self.status_pages.get(page-PAGE_NAMES.len())?;
+            pages.iter().position(|(other,_)|other==id).map(|index|PAGE_NAMES.len()+index)
+        };
+        let current=remap(self.page);
+        let previous=remap(self.page_from);
+        self.drag_saved=self.drag_saved.and_then(remap);
+        self.status_pages=pages;
+        if let Some(page)=current {
+            self.page=page;
+            self.page_from=previous.unwrap_or(page);
+        } else {
+            let fallback=self.navigation_pages().next().unwrap_or(MUSIC_PAGE);
+            self.page=fallback;
+            self.page_from=self.page;
+            self.page_t0=self.t-PAGE_TURN_DURATION as f64;
+            self.subpage=None;
+            self.cancel_edit();
+        }
+        self.dots_target();
+    }
+
+    #[cfg(feature="sdk-js")]
+    pub(crate) fn show_status_page(&mut self, id: &str) {
+        self.sync_status_pages();
+        if let Some(index)=self.status_pages.iter().position(|(source,_)|source==id) {
+            self.show_page(PAGE_NAMES.len()+index);
+        }
+    }
+
+    fn navigate_page(&mut self,next:bool) {
+        let pages:Vec<_>=self.navigation_pages().collect();
+        let Some(position)=pages.iter().position(|&page|page==self.page) else {return;};
+        let offset=if next {1} else {pages.len()-1};
+        self.go(pages[(position+offset)%pages.len()],if next {1.0}else{-1.0});
     }
 
     /// OLED 像素偏移只在收起动画完成、没有鼠标交互、不在编辑时移动；
@@ -1856,7 +1920,7 @@ impl App {
 
     /// 带过渡地切到某页。`dir` > 0 表示内容从右侧进入。
     pub(crate) fn go(&mut self, page: usize, dir: f32) {
-        if page == self.page || !self.settings.visible_pages[page] { return; }
+        if page == self.page || !self.module_on(page) { return; }
         if self.drag_departing {
             self.drag_departing=false;
             self.drag_saved=None;
@@ -2058,7 +2122,7 @@ impl App {
     fn page_shortcuts_enabled(&self) -> bool {
         self.settings.show_page_shortcuts
             && self.active_page_shortcut_colors().is_some()
-            && self.settings.visible_pages.iter().filter(|&&visible| visible).nth(1).is_some()
+            && self.navigation_pages().nth(1).is_some()
     }
 
     pub(crate) fn expanded_height(&self)->f32 {
@@ -2069,7 +2133,10 @@ impl App {
 
     fn page_content_height(&self)->f32 {
         #[cfg(feature="sdk-js")]
-        if self.page==TODO_PAGE && self.plugins.has_card(){return PH+46.0;}
+        {
+            if self.page>=PAGE_NAMES.len(){return crate::plugin_status_ui::STATUS_PAGE_H;}
+            if self.page==TODO_PAGE && self.plugins.has_card(){return PH+46.0;}
+        }
         if self.page==PERFORMANCE_PAGE {crate::performance_ui::PAGE_H}else if self.page==BLUETOOTH_PAGE {194.0}else if self.page==CALENDAR_PAGE {CALENDAR_H}else if self.page==WEATHER_PAGE {WEATHER_H}else if self.page==6{176.0}else if self.page==5&&self.mail.open_uid.is_some(){236.0}else{PH}
     }
 
@@ -3628,7 +3695,7 @@ impl App {
     fn panel_body(&mut self, c: &Card, env: &Env, cmds: &mut Vec<Cmd>) -> bool {
         let settings_card=if self.side() {c.edge_control(380.0,4.0,28.0,28.0)} else {Some(c.clone())};
         if let Some(c)=settings_card {
-            let settings=c.hit(380.0,4.0,28.0,28.0,"page-settings").on_hover_text(format!("打开{}设置窗口",PAGE_NAMES[self.page]));
+            let settings=c.hit(380.0,4.0,28.0,28.0,"page-settings").on_hover_text(format!("打开{}设置窗口",self.navigation_page_name(self.page)));
             let (hover,press)=c.hover_t(&settings);
             #[cfg(all(windows, feature = "sdk-material"))]
             if !self.glassy() || self.glass_controls_ready() {
@@ -3644,7 +3711,7 @@ impl App {
                 c.circle(394.0,18.0,13.0,Color32::from_white_alpha((hover*24.0) as u8));
                 paint::gear(&c.scaled(394.0,18.0,0.8*(1.0-press*0.08)),394.0,18.0,paint::mix(theme::GRAY,theme::WHITE,hover));
             }
-            if settings.clicked(){self.settings_tab=PAGE_SETTINGS_TABS[self.page];self.open_settings();}
+            if settings.clicked(){self.settings_tab=self.page_settings_tab(self.page);self.open_settings();}
         }
         if self.subpage==Some(self.page) {
             c.text(15.0,25.0,"‹",19.0,W::Bold,theme::WHITE,H::Left);
@@ -3688,6 +3755,12 @@ impl App {
 
     fn page_title(&self, page: usize, c: &Card) {
         let base = 25.0;
+        #[cfg(feature="sdk-js")]
+        if page>=PAGE_NAMES.len() {
+            let title=c.fit(self.navigation_page_name(page),size::TITLE,W::Bold,142.0);
+            c.text(15.0,base,&title,size::TITLE,W::Bold,theme::WHITE,H::Left);
+            return;
+        }
         let (a, b, col) = match page {
             0 | CALENDAR_PAGE => return,
             1 => ("番茄", "专注", theme::RED_TOP),
@@ -3713,8 +3786,8 @@ impl App {
     }
 
     fn nav(&mut self, c: &Card) {
-        let pages: Vec<_>=self.settings.page_order.iter().copied().filter(|page|self.settings.visible_pages[*page]).collect();
-        if pages.len()<2 { return; }
+        let all_pages:Vec<_>=self.navigation_pages().collect();
+        if all_pages.len()<2 { return; }
         // 停靠方式决定箭头的锚点，切页改变面板高度时仍可原地点击。
         let anchor_y=68.0;
         let arrow_y=match self.dock() {
@@ -3741,6 +3814,12 @@ impl App {
             if button.clicked() {self.navigate_page(direction>0.0);}
         }
         let shortcuts = self.page_shortcuts_enabled();
+        // 页数较多时，底栏随当前页移动，左右箭头和滚轮仍可切到每一页。
+        let max_slots=if shortcuts {PAGE_NAMES.len()}else{40};
+        let current=all_pages.iter().position(|&page|page==self.page).unwrap_or_default();
+        let start=current.saturating_sub(max_slots/2).min(all_pages.len().saturating_sub(max_slots));
+        let pages=&all_pages[start..(start+max_slots).min(all_pages.len())];
+        let dot_width=|page|self.dots.get(page).map_or(if page==self.page {16.0}else{4.0},|dot|dot.pos);
         let gap = if shortcuts { 3.0 } else { 4.0 };
         let dot_scale = if shortcuts { 0.75 } else { 1.0 };
         let dot_size = 4.0 * dot_scale;
@@ -3750,7 +3829,7 @@ impl App {
             self.page_height.pos - 7.2
         };
         // 图标和页码点共用底部一行，按可见页面的数量整体居中。
-        let dots_width = pages.iter().map(|&page| self.dots[page].pos).sum::<f32>() * dot_scale
+        let dots_width = pages.iter().copied().map(dot_width).sum::<f32>() * dot_scale
             + gap * (pages.len() - 1) as f32;
         let shortcut_slot = 26.0;
         let group_gap = 14.0;
@@ -3761,15 +3840,15 @@ impl App {
             let row_width = dots_width + shortcut_width;
             // 只在整行已经露出时显示，避免展开过程点击穿到正文控件。
             let Some(row) = c.edge_control(x - 2.0, dot_y - 11.0, row_width + 4.0, 22.0) else { return; };
-            for &page in &pages {
+            for &page in pages {
                 let center = x + shortcut_slot / 2.0;
                 let button = row.hit(x, dot_y - 11.0, shortcut_slot, 22.0, ("page-shortcut", page))
-                    .on_hover_text(PAGE_NAMES[page])
+                    .on_hover_text(self.navigation_page_name(page))
                     .on_hover_cursor(egui::CursorIcon::PointingHand);
                 let (hover, press) = row.hover_t(&button);
                 let (ink, bg) = if page == self.page {
                     let accent = self.active_page_shortcut_colors()
-                        .and_then(|colors| colors.get(PAGE_SHORTCUT_KEYS[page]))
+                        .and_then(|colors| PAGE_SHORTCUT_KEYS.get(page).and_then(|key|colors.get(*key)))
                         .map_or(theme::GRAY, |&[r, g, b]| Color32::from_rgb(r, g, b));
                     (paint::mix(accent, theme::WHITE, 0.45), paint::alpha(accent, 0.30))
                 } else {
@@ -3777,21 +3856,28 @@ impl App {
                         Color32::from_white_alpha((hover * 25.0) as u8))
                 };
                 row.fill(center - 10.5, dot_y - 9.0, 21.0, 18.0, 5.0, bg);
-                paint::page_shortcut_icon(&row.scaled(center, dot_y, 1.0 - 0.08 * press), page, center, dot_y, ink);
+                let icon=row.scaled(center, dot_y, 1.0 - 0.08 * press);
+                if page<PAGE_NAMES.len() {
+                    paint::page_shortcut_icon(&icon, page, center, dot_y, ink);
+                } else {
+                    icon.seg((center-5.0,dot_y+4.0),(center-5.0,dot_y+1.0),1.7,ink);
+                    icon.seg((center,dot_y+4.0),(center,dot_y-4.0),1.7,ink);
+                    icon.seg((center+5.0,dot_y+4.0),(center+5.0,dot_y-1.0),1.7,ink);
+                }
                 if button.clicked() { clicked = Some(page); }
                 x += shortcut_slot;
             }
             row.seg((x + group_gap / 2.0, dot_y - 6.0), (x + group_gap / 2.0, dot_y + 6.0), 1.0, Color32::from_gray(55));
             x += group_gap;
         }
-        for i in pages {
-            let w = self.dots[i].pos.max(3.0) * dot_scale;
+        for &i in pages {
+            let w = dot_width(i).max(3.0) * dot_scale;
             let on = anim::remap(w, 4.0 * dot_scale, 16.0 * dot_scale);
             let col = paint::mix(Color32::from_rgb(92, 92, 96), theme::WHITE, on);
             c.fill(x, dot_y - dot_size / 2.0, w, dot_size, dot_size / 2.0, col);
             let extra = gap / 2.0;
             let hr = c.hit(x - extra, dot_y - 6.0, w + gap, 12.0, ("dot", i));
-            hr.clone().on_hover_text(PAGE_NAMES[i]);
+            hr.clone().on_hover_text(self.navigation_page_name(i));
             if hr.hovered() && i != self.page {
                 c.fill(x - 1.0, dot_y - dot_size / 2.0 - 1.0, w + 2.0, dot_size + 2.0, 3.0, Color32::from_white_alpha(28));
             }
@@ -3801,13 +3887,19 @@ impl App {
             x += w + gap;
         }
         if let Some(i) = clicked {
-            let position=|page|self.settings.page_order.iter().position(|p|*p==page).unwrap();
-            let dir = if position(i) > position(self.page) { 1.0 } else { -1.0 };
+            let dir = if all_pages.iter().position(|&page|page==i).is_some_and(|index|index>current) {1.0}else{-1.0};
             self.go(i, dir);
         }
     }
 
     fn render_page(&mut self, page: usize, c: &Card, header: &Card, env: &Env, cmds: &mut Vec<Cmd>) {
+        #[cfg(feature="sdk-js")]
+        if let Some((id,_))=page.checked_sub(PAGE_NAMES.len()).and_then(|index|self.status_pages.get(index)) {
+            if let Some((_,status,health))=self.plugins.status_page(id) {
+                crate::plugin_status_ui::draw_status_page(c,status,health);
+            }
+            return;
+        }
         // 页面内容横向滑动，右侧操作只随切页淡入淡出，避免滑过图钉。
         let actions=header.shifted(-self.header_music_shift(),0.0);
         #[cfg(any(feature="sdk-js",feature="sdk-wasm"))]
@@ -3904,7 +3996,10 @@ impl App {
         let now = format!("{} {}", env.today, env.clock.get(..5).unwrap_or("00:00"));
         let todo_on=self.module_on(TODO_PAGE);
         #[cfg(feature="sdk-js")]
-        self.plugins.tick_features(todo_on,self.module_on(CALENDAR_PAGE),self.quota_active(),&env.today);
+        {
+            self.plugins.tick_features(todo_on,self.module_on(CALENDAR_PAGE),self.quota_active(),&env.today);
+            self.sync_status_pages();
+        }
         let due: Vec<_> = self.todos.items.iter().enumerate().filter(|(_, item)| todo_on && item.reminder_due(&now)).map(|(i,item)| (i,item.text.clone())).collect();
         for (i,text) in due { self.todos.items[i].mark_reminded(&now); self.todos.save(); self.alert("待办到时间了", text, 4, true); }
         // v0.5.5 会议提醒：.ics 里的开始时间，默认提前 15 分钟（可设 5/15/30）。

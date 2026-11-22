@@ -330,6 +330,7 @@ impl LocalPlugins {
                 storage: Value::Null,
                 material_granted: false,
                 source_grant: None,
+                status_page_disabled: false,
             }
         };
         let entry = entry.clone();

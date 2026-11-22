@@ -15,6 +15,7 @@ mod source_read;
 #[path = "local_ui.rs"]
 mod ui;
 use super::{fail, Result};
+use crate::plugin_status::{PluginStatus, StatusHealth};
 use crate::quota_plugin::PluginQuota;
 use cover::{CoverPng, COVER_FILE};
 use serde::{Deserialize, Serialize};
@@ -158,6 +159,8 @@ struct Record {
     material_granted: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     source_grant: Option<SourceGrant>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    status_page_disabled: bool,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -231,6 +234,8 @@ struct Output {
     card: String,
     #[serde(default)]
     quota: Option<PluginQuota>,
+    #[serde(default)]
+    status: Option<PluginStatus>,
     #[serde(default)]
     storage: Value,
 }
@@ -337,6 +342,10 @@ impl Manifest {
         self.owner == "quota"
     }
 
+    fn is_status_page(&self) -> bool {
+        self.owner == "status"
+    }
+
     fn source_limit(&self) -> u64 {
         if self.is_material() {
             MATERIAL_SOURCE_LIMIT
@@ -424,14 +433,25 @@ impl Manifest {
                     "请核对材质归属、屏幕底片权限、能力、弹簧参数和投影强度",
                 ));
             }
-        } else if m.is_quota_source() {
+        } else if m.is_quota_source() || m.is_status_page() {
+            let required = if m.is_quota_source() {
+                "quota.source"
+            } else {
+                "status.page"
+            };
             if m.runtime != "js"
                 || m.material.is_some()
                 || (!m.permissions.is_empty() && m.source_kind().is_none())
-                || m.capabilities.iter().filter(|cap| cap.as_str() == "quota.source").count() != 1
-                || !m.capabilities.iter().all(|cap| matches!(cap.as_str(), "quota.source" | "settings" | "timer" | "storage"))
+                || m.capabilities.iter().filter(|cap| cap.as_str() == required).count() != 1
+                || !m.capabilities.iter().all(|cap| {
+                    cap.as_str() == required || matches!(cap.as_str(), "settings" | "timer" | "storage")
+                })
             {
-                return Err(fail("AI 额度插件需使用 quota 归属、JS 入口与 quota.source 能力"));
+                return Err(fail(if m.is_quota_source() {
+                    "AI 额度插件需使用 quota 归属、JS 入口与 quota.source 能力"
+                } else {
+                    "状态页插件需使用 status 归属、JS 入口与 status.page 能力"
+                }));
             }
         } else if m.runtime != "js"
             || !matches!(m.owner.as_str(), "tasks" | "calendar")
@@ -673,6 +693,19 @@ impl Package {
             return Err(fail("插件输出超过 16 KiB"));
         }
         let mut output: Output = serde_json::from_str(&raw)?;
+        if self.manifest.is_status_page() {
+            if !output.card.is_empty()
+                || output.quota.is_some()
+                || output.status.as_ref().is_some_and(|status| !status.valid())
+            {
+                return Err(fail("状态页需要返回格式有效的 status 或 null"));
+            }
+            if !ready {
+                output.status = None;
+            }
+        } else if output.status.is_some() {
+            return Err(fail("此插件未声明状态页能力"));
+        }
         if self.manifest.is_quota_source() {
             if !output.card.is_empty() || output.quota.as_ref().is_some_and(|quota| !quota.valid()) {
                 return Err(fail("额度来源需要返回格式有效的 quota 或 null"));
@@ -682,7 +715,9 @@ impl Package {
             }
         } else if output.quota.is_some() {
             return Err(fail("此插件未声明额度来源能力"));
-        } else if output.card.trim().is_empty() || output.card.chars().count() > 160 {
+        } else if !self.manifest.is_status_page()
+            && (output.card.trim().is_empty() || output.card.chars().count() > 160)
+        {
             return Err(fail("卡片文字需要 1 至 160 字"));
         }
         if !output.storage.is_null() && !self.manifest.capabilities.iter().any(|s| s == "storage") {
@@ -699,9 +734,9 @@ impl Drop for Staged {
         let _ = fs::remove_file(&self.0);
     }
 }
-struct Rendered {
-    output: Output,
-    staged: Option<Staged>,
+enum Rendered {
+    Output(Output, Option<Staged>),
+    StatusOffline,
 }
 struct Job {
     cancelled: Arc<AtomicBool>,
@@ -728,6 +763,7 @@ pub struct LocalPlugins {
     active_page_shortcuts: Option<String>,
     cards: BTreeMap<String, String>,
     quota: BTreeMap<String, PluginQuota>,
+    status: BTreeMap<String, std::result::Result<PluginStatus, StatusHealth>>,
     calendar_day: String,
     next: BTreeMap<String, Instant>,
     errors: BTreeMap<String, String>,
@@ -763,6 +799,7 @@ impl LocalPlugins {
             active_page_shortcuts: None,
             cards: BTreeMap::new(),
             quota: BTreeMap::new(),
+            status: BTreeMap::new(),
             calendar_day: String::new(),
             next: BTreeMap::new(),
             errors: BTreeMap::new(),
@@ -983,6 +1020,7 @@ impl LocalPlugins {
         }
         self.cards.remove(id);
         self.quota.remove(id);
+        self.status.remove(id);
         self.next.remove(id);
         self.errors.remove(id);
         self.drafts.remove(id);
@@ -1009,6 +1047,7 @@ impl LocalPlugins {
             storage: Value::Null,
             material_granted: false,
             source_grant: None,
+            status_page_disabled: false,
         };
         if let Some(old) = self.records.get(&id) {
             if old.package.is_some() {
@@ -1050,6 +1089,20 @@ impl LocalPlugins {
         r.enabled = on;
         self.put(id, r)?;
         self.forget_view(id);
+        Ok(())
+    }
+
+    pub(crate) fn set_status_page_enabled(&mut self, id: &str, on: bool) -> Result<()> {
+        let mut record = self.installed(id)?;
+        if !record.package.as_ref().unwrap().manifest.is_status_page() {
+            return Err(fail("此插件没有独立状态页"));
+        }
+        let disabled = !on;
+        if record.status_page_disabled != disabled {
+            record.status_page_disabled = disabled;
+            self.put(id, record)?;
+            self.forget_view(id);
+        }
         Ok(())
     }
 
@@ -1106,6 +1159,7 @@ impl LocalPlugins {
             r.enabled = false;
             r.material_granted = false;
             r.source_grant = None;
+            r.status_page_disabled = false;
             self.put(id, r)?
         } else {
             fs::remove_file(self.path(id))?;
@@ -1147,6 +1201,9 @@ impl LocalPlugins {
         self.cards.retain(|id, _| !belongs(id));
         if owner == "quota" {
             self.quota.clear();
+        }
+        if owner == "status" {
+            self.status.clear();
         }
         self.next.retain(|id, _| !belongs(id));
         for (id, job) in &self.jobs {
@@ -1192,16 +1249,24 @@ impl LocalPlugins {
                 .join()
                 .unwrap_or_else(|_| Err("插件线程退出".into()))
                 .and_then(|rendered| {
-                    if let Some(staged) = rendered.staged {
+                    let Rendered::Output(mut output, staged) = rendered else {
+                        return Ok(None);
+                    };
+                    if let Some(staged) = staged {
                         crate::model::replace_file(&staged.0, &self.path(&id))
                             .map_err(|e| e.to_string())?;
-                        self.records.get_mut(&id).unwrap().storage = rendered.output.storage;
+                        self.records.get_mut(&id).unwrap().storage = std::mem::take(&mut output.storage);
                     }
-                    Ok((rendered.output.card, rendered.output.quota))
+                    Ok(Some(output))
                 });
             match result {
-                Ok((card, quota)) => {
+                Ok(Some(Output { card, quota, status, .. })) => {
                     self.errors.remove(&id);
+                    if let Some(status) = status {
+                        self.status.insert(id, Ok(status));
+                        continue;
+                    }
+                    self.status.remove(&id);
                     if let Some(quota) = quota {
                         self.quota.insert(id, quota);
                     } else if card.is_empty() {
@@ -1210,14 +1275,19 @@ impl LocalPlugins {
                         self.cards.insert(id, card);
                     }
                 }
+                Ok(None) => {
+                    self.errors.remove(&id);
+                    self.status.insert(id, Err(StatusHealth::Offline));
+                }
                 Err(e) => {
                     self.cards.remove(&id);
                     self.quota.remove(&id);
+                    self.status.remove(&id);
                     self.errors.insert(id, e);
                 }
             }
         }
-        if (!tasks_on && !calendar_on && !quota_on) || self.jobs.len() >= 2 {
+        if self.jobs.len() >= 2 {
             return;
         }
         let now = Instant::now();
@@ -1232,6 +1302,10 @@ impl LocalPlugins {
                             "tasks" => tasks_on && !pkg.manifest.is_retired_lunar_preview(),
                             "calendar" => calendar_on,
                             "quota" => quota_on,
+                            "status" => {
+                                !r.status_page_disabled
+                                    && (r.source_kind().is_none() || r.source_grant().is_some())
+                            }
                             _ => false,
                         };
                         owner_on
@@ -1276,10 +1350,13 @@ impl LocalPlugins {
                 if worker_cancelled.load(Ordering::Acquire) {
                     return Err("读取已取消".into());
                 }
-                let output = r
-                    .package
-                    .as_ref()
-                    .unwrap()
+                let package = r.package.as_ref().unwrap();
+                if package.manifest.is_status_page()
+                    && matches!(&source, SourceInput::Offline)
+                {
+                    return Ok(Rendered::StatusOffline);
+                }
+                let output = package
                     .render_input(&r.values, &r.storage, &today, source)
                     .map_err(|e| e.to_string())?;
                 if worker_cancelled.load(Ordering::Acquire) {
@@ -1293,13 +1370,14 @@ impl LocalPlugins {
                 } else {
                     None
                 };
-                Ok(Rendered { output, staged })
+                Ok(Rendered::Output(output, staged))
             });
             match result {
                 Ok(result) => {
                     self.jobs.insert(id, Job { cancelled, reading_source, result });
                 }
                 Err(_) => {
+                    self.status.remove(&id);
                     self.errors.insert(id, "暂时无法启动插件刷新，请稍后重试".into());
                 }
             }
@@ -1319,6 +1397,50 @@ impl LocalPlugins {
             !self.records.get(id).and_then(|record| record.package.as_ref())
                 .is_some_and(|package| package.manifest.is_quota_source())
         });
+    }
+
+    pub(crate) fn status_page_preferences(&self) -> impl Iterator<Item = (&str, &str, bool, bool)> {
+        self.records.iter().filter_map(|(id, record)| {
+            let package = record
+                .package
+                .as_ref()
+                .filter(|package| package.manifest.is_status_page())?;
+            Some((
+                id.as_str(),
+                package.manifest.name.as_str(),
+                record.enabled,
+                !record.status_page_disabled,
+            ))
+        })
+    }
+
+    pub(crate) fn status_pages(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.status_page_preferences()
+            .filter_map(|(id, name, plugin_on, page_on)| (plugin_on && page_on).then_some((id, name)))
+    }
+
+    pub(crate) fn status_page(&self, id: &str) -> Option<(&str, Option<&PluginStatus>, StatusHealth)> {
+        let record = self
+            .records
+            .get(id)
+            .filter(|record| record.enabled && !record.status_page_disabled)?;
+        let package = record
+            .package
+            .as_ref()
+            .filter(|package| package.manifest.is_status_page())?;
+        let (snapshot, health) = match self.status.get(id) {
+            Some(Ok(snapshot)) if snapshot.fresh_at(chrono::Utc::now().timestamp()) => {
+                (Some(snapshot), StatusHealth::Ready)
+            }
+            Some(Ok(_)) => (None, StatusHealth::Stale),
+            Some(Err(health)) => (None, *health),
+            None if record.source_kind().is_some() && record.source_grant().is_none() => {
+                (None, StatusHealth::Unconfigured)
+            }
+            None if self.errors.contains_key(id) => (None, StatusHealth::Invalid),
+            None => (None, StatusHealth::Waiting),
+        };
+        Some((package.manifest.name.as_str(), snapshot, health))
     }
     pub fn has_card(&self) -> bool {
         self.cards.keys().any(|id| {
@@ -1370,3 +1492,6 @@ mod source_lifecycle_tests;
 #[cfg(all(test, windows))]
 #[path = "quota_source_tests.rs"]
 mod quota_source_tests;
+#[cfg(all(test, windows))]
+#[path = "status_source_tests.rs"]
+mod status_source_tests;
