@@ -17,6 +17,9 @@ mod market_browse_ui;
 #[cfg(windows)]
 #[path = "plugin_author_ui.rs"]
 mod plugin_author_ui;
+#[cfg(windows)]
+#[path = "plugin_guide_ui.rs"]
+mod plugin_guide_ui;
 #[path = "plugin_feedback_ui.rs"]
 mod plugin_feedback_ui;
 use plugin_feedback_ui::{plugin_feedback, request_plugin_feedback};
@@ -264,7 +267,12 @@ fn segmented_counts(
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
-                for (index, option) in options.iter().enumerate() {
+                // 放在右对齐的标题行时，egui 会从右往左排；倒着画，保证第一项始终在左边。
+                let mut order: Vec<_> = options.iter().enumerate().collect();
+                if ui.layout().prefer_right_to_left() {
+                    order.reverse();
+                }
+                for (index, option) in order {
                     let on = index == selected;
                     let font = egui::FontId::proportional(size);
                     let text_color = if on {
@@ -523,8 +531,9 @@ fn developer_link(ui: &mut egui::Ui) -> bool {
 }
 
 /// 设置归属在界面上的名字，顺序与设置侧栏一致。
-const OWNERS: [(&str, &str); 4] = [
+const OWNERS: [(&str, &str); 5] = [
     ("appearance", "外观"),
+    ("pages", "页面管理"),
     ("calendar", "日程"),
     ("tasks", "待办与置物"),
     ("wireless", "无线设备"),
@@ -832,6 +841,11 @@ impl LocalPlugins {
             if self.market_pending() {
                 ui.ctx().request_repaint_after(Duration::from_millis(32));
             }
+            // 教程里的「从模板创建」「打开开发者工具」在集市页直接弹出，盖在教程上面。
+            self.guide_drawer(ui);
+            if self.developer_dialog(ui) {
+                ui.data_mut(|data| data.insert_temp(page_id, PluginPage::TestMarket));
+            }
             plugin_feedback(ui);
             return None;
         }
@@ -961,9 +975,9 @@ impl LocalPlugins {
         let wireless = manifest.is_wireless();
         let owner_key = manifest.owner.clone();
         let retired = manifest.is_retired_lunar_preview();
-        let owner = match owner_key.as_str() {
+        let module_on = match owner_key.as_str() {
             "calendar" => calendar_on,
-            "wireless" => true,
+            "pages" | "wireless" => true,
             _ => tasks_on,
         };
         let has_settings = !manifest.settings.is_empty();
@@ -1000,7 +1014,7 @@ impl LocalPlugins {
         };
         #[cfg(windows)]
         let author = market_browse_ui::display_author(&author, official_mark).to_owned();
-        let paused = !material && !owner;
+        let paused = !material && !module_on;
         // 路径和跳转都按插件清单写明的设置归属，不写死某一页。
         let owner_key = owner_key.as_str();
         let place = owner_label(owner_key).unwrap_or(owner_key);
@@ -1014,9 +1028,10 @@ impl LocalPlugins {
         } else {
             (format!("设置 › {place} ›"), "前往设置".to_owned())
         };
-        let settings_page = match owner_key {
-            "calendar" => crate::app::CALENDAR_PAGE,
-            _ => crate::app::TODO_PAGE,
+        let settings_tab = match owner_key {
+            "calendar" => crate::app::PAGE_SETTINGS_TABS[crate::app::CALENDAR_PAGE],
+            "pages" => crate::extras::SETTINGS_TAB_PAGES,
+            _ => crate::app::PAGE_SETTINGS_TABS[crate::app::TODO_PAGE],
         };
 
         let row_h = if runtime_error.is_some() { 58.0 } else { 42.0 };
@@ -1068,6 +1083,8 @@ impl LocalPlugins {
                         settings_hint(ui, "已撤回 · 等待更新");
                     } else if wireless {
                         settings_hint(ui, "扩展 2.4G 接收器型号");
+                    } else if owner_key == "pages" && !on {
+                        settings_hint(ui, "启用后可在页面管理设置");
                     } else if path_button(ui, &path, paused, &tip) {
                         if material {
                             *jump = Some(crate::extras::SETTINGS_TAB_APPEARANCE);
@@ -1077,7 +1094,7 @@ impl LocalPlugins {
                             if on && has_settings {
                                 self.focus = Some(id.to_owned());
                             }
-                            *jump = Some(crate::app::PAGE_SETTINGS_TABS[settings_page]);
+                            *jump = Some(settings_tab);
                         }
                     }
                     if let Some(e) = &runtime_error {
@@ -1309,6 +1326,10 @@ impl LocalPlugins {
         let mut opened = false;
         if let Some(action) = author_action {
             author.run(action);
+            if let Some(dir) = author.created_dir() {
+                let dir = dir.to_path_buf();
+                ui.data_mut(|data| data.insert_temp(plugin_guide_ui::template_dir_id(), dir));
+            }
             ctx.request_repaint();
         }
         if local {

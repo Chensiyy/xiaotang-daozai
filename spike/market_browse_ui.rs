@@ -271,6 +271,13 @@ impl LocalPlugins {
             .unwrap_or_else(|| "all".to_owned());
         let mut nav = MarketNav::Stay;
 
+        if official {
+            if plugin_guide_ui::guide_banner(ui) {
+                close_detail(ui);
+                plugin_guide_ui::open_guide(ui);
+            }
+            ui.add_space(14.0);
+        }
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
             if !official {
@@ -663,82 +670,44 @@ impl LocalPlugins {
         id: &str,
         found: Option<(Arc<market::Catalog>, market::Entry)>,
     ) -> bool {
-        let ctx = ui.ctx().clone();
-        let clip = ctx.screen_rect();
         let opened = ui
             .data(|data| data.get_temp::<f64>(detail_id().with("opened")))
             .unwrap_or_default();
-        let elapsed = (ui.input(|input| input.time) - opened) as f32;
-        let t = if crate::bar_layout::animations_enabled() {
-            let t = (elapsed / 0.2).clamp(0.0, 1.0);
-            if t < 1.0 {
-                ctx.request_repaint();
-            }
-            1.0 - (1.0 - t).powi(3)
-        } else {
-            1.0
-        };
-        let width = (clip.width() * 0.92).min(440.0);
-        let mut close = ctx.input(|input| input.key_pressed(egui::Key::Escape));
-        let scrim = egui::Area::new(egui::Id::new("plugin-detail-scrim"))
-            .order(egui::Order::Middle)
-            .fixed_pos(clip.min)
-            .show(&ctx, |ui| {
-                let (rect, response) = ui.allocate_exact_size(clip.size(), egui::Sense::click());
-                ui.painter()
-                    .rect_filled(rect, 0.0, Color32::from_black_alpha((120.0 * t) as u8));
-                response.clicked()
-            });
-        close |= scrim.inner;
-        let left = clip.right() - width * t;
         let mut manage = false;
-        egui::Area::new(egui::Id::new("plugin-detail-drawer"))
-            .order(egui::Order::Foreground)
-            .fixed_pos(egui::pos2(left, clip.top()))
-            .show(&ctx, |ui| {
-                egui::Frame::new()
-                    .fill(color(&ctx, Color32::from_rgb(30, 30, 34), Color32::WHITE))
-                    .stroke(egui::Stroke::new(1.0, line_color(ui)))
-                    .inner_margin(egui::Margin::same(18))
-                    .show(ui, |ui| {
-                        ui.set_width(width - 36.0);
-                        ui.set_height(clip.height() - 36.0);
-                        settings_apply_style(ui);
-                        ui.horizontal(|ui| {
-                            ui.label(egui::RichText::new(id).size(11.0).color(muted_color(ui)));
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                close |= ui
-                                    .add(egui::Button::new(egui::RichText::new("×").size(18.0)).frame(false))
-                                    .on_hover_text("关闭")
-                                    .clicked();
-                            });
-                        });
-                        egui::ScrollArea::vertical()
-                            .id_salt("plugin-detail-scroll")
-                            .auto_shrink([false, false])
-                            .show(ui, |ui| {
-                                ui.spacing_mut().item_spacing.y = 8.0;
-                                match &found {
-                                    Some((catalog, entry)) => {
-                                        manage = self.market_details(ui, catalog, entry);
-                                    }
-                                    None => {
-                                        ui.strong(if self.market_catalog(true).is_some() {
-                                            "此插件已下架"
-                                        } else {
-                                            "暂时无法查看详情"
-                                        });
-                                        if self.is_favorite(id) && ui.button("取消收藏").clicked() {
-                                            if let Err(error) = self.remove_favorite(id) {
-                                                self.notice = error.to_string();
-                                            }
-                                            close = true;
-                                        }
-                                    }
-                                }
-                            });
-                    });
+        let close = plugin_guide_ui::side_drawer(ui, "plugin-detail", opened, |ui| {
+            let mut close = false;
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(id).size(11.0).color(muted_color(ui)));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    close |= plugin_guide_ui::drawer_close(ui);
+                });
             });
+            egui::ScrollArea::vertical()
+                .id_salt("plugin-detail-scroll")
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing.y = 8.0;
+                    match &found {
+                        Some((catalog, entry)) => {
+                            manage = self.market_details(ui, catalog, entry);
+                        }
+                        None => {
+                            ui.strong(if self.market_catalog(true).is_some() {
+                                "此插件已下架"
+                            } else {
+                                "暂时无法查看详情"
+                            });
+                            if self.is_favorite(id) && ui.button("取消收藏").clicked() {
+                                if let Err(error) = self.remove_favorite(id) {
+                                    self.notice = error.to_string();
+                                }
+                                close = true;
+                            }
+                        }
+                    }
+                });
+            close
+        });
         if close {
             close_detail(ui);
         }
