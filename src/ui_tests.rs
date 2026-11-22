@@ -7604,14 +7604,14 @@ fn page_order_drag_applies_on_release_and_saves() {
         h.t+=0.02;let time=h.t;
         egui::Context::set_immediate_viewport_renderer(move|ctx,mut viewport|{
             let id=viewport.ids.this;
-            let raw=egui::RawInput{viewport_id:id,screen_rect:Some(Rect::from_min_size(Pos2::ZERO,egui::vec2(690.0,1000.0))),time:Some(time),events:events.clone(),viewports:std::iter::once((id,egui::ViewportInfo::default())).collect(),..Default::default()};
+            let raw=egui::RawInput{viewport_id:id,screen_rect:Some(Rect::from_min_size(Pos2::ZERO,egui::vec2(690.0,1200.0))),time:Some(time),events:events.clone(),viewports:std::iter::once((id,egui::ViewportInfo::default())).collect(),..Default::default()};
             *capture.lock().unwrap()=Some(ctx.run(raw,|ctx|(viewport.viewport_ui_cb)(ctx)));
         });
         let _=h.ctx.run(egui::RawInput::default(),|ctx|h.app.settings_ui(ctx,false));
         let child=output.lock().unwrap().take().unwrap();h.shapes=child.shapes;
     }
     for _ in 0..3 {draw(&mut h,vec![]);}
-    let point=|h:&H,label:&str|h.shapes.iter().find_map(|s|match &s.shape {egui::Shape::Text(t) if t.galley.text()==label=>Some(t.visual_bounding_rect().left_center()),_=>None}).unwrap();
+    let point=|h:&H,label:&str|h.shapes.iter().find_map(|s|match &s.shape {egui::Shape::Text(t) if t.galley.text()==label && s.clip_rect.contains(t.visual_bounding_rect().left_center())=>Some(t.visual_bounding_rect().left_center()),_=>None}).unwrap();
     let from=point(&h,"播放控制与同步歌词")+egui::vec2(-18.0,-6.0);
     let to=point(&h,"喝水与久坐提醒");
     let button=|pos,pressed|egui::Event::PointerButton{pos,button:egui::PointerButton::Primary,pressed,modifiers:Default::default()};
