@@ -1776,25 +1776,6 @@ impl App {
                             ui.separator();
                             setting_row(ui,"时间","关闭后仍可在展开顶栏查看",&mut self.settings.show_clock);
                             ui.separator();
-                            let mut date_modes=|ui:&mut egui::Ui|{
-                                use crate::model::ResidentDate;
-                                let modes=[
-                                    (ResidentDate::Off,"关闭"),
-                                    (ResidentDate::LunarOnly,"仅农历"),
-                                    (ResidentDate::Gregorian,"仅公历"),
-                                    (ResidentDate::Lunar,"公历＋农历"),
-                                ];
-                                if settings_segmented(ui,&mut self.settings.resident_date,&modes,52.0) {
-                                    ctx.request_repaint_of(egui::ViewportId::ROOT);
-                                }
-                            };
-                            if ui.available_width()<360.0 {
-                                ui.label("日期常驻");
-                                date_modes(ui);
-                            } else {
-                                settings_control_row_right(ui,"日期常驻",date_modes);
-                            }
-                            ui.separator();
                             setting_row(ui,"电量","无电池设备自动隐藏",&mut self.settings.show_battery);
                             ui.separator();
                             resident_setting_row(ui,"天气","天气图标和温度，点击打开天气页",
@@ -1868,13 +1849,32 @@ impl App {
                             });
                             settings_hint(ui,"仅影响设置页，岛的外观保持不变。");
                         });
-                        settings_label(ui,"时间格式");
+                        settings_label(ui,"时间日期格式");
                         settings_card(ui,|ui|{
                             settings_control_row_right(ui,"时间制式",|ui|{settings_segmented(ui,&mut self.settings.clock_12h,&[(false,"24 小时"),(true,"12 小时")],72.0);});
                             settings_control_row_right(ui,"时段文字",|ui|{settings_segmented(ui,&mut self.settings.clock_period,&[(0,"不显示"),(1,"上午 / 下午"),(2,"详细时段")],72.0);});
                             if self.settings.clock_period==2 {settings_hint(ui,"详细时段：凌晨、上午、中午、下午、傍晚、晚上");}
                             ui.separator();
                             setting_row(ui,"显示秒数","时间显示为 14:32:08",&mut self.settings.clock_seconds);
+                            ui.separator();
+                            let mut date_modes=|ui:&mut egui::Ui|{
+                                use crate::model::ResidentDate;
+                                let modes=[
+                                    (ResidentDate::Off,"关闭"),
+                                    (ResidentDate::LunarOnly,"仅农历"),
+                                    (ResidentDate::Gregorian,"仅公历"),
+                                    (ResidentDate::Lunar,"公历＋农历"),
+                                ];
+                                if settings_segmented(ui,&mut self.settings.resident_date,&modes,52.0) {
+                                    ctx.request_repaint_of(egui::ViewportId::ROOT);
+                                }
+                            };
+                            if ui.available_width()<360.0 {
+                                ui.label("日期常驻");
+                                date_modes(ui);
+                            } else {
+                                settings_control_row_right(ui,"日期常驻",date_modes);
+                            }
                         });
                         settings_label(ui,"启动");
                         settings_card(ui,|ui|{
