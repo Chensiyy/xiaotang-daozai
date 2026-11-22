@@ -1754,6 +1754,8 @@ impl App {
                     }
                     SETTINGS_TAB_WIRELESS=>{
                         let on=self.settings_feature_header(ui,crate::app::BLUETOOTH_PAGE,"查看蓝牙电量和 2.4G 接收器状态",|_,_|{});
+                        #[cfg(all(windows,feature="sdk-js"))]
+                        self.plugins.wireless_settings(ui);
                         ui.add_enabled_ui(on,|ui|{
                             settings_label(ui,"岛上常驻");
                             settings_card(ui,|ui|{
