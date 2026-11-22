@@ -198,6 +198,8 @@ impl Shell {
         });
         diagnostics::startup("初始化通知监听");
         #[cfg(windows)]
+        app.start_plugin_notices(&cc.egui_ctx);
+        #[cfg(windows)]
         let incoming=if app.settings.read_notifications {match daozai::system::connect_with_settings(cc.egui_ctx.clone(),&app.settings){Ok(rx)=>Some(rx),Err(e)=>{app.listener_status=format!("Windows 无法读取通知：{}",e.code());None}}}else{None};
         // 音频、网络与输入法查询由后台完成，避免首帧等待系统服务。
         diagnostics::startup("创建后台采样与窗口");
@@ -407,6 +409,8 @@ impl eframe::App for Shell {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        #[cfg(windows)]
+        self.app.poll_plugin_notices();
         daozai::resources::FRAMES.fetch_add(1,std::sync::atomic::Ordering::Relaxed);
         let frame_start=Instant::now();
         if self.resource_at.ready(Duration::from_secs(30)){
@@ -773,6 +777,10 @@ impl eframe::App for Shell {
                         Ok(Some(rx))=>self.music_volume_rx=Some((source,rx)),
                         _=>self.app.say("音乐应用音量暂不可调，请稍后重试"),
                     }
+                }
+                #[cfg(windows)]
+                Cmd::OpenPluginNotice{source,id,session}=>{
+                    self.app.request_plugin_notice_open(&source,&id,&session);
                 }
                 Cmd::ViewMessenger(unread)=>{
                     #[cfg(windows)] {

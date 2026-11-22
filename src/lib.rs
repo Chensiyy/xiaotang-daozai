@@ -9,6 +9,12 @@ pub mod display_layout;
 pub mod diagnostics_tool;
 pub mod rtl_text;
 mod mail_privacy;
+#[cfg(windows)]
+mod plugin_notice;
+#[cfg(windows)]
+mod plugin_notice_settings;
+#[cfg(windows)]
+mod plugin_notice_ui;
 pub mod poll_clock;
 pub mod resources;
 pub mod anim;
