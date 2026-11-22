@@ -240,24 +240,28 @@ fn sdk_capabilities(ui: &mut egui::Ui) {
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.spacing_mut().item_spacing.y = 4.0;
-            ui.label(egui::RichText::new("当前版本已开放的 SDK 能力").size(13.5).strong());
-            ui.add_space(2.0);
-            for (label, description) in capabilities {
-                ui.horizontal_top(|ui| {
-                    let (rect, _) = ui.allocate_exact_size(egui::vec2(76.0, 18.0), egui::Sense::hover());
-                    ui.painter().text(
-                        rect.left_center(),
-                        egui::Align2::LEFT_CENTER,
-                        label,
-                        egui::FontId::proportional(11.5),
-                        ui.visuals().text_color(),
-                    );
-                    ui.add(
-                        egui::Label::new(egui::RichText::new(description).size(12.0).color(muted_color(ui)))
-                            .wrap(),
-                    );
+            egui::CollapsingHeader::new(egui::RichText::new("当前版本已开放的 SDK 能力").size(13.5).strong())
+                .id_salt("plugin-guide-sdk-capabilities")
+                .show_background(false)
+                .show(ui, |ui| {
+                    ui.add_space(2.0);
+                    for (label, description) in capabilities {
+                        ui.horizontal_top(|ui| {
+                            let (rect, _) = ui.allocate_exact_size(egui::vec2(76.0, 18.0), egui::Sense::hover());
+                            ui.painter().text(
+                                rect.left_center(),
+                                egui::Align2::LEFT_CENTER,
+                                label,
+                                egui::FontId::proportional(11.5),
+                                ui.visuals().text_color(),
+                            );
+                            ui.add(
+                                egui::Label::new(egui::RichText::new(description).size(12.0).color(muted_color(ui)))
+                                    .wrap(),
+                            );
+                        });
+                    }
                 });
-            }
         });
 }
 
