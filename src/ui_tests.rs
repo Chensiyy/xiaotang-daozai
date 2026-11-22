@@ -7332,6 +7332,41 @@ fn draw_page_management(h:&mut H,events:Vec<egui::Event>){
     h.shapes=output.lock().unwrap().take().unwrap().shapes;
 }
 
+#[cfg(feature = "sdk-js")]
+#[test]
+fn page_management_page_shortcuts_use_plugin_controls() {
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=H::new();
+    install_page_shortcuts_fixture(&mut h);
+    h.app.plugins.enable(SHORTCUT_FIXTURE_ID,true).unwrap();
+    h.app.settings.settings_theme=crate::settings_theme::SettingsTheme::Dark;
+    h.app.settings_tab=crate::extras::SETTINGS_TAB_PAGES;
+    h.app.settings.show_page_shortcuts=true;
+    h.app.open_settings();
+    h.ctx.set_embed_viewports(false);
+    for _ in 0..12 {draw_page_management(&mut h,vec![]);}
+    let title=h.shapes.iter().find_map(|shape|match &shape.shape {
+        egui::Shape::Text(text) if text.galley.text()=="快捷切换图标"=>Some(text.visual_bounding_rect()),
+        _=>None,
+    }).expect("页面管理应显示已启用插件的图标设置");
+    assert!(h.shapes.iter().any(|shape|matches!(&shape.shape,egui::Shape::Text(text)
+        if text.galley.text()=="插件" && text.visual_bounding_rect().left()>=title.right()
+            && (text.visual_bounding_rect().center().y-title.center().y).abs()<8.0)),
+        "快捷切换图标标题旁应有插件小标");
+    let pos=h.shapes.iter().find_map(|shape|match &shape.shape {
+        egui::Shape::Rect(rect) if rect.fill==egui::Color32::from_rgb(140,127,208)
+            && (rect.rect.center().y-title.center().y).abs()<24.0 => Some(rect.rect.center()),
+        _=>None,
+    }).expect("快捷切换图标开启时应用紫色开关");
+    for pressed in [true,false] {
+        draw_page_management(&mut h,vec![egui::Event::PointerMoved(pos),egui::Event::PointerButton{
+            pos,button:egui::PointerButton::Primary,pressed,modifiers:Default::default(),
+        }]);
+    }
+    assert!(!h.app.settings.show_page_shortcuts);
+    assert!(h.app.plugins.active_page_shortcut_colors().is_some(),"隐藏图标时插件仍启用");
+}
+
 #[test]
 fn weather_status_switch_controls_the_badge_and_keeps_the_page_available(){
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
