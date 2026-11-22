@@ -439,6 +439,7 @@ fn wireless_settings_controls_are_in_their_own_page() {
 fn wireless_compat_settings_follow_install_and_switch() {
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     let mut h=H::new();
+    h.app.settings.settings_theme=crate::settings_theme::SettingsTheme::Dark;
     h.app.settings.visible_pages[BLUETOOTH_PAGE]=true;
     h.app.open_settings();
     h.ctx.set_embed_viewports(false);
@@ -477,6 +478,16 @@ fn wireless_compat_settings_follow_install_and_switch() {
             assert_eq!(labels.iter().any(|s|s==label),expected,"设置页 {tab} 的 {label}");
         }
         assert!(!labels.iter().any(|s|matches!(s.as_str(),"本地插件"|"安装兼容包…"|"卸载")));
+        let title=h.shapes.iter().find_map(|shape|match &shape.shape {
+            egui::Shape::Text(text) if text.galley.text()=="启用兼容包"=>Some(text.visual_bounding_rect()),
+            _=>None,
+        });
+        let has_plugin_tag=title.is_some_and(|title|h.shapes.iter().any(|shape| {
+            matches!(&shape.shape,egui::Shape::Text(text) if text.galley.text()=="插件"
+                && text.visual_bounding_rect().left()>=title.right()
+                && (text.visual_bounding_rect().center().y-title.center().y).abs()<8.0)
+        }));
+        assert_eq!(has_plugin_tag,expected,"设置页 {tab} 的兼容包标题旁应有插件小标");
     };
     let click=|h:&mut H|{
         let pos=frame(h,wireless).expect("已安装兼容包应显示启停开关");
@@ -497,6 +508,11 @@ fn wireless_compat_settings_follow_install_and_switch() {
     frame(&mut h,wireless);
     click(&mut h);
     assert_eq!(store.package().unwrap().version(),"1.0.0");
+    for _ in 0..16 {frame(&mut h,wireless);}
+    let pos=frame(&mut h,wireless).expect("开关应仍可见");
+    assert!(h.shapes.iter().any(|shape|matches!(&shape.shape,egui::Shape::Rect(rect)
+        if rect.fill==egui::Color32::from_rgb(140,127,208) && rect.rect.center().distance(pos)<0.1)),
+        "已启用的兼容包开关应为紫色");
     click(&mut h);
     assert!(store.package().is_none(),"停用后收回兼容数据");
     check(&mut h,wireless,true);

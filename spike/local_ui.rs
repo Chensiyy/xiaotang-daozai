@@ -387,15 +387,14 @@ fn chip(ui: &mut egui::Ui, text: &str, on: bool) -> egui::Response {
     response
 }
 
-/// 插件总开关，紫色为开、灰色为关。只表示插件自己的启用选择。
-fn plugin_switch(ui: &mut egui::Ui, id: &str, on: bool) -> bool {
+/// 插件开关统一用紫色表示开启、灰色表示关闭。
+fn plugin_switch(ui: &mut egui::Ui, id: &str, on: bool, label: &str) -> bool {
     let (_, rect) = ui.allocate_space(egui::vec2(38.0, 22.0));
     let response = ui.interact(
         rect,
         egui::Id::new(("settings-plugin-switch", id)),
         egui::Sense::click(),
     );
-    let label = if on { "停用插件" } else { "启用插件" };
     response
         .widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, on, label));
     let t = ui
@@ -420,6 +419,29 @@ fn plugin_switch(ui: &mut egui::Ui, id: &str, on: bool) -> bool {
     ui.painter()
         .circle_filled(egui::pos2(x, rect.center().y), 8.0, Color32::WHITE);
     response.on_hover_text(label).clicked()
+}
+
+fn plugin_setting_switch_row(
+    ui: &mut egui::Ui,
+    id: &str,
+    title: &str,
+    description: &str,
+    on: bool,
+) -> bool {
+    ui.horizontal(|ui| {
+        ui.vertical(|ui| {
+            ui.horizontal(|ui| {
+                ui.label(title);
+                plugin_tag(ui);
+            });
+            settings_hint(ui, description);
+        });
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            plugin_switch(ui, id, on, title)
+        })
+        .inner
+    })
+    .inner
 }
 
 /// 已安装列表里的「路径」：显示设置归属，点一下就是前往设置。
@@ -661,6 +683,23 @@ fn material_error(ui: &mut egui::Ui) {
 }
 
 impl LocalPlugins {
+    pub(crate) fn page_shortcut_settings(&self, ui: &mut egui::Ui, show: &mut bool) -> bool {
+        if self.active_page_shortcut_colors().is_none() {
+            return false;
+        }
+        if plugin_setting_switch_row(
+            ui,
+            "page-shortcuts-display",
+            "快捷切换图标",
+            "在岛仔展开后的底部与页码点同排显示",
+            *show,
+        ) {
+            *show = !*show;
+            ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
+        }
+        true
+    }
+
     #[cfg(windows)]
     pub(crate) fn wireless_settings(&mut self, ui: &mut egui::Ui) {
         let Some(record) = self
@@ -679,19 +718,7 @@ impl LocalPlugins {
 
         crate::extras::settings_label(ui, "设备兼容");
         settings_card(ui, |ui| {
-            let clicked = ui
-                .horizontal(|ui| {
-                    ui.vertical(|ui| {
-                        ui.label("启用兼容包");
-                        settings_hint(ui, &version);
-                    });
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        plugin_switch(ui, WIRELESS_PLUGIN_ID, enabled)
-                    })
-                    .inner
-                })
-                .inner;
-            if clicked {
+            if plugin_setting_switch_row(ui, WIRELESS_PLUGIN_ID, "启用兼容包", &version, enabled) {
                 let error = self
                     .enable(WIRELESS_PLUGIN_ID, !enabled)
                     .err()
@@ -1209,7 +1236,7 @@ impl LocalPlugins {
                 if ui.add(egui::Button::new("卸载…").frame(false)).clicked() {
                     self.pending = Some(id.to_owned());
                 }
-                if plugin_switch(ui, id, on) {
+                if plugin_switch(ui, id, on, if on { "停用插件" } else { "启用插件" }) {
                     if material {
                         #[cfg(all(windows, feature = "sdk-material"))]
                         if self.request_material(ui, (!selected).then_some(id)) && !selected {
