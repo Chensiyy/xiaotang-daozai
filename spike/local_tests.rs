@@ -477,6 +477,13 @@ mod test_market {
         let mut host = LocalPlugins::open(storage);
         host.set_official_test_index(index_url);
         host.ensure_official_catalog();
+        assert!(!host.official_catalog_busy());
+        assert!(host.official_catalog_error().is_none());
+        assert_eq!(
+            host.market_catalog(true).unwrap().entries[0].version,
+            "1.1.0"
+        );
+        host.refresh_official_catalog();
         settle_market(&mut host);
         let remote = host.market_catalog(true).unwrap();
         assert!(host

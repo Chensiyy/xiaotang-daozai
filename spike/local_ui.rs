@@ -466,10 +466,6 @@ impl LocalPlugins {
             if page != previous {
                 ui.data_mut(|data| data.insert_temp(id, page));
                 market_browse_ui::close_detail(ui);
-                if matches!(page, PluginPage::Market | PluginPage::Favorites) {
-                    forget_covers(ui);
-                    self.refresh_official_catalog();
-                }
             }
             if let Some(detail) = detail.filter(|_| page == PluginPage::Market) {
                 market_browse_ui::select_detail(ui, &detail);
@@ -504,8 +500,6 @@ impl LocalPlugins {
                 settings_hint(ui, "装好后可以在这里管理。");
                 #[cfg(windows)]
                 if ui.add(market_button(ui, "去插件集市")).clicked() {
-                    forget_covers(ui);
-                    self.refresh_official_catalog();
                     ui.data_mut(|data| data.insert_temp(page_id, PluginPage::Market));
                 }
             });

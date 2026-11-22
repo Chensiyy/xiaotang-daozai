@@ -23,7 +23,7 @@ pub(super) struct MarketJob {
 #[derive(Default)]
 pub(super) struct OfficialMarket {
     catalog: Option<Arc<market::Catalog>>,
-    last_attempt: Option<Instant>,
+    initialized: bool,
     sync_job: Option<JoinHandle<std::result::Result<market::Catalog, String>>>,
     error: Option<String>,
     image_job: Option<(String, JoinHandle<Option<CoverPng>>)>,
@@ -110,7 +110,7 @@ impl LocalPlugins {
     }
 
     pub(super) fn market_stats_repaint_delay(&self) -> Option<Duration> {
-        self.market_metrics.refresh_delay()
+        self.market_metrics.repaint_delay()
     }
 
     pub(super) fn set_market_catalog(&mut self, path: &Path) -> Result<()> {
@@ -141,23 +141,20 @@ impl LocalPlugins {
     }
 
     pub(super) fn ensure_official_catalog(&mut self) {
-        self.market_metrics.request_refresh(false);
-        if self
-            .official_market
-            .last_attempt
-            .is_none_or(|last| last.elapsed() >= Duration::from_secs(5 * 60))
-        {
-            self.refresh_official_catalog();
-        }
+        self.load_official_catalog(false);
     }
 
     pub(super) fn refresh_official_catalog(&mut self) {
-        self.market_metrics.request_refresh(true);
+        self.load_official_catalog(true);
+    }
+
+    fn load_official_catalog(&mut self, refresh: bool) {
         let official = &mut self.official_market;
-        if official.sync_job.is_some() {
+        if official.sync_job.is_some() || (!refresh && official.initialized) {
             return;
         }
-        official.last_attempt = Some(Instant::now());
+        official.initialized = true;
+        self.market_metrics.request_refresh(refresh);
         #[cfg(not(test))]
         let index = market::official_index_url().map(Some);
         #[cfg(test)]
@@ -176,11 +173,13 @@ impl LocalPlugins {
                 .ok()
                 .map(Arc::new);
         }
-        official.error = None;
-        official.images.retain(|_, image| image.is_some());
-        official.sync_job = Some(std::thread::spawn(move || {
-            market::Catalog::sync_official(path, index).map_err(|error| error.to_string())
-        }));
+        if refresh || official.catalog.is_none() {
+            official.error = None;
+            official.images.retain(|_, image| image.is_some());
+            official.sync_job = Some(std::thread::spawn(move || {
+                market::Catalog::sync_official(path, index).map_err(|error| error.to_string())
+            }));
+        }
         self.sync_market_favorites();
     }
 

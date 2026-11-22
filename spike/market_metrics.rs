@@ -17,18 +17,17 @@ const JOURNAL_LIMIT: u64 = 1024 * 1024;
 const STATS_LIMIT: u64 = 256 * 1024;
 const QUEUE_LIMIT: usize = 1024;
 const BATCH_LIMIT: usize = 32;
-const REFRESH_INTERVAL: Duration = Duration::from_secs(60);
 const RETRY_INTERVAL: Duration = Duration::from_secs(30);
 #[cfg(not(test))]
 const METRICS_URL: &str = "https://daozai-market-metrics.xiaotang-daozai.workers.dev";
 
-#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub(super) struct Counts {
     pub(super) downloads: u64,
     pub(super) favorites: u64,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 struct Stats {
     plugins: BTreeMap<String, Counts>,
 }
@@ -66,15 +65,20 @@ pub(super) struct MarketMetrics {
     channel: &'static str,
     journal_path: PathBuf,
     journal: Journal,
+    stats_path: PathBuf,
     stats: Option<Stats>,
     job: Option<(usize, JoinHandle<Response>)>,
-    next_read: Instant,
     next_send: Instant,
     want_read: bool,
     batch_limit: usize,
 }
 
 impl MarketMetrics {
+    #[cfg(test)]
+    pub(super) fn for_test(dir: &Path, endpoint: Url) -> Self {
+        Self::with_endpoint(dir, Some(endpoint), "preview", "preview-test")
+    }
+
     pub(super) fn open(dir: &Path) -> Self {
         let channel = if option_env!("DAOZAI_TEST_BUILD").is_some() {
             "preview"
@@ -122,16 +126,19 @@ impl MarketMetrics {
                     && journal.favorites.iter().all(|id| valid_id(id))
             })
             .unwrap_or_default();
-        let now = Instant::now();
+        let stats_path = dir.join(format!("market-stats-{journal_name}.json"));
+        let stats = bounded(&stats_path, STATS_LIMIT)
+            .ok()
+            .and_then(|contents| serde_json::from_str(&contents).ok());
         Self {
             endpoint,
             channel,
             journal_path,
             journal,
-            stats: None,
+            stats_path,
+            stats,
             job: None,
-            next_read: now,
-            next_send: now,
+            next_send: Instant::now(),
             want_read: false,
             batch_limit: BATCH_LIMIT,
         }
@@ -146,29 +153,22 @@ impl MarketMetrics {
         self.endpoint.is_some()
             && (self.job.is_some()
                 || (!self.journal.pending.is_empty() && now >= self.next_send)
-                || (self.want_read && now >= self.next_read))
+                || self.want_read)
     }
 
-    pub(super) fn refresh_delay(&self) -> Option<Duration> {
+    pub(super) fn repaint_delay(&self) -> Option<Duration> {
         self.endpoint.as_ref()?;
-        Some(if self.busy() {
-            Duration::from_millis(32)
+        if self.busy() {
+            Some(Duration::from_millis(32))
+        } else if !self.journal.pending.is_empty() {
+            Some(self.next_send.saturating_duration_since(Instant::now()))
         } else {
-            let next = if self.journal.pending.is_empty() {
-                self.next_read
-            } else {
-                self.next_read.min(self.next_send)
-            };
-            next.saturating_duration_since(Instant::now())
-        })
+            None
+        }
     }
 
     pub(super) fn request_refresh(&mut self, force: bool) {
-        let now = Instant::now();
-        if force {
-            self.next_read = now;
-        }
-        self.want_read |= now >= self.next_read;
+        self.want_read |= force || self.stats.is_none();
     }
 
     pub(super) fn record_download(&mut self, id: &str, version: String) {
@@ -242,18 +242,19 @@ impl MarketMetrics {
             let response = job.join().unwrap_or(Response::Unavailable);
             match response {
                 Response::Snapshot(stats) => {
+                    if let Ok(contents) = serde_json::to_vec(&stats) {
+                        if contents.len() as u64 <= STATS_LIMIT {
+                            let _ = crate::model::atomic_write(&self.stats_path, &contents);
+                        }
+                    }
                     self.stats = Some(stats);
                     self.want_read = false;
-                    self.next_read = now + REFRESH_INTERVAL;
                     advanced = self.acknowledge(size);
                 }
                 Response::Rejected if size > 1 => self.batch_limit = 1,
                 Response::Rejected if size == 1 => advanced = self.acknowledge(size),
                 _ if size > 0 => self.next_send = now + RETRY_INTERVAL,
-                _ => {
-                    self.want_read = false;
-                    self.next_read = now + RETRY_INTERVAL;
-                }
+                _ => self.want_read = false,
             }
         }
         if self.job.is_some() {
@@ -264,7 +265,7 @@ impl MarketMetrics {
         } else {
             0
         };
-        if size > 0 || (self.want_read && now >= self.next_read) {
+        if size > 0 || self.want_read {
             let channel = self.channel;
             let installation_id = self.journal.installation_id.clone();
             let events: Vec<_> = self.journal.pending.iter().take(size).cloned().collect();
@@ -292,7 +293,7 @@ impl MarketMetrics {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use std::{
         fs,
@@ -323,7 +324,9 @@ mod tests {
         Url::parse(&format!("http://{}", listener.local_addr().unwrap())).unwrap()
     }
 
-    fn next_request(socket: &mut TcpStream) -> (String, serde_json::Value) {
+    pub(in crate::sdk_spike::local) fn next_request(
+        socket: &mut TcpStream,
+    ) -> (String, serde_json::Value) {
         socket
             .set_read_timeout(Some(Duration::from_secs(5)))
             .unwrap();
