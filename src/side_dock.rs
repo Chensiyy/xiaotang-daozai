@@ -6,8 +6,9 @@
 //! 吉祥物和岛上歌词是横向内容，侧边停靠时不显示。
 
 use crate::app::{App, Env, Phase, BAR_H_MIN, BAR_W_MIN, PILL_GAP, PW};
-use crate::model::{Dock, IslandShape};
+use crate::model::{Dock, IslandShape, ResidentDate};
 use crate::paint::{self, Card, H};
+use crate::resident_date::ResidentDay;
 use crate::theme::{self, size, W};
 use eframe::egui::{Color32, Pos2, Rect, Vec2};
 
@@ -21,14 +22,14 @@ pub const SIDE_HALF_EXTENT: f32 = 150.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum SideItem {
-    Clock, Weather, Battery, Music, Focus, Bell,
+    Clock, Date(f32), Weather, Battery, Music, Focus, Bell,
     /// AI 额度：账号下标（None 为「+N」）与高度。
     Quota(usize, f32),
 }
 
 impl SideItem {
     fn height(self, clock_seconds: bool) -> f32 {
-        match self { Self::Clock => if clock_seconds {46.0}else{32.0}, Self::Weather => 40.0, Self::Battery => 20.0, Self::Music => 18.0, Self::Focus => 22.0, Self::Bell => 22.0, Self::Quota(_, h) => h }
+        match self { Self::Date(h) => h, Self::Clock => if clock_seconds {46.0}else{32.0}, Self::Weather => 40.0, Self::Battery => 20.0, Self::Music => 18.0, Self::Focus => 22.0, Self::Bell => 22.0, Self::Quota(_, h) => h }
     }
 }
 
@@ -40,6 +41,11 @@ impl App {
     pub(crate) fn side_items(&self) -> Vec<SideItem> {
         let mut items = Vec::new();
         if self.settings.show_clock {items.push(SideItem::Clock);}
+        match self.settings.resident_date {
+            ResidentDate::Off=>{},
+            ResidentDate::Gregorian=>items.push(SideItem::Date(20.0)),
+            ResidentDate::LunarOnly | ResidentDate::Lunar=>items.push(SideItem::Date(44.0)),
+        }
         if self.weather_pill().is_some() {items.push(SideItem::Weather);}
         if self.settings.show_battery && self.resident_power.0.is_some() { items.push(SideItem::Battery); }
         if self.media.is_music() { items.push(SideItem::Music); }
@@ -116,7 +122,7 @@ impl App {
     }
 
     /// 竖向胶囊的内容。`c` 的原点是胶囊左上角。
-    pub(crate) fn side_bar(&mut self, c: &Card, width: f32, height: f32, env: &Env) {
+    pub(crate) fn side_bar(&mut self, c: &Card, width: f32, height: f32, env: &Env, resident_day: Option<&ResidentDay>) {
         let items = self.side_items();
         let total: f32 = items.iter().map(|i| i.height(self.settings.clock_seconds)).sum();
         let cx = width / 2.0;
@@ -135,6 +141,7 @@ impl App {
                     c.text(cx, top + 14.0, &minute, 13.5, W::Bold, theme::WHITE, H::Center);
                     if self.settings.clock_seconds {c.text(cx,top+28.0,text.rsplit(':').next().unwrap_or("--"),12.0,W::Bold,theme::GRAY,H::Center);}
                 }
+                SideItem::Date(_) => if let Some(day)=resident_day {day.draw_side(c,cx,mid);},
                 SideItem::Weather => self.draw_side_weather(c,cx,mid),
                 SideItem::Battery => paint::battery(c, cx, mid, env.battery, env.charging, 0.72),
                 SideItem::Music => paint::playback_bars(c, cx, mid, self.t, self.media.playing, theme::WHITE),

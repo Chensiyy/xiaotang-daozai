@@ -21,6 +21,7 @@ pub mod bt;
 pub mod calendar;
 mod calendar_ui;
 mod local_calendar;
+mod lunar_calendar;
 mod calendar_editor;
 pub mod glass;
 pub mod skin_paint;
@@ -50,6 +51,7 @@ mod pet;
 mod pet_expressions;
 mod bar_layout;
 mod resident_settings;
+mod resident_date;
 mod avoidance;
 mod focus_bar;
 #[cfg(windows)]

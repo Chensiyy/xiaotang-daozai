@@ -12,6 +12,7 @@ use crate::lyrics;
 use crate::mail;
 use crate::model;
 use crate::paint::{self, Card, H};
+use crate::resident_date::ResidentDay;
 use crate::shape;
 use crate::smtc::{NowPlaying, Transport};
 use crate::theme::{self, size, W};
@@ -1959,10 +1960,19 @@ impl App {
         let mut layout=Layout::new(self.settings.show_battery&&env.battery.is_some(),self.quota_bar_indices().len(),self.media.is_music()&&!bell,self.pomo.running,bell,self.pet_enabled(),self.weather_pill().is_some());
         layout.reorder(&self.settings.resident_order);
         for (position,extra) in self.quota_balance_layout(&ctx){layout.balance_tail(position,extra);}
-        if self.settings.clock_period!=0 { layout.widen_clock(40.0); }
-        if self.settings.clock_seconds { layout.widen_clock(24.0); }
+        let resident_day=if self.settings.resident_date==model::ResidentDate::Off {None}else{
+            chrono::NaiveDate::parse_from_str(&env.today,"%Y-%m-%d").ok()
+                .and_then(|today|ResidentDay::new(self.settings.resident_date,today))
+        };
+        if let Some(day)=resident_day.as_ref() {
+            let clock=self.settings.show_clock.then(||self.settings.clock_text(&env.clock));
+            layout.set_clock_width(day.group_width(&ctx,clock.as_deref()));
+        }else {
+            if self.settings.clock_period!=0 {layout.widen_clock(40.0);}
+            if self.settings.clock_seconds {layout.widen_clock(24.0);}
+        }
         if let Some(extra)=self.weather_pill_extra(&ctx){ layout.widen(bar::WEATHER,extra); }
-        if !self.settings.show_clock {layout.hide_clock();}
+        if resident_day.is_none() && !self.settings.show_clock {layout.hide_clock();}
         if self.pet_enabled() {
             if let Some(a)=self.notice.as_ref().filter(|_|!self.compact_notices()&&!self.open){layout.x[bar::PET]=Some(22.0-(self.notice_size(a).0+self.pet_space())/2.0);}
             else if self.island_lyrics_active() {layout.x[bar::PET]=Some(60.0-self.lyric_bar_width()/2.0);}
@@ -2204,7 +2214,7 @@ impl App {
             let width_progress=if (to-from).abs()<1.0 {if banner{1.0}else{0.0}}else{((self.w.pos-from)/(to-from)).clamp(0.0,1.0)};
             let (opacity,header_opacity)=if banner {(self.hud_alpha*smoothstep(0.45,0.85,width_progress),1.0-smoothstep(0.05,0.40,width_progress))}
                 else {(self.hud_alpha*smoothstep(0.20,0.60,width_progress),1.0-smoothstep(0.05,0.25,width_progress))};
-            if !minimal_pill||pc>0.0 {self.resident_header(&base.faded(header_opacity),panel,cx,pc,reveal,env);}
+            if !minimal_pill||pc>0.0 {self.resident_header(&base.faded(header_opacity),panel,cx,pc,reveal,env,resident_day.as_ref());}
             if let Some(a)=self.hud_notice.clone(){
                 let overlay=Card::new(ui,panel.min+Vec2::new(self.pet_space(),0.0),panel.intersect(ui.max_rect())).faded(opacity);
                 let overlay=if opacity<0.85||!banner{overlay.ghost()}else{overlay};
@@ -2213,7 +2223,7 @@ impl App {
         }else if banner {
             if let Some(a)=self.notice.clone(){self.draw_notice(&Card::new(ui,panel.min+Vec2::new(self.pet_space(),0.0),panel.intersect(ui.max_rect())),panel,&a,&mut cmds);}
         }else if !minimal_pill || pc > 0.0 {
-            self.resident_header(&base, panel, cx, if restoring_lyrics{0.0}else{pc}, reveal, env);
+            self.resident_header(&base, panel, cx, if restoring_lyrics{0.0}else{pc}, reveal, env, resident_day.as_ref());
         }
         if let Some(rect)=notice_rect {
             let c=Card::new(ui,rect.min,rect.intersect(ui.max_rect()));
@@ -3086,7 +3096,7 @@ impl App {
     // ---------------------------------------------------------------
     // 顶栏：电池 + 日期 + 时钟。药丸里的电池与时钟会「飞」到顶栏位置（共享元素过渡）。
     // ---------------------------------------------------------------
-    fn shared_header(&mut self, base: &Card, cx: f32, p: f32, reveal: f32, env: &Env) {
+    fn shared_header(&mut self, base: &Card, cx: f32, p: f32, reveal: f32, env: &Env, resident_day: Option<&ResidentDay>) {
         let local_cx = cx - base.origin.x;
         let fit=if self.island_lyrics_active(){1.0}else{(self.resident_limit()/self.resident.target.width).min(1.0)};
         let fitted=base.scaled(local_cx,15.0,lerp(fit,1.0,p));
@@ -3151,7 +3161,13 @@ impl App {
         let has_music=self.media.is_music();
         let layout=self.resident.current();
         let pb=(local_cx+layout.x[bar::BATTERY].unwrap_or(0.0),15.0);
-        let pcx=layout.x[bar::CLOCK].map_or(hc,|x|local_cx+x-paint::clock_width(base,&clock,size::PILL_CLOCK)/2.0);
+        let pcx=layout.x[bar::CLOCK].map_or(hc,|x|{
+            let width=if resident_day.is_some(){layout.widths[bar::CLOCK]}else{
+                paint::clock_width(base,&clock,size::PILL_CLOCK)
+            };
+            local_cx+x-width/2.0
+        });
+        let clock_clearance=if resident_day.is_some(){layout.date_group_clearance()}else{layout.clearance(bar::CLOCK)};
 
         if self.effective_minimal() && self.t>=self.notification_bell_until && p < 0.02 { return; }
         // 电池：位置/大小连续插值
@@ -3161,9 +3177,9 @@ impl App {
 
         // 时钟：两个字号沿同一路径交叉淡化，避免逐帧换字号
         let cpos = (lerp(pcx, hc, m), lerp(21.0, 23.0, m));
-        let a_pill = (1.0 - smoothstep(0.25, 0.6, m)) * layout.clearance(bar::CLOCK);
+        let a_pill = (1.0 - smoothstep(0.25, 0.6, m)) * clock_clearance;
         let a_head = smoothstep(0.35, 0.75, m);
-        if a_pill > 0.0 {
+        if self.settings.show_clock && a_pill > 0.0 {
             paint::clock(&base.faded(a_pill),cpos.0,cpos.1,&clock,size::PILL_CLOCK);
         }
         if a_head > 0.0 {
@@ -3215,6 +3231,12 @@ impl App {
                 .on_hover_cursor(egui::CursorIcon::PointingHand).clicked(){self.show_page(0);}
         }
         let compact_alpha=1.0-smoothstep(0.0,0.22,p);
+        let date_alpha=compact_alpha*clock_clearance;
+        if date_alpha>0.004 {
+            if let Some(day)=resident_day {
+                day.draw_after_clock(&base.faded(date_alpha),pcx,self.settings.show_clock.then_some(clock.as_str()));
+            }
+        }
         if self.t<self.notification_bell_until&&!self.compact_notices()&&p<0.1 {
             if let Some(x)=layout.x[bar::BELL]{
                 let x=local_cx+x;paint::bell(&base.scaled(x,14.0,1.2),x,14.0,theme::WHITE,paint::bell_swing(self.t-self.notification_bell_at));
@@ -3234,16 +3256,16 @@ impl App {
 
     /// 常驻内容：顶部停靠走共享元素过渡（药丸里的电池、时钟飞到顶栏）；
     /// 左右停靠时竖排内容随展开淡出，顶栏随面板内容淡入。
-    fn resident_header(&mut self, base: &Card, panel: Rect, cx: f32, p: f32, reveal: f32, env: &Env) {
-        if !self.side() {self.shared_header(base,cx,p,reveal,env);return;}
+    fn resident_header(&mut self, base: &Card, panel: Rect, cx: f32, p: f32, reveal: f32, env: &Env, resident_day: Option<&ResidentDay>) {
+        if !self.side() {self.shared_header(base,cx,p,reveal,env,resident_day);return;}
         let bar_alpha=1.0-smoothstep(0.0,0.3,p);
         let minimal=self.effective_minimal()&&self.t>=self.notification_bell_until;
         if bar_alpha>0.004 && !minimal {
             let c=base.shifted(panel.min.x-base.origin.x,panel.min.y-base.origin.y).faded(bar_alpha);
             let c=if bar_alpha<0.8 {c.ghost()} else {c};
-            self.side_bar(&c,panel.width(),panel.height(),env);
+            self.side_bar(&c,panel.width(),panel.height(),env,resident_day);
         }
-        if reveal>0.004 {self.shared_header(&base.faded(reveal),base.origin.x+PW/2.0,1.0,reveal,env);}
+        if reveal>0.004 {self.shared_header(&base.faded(reveal),base.origin.x+PW/2.0,1.0,reveal,env,None);}
     }
 
     fn update_pet(&mut self, env: &Env, cx: f32, top:f32) {

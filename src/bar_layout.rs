@@ -76,10 +76,15 @@ impl Layout {
     pub fn quota_slots(&self)->impl Iterator<Item=usize> { (0..self.quotas).map(quota_slot) }
     /// 把某个槽加宽 extra：其余槽对称让位并记入总宽。点数文字、时段时钟、天气温度共用。
     pub fn widen(&mut self,slot:usize,extra:f32){
-        if extra<=0.0 {return;}
+        if extra>0.0{self.resize(slot,extra);}
+    }
+    fn resize(&mut self,slot:usize,extra:f32) {
         let Some(center)=self.x.get(slot).copied().flatten() else {return;};
         for (i,x) in self.x.iter_mut().enumerate(){if i!=slot{if let Some(x)=x{*x+=if *x<center{-extra/2.0}else{extra/2.0};}}}
-        self.widths[slot]+=extra;self.width+=extra;
+        self.widths[slot]+=extra;self.width=(self.width+extra).max(96.0);
+    }
+    pub(crate) fn set_clock_width(&mut self,width:f32){
+        self.resize(CLOCK,width-self.widths[CLOCK]);
     }
     pub fn balance_tail(&mut self,position:usize,extra:f32){self.widen(quota_slot(position),extra);}
     pub fn widen_clock(&mut self, extra:f32) {self.widen(CLOCK,extra);}
@@ -108,6 +113,14 @@ impl Layout {
         let distance=self.quota_slots().filter_map(|i|self.x[i].map(|other|(other-x).abs()-(self.widths[i]-27.0)/2.0)).fold(f32::INFINITY,f32::min);
         let quota=if slot==CLOCK {smoothstep(34.0,44.0,distance)}else{smoothstep(22.0,34.0,distance)};
         quota*self.pet_clearance(slot)
+    }
+    /// 宽度切换和拖动排序期间，日期组也避让电量、天气等相邻组件。
+    pub(crate) fn date_group_clearance(&self)->f32 {
+        let Some(x)=self.x[CLOCK] else{return 0.0;};
+        let gap=self.x.iter().enumerate().filter(|(slot,_)|*slot!=CLOCK)
+            .filter_map(|(slot,other)|other.map(|other|(other-x).abs()-(self.widths[slot]+self.widths[CLOCK])/2.0))
+            .fold(f32::INFINITY,f32::min);
+        smoothstep(1.0,6.5,gap)
     }
     pub fn pet_clearance(&self,slot:usize)->f32 {
         match (self.x[slot],self.x[PET]) {
@@ -155,6 +168,19 @@ impl Motion {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn date_group_resizes_clock_slot_without_overlapping_other_items(){
+        for width in [31.0,105.0,162.0]{
+            let mut layout=Layout::new(true,5,true,false,false,false,true);
+            layout.reorder(&DEFAULT_ORDER);
+            layout.set_clock_width(width);
+            assert_eq!(layout.widths[CLOCK],width);
+            assert_eq!(layout.date_group_clearance(),1.0);
+            let mut boxes:Vec<_>=layout.x.iter().enumerate().filter_map(|(i,x)|x.map(|x|(x-layout.widths[i]/2.0,x+layout.widths[i]/2.0))).collect();
+            boxes.sort_by(|a,b|a.0.total_cmp(&b.0));
+            assert!(boxes.windows(2).all(|pair|pair[1].0-pair[0].1>=6.9));
+        }
+    }
     #[test]
     fn reordered_clock_stays_centered_at_minimum_width(){
         let mut layout=Layout::new(false,0,false,false,false,false,false);

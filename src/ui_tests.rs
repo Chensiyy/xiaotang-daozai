@@ -3158,6 +3158,89 @@ fn resident_quota_moves_left_and_releases_battery_space(){
 }
 
 #[test]
+fn resident_date_modes_are_independent_of_the_clock() {
+    let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=H::new();
+    h.app.settings.pet=false;
+    h.power=(Some(76),false);
+    h.quota_accounts(3);
+    let date="10月28日";
+    let day=chrono::NaiveDate::from_ymd_opt(2026,10,28).unwrap();
+    let lunar=crate::lunar_calendar::for_date(day).unwrap().label;
+    use crate::model::ResidentDate;
+    let text=|h:&H,label:&str|h.shapes.iter().find_map(|s|match &s.shape {
+        egui::Shape::Text(t) if t.galley.text()==label=>Some((
+            t.visual_bounding_rect(),
+            t.galley.job.sections[0].format.font_id.size,
+        )),
+        _=>None,
+    });
+    let profile=std::path::PathBuf::from(std::env::var_os("DAOZAI_DATA_DIR").unwrap());
+    std::fs::create_dir_all(&profile).unwrap();
+    std::fs::write(profile.join("settings.txt"),"resident_date=lunar\n").unwrap();
+    assert_eq!(crate::model::Settings::load().resident_date,ResidentDate::Lunar);
+    let mut single_font=[0.0;2];
+    for (mode,show_clock) in [
+        (ResidentDate::Off,true),
+        (ResidentDate::Gregorian,true),
+        (ResidentDate::LunarOnly,true),
+        (ResidentDate::Lunar,true),
+        (ResidentDate::LunarOnly,false),
+        (ResidentDate::Lunar,false),
+        (ResidentDate::Off,false),
+    ] {
+        h.app.settings.resident_date=mode;
+        h.app.settings.show_clock=show_clock;
+        for _ in 0..90 {h.frame(vec![]);}
+        let clock=text(&h,"09:41");
+        let gregorian=text(&h,date);
+        let lunar_text=text(&h,&lunar);
+        assert_eq!(clock.is_some(),show_clock);
+        assert_eq!(gregorian.is_some(),matches!(mode,ResidentDate::Gregorian|ResidentDate::Lunar));
+        assert_eq!(lunar_text.is_some(),matches!(mode,ResidentDate::LunarOnly|ResidentDate::Lunar));
+        if let (Some((clock,_)),Some((first,_)))=(clock,gregorian.or(lunar_text)) {
+            assert!(clock.right()<first.left(),"日期应位于时间右侧");
+        }
+        match mode {
+            ResidentDate::Gregorian=>single_font[0]=gregorian.unwrap().1,
+            ResidentDate::LunarOnly if show_clock=>single_font[1]=lunar_text.unwrap().1,
+            ResidentDate::Lunar if show_clock=>{
+                let (gregorian,g_size)=gregorian.unwrap();
+                let (lunar,l_size)=lunar_text.unwrap();
+                assert!(gregorian.bottom()<lunar.top(),"公历与农历分两行显示");
+                assert!((single_font[0]-single_font[1]).abs()<0.1,"两种单行日期应使用同一字号");
+                assert!(single_font[0]>g_size+1.0 && single_font[1]>l_size+1.0,"单行日期应比双行清晰");
+            }
+            _=>{}
+        }
+        h.app.settings.save();
+        let saved=crate::model::Settings::load();
+        assert_eq!((saved.resident_date,saved.show_clock),(mode,show_clock));
+    }
+}
+
+#[test]
+#[ignore="按需导出本体收起日期样式"]
+fn resident_date_layout_gallery() {
+    let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let dest=std::path::PathBuf::from(std::env::var_os("DAOZAI_RESIDENT_PREVIEW_DIR").expect("需指定预览目录"));
+    std::fs::create_dir_all(&dest).unwrap();
+    for (mode,name) in [
+        (crate::model::ResidentDate::LunarOnly,"resident-date-lunar-only"),
+        (crate::model::ResidentDate::Gregorian,"resident-date-gregorian"),
+        (crate::model::ResidentDate::Lunar,"resident-date-lunar"),
+    ] {
+        let mut h=H::new();
+        h.app.settings.pet=false;
+        h.app.settings.resident_date=mode;
+        h.power=(Some(76),false);
+        h.quota_accounts(3);
+        let mut raster=feature_raster();
+        shoot_feature(&mut h,&mut raster,&dest,name,90,None,"2026-11-22");
+    }
+}
+
+#[test]
 fn resident_quotas_coexist_with_music_and_focus(){
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();h.app.settings.pet=false;h.quota_accounts(3);
     h.media=crate::smtc::NowPlaying{title:"Track".into(),artist:"Artist".into(),playing:true,duration:120.0,..Default::default()};
@@ -5617,6 +5700,27 @@ fn calendar_dates_are_readable_and_source_labels_do_not_take_a_second_line() {
 }
 
 #[test]
+fn calendar_lunar_annotation_follows_the_selected_day() {
+    let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=H::new();
+    let term=chrono::NaiveDate::from_ymd_opt(2026,11,22).unwrap();
+    let previous=term.pred_opt().unwrap();
+    h.app.select_calendar_day(term);
+    h.app.open_calendar(None);
+    h.hover(H::local(300.0,40.0),1.0);
+    let visible=|h:&H,label:&str|h.shapes.iter().any(|s|matches!(&s.shape,
+        egui::Shape::Text(t) if t.galley.text()==label));
+    assert!(visible(&h,"农历十月十四"));
+    assert!(visible(&h,"小雪"));
+    let cell=h.ctx.read_response(egui::Id::new(("card",true,("calendar-day",previous)))).unwrap();
+    h.click(cell.interact_rect.center());
+    h.frame(vec![]);
+    assert_eq!(h.app.calendar.view.day,previous);
+    assert!(visible(&h,"农历十月十三"));
+    assert!(!visible(&h,"小雪"));
+}
+
+#[test]
 fn calendar_first_schedule_has_a_large_time_and_keeps_the_lower_list_scrollable() {
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();
     let day=chrono::NaiveDate::from_ymd_opt(2026,10,28).unwrap();
@@ -5754,13 +5858,21 @@ fn calendar_layout_gallery() {
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     let dest=std::path::PathBuf::from(std::env::var_os("DAOZAI_CALENDAR_PREVIEW_DIR").expect("需指定预览目录"));
     std::fs::create_dir_all(&dest).unwrap();
-    for mode in ["agenda","agenda-list","dingtalk","wecom","empty","loading","failed","disconnected","local-editor","local","local-all-day","mixed"] {
+    let modes=["agenda","agenda-list","dingtalk","wecom","empty","loading","failed","disconnected","local-editor","local","local-all-day","mixed"];
+    let modes=if std::env::var_os("DAOZAI_LUNAR_CALENDAR_PREVIEW").is_some() {
+        &["lunar","lunar-term","lunar-term-cream"][..]
+    } else {
+        &modes[..]
+    };
+    for &mode in modes {
         let mut h=H::new();
-        let day=chrono::NaiveDate::from_ymd_opt(2026,11,2).unwrap();
+        let day_number=match mode {"lunar"=>21,"lunar-term"|"lunar-term-cream"=>22,_=>2};
+        let day=chrono::NaiveDate::from_ymd_opt(2026,11,day_number).unwrap();
         h.app.calendar.view.day=day;h.app.calendar.view.month=crate::calendar::month_start(day);
         h.app.open_calendar(None);
+        if mode=="lunar-term-cream"{h.app.settings.skin=crate::model::Skin::Cream;}
         let provider=match mode{"dingtalk"=>crate::calendar::Provider::DingTalk,"wecom"=>crate::calendar::Provider::WeCom,_=>crate::calendar::Provider::Feishu};
-        if !["disconnected","local-editor","local","local-all-day"].contains(&mode){h.app.calendar.config=Some(crate::calendar::Config{provider,username:"demo".into(),href:None,server:None});h.app.calendar.connected=true;}
+        if !["disconnected","local-editor","local","local-all-day","lunar","lunar-term","lunar-term-cream"].contains(&mode){h.app.calendar.config=Some(crate::calendar::Config{provider,username:"demo".into(),href:None,server:None});h.app.calendar.connected=true;}
         h.app.calendar.view.loaded=Some(crate::calendar::month_start(day));
         if ["agenda","agenda-list","dingtalk","wecom","mixed"].contains(&mode) {
             for (i,(hour,minute,title)) in [(14,30,"产品方案评审"),(16,0,"下一阶段的设计方案与开发排期对齐"),(17,0,"项目进度同步")].into_iter().enumerate(){
@@ -5794,10 +5906,19 @@ fn calendar_layout_gallery() {
         for f in 0..90 {
             let t=f as f64/60.0;
             let raw=egui::RawInput{screen_rect:Some(Rect::from_min_size(Pos2::ZERO,egui::vec2(WIN_W,WIN_H))),time:Some(t),viewports:std::iter::once((egui::ViewportId::ROOT,egui::ViewportInfo{native_pixels_per_point:Some(2.0),..Default::default()})).collect(),..Default::default()};
-            let env=Env{t,today:"2026-11-02".into(),date:"11月2日 周一".into(),clock:"14:15:00".into(),battery:Some(76),charging:true,cursor:Some(H::local(300.0,40.0)),..Default::default()};
+            let day_label=match day_number {21=>"11月21日 周六",22=>"11月22日 周日",_=>"11月2日 周一"};
+            let env=Env{t,today:day.to_string(),date:day_label.into(),clock:"14:15:00".into(),battery:Some(76),charging:true,cursor:Some(H::local(300.0,40.0)),..Default::default()};
             let out=h.ctx.run(raw,|ctx|{egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx,|ui|{let win=ui.max_rect();h.app.frame(ui,win,&env);});});
             raster.update_textures(&out.textures_delta);
             if f==89 {
+                if mode.starts_with("lunar") {
+                    let texts=out.shapes.iter().filter_map(|shape|match &shape.shape {
+                        egui::Shape::Text(t)=>Some(t.galley.text()),
+                        _=>None,
+                    }).collect::<Vec<_>>();
+                    assert!(texts.contains(&if day_number==21 {"农历十月十三"} else {"农历十月十四"}));
+                    assert_eq!(texts.contains(&"小雪"),day_number==22);
+                }
                 if mode=="local-all-day" {
                     assert!(out.shapes.iter().any(|shape|matches!(&shape.shape,egui::Shape::Text(t) if t.galley.text()=="散步与读书")),"只有全天日程时也必须显示普通日程行");
                 }
@@ -8434,7 +8555,7 @@ fn side_dock_stacks_ai_quota_and_opens_the_account(){
     let total=h.app.side_bar_len()-14.0;
     let mut y=top+(h.app.h.pos-total)/2.0;
     for item in h.app.side_items() {
-        let height=match item {crate::side_dock::SideItem::Quota(i,hh) if h.app.quota.config.accounts[i].id==wb=>{y+=hh/2.0;break;},crate::side_dock::SideItem::Quota(_,hh)=>hh,crate::side_dock::SideItem::Clock=>32.0,crate::side_dock::SideItem::Weather=>40.0,crate::side_dock::SideItem::Battery=>20.0,crate::side_dock::SideItem::Music=>18.0,crate::side_dock::SideItem::Focus|crate::side_dock::SideItem::Bell=>22.0};
+        let height=match item {crate::side_dock::SideItem::Quota(i,hh) if h.app.quota.config.accounts[i].id==wb=>{y+=hh/2.0;break;},crate::side_dock::SideItem::Quota(_,hh)|crate::side_dock::SideItem::Date(hh)=>hh,crate::side_dock::SideItem::Clock=>32.0,crate::side_dock::SideItem::Weather=>40.0,crate::side_dock::SideItem::Battery=>20.0,crate::side_dock::SideItem::Music=>18.0,crate::side_dock::SideItem::Focus|crate::side_dock::SideItem::Bell=>22.0};
         y+=height;
     }
     let click=Pos2::new(18.0,y);
