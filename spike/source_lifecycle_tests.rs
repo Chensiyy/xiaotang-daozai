@@ -103,7 +103,12 @@ fn user_file_grant_reads_only_after_enable_and_is_revoked_on_uninstall() -> Resu
     fs::rename(&file, fixture.0.join("已移走.txt"))?;
     host.next.remove(READ);
     settle(&mut host, true);
-    assert_eq!(host.cards[READ], "offline");
+    assert_eq!(
+        host.cards.get(READ).map(String::as_str),
+        Some("offline"),
+        "{:?}",
+        host.errors
+    );
     host.uninstall(READ, true)?;
     host.install(&path)?;
     assert!(host.source_grant(READ).is_none());

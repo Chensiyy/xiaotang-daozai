@@ -635,14 +635,14 @@ impl Package {
         let runtime = rquickjs::Runtime::new()?;
         runtime.set_memory_limit(4 * 1024 * 1024);
         runtime.set_max_stack_size(128 * 1024);
-        let end = Instant::now() + Duration::from_millis(30);
-        runtime.set_interrupt_handler(Some(Box::new(move || Instant::now() >= end)));
         let ctx = rquickjs::Context::full(&runtime)?;
         let mut input = json!({"settings":values,"storage":storage,"today":today});
         if self.manifest.source_kind().is_some() {
             input["source"] = serde_json::to_value(source)?;
         }
         let input = input.to_string();
+        let end = Instant::now() + Duration::from_millis(30);
+        runtime.set_interrupt_handler(Some(Box::new(move || Instant::now() >= end)));
         let raw = ctx.with(|c| -> rquickjs::Result<String> {
             c.eval::<(), _>(self.source.as_bytes())?;
             c.globals().set("__input", input)?;
