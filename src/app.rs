@@ -2539,7 +2539,7 @@ impl App {
     fn unread_count(&self)->usize {
         let count=self.pending_messengers.len()+self.health_badges().len();
         #[cfg(windows)]
-        let count=count+self.plugin_notice_ui.unread.len();
+        let count=count+self.plugin_notice_ui.item_count();
         count
     }
     /// 收起时叠放的来源图标，每个客户端各占一个。

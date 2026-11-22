@@ -15,7 +15,10 @@ impl App {
     pub fn start_plugin_notices(&mut self, ctx: &egui::Context) {
         match Bridge::start(&crate::model::config_dir(), ctx.clone()) {
             Ok(bridge) => {
-                bridge.preview(self.settings.notifications && self.settings.notification_preview);
+                bridge.display(
+                    self.settings.notifications,
+                    self.settings.notification_preview,
+                );
                 self.plugin_notice_host.bridge = Some(bridge);
             }
             Err(error) => self.plugin_notice_host.message = error,
@@ -29,7 +32,10 @@ impl App {
             .as_ref()
             .filter(|bridge| !bridge.sources().is_empty())
         {
-            bridge.preview(self.settings.notifications && self.settings.notification_preview);
+            bridge.display(
+                self.settings.notifications,
+                self.settings.notification_preview,
+            );
             for event in bridge.drain() {
                 self.receive_plugin_notice(event);
             }
@@ -72,7 +78,7 @@ impl App {
             };
             settings_hint(
                 ui,
-                "授权后，接入端可使用凭据文件发送完成提醒和处理会话跳转。",
+                "接入端可发送通知、更新状态并处理你点击的动作。关闭提醒会暂停接收，撤销全部授权会关闭本机接口。",
             );
             for source in bridge.sources() {
                 ui.push_id(&source.id, |ui| {
@@ -139,7 +145,10 @@ impl App {
             self.remove_plugin_notice_source(&id);
         }
         if let Some(bridge) = &self.plugin_notice_host.bridge {
-            bridge.preview(self.settings.notifications && self.settings.notification_preview);
+            bridge.display(
+                self.settings.notifications,
+                self.settings.notification_preview,
+            );
         }
     }
 }
