@@ -3819,7 +3819,7 @@ impl App {
         let current=all_pages.iter().position(|&page|page==self.page).unwrap_or_default();
         let start=current.saturating_sub(max_slots/2).min(all_pages.len().saturating_sub(max_slots));
         let pages=&all_pages[start..(start+max_slots).min(all_pages.len())];
-        let dot_width=|page|self.dots.get(page).map_or(if page==self.page {16.0}else{4.0},|dot|dot.pos);
+        let dot_width=|page:usize|self.dots.get(page).map_or(if page==self.page {16.0}else{4.0},|dot|dot.pos);
         let gap = if shortcuts { 3.0 } else { 4.0 };
         let dot_scale = if shortcuts { 0.75 } else { 1.0 };
         let dot_size = 4.0 * dot_scale;
