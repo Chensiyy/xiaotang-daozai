@@ -4,14 +4,21 @@ use eframe::egui;
 fn frame(
     ctx: &egui::Context,
     events: Vec<egui::Event>,
+    draw: impl FnMut(&mut egui::Ui),
+) -> egui::FullOutput {
+    frame_in(ctx, egui::vec2(500., 550.), events, draw)
+}
+
+/// 与真实设置窗口差不多大的画布，教程抽屉这类长内容用。
+fn frame_in(
+    ctx: &egui::Context,
+    size: egui::Vec2,
+    events: Vec<egui::Event>,
     mut draw: impl FnMut(&mut egui::Ui),
 ) -> egui::FullOutput {
     ctx.run(
         egui::RawInput {
-            screen_rect: Some(egui::Rect::from_min_size(
-                egui::Pos2::ZERO,
-                egui::vec2(500., 550.),
-            )),
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
             events,
             ..Default::default()
         },
@@ -441,5 +448,134 @@ fn header_tabs_keep_market_on_the_left_in_a_right_aligned_title_row() {
             .unwrap_or_else(|| panic!("找不到 {label}"))
     };
     assert!(x("集市") < x("已安装"));
+    let _ = fs::remove_dir_all(dir);
+}
+
+const WINDOW: egui::Vec2 = egui::vec2(940., 860.);
+
+fn click_in(ctx: &egui::Context, size: egui::Vec2, label: &str, mut draw: impl FnMut(&mut egui::Ui)) {
+    let _ = frame_in(ctx, size, vec![], &mut draw);
+    let out = frame_in(ctx, size, vec![], &mut draw);
+    let pos = out
+        .shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) if text.galley.text() == label => {
+                Some(text.visual_bounding_rect().center())
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("找不到按钮 {label}"));
+    for pressed in [true, false] {
+        let _ = frame_in(
+            ctx,
+            size,
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Default::default(),
+                },
+            ],
+            &mut draw,
+        );
+    }
+}
+
+#[test]
+fn guide_opens_from_the_market_copies_a_prompt_and_stacks_the_template_form() {
+    let dir = std::env::temp_dir().join(format!("daozai-guide-{}", std::process::id()));
+    let mut host = LocalPlugins::open(dir.join("installed"));
+    let ctx = egui::Context::default();
+    crate::theme::load_fonts(&ctx);
+    ctx.style_mut(|style| style.animation_time = 0.);
+    let draw = |host: &mut LocalPlugins, ui: &mut egui::Ui| {
+        host.header_tabs(ui);
+        host.manage(
+            ui,
+            true,
+            #[cfg(feature = "sdk-material")]
+            None,
+        );
+    };
+    let market = frame_in(&ctx, WINDOW, vec![], |ui| draw(&mut host, ui));
+    assert!(has_text(&market, "看教程"));
+    assert!(!has_text(&market, "做一个岛仔插件"));
+    click_in(&ctx, WINDOW, "看教程", |ui| draw(&mut host, ui));
+    let guide = frame_in(&ctx, WINDOW, vec![], |ui| draw(&mut host, ui));
+    for expected in ["做一个岛仔插件", "现在能做", "正在接入", "不会开放", "一句话交给 AI 做", "复制这段话", "从模板创建", "投稿指南"] {
+        assert!(has_text(&guide, expected), "{expected}");
+    }
+
+    // 复制出来的那段话带示例想法和校验命令。
+    let _ = frame_in(&ctx, WINDOW, vec![], |ui| draw(&mut host, ui));
+    let out = frame_in(&ctx, WINDOW, vec![], |ui| draw(&mut host, ui));
+    let pos = out
+        .shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) if text.galley.text() == "复制这段话" => {
+                Some(text.visual_bounding_rect().center())
+            }
+            _ => None,
+        })
+        .expect("复制按钮");
+    let mut copied = String::new();
+    for pressed in [true, false] {
+        let out = frame_in(
+            &ctx,
+            WINDOW,
+            vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed,
+                    modifiers: Default::default(),
+                },
+            ],
+            |ui| draw(&mut host, ui),
+        );
+        for command in out.platform_output.commands {
+            if let egui::OutputCommand::CopyText(text) = command {
+                copied = text;
+            }
+        }
+    }
+    assert!(copied.contains("在待办里显示离下次还信用卡还有几天"), "{copied}");
+    assert!(copied.contains("--plugin-test plugin.json"), "{copied}");
+    assert!(has_text(&frame_in(&ctx, WINDOW, vec![], |ui| draw(&mut host, ui)), "已复制"));
+
+    click_in(&ctx, WINDOW, "已经做好了", |ui| draw(&mut host, ui));
+    assert!(has_text(
+        &frame_in(&ctx, WINDOW, vec![], |ui| draw(&mut host, ui)),
+        "一句话交给 AI 改造"
+    ));
+
+    // 「从模板创建」的表单盖在教程上面；Esc 先关表单，再关教程。
+    click_in(&ctx, WINDOW, "从模板创建", |ui| draw(&mut host, ui));
+    let form = frame_in(&ctx, WINDOW, vec![], |ui| draw(&mut host, ui));
+    assert!(has_text(&form, "选择位置并创建…"));
+    assert!(has_text(&form, "做一个岛仔插件"));
+    let escape = || {
+        vec![egui::Event::Key {
+            key: egui::Key::Escape,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: Default::default(),
+        }]
+    };
+    let _ = frame_in(&ctx, WINDOW, escape(), |ui| draw(&mut host, ui));
+    let after = frame_in(&ctx, WINDOW, vec![], |ui| draw(&mut host, ui));
+    assert!(!has_text(&after, "选择位置并创建…"));
+    assert!(has_text(&after, "做一个岛仔插件"));
+    let _ = frame_in(&ctx, WINDOW, escape(), |ui| draw(&mut host, ui));
+    assert!(!has_text(
+        &frame_in(&ctx, WINDOW, vec![], |ui| draw(&mut host, ui)),
+        "做一个岛仔插件"
+    ));
     let _ = fs::remove_dir_all(dir);
 }
