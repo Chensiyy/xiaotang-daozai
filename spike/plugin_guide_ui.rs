@@ -236,10 +236,13 @@ fn sdk_capabilities(ui: &mut egui::Ui) {
         .fill(card_color(ui))
         .stroke(egui::Stroke::new(1.0, line_color(ui)))
         .corner_radius(8.0)
-        .inner_margin(egui::Margin::symmetric(12, 9))
+        .inner_margin(egui::Margin::symmetric(12, 3))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.spacing_mut().item_spacing.y = 4.0;
+            let spacing = ui.spacing_mut();
+            spacing.item_spacing.y = 4.0;
+            spacing.button_padding.y = 2.0;
+            spacing.interact_size.y = 20.0;
             egui::CollapsingHeader::new(egui::RichText::new("当前版本已开放的 SDK 能力").size(13.5).strong())
                 .id_salt("plugin-guide-sdk-capabilities")
                 .show_background(false)
@@ -261,6 +264,7 @@ fn sdk_capabilities(ui: &mut egui::Ui) {
                             );
                         });
                     }
+                    ui.add_space(3.0);
                 });
         });
 }
