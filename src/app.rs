@@ -95,7 +95,8 @@ const OPEN_H: (f32, f32) = (290.0, 0.74);
 // 收起：临界阻尼，约 0.18 s 干净收回，无回弹。
 const CLOSE: (f32, f32) = (620.0, 1.0);
 const SWELL_K: (f32, f32) = (420.0, 0.8);
-const PAGE_SLIDE: f32 = 46.0;
+const PAGE_SLIDE: f32 = 32.0;
+const PAGE_TURN_DURATION: f32 = 0.34;
 
 pub struct Options {
     /// 是否联网查歌词（录制/测试时关掉）。
@@ -779,10 +780,11 @@ pub struct App {
     // 切页
     pub(crate) page: usize,
     page_from: usize,
+    page_from_offset: f32,
+    page_from_elapsed: f32,
     page_scroll_area: Option<Rect>,
     page_dir: f32,
     page_t0: f64,
-    slide: Spring,
     dots: [Spring; 9],
     wheel_delta: f32,
     pub(crate) content_scroll: Option<(egui::Id, f32)>,
@@ -984,10 +986,11 @@ impl App {
             grip_hover_since: None,
             page: initial_page,
             page_from: initial_page,
+            page_from_offset: 0.0,
+            page_from_elapsed: PAGE_TURN_DURATION,
             page_scroll_area: None,
             page_dir: 1.0,
             page_t0: -10.0,
-            slide: Spring::new(0.0, 260.0, 0.92),
             dots: std::array::from_fn(|i| Spring::new(if i == initial_page { 16.0 } else { 4.0 }, 380.0, 0.86)),
             wheel_delta: 0.0,
             content_scroll: None,
@@ -1741,20 +1744,33 @@ impl App {
         }
         self.music_volume_open=false;
         self.subpage=None;
-        // 连点：上一段过渡还没结束时，以当前页为起点重新开始，位移速度保留。
+        // 连点时，尚在滑入的页面从当前的位置和透明度开始淡出。
+        let elapsed = self.page_e();
+        self.page_from_offset = self.page_slide_offset(elapsed);
+        self.page_from_elapsed = elapsed;
         self.page_from = self.page;
         self.page = page;
         if page==CALENDAR_PAGE {self.request_calendar_month(false);}
         self.page_dir = dir;
         self.page_t0 = self.t;
-        self.slide.pos = dir * PAGE_SLIDE + if self.page_e() < 0.4 { self.slide.pos * 0.3 } else { 0.0 };
-        self.slide.target = 0.0;
         self.dots_target();
         self.cancel_edit();
     }
 
     fn page_e(&self) -> f32 {
         (self.t - self.page_t0) as f32
+    }
+
+    fn page_slide_offset(&self, elapsed: f32) -> f32 {
+        self.page_dir * PAGE_SLIDE * (1.0 - smoothstep(0.0, PAGE_TURN_DURATION, elapsed))
+    }
+
+    fn page_slide_alpha(elapsed: f32) -> f32 {
+        smoothstep(0.03, 0.28, elapsed)
+    }
+
+    fn page_header_alpha(elapsed: f32) -> f32 {
+        smoothstep(0.10, 0.23, elapsed)
     }
 
     fn dots_target(&mut self) {
@@ -2106,7 +2122,6 @@ impl App {
                 self.go(page, if page < SHELF_PAGE { -1.0 } else { 1.0 });
                 self.page_from = self.page;
                 self.page_t0 = self.t - 1.0;
-                self.slide.snap(0.0);
             }
         }
         self.hold_slot=ctx.animate_bool_with_time(egui::Id::new("hold-open-slot"),self.shows_hold_open(),0.18);
@@ -3080,7 +3095,6 @@ impl App {
         for d in &mut self.dots {
             d.step(dt);
         }
-        self.slide.step(dt);
     }
 
     // ---------------------------------------------------------------
@@ -3327,25 +3341,24 @@ impl App {
             self.page_settings(c);self.nav(c);return false;
         }
         let e = self.page_e();
-        let in_tx = e < 0.55 && self.page_from != self.page;
+        let in_tx = e < PAGE_TURN_DURATION && self.page_from != self.page;
         if in_tx {
-            // 旧页：原地向反方向轻移并快速淡出；新页：弹簧滑入 + 稍晚淡入
-            let old_a = 1.0 - smoothstep(0.0, 0.16, e);
-            let new_a = smoothstep(0.03, 0.28, e);
-            let old_dx = -self.page_dir * 18.0 * anim::ease_out_cubic(e / 0.3);
+            // 旧页停在当前位置淡出，新页朝目标单向滑入。
+            let old_a = Self::page_slide_alpha(self.page_from_elapsed) * (1.0 - smoothstep(0.0, 0.16, e));
+            let new_a = Self::page_slide_alpha(e);
             if old_a > 0.0 {
                 let oc = c.faded(old_a).ghost();
-                let old_header=c.faded(1.0-smoothstep(0.0,0.10,e)).ghost();
+                let old_header=c.faded(Self::page_header_alpha(self.page_from_elapsed)*(1.0-smoothstep(0.0,0.10,e))).ghost();
                 self.page_title(self.page_from, &old_header);
-                self.render_page(self.page_from, &oc.shifted(old_dx, 0.0), &old_header, env, &mut Vec::new());
+                self.render_page(self.page_from, &oc.shifted(self.page_from_offset, 0.0), &old_header, env, &mut Vec::new());
             }
             let nc = c.faded(new_a);
             let nc = if e < 0.12 { nc.ghost() } else { nc };
             // 同一位置的标题先退后进，避免两个页面的汉字在中间帧叠成重影。
-            let header=c.faded(smoothstep(0.10,0.23,e));
+            let header=c.faded(Self::page_header_alpha(e));
             let header=if e<0.12 {header.ghost()}else{header};
             self.page_title(self.page, &header);
-            self.render_page(self.page, &nc.shifted(self.slide.pos,0.0), &header, env, cmds);
+            self.render_page(self.page, &nc.shifted(self.page_slide_offset(e), 0.0), &header, env, cmds);
         } else {
             self.page_title(self.page, c);
             self.render_page(self.page, c, c, env, cmds);
