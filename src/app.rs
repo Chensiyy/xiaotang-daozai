@@ -22,6 +22,7 @@ use std::path::PathBuf;
 // ---------- 几何（逻辑点；原版 125% 截图 ÷ 1.25） ----------
 pub const PW: f32 = 419.0; // 展开面板宽
 pub const PH: f32 = 140.0; // 展开面板高
+const PAGE_SHORTCUT_ROW_H: f32 = 24.0;
 pub const MUSIC_PAGE: usize = 0;
 pub const FOCUS_PAGE: usize = 1;
 pub const WATER_PAGE: usize = 2;
@@ -49,7 +50,7 @@ pub const FLARE_H: f32 = 16.0; // 外翻收敛高度
 pub const RAD: f32 = 33.0; // 底部圆角
 pub const WIN_W: f32 = 640.0; // 窗口（透明画布）
 pub const CANVAS_W: f32 = WIN_W + 320.0; // 保留右侧通知及阴影的完整空间，原岛仍按 WIN_W 定位。
-pub const WIN_H: f32 = 270.0;
+pub const WIN_H: f32 = 270.0 + PAGE_SHORTCUT_ROW_H;
 /// 胶囊皮肤与屏幕顶边的间隙。
 pub const PILL_GAP: f32 = 6.0;
 
@@ -1893,7 +1894,15 @@ impl App {
         self.page_scroll_area=None;
     }
 
+    fn page_shortcuts_enabled(&self) -> bool {
+        self.settings.show_page_shortcuts && self.settings.visible_pages.iter().filter(|&&visible| visible).nth(1).is_some()
+    }
+
     pub(crate) fn expanded_height(&self)->f32 {
+        self.page_content_height() + if self.page_shortcuts_enabled() { PAGE_SHORTCUT_ROW_H } else { 0.0 }
+    }
+
+    fn page_content_height(&self)->f32 {
         if self.page==CALENDAR_PAGE {CALENDAR_H}else if self.page==WEATHER_PAGE {WEATHER_H}else if self.page==6{176.0}else if self.page==5&&self.mail.open_uid.is_some(){236.0}else{PH}
     }
 
@@ -3395,21 +3404,56 @@ impl App {
             paint::chevron(&arrow_card,x,arrow_y,direction,hover,press);
             if button.clicked() {self.navigate_page(direction>0.0);}
         }
-        // 页码豆：宽度由弹簧驱动，整行实时居中；当前页是白色长条
-        let gap = 4.0;
-        let dot_y=self.page_height.pos-7.2;
-        let total: f32 = pages.iter().map(|page| self.dots[*page].pos).sum::<f32>() + gap * (pages.len()-1) as f32;
-        let mut x = PW / 2.0 - total / 2.0;
+        let shortcuts = self.page_shortcuts_enabled();
+        let gap = if shortcuts { 3.0 } else { 4.0 };
+        let dot_scale = if shortcuts { 0.75 } else { 1.0 };
+        let dot_size = 4.0 * dot_scale;
+        let dot_y = if shortcuts {
+            self.page_height.pos - PAGE_SHORTCUT_ROW_H / 2.0
+        } else {
+            self.page_height.pos - 7.2
+        };
+        // 图标和页码点共用底部一行，按可见页面的数量整体居中。
+        let dots_width = pages.iter().map(|&page| self.dots[page].pos).sum::<f32>() * dot_scale
+            + gap * (pages.len() - 1) as f32;
+        let shortcut_slot = 26.0;
+        let group_gap = 14.0;
+        let shortcut_width = if shortcuts { shortcut_slot * pages.len() as f32 + group_gap } else { 0.0 };
+        let mut x = (PW - dots_width - shortcut_width) / 2.0;
         let mut clicked = None;
+        if shortcuts {
+            let row_width = dots_width + shortcut_width;
+            // 只在整行已经露出时显示，避免展开过程点击穿到正文控件。
+            let Some(row) = c.edge_control(x - 2.0, dot_y - 11.0, row_width + 4.0, 22.0) else { return; };
+            for &page in &pages {
+                let center = x + shortcut_slot / 2.0;
+                let button = row.hit(x, dot_y - 11.0, shortcut_slot, 22.0, ("page-shortcut", page))
+                    .on_hover_text(PAGE_NAMES[page])
+                    .on_hover_cursor(egui::CursorIcon::PointingHand);
+                let (hover, press) = row.hover_t(&button);
+                let active = page == self.page;
+                let ink = if active { Color32::from_rgb(163, 239, 228) }
+                    else { paint::mix(Color32::from_gray(174), theme::WHITE, hover) };
+                let bg = if active { Color32::from_rgb(28, 56, 52) }
+                    else { Color32::from_white_alpha((hover * 25.0) as u8) };
+                row.fill(center - 10.5, dot_y - 9.0, 21.0, 18.0, 5.0, bg);
+                paint::page_shortcut_icon(&row.scaled(center, dot_y, 1.0 - 0.08 * press), page, center, dot_y, ink);
+                if button.clicked() { clicked = Some(page); }
+                x += shortcut_slot;
+            }
+            row.seg((x + group_gap / 2.0, dot_y - 6.0), (x + group_gap / 2.0, dot_y + 6.0), 1.0, Color32::from_gray(55));
+            x += group_gap;
+        }
         for i in pages {
-            let w = self.dots[i].pos.max(3.0);
-            let on = anim::remap(w, 4.0, 16.0);
+            let w = self.dots[i].pos.max(3.0) * dot_scale;
+            let on = anim::remap(w, 4.0 * dot_scale, 16.0 * dot_scale);
             let col = paint::mix(Color32::from_rgb(92, 92, 96), theme::WHITE, on);
-            c.fill(x, dot_y - 2.0, w, 4.0, 2.0, col);
-            let hr = c.hit(x - 2.0, dot_y - 6.0, w + 4.0, 12.0, ("dot", i));
+            c.fill(x, dot_y - dot_size / 2.0, w, dot_size, dot_size / 2.0, col);
+            let extra = gap / 2.0;
+            let hr = c.hit(x - extra, dot_y - 6.0, w + gap, 12.0, ("dot", i));
             hr.clone().on_hover_text(PAGE_NAMES[i]);
             if hr.hovered() && i != self.page {
-                c.fill(x - 1.0, dot_y - 3.0, w + 2.0, 6.0, 3.0, Color32::from_white_alpha(28));
+                c.fill(x - 1.0, dot_y - dot_size / 2.0 - 1.0, w + 2.0, dot_size + 2.0, 3.0, Color32::from_white_alpha(28));
             }
             if hr.clicked() {
                 clicked = Some(i);

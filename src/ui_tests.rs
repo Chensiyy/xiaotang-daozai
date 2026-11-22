@@ -2889,6 +2889,7 @@ fn wheel_navigation_reaches_every_page_in_both_directions(){
 fn wheel_from_tall_page_allows_movement_in_previous_page_bounds() {
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     let mut h=H::new();
+    h.app.settings.show_page_shortcuts=false;
     let edge=H::local(70.0,165.0);
     let inner=H::local(70.0,80.0);
     h.hover(Pos2::new(WIN_W/2.0,12.0),1.0);
@@ -2926,6 +2927,7 @@ fn side_docks_keep_both_edges_when_turning_to_a_shorter_page() {
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     for dock in [crate::model::Dock::Left,crate::model::Dock::Right] {
         let mut h=H::new();
+        h.app.settings.show_page_shortcuts=false;
         h.app.settings.dock=dock;
         let x=if dock==crate::model::Dock::Left {1.0}else{crate::side_dock::SIDE_W-1.0};
         let resident=Pos2::new(x,crate::side_dock::SIDE_H/2.0);
@@ -3534,6 +3536,7 @@ fn quota_update_status_is_visible_for_every_provider_and_keeps_failed_data(){
     let time=chrono::DateTime::from_timestamp(at,0).unwrap().with_timezone(&chrono::Local).format("%H:%M").to_string();
     for provider in Provider::ALL{
         let mut h=H::new();h.quota_accounts(1);h.app.quota.config.accounts[0].provider=provider;
+        h.app.settings.show_page_shortcuts=false;
         let mut snapshot=match provider{
             Provider::Kiro=>kiro_snapshot(720.0,1000.0),
             Provider::DeepSeek=>crate::quota::parse(provider,&serde_json::json!({"is_available":true,"balance_infos":[{"currency":"CNY","total_balance":"4.18","granted_balance":"0","topped_up_balance":"4.18"}]})).unwrap(),
@@ -3575,6 +3578,7 @@ fn quota_update_status_is_visible_for_every_provider_and_keeps_failed_data(){
 #[test]
 fn quota_page_navigation_tracks_the_taller_panel(){
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();h.quota_accounts(1);
+    h.app.settings.show_page_shortcuts=false;
     h.app.show_page(6);h.hover(H::local(300.0,60.0),0.8);
     assert!((h.hit.height()-178.0).abs()<0.2,"额度页新增的底部空间应属于命中区域");
     let dot=h.shapes.iter().find_map(|shape|match &shape.shape{
@@ -3709,7 +3713,8 @@ fn page_visibility_skips_hidden_pages_in_every_navigation_control() {
         assert_eq!(h.app.page,expected);
         h.hover(H::local(300.0,60.0),0.7);
     }
-    h.click(H::local(PW/2.0+6.0,132.8));
+    let dot=h.ctx.read_response(egui::Id::new(("card",true,("dot",2usize)))).unwrap();
+    h.click(dot.interact_rect.center());
     assert_eq!(h.app.page,2,"底部圆点应仅包含启用的页面");
     h.hover(H::local(300.0,60.0),0.7);
     h.frame(vec![egui::Event::Key{key:egui::Key::ArrowRight,physical_key:None,pressed:true,repeat:false,modifiers:Default::default()}]);
@@ -5913,6 +5918,74 @@ fn frame_control_draw(h:&mut H,cursor:Option<Pos2>,events:Vec<egui::Event>) {
 }
 
 #[test]
+fn bottom_page_shortcuts_share_a_row_with_dots_on_every_dock() {
+    use crate::app::{FOCUS_PAGE,MUSIC_PAGE,TODO_PAGE};
+    use crate::model::Dock;
+
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let pages=[TODO_PAGE,MUSIC_PAGE,FOCUS_PAGE];
+    let control=|h:&H,kind:&str,page:usize| {
+        h.ctx.read_response(egui::Id::new(("card",true,(kind,page)))).map(|r|r.interact_rect)
+    };
+    let settle=|h:&mut H| {
+        for _ in 0..100 {frame_control_draw(h,None,vec![]);}
+    };
+    let click=|h:&mut H,pos:Pos2| {
+        frame_control_draw(h,Some(pos),vec![egui::Event::PointerMoved(pos)]);
+        for pressed in [true,false] {
+            frame_control_draw(h,Some(pos),vec![egui::Event::PointerButton {
+                pos,button:egui::PointerButton::Primary,pressed,modifiers:Default::default(),
+            }]);
+        }
+    };
+
+    for dock in [Dock::Top,Dock::Bottom,Dock::Left,Dock::Right] {
+        let mut h=H::new();
+        h.app.settings.dock=dock;
+        assert!(h.app.settings.show_page_shortcuts);
+        h.app.settings.visible_pages=std::array::from_fn(|page|pages.contains(&page));
+        h.app.settings.page_order.rotate_left(TODO_PAGE);
+        h.app.show_page(TODO_PAGE);
+        settle(&mut h);
+        assert_eq!(h.app.expanded_height(),PH+24.0);
+
+        let shortcuts=pages.map(|page|control(&h,"page-shortcut",page).expect("应显示已启用页面的快捷图标"));
+        let dots=pages.map(|page|control(&h,"dot",page).expect("应显示已启用页面的页码点"));
+        assert!(shortcuts.windows(2).all(|pair|pair[0].right()<=pair[1].left()));
+        assert!(dots.windows(2).all(|pair|pair[0].center().x<pair[1].center().x));
+        assert!(shortcuts[2].right()<=dots[0].left());
+        let row_y=shortcuts[0].center().y;
+        assert!(shortcuts.iter().chain(&dots).all(|rect|(rect.center().y-row_y).abs()<0.1),"{dock:?} 停靠的快捷图标和页码点应在同一排");
+        for page in 0..h.app.settings.visible_pages.len() {
+            if !pages.contains(&page) {
+                assert!(control(&h,"page-shortcut",page).is_none());
+                assert!(control(&h,"dot",page).is_none());
+            }
+        }
+
+        click(&mut h,shortcuts[1].center());
+        assert_eq!(h.app.page(),MUSIC_PAGE);
+        settle(&mut h);
+        let dot=control(&h,"dot",FOCUS_PAGE).unwrap();
+        click(&mut h,dot.center());
+        assert_eq!(h.app.page(),FOCUS_PAGE);
+
+        h.app.settings.show_page_shortcuts=false;
+        settle(&mut h);
+        assert_eq!(h.app.expanded_height(),PH);
+        assert!(control(&h,"page-shortcut",FOCUS_PAGE).is_none());
+        assert!(control(&h,"dot",FOCUS_PAGE).is_some());
+
+        h.app.settings.show_page_shortcuts=true;
+        h.app.settings.visible_pages=std::array::from_fn(|page|page==FOCUS_PAGE);
+        settle(&mut h);
+        assert_eq!(h.app.expanded_height(),PH);
+        assert!(control(&h,"page-shortcut",FOCUS_PAGE).is_none());
+        assert!(control(&h,"dot",FOCUS_PAGE).is_none());
+    }
+}
+
+#[test]
 fn page_arrows_stay_at_same_position_across_pages_and_docks() {
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     use crate::model::Dock;
@@ -6340,6 +6413,7 @@ fn scrolling_mail_details_keeps_the_current_message_open() {
 #[test]
 fn todo_reminder_picker_is_embedded_in_the_island(){
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();
+    h.app.settings.show_page_shortcuts=false;
     h.app.todos.items=vec![crate::model::TodoItem{text:"准备会议".into(),done_on:None,due:None,reminded:false,..Default::default()}];
     h.app.show_page(4);h.hover(H::local(300.0,60.0),1.0);
     h.ctx.set_embed_viewports(false);
@@ -6927,6 +7001,7 @@ fn mailbox_readability_gallery(){
 #[test]
 fn mailbox_large_code_card_preserves_copy_and_identifies_source(){
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();
+    h.app.settings.show_page_shortcuts=false;
     h.app.mail.accounts=["work@qq.com","personal@gmail.com"].into_iter().map(|email|crate::mail::Account {use_windows_proxy: false, custom: None, email:email.into(),provider:crate::mail::Provider::Qq,enabled:true}).collect();
     h.app.mail.recent=[("work@qq.com","GitHub","274630"),("personal@gmail.com","Notion","815926")].into_iter().map(|(account,from,code)|crate::mail::Item {received_unix: None, account:account.into(),from:from.into(),subject:"登录验证码".into(),time:"09:41".into(),code:Some(code.into()),html: String::new().into(), summary:String::new().into(),links:vec![],meeting:None,uid:42}).collect();
     for item in h.app.mail.recent.clone(){h.app.mail.privacy.observe(&item,true,h.app.t,chrono::Utc::now().timestamp());}
