@@ -47,6 +47,7 @@
         "self",
         "general",
         "appearance",
+        "pages",
         "tasks",
         "focus",
         "calendar",
@@ -68,6 +69,7 @@
           "quota.source",
           "appearance.skin",
           "appearance.material",
+          "navigation.shortcuts",
           "storage",
           "timer",
           "event",
@@ -412,6 +414,9 @@
         "properties": {
           "runtime": {
             "const": "assets"
+          },
+          "capabilities": {
+            "not": {"contains": {"const": "navigation.shortcuts"}}
           }
         }
       },
@@ -446,6 +451,27 @@
         "required": [
           "entry"
         ]
+      }
+    },
+    {
+      "if": {
+        "anyOf": [
+          {"properties": {"owner": {"const": "pages"}}},
+          {"properties": {"capabilities": {"contains": {"const": "navigation.shortcuts"}}}}
+        ]
+      },
+      "then": {
+        "required": ["entry", "settings"],
+        "properties": {
+          "runtime": {"const": "assets"},
+          "owner": {"const": "pages"},
+          "entry": {"const": "shortcuts.json"},
+          "capabilities": {"const": ["navigation.shortcuts"]},
+          "dataVersion": {"const": 1},
+          "permissions": {"maxProperties": 0},
+          "settings": {"maxItems": 0}
+        },
+        "not": {"anyOf": [{"required": ["assets"]}, {"required": ["actions"]}]}
       }
     },
     {

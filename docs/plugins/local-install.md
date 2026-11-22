@@ -25,6 +25,18 @@ $env:DAOZAI_DATA_DIR = Join-Path (Get-Location) 'target/local-trial'
 
 重启时岛仔重新核对已安装记录的 ID、清单、脚本入口和设置。看到“需要重新安装”时，在「开发者工具」重新选择可信的原包，或点「移除记录」。未通过检查的记录不会启动；重装会使用原包的默认设置。
 
+### 快捷切换插件
+
+包根目录放置 `plugin.json`、`shortcuts.json` 和 `cover.png`。清单使用 `runtime: "assets"`、`owner: "pages"`、`entry: "shortcuts.json"`、`capabilities: ["navigation.shortcuts"]`、`permissions: {}` 和 `settings: []`。
+
+在 `shortcuts.json` 的 `colors` 中至少填一个页面的选中颜色。颜色使用六位 `#RRGGBB`。页面键支持 `music`、`focus`、`health`、`shelf`、`tasks`、`mail`、`quota`、`calendar`、`weather`、`performance` 和 `wireless`。
+
+```json
+{"colors":{"music":"#FA3E72","focus":"#FF8A30","weather":"#4C9BE8"}}
+```
+
+安装后在「插件 → 已安装」启用，再到「设置 → 页面管理」调整快捷切换图标的显示。图标按岛仔的页面顺序排列，点击可切换到对应页面。停用或卸载后恢复原有页码点。
+
 ## 测试集市
 
 测试集市使用本地的 `catalog.json` 和同目录 ZIP。用另一个插件 ID 或干净的试用配置做测试，方便分别验证本地安装和集市的安装来源。
@@ -45,7 +57,7 @@ New-Item -ItemType Directory -Force (Split-Path $catalog) | Out-Null
 & $island --plugin-submit $bundle $catalog | Out-Host
 ```
 
-`--plugin-test` 检查清单、入口和封面，并用默认设置试跑一张卡片。`--plugin-pack` 导出含封面的 ZIP。`--plugin-submit` 将已验证的包放进测试目录，随后更新索引。命令失败时查看输出，并在修正后重新执行。
+`--plugin-test` 检查清单、入口和封面。JavaScript 插件还会用默认设置试跑一张卡片。`--plugin-pack` 导出含封面的 ZIP。`--plugin-submit` 将已验证的包放进测试目录，随后更新索引。命令失败时查看输出，并在修正后重新执行。
 
 要试更新，把样例副本的 `version` 从 `1.0.0` 改成 `1.0.1`，同时给卡片文案加一处能看出版本差异的改动。保持插件 ID、设置键和数据版本。用新清单、新 ZIP 文件路径再次校验和打包，然后提交到同一个 `catalog.json`。
 

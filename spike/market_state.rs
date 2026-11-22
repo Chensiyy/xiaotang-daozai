@@ -471,11 +471,13 @@ fn prepare_record(mut record: Record, package: Package) -> Result<Record> {
     {
         return Err(fail("新版本与已保存的设置不兼容"));
     }
-    package.render(
-        &values,
-        &record.storage,
-        &chrono::Local::now().date_naive().to_string(),
-    )?;
+    if !manifest.is_page_shortcuts() {
+        package.render(
+            &values,
+            &record.storage,
+            &chrono::Local::now().date_naive().to_string(),
+        )?;
+    }
     record.values = values;
     record.package = Some(package);
     Ok(record)

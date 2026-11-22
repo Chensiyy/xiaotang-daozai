@@ -523,8 +523,9 @@ fn developer_link(ui: &mut egui::Ui) -> bool {
 }
 
 /// 设置归属在界面上的名字，顺序与设置侧栏一致。
-const OWNERS: [(&str, &str); 3] = [
+const OWNERS: [(&str, &str); 4] = [
     ("appearance", "外观"),
+    ("pages", "页面管理"),
     ("calendar", "日程"),
     ("tasks", "待办与置物"),
 ];
@@ -959,7 +960,11 @@ impl LocalPlugins {
         let material = manifest.is_material();
         let owner_key = manifest.owner.clone();
         let retired = manifest.is_retired_lunar_preview();
-        let owner = if owner_key == "calendar" { calendar_on } else { tasks_on };
+        let module_on = match owner_key.as_str() {
+            "calendar" => calendar_on,
+            "pages" => true,
+            _ => tasks_on,
+        };
         let has_settings = !manifest.settings.is_empty();
         let key = egui::Id::new(("installed", &r.origin, id, &manifest.version));
         let cover = package.cover.clone();
@@ -994,7 +999,7 @@ impl LocalPlugins {
         };
         #[cfg(windows)]
         let author = market_browse_ui::display_author(&author, official_mark).to_owned();
-        let paused = !material && !owner;
+        let paused = !material && !module_on;
         // 路径和跳转都按插件清单写明的设置归属，不写死某一页。
         let owner_key = owner_key.as_str();
         let place = owner_label(owner_key).unwrap_or(owner_key);
@@ -1008,9 +1013,10 @@ impl LocalPlugins {
         } else {
             (format!("设置 › {place} ›"), "前往设置".to_owned())
         };
-        let settings_page = match owner_key {
-            "calendar" => crate::app::CALENDAR_PAGE,
-            _ => crate::app::TODO_PAGE,
+        let settings_tab = match owner_key {
+            "calendar" => crate::app::PAGE_SETTINGS_TABS[crate::app::CALENDAR_PAGE],
+            "pages" => crate::extras::SETTINGS_TAB_PAGES,
+            _ => crate::app::PAGE_SETTINGS_TABS[crate::app::TODO_PAGE],
         };
 
         let row_h = if runtime_error.is_some() { 58.0 } else { 42.0 };
@@ -1060,6 +1066,8 @@ impl LocalPlugins {
                     });
                     if retired {
                         settings_hint(ui, "已撤回 · 等待更新");
+                    } else if owner_key == "pages" && !on {
+                        settings_hint(ui, "启用后可在页面管理设置");
                     } else if path_button(ui, &path, paused, &tip) {
                         if material {
                             *jump = Some(crate::extras::SETTINGS_TAB_APPEARANCE);
@@ -1069,7 +1077,7 @@ impl LocalPlugins {
                             if on && has_settings {
                                 self.focus = Some(id.to_owned());
                             }
-                            *jump = Some(crate::app::PAGE_SETTINGS_TABS[settings_page]);
+                            *jump = Some(settings_tab);
                         }
                     }
                     if let Some(e) = &runtime_error {
