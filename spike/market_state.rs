@@ -329,6 +329,7 @@ impl LocalPlugins {
                 values: Values::new(),
                 storage: Value::Null,
                 material_granted: false,
+                source_grant: None,
             }
         };
         let entry = entry.clone();
@@ -379,6 +380,8 @@ impl LocalPlugins {
             // 校验期间，旧插件可能完成一次后台刷新，保留该次已保存的数据。
             if let Some(current) = self.records.get(&job.id) {
                 record.storage = current.storage.clone();
+                record.enabled = current.enabled;
+                record.source_grant = current.source_grant().cloned();
             }
             self.put(&job.id, record)
                 .map_err(|error| error.to_string())?;

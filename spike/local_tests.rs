@@ -287,7 +287,7 @@ mod test_market {
         host.tick(true, true, "2026-12-02");
         host.market_action(false, ID)?;
         settle_market(&mut host);
-        assert!(!host.jobs[ID].valid, "上个版本的迟到结果应作废");
+        assert!(host.jobs[ID].cancelled.load(Ordering::Acquire), "上个版本的迟到结果应作废");
         assert_eq!(host.records[ID].storage, saved);
         assert_eq!(status(&host), MarketStatus::Installed);
         assert!(host.records[ID].enabled);
