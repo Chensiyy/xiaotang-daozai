@@ -202,6 +202,7 @@ pub enum ResidentDate {
     #[default]
     Off,
     Gregorian,
+    LunarOnly,
     Lunar,
 }
 
@@ -210,6 +211,7 @@ impl ResidentDate {
         match self {
             Self::Off => "off",
             Self::Gregorian => "gregorian",
+            Self::LunarOnly => "lunar-only",
             Self::Lunar => "lunar",
         }
     }
@@ -217,6 +219,7 @@ impl ResidentDate {
     fn parse(value: &str) -> Self {
         match value {
             "gregorian" => Self::Gregorian,
+            "lunar-only" => Self::LunarOnly,
             "lunar" => Self::Lunar,
             _ => Self::Off,
         }

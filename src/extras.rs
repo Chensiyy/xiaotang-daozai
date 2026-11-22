@@ -1776,13 +1776,24 @@ impl App {
                             ui.separator();
                             setting_row(ui,"时间","关闭后仍可在展开顶栏查看",&mut self.settings.show_clock);
                             ui.separator();
-                            settings_control_row_right(ui,"日期常驻",|ui|{
+                            let mut date_modes=|ui:&mut egui::Ui|{
                                 use crate::model::ResidentDate;
-                                let modes=[(ResidentDate::Off,"关闭"),(ResidentDate::Gregorian,"仅公历"),(ResidentDate::Lunar,"公历＋农历")];
-                                if settings_segmented(ui,&mut self.settings.resident_date,&modes,68.0) {
+                                let modes=[
+                                    (ResidentDate::Off,"关闭"),
+                                    (ResidentDate::LunarOnly,"仅农历"),
+                                    (ResidentDate::Gregorian,"仅公历"),
+                                    (ResidentDate::Lunar,"公历＋农历"),
+                                ];
+                                if settings_segmented(ui,&mut self.settings.resident_date,&modes,52.0) {
                                     ctx.request_repaint_of(egui::ViewportId::ROOT);
                                 }
-                            });
+                            };
+                            if ui.available_width()<360.0 {
+                                ui.label("日期常驻");
+                                date_modes(ui);
+                            } else {
+                                settings_control_row_right(ui,"日期常驻",date_modes);
+                            }
                             ui.separator();
                             setting_row(ui,"电量","无电池设备自动隐藏",&mut self.settings.show_battery);
                             ui.separator();
