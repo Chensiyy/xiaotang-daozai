@@ -8,6 +8,20 @@ use std::{
 };
 
 fn install(h: &mut H, profile: &Path, id: &str, name: &str, data: &Value) {
+    let source = profile.join(id).join("status.json");
+    fs::create_dir_all(source.parent().unwrap()).unwrap();
+    fs::write(&source, data.to_string()).unwrap();
+    install_with_source(h, profile, id, name, &source, None);
+}
+
+fn install_with_source(
+    h: &mut H,
+    profile: &Path,
+    id: &str,
+    name: &str,
+    source: &Path,
+    layout: Option<Value>,
+) {
     let folder = profile.join(id);
     fs::create_dir_all(&folder).unwrap();
     fs::write(
@@ -24,20 +38,17 @@ function refresh({source}) {
 "#,
     )
     .unwrap();
-    let source = folder.join("status.json");
-    fs::write(&source, data.to_string()).unwrap();
     let manifest = folder.join("plugin.json");
-    fs::write(
-        &manifest,
-        json!({
+    let mut definition = json!({
             "id":id, "name":name, "author":"验收", "version":"1.0.0", "api":1,
             "runtime":"js", "entry":"main.js", "cover":"cover.png", "owner":"status",
             "capabilities":["status.page","timer"], "dataVersion":1,
             "permissions":{"source.read":"file"}, "settings":[]
-        })
-        .to_string(),
-    )
-    .unwrap();
+    });
+    if let Some(layout) = layout {
+        definition["statusLayout"] = layout;
+    }
+    fs::write(&manifest, definition.to_string()).unwrap();
     h.app.plugins.install(&manifest).unwrap();
     let installed = profile
         .join("local-plugins")
@@ -45,6 +56,121 @@ function refresh({source}) {
     let mut record: Value = serde_json::from_slice(&fs::read(&installed).unwrap()).unwrap();
     record["source_grant"] = json!({"File":source});
     fs::write(installed, record.to_string()).unwrap();
+}
+
+fn text_y(h: &H, label: &str) -> f32 {
+    h.shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) if text.galley.text() == label => {
+                Some(text.visual_bounding_rect().center().y)
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("未绘制：{label}"))
+}
+
+#[test]
+fn plugin_status_layout_renders_author_ring_and_bar_from_the_same_snapshot() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let mut h = H::new();
+    let profile = crate::model::config_dir();
+    let ring = "test.bambu-ring";
+    let bar = "test.bambu-bar";
+    let source = profile.join("shared-status.json");
+    fs::create_dir_all(&profile).unwrap();
+    fs::write(
+        &source,
+        json!({
+            "state":"running", "label":"打印中", "summary":"拓竹模拟任务 · 收纳盒",
+            "progress_pct":48, "observed_at":1793756400,
+            "metrics":[
+                {"label":"喷嘴温度","value":"220 °C"},
+                {"label":"热床温度","value":"60 °C"},
+                {"label":"层数","value":"58 / 120"},
+                {"label":"剩余时间","value":"24 分钟"}
+            ],
+            "alert":"耗材余量偏低"
+        })
+        .to_string(),
+    )
+    .unwrap();
+    install_with_source(
+        &mut h,
+        &profile,
+        ring,
+        "拓竹打印（圆环）",
+        &source,
+        Some(json!({
+            "components": [
+                {"type":"state"}, {"type":"summary"}, {"type":"progress","variant":"ring"},
+                {"type":"metrics","columns":2}, {"type":"alert"}, {"type":"updated_at"}
+            ],
+            "style": {"accent":"#74C99F"}
+        })),
+    );
+    install_with_source(
+        &mut h,
+        &profile,
+        bar,
+        "拓竹打印（进度条）",
+        &source,
+        Some(json!({
+            "components": [
+                {"type":"state"}, {"type":"metrics","columns":1},
+                {"type":"progress","variant":"bar"}, {"type":"alert"}, {"type":"updated_at"}
+            ],
+            "style":{"accent":"#66B8FF","density":"compact","surface":"plain"}
+        })),
+    );
+    h.app.plugins = crate::sdk_spike::local::LocalPlugins::open(profile.join("local-plugins"));
+    h.app.plugins.enable(ring, true).unwrap();
+    h.app.plugins.enable(bar, true).unwrap();
+    settled(&mut h, ring, StatusHealth::Ready);
+    settled(&mut h, bar, StatusHealth::Ready);
+    let (_, first, _) = h.app.plugins.status_page(ring).unwrap();
+    let (_, second, _) = h.app.plugins.status_page(bar).unwrap();
+    assert_eq!(first, second);
+
+    let cursor = H::local(225.0, 85.0);
+    let dir = std::env::var_os("DAOZAI_PLUGIN_STATUS_LAYOUT_PREVIEW").map(std::path::PathBuf::from);
+    if let Some(dir) = &dir {
+        fs::create_dir_all(dir).unwrap();
+    }
+    h.app.show_status_page(ring);
+    h.hover(cursor, 0.8);
+    assert!(has_text(&h, "拓竹模拟任务 · 收纳盒"));
+    assert!(text_y(&h, "48") < text_y(&h, "220 °C"));
+    if let Some(dir) = &dir {
+        shoot_feature(
+            &mut h,
+            &mut feature_raster(),
+            dir,
+            "拓竹模拟-圆环",
+            30,
+            Some(cursor),
+            "2026-11-04",
+        );
+    }
+    h.app.show_status_page(bar);
+    h.hover(cursor, 0.8);
+    assert!(text_y(&h, "220 °C") < text_y(&h, "48"));
+    assert!(!has_text(&h, "拓竹模拟任务 · 收纳盒"));
+    assert!(has_text(&h, "耗材余量偏低"));
+    assert!(h.shapes.iter().any(|shape| matches!(&shape.shape,egui::Shape::Rect(rect)
+        if rect.rect.width()>90.0 && rect.rect.height()<14.0 && rect.fill==egui::Color32::from_rgb(102,184,255)
+    )), "应绘制作者指定蓝色的横向进度条");
+    if let Some(dir) = &dir {
+        shoot_feature(
+            &mut h,
+            &mut feature_raster(),
+            dir,
+            "拓竹模拟-横向进度条",
+            30,
+            Some(cursor),
+            "2026-11-04",
+        );
+    }
 }
 
 fn has_text(h: &H, label: &str) -> bool {

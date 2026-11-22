@@ -28,7 +28,7 @@ function refresh({ settings, today }) {
 | 日期标注 · 已实现 | `owner: "calendar"` 复用文字卡和周期刷新，`card` 可以返回“日期说明 · 短标签” | 展开「日程 → 日历」查看电脑当天日期下方的标注 |
 | 周期刷新 · 已实现 | 两个样例在清单声明 `"refreshSeconds":60` 和 timer 能力。到期由岛仔调用 refresh | 卡片按期更新 |
 | 常驻、固定、临时卡 · 待宿主实现 | `function refresh(i){return {cards:[{id:"job",mode:"temporary",text:i.settings.title,ttlMs:5000}]}}` | 常驻栏、临时位置，用户自行选择固定 |
-| 结构化状态卡和独立详情页 · 测试版 | 清单使用 `"owner":"status"` 和 `"capabilities":["status.page","timer"]`，`refresh` 返回 `status`，由岛仔绘制进度、指标和告警。 | 在岛上翻页查看，在「设置 → 页面管理 → 状态详情」单独启停 |
+| 结构化状态卡和独立详情页 · 测试版 | 清单使用 `"owner":"status"` 和 `"capabilities":["status.page","timer"]`，`refresh` 返回 `status`。可用 `statusLayout` 选择组件、排序和样式。 | 在岛上翻页查看，在「设置 → 页面管理 → 状态详情」单独启停 |
 | 可编辑独立模块、列表、表单 · 待宿主实现 | 清单声明 module 与按钮 `actions:["save"]`。示意 `function action(i){return {page:{kind:"detail",text:i.form.text},storage:{note:i.form.text}}}` | 岛上功能栏查看、编辑，侧栏调偏好，页面管理启停 |
 | 日程来源 · 待宿主实现 | `function refresh(i){return {calendar:[{id:"anniversary",title:i.settings.title,date:i.settings.target}]}}` | 日程里的来源，按来源和条目 ID 更新 |
 | 歌词来源 · 待宿主实现 | `function refresh(i){return {lyrics:{trackId:i.track.id,lines:i.source.lines}}}`。换歌后宿主只接收当前曲目的结果 | 原音乐页 |
@@ -45,7 +45,7 @@ function refresh({ settings, today }) {
 
 用户习惯去原功能完成的事，可以往原设置页加一项。皮肤进入外观选择器，歌词来源进入音乐设置。只需要看一眼的内容可以做卡片，少量参数仍放在所属页。
 
-用户要反复编辑便签、管理纪念日，或专门查看打印进度、温度和告警时，可以新增独立模块。作者决定展示哪些内容及其顺序，岛仔负责配色、字体、缩放和点击。正文和一次性输入在功能页编辑，默认排序等偏好在模块设置页修改。
+用户要反复编辑便签、管理纪念日，或专门查看打印进度、温度和告警时，可以新增独立模块。作者选择展示内容与样式，岛仔负责字体、缩放和点击。正文和一次性输入在功能页编辑，默认排序等偏好在模块设置页修改。
 
 只读状态详情页通过 `owner: "status"` 和 `status.page` 接入，按照插件 ID 找到页面和独立开关。岛上的齿轮与「已安装」里的页面路径都进入页面管理。可编辑独立模块的设计使用 `owner: "self"` 和 `module`。
 
@@ -133,6 +133,38 @@ JS 清单使用 `"owner":"status"`，能力列出 `status.page`。可选的 `tim
 | `progress_pct` | 可选，0 至 100 的数字 |
 | `metrics` | 可选，最多 6 项。每项填 `label`（1 至 28 字）和 `value`（1 至 32 字），数值和单位可放在同一段文字 |
 | `observed_at`、`expires_at` | 可选的 Unix 秒，分别表示观察和过期时间。观察时间须早于或等于过期时间，到了过期时间会撤下旧读数 |
+
+#### 自定义详情页布局
+
+在 `owner: "status"` 的插件清单中添加 `statusLayout`。缺省时使用原有默认模板。布局从清单读取，`refresh` 仍按上表返回 `status`。下例在状态标题后显示横向进度条、摘要、指标和告警。
+
+```json
+{
+  "statusLayout": {
+    "components": [
+      {"type": "state"},
+      {"type": "progress", "variant": "bar"},
+      {"type": "summary"},
+      {"type": "metrics", "columns": 2},
+      {"type": "alert"}
+    ],
+    "style": {"accent": "#5BADEF", "density": "compact", "surface": "card"}
+  }
+}
+```
+
+选择 1 至 6 个不同类型的组件，数组顺序就是展示顺序。有数据的组件按顺序显示。
+
+| 组件 `type` | 数据与选项 |
+| --- | --- |
+| `state` | 显示 `state` 和 `label` |
+| `summary` | 显示 `summary` |
+| `progress` | 显示 `progress_pct`。`variant` 可选 `ring`（默认，圆环）或 `bar`（横向进度条） |
+| `metrics` | 显示 `metrics`。`columns` 可选 `1` 或 `2`（默认） |
+| `alert` | 显示 `alert` |
+| `updated_at` | 显示 `observed_at` |
+
+`style` 可以省略。主色 `accent` 使用六位 `#RRGGBB`，省略时沿用岛仔默认状态色。间距 `density` 可选 `comfortable`（默认）或 `compact`。背景 `surface` 可选 `card`（默认）或 `plain`。
 
 返回 `{status:null}` 时显示等待状态。取数失败会撤下旧读数，在本页显示数据源暂不可用。来源正常返回 `state:"offline"` 时，按插件提供的设备离线状态展示。宿主按插件 ID 分开刷新和撤下状态。
 
@@ -245,7 +277,7 @@ function refresh({settings}) {
 
 以下内容还需要实际开发和试装。
 
-作者可组合布局的独立页面用只读仪表页和可编辑便签验证。后续试验临时卡到期撤回、日程跨来源去重、切歌时清旧歌词，以及重复通知只提醒一次。开发者模式补保存后自动重新加载。用资源换肤包、纪念日验证切换恢复与跨模块输出。评估独立低权限进程对故障隔离和启动的影响。
+可编辑的独立页面用便签验证。后续试验临时卡到期撤回、日程跨来源去重、切歌时清旧歌词，以及重复通知只提醒一次。开发者模式补保存后自动重新加载。用资源换肤包、纪念日验证切换恢复与跨模块输出。评估独立低权限进程对故障隔离和启动的影响。
 
 ### 名词解释
 

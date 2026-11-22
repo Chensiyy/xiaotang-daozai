@@ -2134,7 +2134,10 @@ impl App {
     fn page_content_height(&self)->f32 {
         #[cfg(feature="sdk-js")]
         {
-            if self.page>=PAGE_NAMES.len(){return crate::plugin_status_ui::STATUS_PAGE_H;}
+            if let Some(index)=self.page.checked_sub(PAGE_NAMES.len()) {
+                let layout=self.status_pages.get(index).and_then(|(id,_)|self.plugins.status_layout(id));
+                return crate::plugin_status_ui::status_page_height(layout);
+            }
             if self.page==TODO_PAGE && self.plugins.has_card(){return PH+46.0;}
         }
         if self.page==PERFORMANCE_PAGE {crate::performance_ui::PAGE_H}else if self.page==BLUETOOTH_PAGE {194.0}else if self.page==CALENDAR_PAGE {CALENDAR_H}else if self.page==WEATHER_PAGE {WEATHER_H}else if self.page==6{176.0}else if self.page==5&&self.mail.open_uid.is_some(){236.0}else{PH}
@@ -3896,7 +3899,7 @@ impl App {
         #[cfg(feature="sdk-js")]
         if let Some((id,_))=page.checked_sub(PAGE_NAMES.len()).and_then(|index|self.status_pages.get(index)) {
             if let Some((_,status,health))=self.plugins.status_page(id) {
-                crate::plugin_status_ui::draw_status_page(c,status,health);
+                crate::plugin_status_ui::draw_status_page(c,status,health,self.plugins.status_layout(id));
             }
             return;
         }

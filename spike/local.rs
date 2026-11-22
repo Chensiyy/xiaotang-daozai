@@ -15,7 +15,7 @@ mod source_read;
 #[path = "local_ui.rs"]
 mod ui;
 use super::{fail, Result};
-use crate::plugin_status::{PluginStatus, StatusHealth};
+use crate::plugin_status::{PluginStatus, StatusHealth, StatusLayout};
 use crate::quota_plugin::PluginQuota;
 use cover::{CoverPng, COVER_FILE};
 use serde::{Deserialize, Serialize};
@@ -127,6 +127,12 @@ struct Manifest {
     refresh_seconds: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     material: Option<Material>,
+    #[serde(
+        default,
+        deserialize_with = "present_value",
+        skip_serializing_if = "Option::is_none"
+    )]
+    status_layout: Option<StatusLayout>,
 }
 fn default_refresh() -> u32 {
     60
@@ -377,6 +383,12 @@ impl Manifest {
                 .all(|v| v.parse::<u32>().is_ok_and(|n| n.to_string() == v))
         {
             return Err(fail("请核对插件 ID、作者、版本和 API 版本"));
+        }
+        if let Some(layout) = &m.status_layout {
+            if !m.is_status_page() {
+                return Err(fail("statusLayout 只适用于 status 归属的状态页插件"));
+            }
+            layout.validate().map_err(fail)?;
         }
         let material = m.is_material();
         if m.is_wireless() {
@@ -1417,6 +1429,16 @@ impl LocalPlugins {
     pub(crate) fn status_pages(&self) -> impl Iterator<Item = (&str, &str)> {
         self.status_page_preferences()
             .filter_map(|(id, name, plugin_on, page_on)| (plugin_on && page_on).then_some((id, name)))
+    }
+
+    pub(crate) fn status_layout(&self, id: &str) -> Option<&StatusLayout> {
+        self.records
+            .get(id)?
+            .package
+            .as_ref()?
+            .manifest
+            .status_layout
+            .as_ref()
     }
 
     pub(crate) fn status_page(&self, id: &str) -> Option<(&str, Option<&PluginStatus>, StatusHealth)> {

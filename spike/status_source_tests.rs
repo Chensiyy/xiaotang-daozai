@@ -1,6 +1,6 @@
 use super::*;
 use std::{
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader, Read, Write},
     net::TcpListener,
     sync::mpsc,
     thread,
@@ -95,6 +95,129 @@ fn snapshot(progress: u8) -> String {
         "metrics":[{"label":"喷嘴温度","value":"220 °C"},{"label":"层数","value":"74 / 180"}]
     }})
     .to_string()
+}
+
+#[test]
+fn structured_status_layout_is_optional_and_preserved_in_author_packages() -> Result<()> {
+    use crate::plugin_status::{ProgressVariant, StatusComponent, StatusDensity, StatusSurface};
+
+    let fixture = Fixture::new()?;
+    let path = fixture.plugin(
+        PRINTER,
+        "status",
+        &["status.page"],
+        json!({}),
+        "function refresh() {return {status:{state:'running',label:'打印中',progress_pct:42}};}",
+    )?;
+    let mut manifest: Value = serde_json::from_slice(&fs::read(&path)?)?;
+    assert!(Manifest::decode(&manifest.to_string())?
+        .status_layout
+        .is_none());
+    manifest["statusLayout"] = json!({
+        "components":[{"type":"metrics"},{"type":"progress","variant":"bar"},{"type":"state"}],
+        "style":{"accent":"#28a7DB","density":"compact","surface":"plain"}
+    });
+    fs::write(&path, serde_json::to_vec(&manifest)?)?;
+
+    let bundle = fixture.0.join("status-layout.zip");
+    market::pack(&path, &bundle)?;
+    let mut zip = zip::ZipArchive::new(fs::File::open(bundle)?)?;
+    let mut packed = String::new();
+    zip.by_name("plugin.json")?.read_to_string(&mut packed)?;
+    let layout = Manifest::decode(&packed)?.status_layout.unwrap();
+    assert_eq!(
+        layout.components,
+        [
+            StatusComponent::Metrics { columns: 2 },
+            StatusComponent::Progress {
+                variant: ProgressVariant::Bar
+            },
+            StatusComponent::State {},
+        ]
+    );
+    assert_eq!(layout.style.accent_rgb(), Some([0x28, 0xa7, 0xdb]));
+    assert_eq!(layout.style.density, StatusDensity::Compact);
+    assert_eq!(layout.style.surface, StatusSurface::Plain);
+
+    let mut host = fixture.host();
+    host.install(&path)?;
+    host.enable(PRINTER, true)?;
+    assert_eq!(host.status_layout(PRINTER), Some(&layout));
+    settle(&mut host, false);
+    assert_eq!(status(&host, PRINTER), (Some(42.0), StatusHealth::Ready));
+    let saved = host.path(PRINTER);
+    drop(host);
+    assert_eq!(fixture.host().status_layout(PRINTER), Some(&layout));
+
+    let mut stored: Value = serde_json::from_slice(&fs::read(&saved)?)?;
+    stored["package"]["manifest"]["statusLayout"]["components"] = json!([]);
+    fs::write(saved, serde_json::to_vec(&stored)?)?;
+    let host = fixture.host();
+    assert!(host.invalid.contains(PRINTER));
+    assert!(host.status_layout(PRINTER).is_none());
+    assert!(host.status_page(PRINTER).is_none());
+    Ok(())
+}
+
+#[test]
+fn structured_status_layout_rejects_out_of_contract_manifests() -> Result<()> {
+    use crate::plugin_status::{ProgressVariant, StatusComponent, StatusDensity, StatusSurface};
+
+    let fixture = Fixture::new()?;
+    let path = fixture.plugin(
+        PRINTER,
+        "status",
+        &["status.page"],
+        json!({}),
+        "function refresh() {return {status:null};}",
+    )?;
+    let mut manifest: Value = serde_json::from_slice(&fs::read(path)?)?;
+    for invalid in [
+        Value::Null,
+        json!({"components":[]}),
+        json!({"components":vec![json!({"type":"alert"}); 7]}),
+        json!({"components":[{"type":"progress","variant":"ring"},{"type":"progress","variant":"bar"}]}),
+        json!({"components":[{"type":"state","text":"越权字段"}]}),
+        json!({"components":[{"type":"progress","style":"ring"}]}),
+        json!({"components":[{"type":"progress","variant":"dial"}]}),
+        json!({"components":[{"type":"metrics","columns":3}]}),
+        json!({"components":[{"type":"metrics","columns":null}]}),
+        json!({"components":[{"type":"summary"}],"style":{"accent":"red"}}),
+        json!({"components":[{"type":"summary"}],"style":{"accent":"#12+345"}}),
+        json!({"components":[{"type":"summary"}],"style":{"accent":null}}),
+        json!({"components":[{"type":"summary"}],"style":{"surface":"custom"}}),
+        json!({"components":[{"type":"summary"}],"style":{"font":"自定字体"}}),
+        json!({"components":[{"type":"summary"}],"style":null}),
+        json!({"components":[{"type":"summary"}],"width":300}),
+    ] {
+        manifest["statusLayout"] = invalid;
+        assert!(
+            Manifest::decode(&manifest.to_string()).is_err(),
+            "误接受：{}",
+            manifest["statusLayout"]
+        );
+    }
+
+    manifest["statusLayout"] = json!({"components":[{"type":"progress"}]});
+    let layout = Manifest::decode(&manifest.to_string())?
+        .status_layout
+        .unwrap();
+    assert_eq!(
+        layout.components,
+        [StatusComponent::Progress {
+            variant: ProgressVariant::Ring
+        }]
+    );
+    assert_eq!(layout.style.density, StatusDensity::Comfortable);
+    assert_eq!(layout.style.surface, StatusSurface::Card);
+    assert_eq!(layout.style.accent_rgb(), None);
+
+    manifest["owner"] = json!("tasks");
+    manifest["capabilities"] = json!(["card"]);
+    assert!(Manifest::decode(&manifest.to_string()).is_err());
+    manifest.as_object_mut().unwrap().remove("statusLayout");
+    assert!(Manifest::decode(&manifest.to_string()).is_ok());
+    Ok(())
 }
 
 #[test]
