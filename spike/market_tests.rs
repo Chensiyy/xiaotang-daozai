@@ -131,6 +131,34 @@ impl Drop for Fixture {
 }
 
 #[test]
+fn market_author_template_is_valid_and_preserves_existing_files() -> Result<()> {
+    let fixture = Fixture::new()?;
+    assert!(create_template(&fixture.0, "../escape", "发薪倒计时", "小明").is_err());
+    assert!(create_template(&fixture.0, "xiaoming.payday", " ", "小明").is_err());
+    assert!(create_template(&fixture.0, "xiaoming.payday", "发薪倒计时", " ").is_err());
+    assert_eq!(fs::read_dir(&fixture.0)?.count(), 0);
+
+    let path = create_template(&fixture.0, "xiaoming.payday", "自定义倒计时", "小明")?;
+    assert_eq!(path, fixture.0.join("xiaoming.payday/plugin.json"));
+    assert_eq!(validate_project(&path)?, "xiaoming.payday v1.0.0 校验通过");
+    let original = fs::read_to_string(&path)?;
+    let manifest = Manifest::decode(&original)?;
+    assert_eq!(manifest.name, "自定义倒计时");
+    assert_eq!(manifest.author, "小明");
+    assert_eq!(
+        fs::read(path.with_file_name("LICENSE"))?.as_slice(),
+        include_bytes!("examples/payday/LICENSE")
+    );
+
+    assert!(create_template(&fixture.0, "xiaoming.payday", "另一个插件", "另一位作者").is_err());
+    assert_eq!(fs::read_to_string(&path)?, original);
+    assert_eq!(fs::read_dir(&fixture.0)?.count(), 1);
+    fs::remove_file(path.with_file_name(COVER_FILE))?;
+    assert!(validate_project(&path).is_err());
+    Ok(())
+}
+
+#[test]
 fn market_author_packages_and_submits_immutable_versions() -> Result<()> {
     let fixture = Fixture::new()?;
     let catalog_path = fixture.0.join("catalog.json");
