@@ -6,7 +6,14 @@ use crate::theme::{self, size, W};
 use eframe::egui::{self, Color32, Rect};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum AlertSource { Internal, MailCode(String,u32), Messenger(crate::app::Messenger), External(String) }
+pub(crate) enum AlertSource {
+    Internal,
+    MailCode(String,u32),
+    Messenger(crate::app::Messenger),
+    External(String),
+    #[cfg(windows)]
+    Plugin { source: String, id: String },
+}
 
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
 pub(crate) enum HealthReminder {Water,Sit}
@@ -494,6 +501,8 @@ impl App {
             AlertSource::MailCode(..)=>!self.fullscreen_hidden,
             AlertSource::Messenger(client)=>client.enabled(&self.settings),
             AlertSource::External(id)=>self.settings.read_notifications && crate::messenger::NotificationFilter::for_settings(&self.settings).allows(id) && self.settings.notifications && !crate::messenger::suppresses_toast(&a.title,id,crate::messenger::toast_suppression(&self.settings)) && self.notification_apps.items.iter().any(|(key,_,on)|key==id && *on),
+            #[cfg(windows)]
+            AlertSource::Plugin { .. } => self.settings.notifications,
         };
         self.alerts.retain(&allowed);
         if self.notice.as_ref().is_some_and(|a|!allowed(a)){self.notice=None;}
@@ -522,6 +531,11 @@ impl App {
     }
     pub(crate) fn draw_notice(&mut self, c:&Card,panel:Rect,a:&Alert,_cmds:&mut Vec<Cmd>){
         let nc=c.clipped(0.0,0.0,panel.width(),panel.height());
+        #[cfg(windows)]
+        if let AlertSource::Plugin { source, id } = &a.source {
+            self.draw_plugin_notice_banner(&nc, a, source, id, _cmds);
+            return;
+        }
         if let AlertSource::MailCode(account,uid)=&a.source {
             if let Some(item)=self.mail.alert_code_item(account,*uid,self.t,self.settings.mail_code_hide_seconds) {
                 let code=item.code.as_deref().unwrap_or_default();
@@ -2233,7 +2247,7 @@ impl App {
                                         } else if ui.button("连接…").clicked(){open_connect=true;}
                                     });
                                 });
-                                sub(ui,"显示通知正文","仅 QQ 与 Windows 通知；可能包含私密消息，屏幕共享时建议关闭",&mut self.settings.notification_preview);
+                                sub(ui,"显示通知正文","适用于 QQ、Windows 通知和本机接入；屏幕共享时建议关闭",&mut self.settings.notification_preview);
                                 // 收到过通知的应用可能有几十个：默认收起，展开后用可点选的标签排成几行，不再一应用一行。
                                 let before_apps=self.notification_apps.items.clone();
                                 let total=self.notification_apps.items.len();
@@ -2271,6 +2285,8 @@ impl App {
                             });
                             if close || modal.should_close() {ctx.data_mut(|d|d.remove::<bool>(connect_id));}
                         }
+                        #[cfg(windows)]
+                        self.plugin_notice_settings(ui);
                     }
                     7=>{
                         let mut add_mail=false;

@@ -193,6 +193,8 @@ pub enum Cmd {
     Media(Transport),
     Open(PathBuf),
     ViewMessenger(Unread),
+    #[cfg(windows)]
+    OpenPluginNotice { source: String, id: String, session: String },
     OpenUrl(String),
     WirelessCompatInstall,
     /// 需要键盘输入：外壳应让窗口可激活并取得焦点。
@@ -903,6 +905,10 @@ pub struct App {
     notice_width: Spring,
     notice_details: bool,
     pub pending_messengers:Vec<Unread>,
+    #[cfg(windows)]
+    pub(crate) plugin_notice_ui: crate::plugin_notice_ui::NoticeUi,
+    #[cfg(windows)]
+    pub(crate) plugin_notice_host: crate::plugin_notice_settings::NoticeHost,
     messenger_scroll: f32,
     pub(crate) alerts: std::collections::VecDeque<Alert>,
     pub(crate) history: std::collections::VecDeque<Alert>,
@@ -1084,6 +1090,10 @@ impl App {
             forced_open_until:0.0, settings_open:false, settings_window:std::sync::Arc::new(std::sync::Mutex::new(crate::settings_window::State::load())), displays:Vec::new(), browser_at_top:false, browser_minimal_active:false, glass_tint:0.0, fluid:Default::default(), fluid_origin:Pos2::ZERO, fluid_art:None, fluid_title:String::new(), screen:None, settings_focus_requested:false, settings_tab:0, settings_category:0, messenger_statuses:Default::default(), notification_apps:model::NotificationApps::load(), subpage:None, task_dialog:None,
             listener_status: "尚未连接".into(),
             notification_bell_until: 0.0, notification_bell_at: -10.0, notice: None, hud_notice: None, hud_alpha: 0.0, notice_width:Spring::new(0.0,CLOSE.0,CLOSE.1), notice_details:false, pending_messengers:Vec::new(), messenger_scroll:0.0, alerts: Default::default(), history: Default::default(), pending: vec![],
+            #[cfg(windows)]
+            plugin_notice_ui: Default::default(),
+            #[cfg(windows)]
+            plugin_notice_host: Default::default(),
             todo_first: 0, todo_choosing: false, pet: Default::default(), last_drink: None,
             toast: None, toast_below: false,
             last_input: 0.0, system_idle: None,
@@ -1902,7 +1912,13 @@ impl App {
         self.settings.island_lyrics && self.settings.visible_pages[0] && self.media.is_music() && self.media.playing
             && !self.browser_minimal_active
     }
-    pub(crate) fn compact_notices(&self)->bool {self.island_lyrics_active()&&!self.open&&!self.notice.as_ref().is_some_and(|a|a.meeting.is_some()||self.settings.notification_preview&&matches!(a.source,crate::extras::AlertSource::External(_)))}
+    pub(crate) fn compact_notices(&self)->bool {
+        #[cfg(windows)]
+        if self.notice.as_ref().is_some_and(|a| matches!(a.source, crate::extras::AlertSource::Plugin { .. })) {
+            return false;
+        }
+        self.island_lyrics_active()&&!self.open&&!self.notice.as_ref().is_some_and(|a|a.meeting.is_some()||self.settings.notification_preview&&matches!(a.source,crate::extras::AlertSource::External(_)))
+    }
 
     /// 换句、分段和展开高亮共用时间调整；正数延后，负数提前。
     pub(crate) fn lyric_position(&self)->f32 {(self.media.position-self.settings.lyric_delay_ms as f64/1000.0)as f32}
@@ -2028,6 +2044,8 @@ impl App {
     }
 
     pub(crate) fn expanded_height(&self)->f32 {
+        #[cfg(windows)]
+        if self.plugin_notice_detail_open() { return crate::plugin_notice_ui::DETAIL_HEIGHT; }
         self.page_content_height() + if self.page_shortcuts_enabled() { PAGE_SHORTCUT_ROW_H } else { 0.0 }
     }
 
@@ -2089,6 +2107,12 @@ impl App {
         self.sync_device(env);
         self.update_mail_code_alerts(env);
         self.tick_alerts();
+        #[cfg(windows)]
+        self.tick_plugin_notices(&ctx, env);
+        #[cfg(windows)]
+        let plugin_notice_detail = self.plugin_notice_detail_open();
+        #[cfg(not(windows))]
+        let plugin_notice_detail = false;
         let hud_active=self.notice.clone();
         if hud_active.as_ref().map(|a|&a.title)!=self.hud_notice.as_ref().map(|a|&a.title)||hud_active.is_none(){self.notice_details=false;}
         if let Some(a)=&hud_active {self.hud_notice=Some(a.clone());}
@@ -2207,7 +2231,7 @@ impl App {
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) && self.is_editing() {
             self.cancel_edit();
         }
-        if (!self.is_editing() || self.todo_choosing) && page_hover && self.open && self.reveal > 0.95 {
+        if !plugin_notice_detail && (!self.is_editing() || self.todo_choosing) && page_hover && self.open && self.reveal > 0.95 {
             let (scroll, left, right, esc) = ctx.input(|i| (i.raw_scroll_delta.y, i.key_pressed(egui::Key::ArrowLeft), i.key_pressed(egui::Key::ArrowRight), i.key_pressed(egui::Key::Escape)));
             if esc { self.hover_lock = true; }
             if (left || right) && !self.todo_choosing {
@@ -2261,7 +2285,7 @@ impl App {
             }
         } else {self.wheel_delta=0.0;}
         let volume_dragging=self.music_volume_open && ctx.is_being_dragged(egui::Id::new(("card-drag",true,"m-volume-track")));
-        let want = self.hold_open || (page_hover && !self.hover_lock && (self.compact_notices()||self.notice.is_none()||self.open)) || self.open && on_notice || (self.open && self.t<self.forced_open_until) || self.drag_hot || volume_dragging || (self.is_editing() && self.open);
+        let want = plugin_notice_detail || self.hold_open || (page_hover && !self.hover_lock && (self.compact_notices()||self.notice.is_none()||self.open)) || self.open && on_notice || (self.open && self.t<self.forced_open_until) || self.drag_hot || volume_dragging || (self.is_editing() && self.open);
         self.morph(want, inside, env.t, dt);
         let staying_open = self.open && want;
         if !self.drag_departing || staying_open {
@@ -2395,7 +2419,7 @@ impl App {
             }
         }else if banner {
             if let Some(a)=self.notice.clone(){self.draw_notice(&Card::new(ui,panel.min+Vec2::new(self.pet_space(),0.0),panel.intersect(ui.max_rect())),panel,&a,&mut cmds);}
-        }else if !minimal_pill || pc > 0.0 {
+        }else if !plugin_notice_detail && (!minimal_pill || pc > 0.0) {
             self.resident_header(&base, panel, cx, if restoring_lyrics{0.0}else{pc}, reveal, env, resident_day.as_ref());
         }
         if let Some(rect)=notice_rect {
@@ -2450,7 +2474,12 @@ impl App {
         }
         let previous_scroll=self.content_scroll.take();
         let mut page_transition=false;
-        if reveal > 0.004 && !banner && !restoring_lyrics {
+        if plugin_notice_detail {
+            #[cfg(windows)]
+            if self.open && reveal > 0.6 {
+                self.draw_plugin_notice_detail(&base, &mut cmds);
+            }
+        } else if reveal > 0.004 && !banner && !restoring_lyrics {
             let c = base.shifted(0.0, (1.0 - reveal) * -5.0).faded(reveal);
             let c = if reveal < 0.6 { c.ghost() } else { c };
             if self.drag_departing {
@@ -2468,12 +2497,12 @@ impl App {
             } else {origin};
             self.toast_layer(&Card::new(ui,toast_origin,win),if bottom {-36.0}else{h+8.0})
         }else{None};
-        if (self.adding||self.editing.is_some()) && reveal > 0.9 && self.page == 4 && self.page_e() > 0.25 {
+        if !plugin_notice_detail && (self.adding||self.editing.is_some()) && reveal > 0.9 && self.page == 4 && self.page_e() > 0.25 {
             self.input_field(ui, origin, &mut cmds);
         }
 
-        if self.task_dialog.is_some() && reveal>0.9 {self.task_editor_inputs(ui,origin,&mut cmds);}
-        if self.calendar.draft.is_some() && reveal>0.9 {self.calendar_editor_inputs(ui,origin,&mut cmds);}
+        if !plugin_notice_detail && self.task_dialog.is_some() && reveal>0.9 {self.task_editor_inputs(ui,origin,&mut cmds);}
+        if !plugin_notice_detail && self.calendar.draft.is_some() && reveal>0.9 {self.calendar_editor_inputs(ui,origin,&mut cmds);}
 
         // ---------- 输出 ----------
         let rel = |r: Rect| r.translate(-win.min.to_vec2());
@@ -2670,7 +2699,12 @@ impl App {
     fn unread_slot(&self,height:f32)->f32 {
         if self.unread_count()>=3 {(height-4.0)/3.0} else {UNREAD_SLOT}
     }
-    fn unread_count(&self)->usize {self.pending_messengers.len()+self.health_badges().len()}
+    fn unread_count(&self)->usize {
+        let count=self.pending_messengers.len()+self.health_badges().len();
+        #[cfg(windows)]
+        let count=count+self.plugin_notice_ui.unread.len();
+        count
+    }
     /// 收起时叠放的来源图标，每个客户端各占一个。
     fn unread_sources(&self)->Vec<Messenger>{
         let mut sources=Vec::new();
@@ -2679,13 +2713,15 @@ impl App {
     }
     /// 收起时叠放区沿胶囊方向的长度。
     fn unread_stack_len(&self,horizontal:bool)->f32 {
-        let icons=(self.unread_sources().len()+self.health_badges().len()) as f32;
+        let icons=self.unread_sources().len()+self.health_badges().len();
+        #[cfg(windows)]
+        let icons=icons+self.plugin_notice_ui.collapsed_count();
+        let icons=icons as f32;
         if icons==0.0 {0.0}else{32.0+unread_step(horizontal)*(icons-1.0)}
     }
 
     pub(crate) fn resident_limit(&self)->f32 {
         let limit=if self.side(){crate::side_dock::SIDE_H-24.0}else{WIN_W-32.0};
-        if self.pending_messengers.is_empty() && !self.health_pending.contains(&true){return limit;}
         limit-self.unread_stack_len(!self.side())
     }
 
@@ -2711,7 +2747,7 @@ impl App {
     fn messenger_badge_rect(&self,win:Rect,panel:Rect)->Option<Rect>{
         if self.unread_count()==0 || self.browser_minimal_active && !self.open {return None;}
         // 完整横幅已包含该来源图标。歌词模式和横幅收起后使用常驻入口。
-        if !self.open && !self.compact_notices() && self.pending_messengers.len()==1 && self.health_badges().is_empty()
+        if !self.open && !self.compact_notices() && self.unread_count()==1 && self.pending_messengers.len()==1
             && self.notice.as_ref().and_then(|a|a.messenger())==self.pending_messengers.first().map(|u|u.source){return None;}
         let bounds=self.screen.map_or(win,|screen|screen.intersect(win));
         let appear=self.messenger_appear();
@@ -2776,8 +2812,12 @@ impl App {
             let button=inner.hit(0.0,cy-slot/2.0,UNREAD_W,slot,self.unread_id(i)).on_hover_text(format!("查看{name}"));
             if button.clicked(){cmds.push(Cmd::ViewMessenger(u));}
         }
-        for (i,kind) in self.health_badges().into_iter().enumerate() {
-            let cy=2.0+slot*((self.pending_messengers.len()+i) as f32+0.5)-self.messenger_scroll;
+        let health=self.health_badges();
+        let health_offset=self.pending_messengers.len();
+        #[cfg(windows)]
+        self.draw_plugin_notice_capsule(&inner, health_offset+health.len(), slot, height, self.messenger_scroll, UNREAD_W, cmds);
+        for (i,kind) in health.into_iter().enumerate() {
+            let cy=2.0+slot*((health_offset+i) as f32+0.5)-self.messenger_scroll;
             if cy< -slot || cy>height+slot {continue;}
             kind.icon(&inner,x,cy,0.8);
             inner.circle(x+10.0,cy-9.0,2.6,Color32::from_rgb(255,59,48));
@@ -2798,6 +2838,8 @@ impl App {
         let health=self.health_badges();
         let count=self.pending_messengers.len();
         let icons=sources.len()+health.len();
+        #[cfg(windows)]
+        let icons=icons+self.plugin_notice_ui.collapsed_count();
         let step=unread_step(horizontal);
         let at=|k:usize|if horizontal {(16.0+step*k as f32,14.0)}else{(16.0,14.0+step*k as f32)};
         for k in 0..sources.len() {
@@ -2807,9 +2849,9 @@ impl App {
         }
         for (i,kind) in health.iter().enumerate(){let (x,y)=at(sources.len()+i);kind.icon(c,x,y,0.7);}
         // 每个来源图标右上角一个小红点，不显示数字。
-        for k in 0..icons {let (x,y)=at(k);c.circle(x+8.0,y-7.0,2.6,Color32::from_rgb(255,59,48));}
+        for k in 0..sources.len()+health.len() {let (x,y)=at(k);c.circle(x+8.0,y-7.0,2.6,Color32::from_rgb(255,59,48));}
         let length=self.unread_stack_len(horizontal);
-        let messenger_length=if health.is_empty(){length}else{sources.len() as f32*step+if horizontal{5.0}else{3.0}};
+        let messenger_length=if icons==sources.len(){length}else{sources.len() as f32*step+if horizontal{5.0}else{3.0}};
         let (w,h)=if horizontal {(messenger_length,BAR_H)}else{(32.0,messenger_length)};
         if count==1 {
             let u=self.pending_messengers[0];
@@ -2819,6 +2861,8 @@ impl App {
             let button=c.hit(0.0,0.0,w,h,"messenger-stack").on_hover_text(format!("{count} 条未读 · 展开挑选"));
             if button.clicked(){self.reveal_unread();}
         }
+        #[cfg(windows)]
+        self.draw_plugin_notice_stack(c,horizontal,sources.len()+health.len(),step,length,cmds);
         for (i,kind) in health.into_iter().enumerate() {
             let k=sources.len()+i;
             let (x,y)=at(k);
