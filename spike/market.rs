@@ -542,6 +542,74 @@ fn checked_project(path: &Path) -> Result<Package> {
     Ok(package)
 }
 
+pub(super) fn validate_project(path: &Path) -> Result<String> {
+    let package = checked_project(path)?;
+    Ok(format!(
+        "{} v{} 校验通过",
+        package.manifest.id, package.manifest.version
+    ))
+}
+
+pub(super) fn create_template(
+    parent: &Path,
+    id: &str,
+    name: &str,
+    author: &str,
+) -> Result<PathBuf> {
+    let (id, name, author) = (id.trim(), name.trim(), author.trim());
+    if !valid_id(id) {
+        return Err(fail("插件 ID 格式应类似 xiaoming.payday，最多 64 个字符"));
+    }
+    if name.is_empty() || name.chars().count() > 80 {
+        return Err(fail("插件名称需要 1 到 80 个字符"));
+    }
+    if author.is_empty() || author.chars().count() > 80 {
+        return Err(fail("作者名称需要 1 到 80 个字符"));
+    }
+
+    let mut manifest = Manifest::decode(include_str!("examples/payday/plugin.json"))?;
+    manifest.id = id.into();
+    manifest.name = name.into();
+    manifest.author = author.into();
+    let bytes = serde_json::to_vec_pretty(&manifest)?;
+    let files: [(&str, &[u8]); 4] = [
+        ("plugin.json", &bytes),
+        ("main.js", include_bytes!("examples/payday/main.js")),
+        (COVER_FILE, include_bytes!("examples/payday/cover.png")),
+        ("LICENSE", include_bytes!("examples/payday/LICENSE")),
+    ];
+
+    let project = parent.join(id);
+    let path = target_path(&project)?;
+    if fs::symlink_metadata(&path).is_ok() {
+        return Err(fail("同名文件或目录已存在，请更换插件 ID 或保存位置"));
+    }
+    let tmp = loop {
+        let tmp = temporary_sibling(&path);
+        match fs::create_dir(&tmp) {
+            Ok(()) => break tmp,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.into()),
+        }
+    };
+    // 文件全部写好后再移入目标路径，已有目录始终保留。
+    let result = files
+        .iter()
+        .try_for_each(|(name, contents)| fs::write(tmp.join(name), contents))
+        .and_then(|_| move_new(&tmp, &path));
+    if let Err(error) = result {
+        for (name, _) in files {
+            let _ = fs::remove_file(tmp.join(name));
+        }
+        let _ = fs::remove_dir(&tmp);
+        return Err(fail(&format!(
+            "无法创建插件目录 {}：{error}",
+            project.display()
+        )));
+    }
+    Ok(project.join("plugin.json"))
+}
+
 fn target_path(path: &Path) -> io::Result<PathBuf> {
     let filename = path
         .file_name()
@@ -554,27 +622,51 @@ fn target_path(path: &Path) -> io::Result<PathBuf> {
     Ok(directory.join(filename))
 }
 
-fn write_new(path: &Path, bytes: &[u8]) -> io::Result<()> {
-    use std::{
-        os::windows::ffi::OsStrExt,
-        sync::atomic::{AtomicU64, Ordering as AtomicOrdering},
-    };
+fn temporary_sibling(path: &Path) -> PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
+
+    static SERIAL: AtomicU64 = AtomicU64::new(0);
+    let mut name = path.file_name().unwrap().to_os_string();
+    name.push(format!(
+        ".{}-{}.tmp",
+        std::process::id(),
+        SERIAL.fetch_add(1, AtomicOrdering::Relaxed)
+    ));
+    path.with_file_name(name)
+}
+
+fn move_new(tmp: &Path, path: &Path) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
     use windows::core::{HRESULT, PCWSTR};
     use windows::Win32::{
         Foundation::{ERROR_ALREADY_EXISTS, ERROR_FILE_EXISTS},
         Storage::FileSystem::{MoveFileExW, MOVEFILE_WRITE_THROUGH},
     };
 
-    static SERIAL: AtomicU64 = AtomicU64::new(0);
+    let source: Vec<u16> = tmp.as_os_str().encode_wide().chain(Some(0)).collect();
+    let destination: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    unsafe {
+        MoveFileExW(
+            PCWSTR(source.as_ptr()),
+            PCWSTR(destination.as_ptr()),
+            MOVEFILE_WRITE_THROUGH,
+        )
+    }
+    .map_err(|error| {
+        if error.code() == HRESULT::from_win32(ERROR_ALREADY_EXISTS.0)
+            || error.code() == HRESULT::from_win32(ERROR_FILE_EXISTS.0)
+        {
+            io::Error::new(io::ErrorKind::AlreadyExists, error)
+        } else {
+            io::Error::other(error)
+        }
+    })
+}
+
+fn write_new(path: &Path, bytes: &[u8]) -> io::Result<()> {
     let path = target_path(path)?;
     let (tmp, mut file) = loop {
-        let mut name = path.file_name().unwrap().to_os_string();
-        name.push(format!(
-            ".{}-{}.tmp",
-            std::process::id(),
-            SERIAL.fetch_add(1, AtomicOrdering::Relaxed)
-        ));
-        let tmp = path.with_file_name(name);
+        let tmp = temporary_sibling(&path);
         match OpenOptions::new().write(true).create_new(true).open(&tmp) {
             Ok(file) => break (tmp, file),
             Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
@@ -585,26 +677,7 @@ fn write_new(path: &Path, bytes: &[u8]) -> io::Result<()> {
     // 版本文件只在完整写盘后出现，移动时保留已存在的目标。
     let result = file.write_all(bytes).and_then(|_| file.sync_all());
     drop(file);
-    let result = result.and_then(|_| {
-        let source: Vec<u16> = tmp.as_os_str().encode_wide().chain(Some(0)).collect();
-        let destination: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-        unsafe {
-            MoveFileExW(
-                PCWSTR(source.as_ptr()),
-                PCWSTR(destination.as_ptr()),
-                MOVEFILE_WRITE_THROUGH,
-            )
-        }
-        .map_err(|error| {
-            if error.code() == HRESULT::from_win32(ERROR_ALREADY_EXISTS.0)
-                || error.code() == HRESULT::from_win32(ERROR_FILE_EXISTS.0)
-            {
-                io::Error::new(io::ErrorKind::AlreadyExists, error)
-            } else {
-                io::Error::other(error)
-            }
-        })
-    });
+    let result = result.and_then(|_| move_new(&tmp, &path));
     if result.is_err() {
         let _ = fs::remove_file(&tmp);
     }
@@ -713,12 +786,7 @@ pub(in crate::sdk_spike) fn author_command(args: &[OsString]) -> Option<ExitCode
     // Windows 图形程序的显式作者命令与父终端共用控制台。
     unsafe { AttachConsole(u32::MAX) };
     let result = match (operation, &args[2..]) {
-        ("--plugin-test", [manifest]) => checked_project(Path::new(manifest)).map(|package| {
-            format!(
-                "{} v{} 校验通过",
-                package.manifest.id, package.manifest.version
-            )
-        }),
+        ("--plugin-test", [manifest]) => validate_project(Path::new(manifest)),
         ("--plugin-pack", [manifest, output]) => pack(Path::new(manifest), Path::new(output))
             .map(|_| format!("已生成插件包 {}", Path::new(output).display())),
         ("--plugin-submit", [zip, catalog]) => submit(Path::new(zip), Path::new(catalog))

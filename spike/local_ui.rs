@@ -14,6 +14,9 @@ use std::sync::Arc;
 #[cfg(windows)]
 #[path = "market_browse_ui.rs"]
 mod market_browse_ui;
+#[cfg(windows)]
+#[path = "plugin_author_ui.rs"]
+mod plugin_author_ui;
 #[path = "plugin_feedback_ui.rs"]
 mod plugin_feedback_ui;
 use plugin_feedback_ui::{plugin_feedback, request_plugin_feedback};
@@ -923,7 +926,7 @@ impl LocalPlugins {
                     ui.data_mut(|data| data.insert_temp(egui::Id::new("plugin-developer-tools"), true));
                 }
                 ui.label(
-                    egui::RichText::new("安装本地插件、导入测试集市")
+                    egui::RichText::new("创建、校验与试装插件")
                         .size(11.5)
                         .color(muted_color(ui)),
                 );
@@ -1252,18 +1255,31 @@ impl LocalPlugins {
         if !ui.data(|data| data.get_temp::<bool>(key)).unwrap_or(false) {
             return false;
         }
+        let author_key = key.with("author");
+        let mut author = ui.data_mut(|data| {
+            data.remove_temp::<plugin_author_ui::AuthorTools>(author_key)
+                .unwrap_or_default()
+        });
         let ctx = ui.ctx().clone();
         let mut close = false;
         let mut local = false;
         let mut market = false;
+        let mut author_action = None;
         let modal = egui::Modal::new(key.with("modal"))
             .frame(settings_modal_frame(&ctx))
             .backdrop_color(Color32::from_black_alpha(110))
             .show(&ctx, |ui| {
                 ui.set_width(360.0);
                 settings_apply_style(ui);
+                if author.creating() {
+                    close = settings_modal_title(ui, "从模板创建");
+                    author_action = author.form(ui);
+                    return;
+                }
                 close = settings_modal_title(ui, "开发者工具");
                 settings_hint(ui, "给插件作者自测用。本地安装的插件不经过集市审核。");
+                ui.add_space(4.0);
+                author_action = author.menu(ui);
                 ui.add_space(4.0);
                 local = option_card(
                     ui,
@@ -1283,6 +1299,10 @@ impl LocalPlugins {
                 });
             });
         let mut opened = false;
+        if let Some(action) = author_action {
+            author.run(action);
+            ctx.request_repaint();
+        }
         if local {
             match crate::system::pick_files_for("选择本地插件的 plugin.json", false) {
                 Ok(paths) => {
@@ -1318,6 +1338,8 @@ impl LocalPlugins {
         }
         if local || market || close || modal.should_close() {
             ui.data_mut(|data| data.remove::<bool>(key));
+        } else {
+            ui.data_mut(|data| data.insert_temp(author_key, author));
         }
         opened
     }
