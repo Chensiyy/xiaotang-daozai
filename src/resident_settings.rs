@@ -1,4 +1,4 @@
-use crate::{bar_layout::*,paint::{self,Card,H},theme::{self,W}};
+use crate::{bar_layout::*,paint::{self,Card,H},resident_date::ResidentDay,theme::{self,W}};
 use eframe::egui::{self,Color32,RichText,Rect,Pos2,Vec2};
 
 pub(crate) fn preview_layout(order:&[usize],quotas:usize,performance_width:f32)->Layout {
@@ -23,8 +23,16 @@ impl crate::app::App {
         let performance_width=if performance_enabled {self.settings.performance_bar.width(self.settings.performance_metrics)}else{20.0};
         let mut layout=preview_layout(&order,count,performance_width);
         for (position,extra) in self.quota_balance_layout(ui.ctx()){layout.balance_tail(position,extra);}
-        if self.settings.clock_period!=0 { layout.widen_clock(40.0); }
-        if self.settings.clock_seconds { layout.widen_clock(24.0); }
+        let now=chrono::Local::now();
+        let clock_text=self.settings.clock_text(&now.format("%H:%M:%S").to_string());
+        let clock=self.settings.show_clock.then_some(clock_text.as_str());
+        let day=ResidentDay::new(self.settings.resident_date,now.date_naive());
+        if let Some(day)=&day {
+            layout.set_clock_width(day.group_width(ui.ctx(),clock));
+        }else{
+            if self.settings.clock_period!=0 { layout.widen_clock(40.0); }
+            if self.settings.clock_seconds { layout.widen_clock(24.0); }
+        }
         if let Some(extra)=self.weather_pill_extra(ui.ctx()){layout.widen(WEATHER,extra);}
         let (stage,_)=ui.allocate_exact_size(Vec2::new(ui.available_width(),100.0),egui::Sense::hover());
         ui.painter().rect_filled(stage,10.0,Color32::from_rgb(19,25,36));
@@ -51,7 +59,9 @@ impl crate::app::App {
         let pointer=ui.ctx().pointer_interact_pos();
         let dragged=egui::DragAndDrop::payload::<usize>(ui.ctx());
         let mut movement=None;
-        let label=|slot|match slot{CLOCK=>"时间",BATTERY=>"电量",WEATHER=>"天气",QUOTA=>"AI 额度",MUSIC=>"音乐",FOCUS=>"专注",PERFORMANCE=>"系统性能",_=>"吉祥物"};
+        let label=|slot|match slot{
+            CLOCK if day.is_some()=>if clock.is_some(){"时间和日期"}else{"日期"},
+            CLOCK=>"时间",BATTERY=>"电量",WEATHER=>"天气",QUOTA=>"AI 额度",MUSIC=>"音乐",FOCUS=>"专注",PERFORMANCE=>"系统性能",_=>"吉祥物"};
         for (index,&slot) in order.iter().enumerate(){
             let x=cx+layout.x[slot].unwrap();
             let width=match slot{CLOCK=>layout.widths[CLOCK],BATTERY=>20.0,WEATHER=>layout.widths[WEATHER],PET=>32.0,MUSIC=>14.0,FOCUS=>crate::focus_bar::WIDTH,PERFORMANCE=>layout.widths[PERFORMANCE],_=>{
@@ -70,15 +80,18 @@ impl crate::app::App {
             let dx=if is_dragged{pointer.map(|p|((p.x-origin.x)/scale-(left+width/2.0)).clamp(-left,layout.width-left-width)).unwrap_or(0.0)}else{0.0};
             if is_dragged {ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);}
             else if response.hovered(){ui.painter().rect_filled(rect,6.0,Color32::from_white_alpha(18));}
-            let active=match slot{CLOCK=>self.settings.show_clock,BATTERY=>self.settings.show_battery&&self.resident_power.0.is_some(),WEATHER=>weather_snapshot.is_some(),PET=>self.settings.pet,QUOTA=>count>0,MUSIC=>self.media.is_music(),FOCUS=>self.pomo.running,PERFORMANCE=>self.performance_on_bar(),_=>true};
+            let active=match slot{CLOCK=>clock.is_some()||day.is_some(),BATTERY=>self.settings.show_battery&&self.resident_power.0.is_some(),WEATHER=>weather_snapshot.is_some(),PET=>self.settings.pet,QUOTA=>count>0,MUSIC=>self.media.is_music(),FOCUS=>self.pomo.running,PERFORMANCE=>self.performance_on_bar(),_=>true};
             let c=card.shifted(dx,0.0).faded(if active||is_dragged{1.0}else{0.38}).ghost();
             match slot{
                 PERFORMANCE if performance_enabled=>self.paint_performance_bar(&c,x),
                 PERFORMANCE=>{c.arc(x,15.0,7.0,2.25,7.18,2.0,theme::GRAY);c.seg((x,15.0),(x+3.0,11.5),1.8,theme::WHITE);},
                 BATTERY=>paint::battery(&c,x,15.0,self.resident_power.0,self.resident_power.1,1.0),
                 CLOCK=>{
-                    let text=self.settings.clock_text(&chrono::Local::now().format("%H:%M:%S").to_string());
-                    paint::clock(&c,x-paint::clock_width(&c,&text,theme::size::PILL_CLOCK)/2.0,21.0,&text,theme::size::PILL_CLOCK);
+                    if let Some(day)=&day {
+                        day.draw_group(&c,x,clock);
+                    }else{
+                        paint::clock(&c,x-paint::clock_width(&c,&clock_text,theme::size::PILL_CLOCK)/2.0,21.0,&clock_text,theme::size::PILL_CLOCK);
+                    }
                 },
                 WEATHER=>if let Some(snapshot)=weather_snapshot.as_ref(){self.paint_pill_weather(&c,x,&layout,snapshot);}else{crate::weather_ui::icon(&c,x,15.0,16.0,crate::weather::Kind::Partly);},
                 PET=>self.pet.draw(&c,x,self.t,self.skin_palette()),

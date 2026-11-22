@@ -1776,6 +1776,14 @@ impl App {
                             ui.separator();
                             setting_row(ui,"时间","关闭后仍可在展开顶栏查看",&mut self.settings.show_clock);
                             ui.separator();
+                            settings_control_row_right(ui,"日期常驻",|ui|{
+                                use crate::model::ResidentDate;
+                                let modes=[(ResidentDate::Off,"关闭"),(ResidentDate::Gregorian,"仅公历"),(ResidentDate::Lunar,"公历＋农历")];
+                                if settings_segmented(ui,&mut self.settings.resident_date,&modes,68.0) {
+                                    ctx.request_repaint_of(egui::ViewportId::ROOT);
+                                }
+                            });
+                            ui.separator();
                             setting_row(ui,"电量","无电池设备自动隐藏",&mut self.settings.show_battery);
                             ui.separator();
                             resident_setting_row(ui,"天气","天气图标和温度，点击打开天气页",
