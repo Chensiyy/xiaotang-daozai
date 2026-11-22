@@ -416,3 +416,30 @@ fn material_management_waits_for_permission_and_offers_to_enable_compatibility()
     fs::remove_dir_all(dir)?;
     Ok(())
 }
+
+#[test]
+fn header_tabs_keep_market_on_the_left_in_a_right_aligned_title_row() {
+    let dir = std::env::temp_dir().join(format!("daozai-header-tabs-{}", std::process::id()));
+    let mut host = LocalPlugins::open(dir.join("installed"));
+    let ctx = egui::Context::default();
+    crate::theme::load_fonts(&ctx);
+    let out = frame(&ctx, vec![], |ui| {
+        ui.horizontal(|ui| {
+            ui.label("插件");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                host.header_tabs(ui)
+            });
+        });
+    });
+    let x = |label: &str| {
+        out.shapes
+            .iter()
+            .find_map(|shape| match &shape.shape {
+                egui::Shape::Text(text) if text.galley.text() == label => Some(text.pos.x),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("找不到 {label}"))
+    };
+    assert!(x("集市") < x("已安装"));
+    let _ = fs::remove_dir_all(dir);
+}

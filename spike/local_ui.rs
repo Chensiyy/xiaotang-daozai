@@ -261,7 +261,12 @@ fn segmented_counts(
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
-                for (index, option) in options.iter().enumerate() {
+                // 放在右对齐的标题行时，egui 会从右往左排；倒着画，保证第一项始终在左边。
+                let mut order: Vec<_> = options.iter().enumerate().collect();
+                if ui.layout().prefer_right_to_left() {
+                    order.reverse();
+                }
+                for (index, option) in order {
                     let on = index == selected;
                     let font = egui::FontId::proportional(size);
                     let text_color = if on {
