@@ -11,36 +11,67 @@ use crate::{
 };
 
 const CENTER_Y: f32 = 15.0;
+const SINGLE_DATE_SIZE: f32 = 12.0;
 const DATE_SIZE: f32 = 9.0;
-const LUNAR_SIZE: f32 = 7.8;
-const TERM_SIZE: f32 = 7.0;
 const CLOCK_GAP: f32 = 12.0;
 const TERM_GAP: f32 = 3.0;
 const TERM_PAD: f32 = 6.0;
 const MUTED: Color32 = Color32::from_rgb(190, 191, 200);
 const TERM_BG: Color32 = Color32::from_rgb(27, 45, 63);
 
-pub(crate) struct ResidentDay {
-    gregorian: String,
-    short_gregorian: String,
-    lunar: Option<LunarDate>,
+struct LunarStyle {
+    size: f32,
+    weight: W,
+    color: Color32,
+    term_size: f32,
+}
+
+const SINGLE_LUNAR: LunarStyle = LunarStyle {
+    size: SINGLE_DATE_SIZE,
+    weight: W::Semibold,
+    color: theme::WHITE,
+    term_size: 8.5,
+};
+const DOUBLE_LUNAR: LunarStyle = LunarStyle {
+    size: 7.8,
+    weight: W::Regular,
+    color: MUTED,
+    term_size: 7.0,
+};
+
+pub(crate) enum ResidentDay {
+    Gregorian {
+        date: String,
+        short: String,
+    },
+    LunarOnly(LunarDate),
+    Combined {
+        date: String,
+        short: String,
+        lunar: LunarDate,
+    },
 }
 
 impl ResidentDay {
     pub(crate) fn new(mode: ResidentDate, date: NaiveDate) -> Option<Self> {
-        if mode == ResidentDate::Off {
-            return None;
+        match mode {
+            ResidentDate::Off => None,
+            ResidentDate::LunarOnly => lunar_calendar::for_date(date).map(Self::LunarOnly),
+            ResidentDate::Gregorian | ResidentDate::Lunar => {
+                let short = format!("{}/{}", date.month(), date.day());
+                let label = format!("{}月{}日", date.month(), date.day());
+                if mode == ResidentDate::Lunar {
+                    if let Some(lunar) = lunar_calendar::for_date(date) {
+                        return Some(Self::Combined {
+                            date: label,
+                            short,
+                            lunar,
+                        });
+                    }
+                }
+                Some(Self::Gregorian { date: label, short })
+            }
         }
-        let lunar = if mode == ResidentDate::Lunar {
-            lunar_calendar::for_date(date)
-        } else {
-            None
-        };
-        Some(Self {
-            gregorian: format!("{}月{}日", date.month(), date.day()),
-            short_gregorian: format!("{}/{}", date.month(), date.day()),
-            lunar,
-        })
     }
 
     pub(crate) fn group_width(&self, ctx: &egui::Context, clock: Option<&str>) -> f32 {
@@ -52,13 +83,19 @@ impl ResidentDay {
                     .x
             })
         };
-        let gregorian = measure(&self.gregorian, DATE_SIZE, W::Semibold);
-        let lunar = self.lunar.as_ref().map_or(0.0, |lunar| {
-            measure(&lunar.label, LUNAR_SIZE, W::Regular)
+        let lunar_width = |lunar: &LunarDate, style: LunarStyle| {
+            measure(&lunar.label, style.size, style.weight)
                 + lunar.solar_term.map_or(0.0, |term| {
-                    TERM_GAP + TERM_PAD + measure(term, TERM_SIZE, W::Semibold)
+                    TERM_GAP + TERM_PAD + measure(term, style.term_size, W::Semibold)
                 })
-        });
+        };
+        let date_width = match self {
+            Self::Gregorian { date, .. } => measure(date, SINGLE_DATE_SIZE, W::Semibold),
+            Self::LunarOnly(lunar) => lunar_width(lunar, SINGLE_LUNAR),
+            Self::Combined { date, lunar, .. } => {
+                measure(date, DATE_SIZE, W::Semibold).max(lunar_width(lunar, DOUBLE_LUNAR))
+            }
+        };
         let clock_space = clock.map_or(0.0, |clock| {
             let width = if let Some((period, digits)) = clock.split_once(' ') {
                 measure(period, size::PILL_CLOCK * 0.72, W::Semibold)
@@ -69,7 +106,7 @@ impl ResidentDay {
             };
             width + CLOCK_GAP
         });
-        clock_space + gregorian.max(lunar)
+        clock_space + date_width
     }
 
     /// 和设置中的常驻排序预览使用同一套位置和色彩。
@@ -94,50 +131,49 @@ impl ResidentDay {
         } else {
             left
         };
-        let Some(lunar) = self.lunar.as_ref() else {
-            c.centered_text(
+        match self {
+            Self::Gregorian { date, .. } => c.centered_text(
                 x,
                 CENTER_Y,
-                &self.gregorian,
-                DATE_SIZE,
+                date,
+                SINGLE_DATE_SIZE,
                 W::Semibold,
                 theme::WHITE,
                 H::Left,
-            );
-            return;
-        };
-        c.centered_text(
-            x,
-            9.5,
-            &self.gregorian,
-            DATE_SIZE,
-            W::Semibold,
-            theme::WHITE,
-            H::Left,
-        );
-        c.centered_text(
-            x,
-            20.5,
-            &lunar.label,
-            LUNAR_SIZE,
-            W::Regular,
-            MUTED,
-            H::Left,
-        );
-        if let Some(term) = lunar.solar_term {
-            let badge_left = x + c.text_w(&lunar.label, LUNAR_SIZE, W::Regular) + TERM_GAP;
-            Self::term_badge(c, badge_left, 20.5, term);
+            ),
+            Self::LunarOnly(lunar) => Self::draw_lunar(c, x, CENTER_Y, lunar, SINGLE_LUNAR),
+            Self::Combined { date, lunar, .. } => {
+                c.centered_text(x, 9.5, date, DATE_SIZE, W::Semibold, theme::WHITE, H::Left);
+                Self::draw_lunar(c, x, 20.5, lunar, DOUBLE_LUNAR);
+            }
         }
     }
 
-    fn term_badge(c: &Card, left: f32, y: f32, term: &str) {
-        let width = c.text_w(term, TERM_SIZE, W::Semibold) + TERM_PAD;
-        c.fill(left, y - 4.4, width, 8.8, 3.0, TERM_BG);
+    fn draw_lunar(c: &Card, x: f32, y: f32, lunar: &LunarDate, style: LunarStyle) {
+        c.centered_text(
+            x,
+            y,
+            &lunar.label,
+            style.size,
+            style.weight,
+            style.color,
+            H::Left,
+        );
+        if let Some(term) = lunar.solar_term {
+            let left = x + c.text_w(&lunar.label, style.size, style.weight) + TERM_GAP;
+            Self::term_badge(c, left, y, term, style.term_size);
+        }
+    }
+
+    fn term_badge(c: &Card, left: f32, y: f32, term: &str, size: f32) {
+        let width = c.text_w(term, size, W::Semibold) + TERM_PAD;
+        let height = size + 1.8;
+        c.fill(left, y - height / 2.0, width, height, 3.0, TERM_BG);
         c.centered_text(
             left + width / 2.0,
             y,
             term,
-            TERM_SIZE,
+            size,
             W::Semibold,
             theme::WHITE,
             H::Center,
@@ -146,19 +182,17 @@ impl ResidentDay {
 
     /// 侧停靠的窄条使用月/日，过宽的农历按月和日拆行。
     pub(crate) fn draw_side(&self, c: &Card, x: f32, y: f32) {
-        let Some(lunar) = self.lunar.as_ref() else {
-            c.centered_text(
-                x,
-                y,
-                &self.short_gregorian,
-                DATE_SIZE,
-                W::Semibold,
-                theme::WHITE,
-                H::Center,
-            );
-            return;
+        let (gregorian, lunar, style, step) = match self {
+            Self::Gregorian { short, .. } => {
+                Self::side_text(c, x, y, short, SINGLE_DATE_SIZE, W::Semibold, theme::WHITE);
+                return;
+            }
+            Self::LunarOnly(lunar) => (None, lunar, SINGLE_LUNAR, 13.0),
+            Self::Combined { short, lunar, .. } => {
+                (Some(short.as_str()), lunar, DOUBLE_LUNAR, 10.0)
+            }
         };
-        let split = if c.text_w(&lunar.label, LUNAR_SIZE, W::Regular) > 30.0 {
+        let split = if c.text_w(&lunar.label, style.size, style.weight) > 30.0 {
             lunar
                 .label
                 .find('月')
@@ -166,52 +200,29 @@ impl ResidentDay {
         } else {
             None
         };
-        let extra = u8::from(lunar.solar_term.is_some()) + u8::from(split.is_some());
-        let first = y - 5.0 * (1.0 + f32::from(extra));
-        c.centered_text(
-            x,
-            first,
-            &self.short_gregorian,
-            DATE_SIZE,
-            W::Semibold,
-            theme::WHITE,
-            H::Center,
-        );
-        let mut term_y = first + 20.0;
-        if let Some((month, day)) = split {
-            c.centered_text(
-                x,
-                first + 10.0,
-                month,
-                LUNAR_SIZE,
-                W::Regular,
-                MUTED,
-                H::Center,
-            );
-            c.centered_text(
-                x,
-                first + 20.0,
-                day,
-                LUNAR_SIZE,
-                W::Regular,
-                MUTED,
-                H::Center,
-            );
-            term_y += 10.0;
-        } else {
-            c.centered_text(
-                x,
-                first + 10.0,
-                &lunar.label,
-                LUNAR_SIZE,
-                W::Regular,
-                MUTED,
-                H::Center,
-            );
+        let extra_rows = u8::from(gregorian.is_some())
+            + u8::from(split.is_some())
+            + u8::from(lunar.solar_term.is_some());
+        let mut row = y - step * f32::from(extra_rows) / 2.0;
+        if let Some(date) = gregorian {
+            Self::side_text(c, x, row, date, DATE_SIZE, W::Semibold, theme::WHITE);
+            row += step;
+        }
+        let (month, day) = split.unwrap_or((&lunar.label, ""));
+        Self::side_text(c, x, row, month, style.size, style.weight, style.color);
+        row += step;
+        if !day.is_empty() {
+            Self::side_text(c, x, row, day, style.size, style.weight, style.color);
+            row += step;
         }
         if let Some(term) = lunar.solar_term {
-            let left = x - (c.text_w(term, TERM_SIZE, W::Semibold) + TERM_PAD) / 2.0;
-            Self::term_badge(c, left, term_y, term);
+            let left = x - (c.text_w(term, style.term_size, W::Semibold) + TERM_PAD) / 2.0;
+            Self::term_badge(c, left, row, term, style.term_size);
         }
+    }
+
+    fn side_text(c: &Card, x: f32, y: f32, text: &str, size: f32, weight: W, color: Color32) {
+        let fitted_size = size * (30.0 / c.text_w(text, size, weight)).min(1.0);
+        c.centered_text(x, y, text, fitted_size, weight, color, H::Center);
     }
 }

@@ -3232,31 +3232,51 @@ fn resident_date_modes_are_independent_of_the_clock() {
     let date="10月28日";
     let day=chrono::NaiveDate::from_ymd_opt(2026,10,28).unwrap();
     let lunar=crate::lunar_calendar::for_date(day).unwrap().label;
-    let text_rect=|h:&H,label:&str|h.shapes.iter().find_map(|s|match &s.shape {
-        egui::Shape::Text(t) if t.galley.text()==label=>Some(t.visual_bounding_rect()),
+    use crate::model::ResidentDate;
+    let text=|h:&H,label:&str|h.shapes.iter().find_map(|s|match &s.shape {
+        egui::Shape::Text(t) if t.galley.text()==label=>Some((
+            t.visual_bounding_rect(),
+            t.galley.job.sections[0].format.font_id.size,
+        )),
         _=>None,
     });
+    let profile=std::path::PathBuf::from(std::env::var_os("DAOZAI_DATA_DIR").unwrap());
+    std::fs::create_dir_all(&profile).unwrap();
+    std::fs::write(profile.join("settings.txt"),"resident_date=lunar\n").unwrap();
+    assert_eq!(crate::model::Settings::load().resident_date,ResidentDate::Lunar);
+    let mut single_font=[0.0;2];
     for (mode,show_clock) in [
-        (crate::model::ResidentDate::Off,true),
-        (crate::model::ResidentDate::Gregorian,true),
-        (crate::model::ResidentDate::Lunar,true),
-        (crate::model::ResidentDate::Lunar,false),
-        (crate::model::ResidentDate::Off,false),
+        (ResidentDate::Off,true),
+        (ResidentDate::Gregorian,true),
+        (ResidentDate::LunarOnly,true),
+        (ResidentDate::Lunar,true),
+        (ResidentDate::LunarOnly,false),
+        (ResidentDate::Lunar,false),
+        (ResidentDate::Off,false),
     ] {
         h.app.settings.resident_date=mode;
         h.app.settings.show_clock=show_clock;
         for _ in 0..90 {h.frame(vec![]);}
-        let clock=text_rect(&h,"09:41");
-        let gregorian=text_rect(&h,date);
-        let lunar_text=text_rect(&h,&lunar);
+        let clock=text(&h,"09:41");
+        let gregorian=text(&h,date);
+        let lunar_text=text(&h,&lunar);
         assert_eq!(clock.is_some(),show_clock);
-        assert_eq!(gregorian.is_some(),mode!=crate::model::ResidentDate::Off);
-        assert_eq!(lunar_text.is_some(),mode==crate::model::ResidentDate::Lunar);
-        if let (Some(clock),Some(gregorian))=(clock,gregorian) {
-            assert!(clock.right()<gregorian.left(),"日期应位于时间右侧");
+        assert_eq!(gregorian.is_some(),matches!(mode,ResidentDate::Gregorian|ResidentDate::Lunar));
+        assert_eq!(lunar_text.is_some(),matches!(mode,ResidentDate::LunarOnly|ResidentDate::Lunar));
+        if let (Some((clock,_)),Some((first,_)))=(clock,gregorian.or(lunar_text)) {
+            assert!(clock.right()<first.left(),"日期应位于时间右侧");
         }
-        if let (Some(gregorian),Some(lunar_text))=(gregorian,lunar_text) {
-            assert!(gregorian.bottom()<lunar_text.top(),"公历与农历分两行显示");
+        match mode {
+            ResidentDate::Gregorian=>single_font[0]=gregorian.unwrap().1,
+            ResidentDate::LunarOnly if show_clock=>single_font[1]=lunar_text.unwrap().1,
+            ResidentDate::Lunar if show_clock=>{
+                let (gregorian,g_size)=gregorian.unwrap();
+                let (lunar,l_size)=lunar_text.unwrap();
+                assert!(gregorian.bottom()<lunar.top(),"公历与农历分两行显示");
+                assert!((single_font[0]-single_font[1]).abs()<0.1,"两种单行日期应使用同一字号");
+                assert!(single_font[0]>g_size+1.0 && single_font[1]>l_size+1.0,"单行日期应比双行清晰");
+            }
+            _=>{}
         }
         h.app.settings.save();
         let saved=crate::model::Settings::load();
@@ -3271,6 +3291,7 @@ fn resident_date_layout_gallery() {
     let dest=std::path::PathBuf::from(std::env::var_os("DAOZAI_RESIDENT_PREVIEW_DIR").expect("需指定预览目录"));
     std::fs::create_dir_all(&dest).unwrap();
     for (mode,name) in [
+        (crate::model::ResidentDate::LunarOnly,"resident-date-lunar-only"),
         (crate::model::ResidentDate::Gregorian,"resident-date-gregorian"),
         (crate::model::ResidentDate::Lunar,"resident-date-lunar"),
     ] {

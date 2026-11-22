@@ -44,7 +44,7 @@ impl App {
         match self.settings.resident_date {
             ResidentDate::Off=>{},
             ResidentDate::Gregorian=>items.push(SideItem::Date(20.0)),
-            ResidentDate::Lunar=>items.push(SideItem::Date(44.0)),
+            ResidentDate::LunarOnly | ResidentDate::Lunar=>items.push(SideItem::Date(44.0)),
         }
         if self.weather_pill().is_some() {items.push(SideItem::Weather);}
         if !self.wireless_resident().is_empty(){items.push(SideItem::Wireless);}
