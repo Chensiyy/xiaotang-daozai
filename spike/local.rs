@@ -828,6 +828,18 @@ impl LocalPlugins {
         self.forget_view(id);
         Ok(())
     }
+    /// 移除重启检查没通过的安装记录。插件已经停止运行，这里只删掉留下的记录文件。
+    fn remove_invalid(&mut self, id: &str) -> Result<()> {
+        if !self.invalid.contains(id) {
+            return Err(fail("没有需要移除的记录"));
+        }
+        match fs::remove_file(self.path(id)) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error.into()),
+            _ => {}
+        }
+        self.invalid.remove(id);
+        Ok(())
+    }
     pub fn pause_owner(&mut self, owner: &str) {
         let records = &self.records;
         let belongs = |id: &str| {

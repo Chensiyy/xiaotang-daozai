@@ -277,6 +277,10 @@ impl LocalPlugins {
         self.market_job.is_some()
     }
 
+    pub(super) fn market_job_id(&self) -> Option<&str> {
+        self.market_job.as_ref().map(|job| job.id.as_str())
+    }
+
     pub(super) fn market_pending(&self) -> bool {
         self.market_busy()
             || self.official_catalog_busy()

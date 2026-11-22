@@ -34,12 +34,15 @@ fn click(ctx: &egui::Context, label: &str, mut draw: impl FnMut(&mut egui::Ui)) 
             _ => None,
         })
         .or_else(|| {
-            if matches!(label, "启用" | "停用") {
-                let id = egui::Id::new(("settings-plugin-switch", "example.payday"));
-                ctx.read_response(id).map(|response| response.rect.center())
-            } else {
-                None
-            }
+            let id = match label {
+                "启用" | "停用" => ["example.payday", "example.material"]
+                    .into_iter()
+                    .map(|plugin| egui::Id::new(("settings-plugin-switch", plugin)))
+                    .find(|id| ctx.read_response(*id).is_some())?,
+                "刷新目录" => egui::Id::new("plugin-market-refresh"),
+                _ => return None,
+            };
+            ctx.read_response(id).map(|response| response.rect.center())
         })
         .unwrap_or_else(|| panic!("找不到按钮 {label}"));
     click_at(ctx, pos, draw);
@@ -114,14 +117,16 @@ fn management_buttons_jump_disable_and_confirm_uninstall() -> Result<()> {
     };
     click(&mut host, "启用");
     assert!(host.records["example.payday"].enabled);
-    click(&mut host, "前往设置");
+    click(&mut host, "设置 › 待办与置物 ›");
     assert_eq!(host.focus.as_deref(), Some("example.payday"));
     click(&mut host, "停用");
     assert!(!host.records["example.payday"].enabled);
-    click(&mut host, "卸载");
+    click(&mut host, "···");
+    click(&mut host, "卸载…");
     click(&mut host, "取消");
     assert!(host.records["example.payday"].package.is_some());
-    click(&mut host, "卸载");
+    click(&mut host, "···");
+    click(&mut host, "卸载…");
     click(&mut host, "删除数据");
     assert!(!host.records.contains_key("example.payday"));
     assert!(jumped);
@@ -163,10 +168,10 @@ fn management_module_pause_and_plugin_switch_keep_their_own_choices() -> Result<
     let paused = frame(&ctx, vec![], |ui| {
         let _ = manage(&mut host, ui, false);
     });
-    assert!(has_text(&paused, "已开启 · 模块已暂停"));
-    assert!(!has_text(&paused, "前往设置"));
+    assert!(has_text(&paused, "页面管理 › 待办与置物 ›"));
+    assert!(!has_text(&paused, "设置 › 待办与置物 ›"));
     let mut jump = None;
-    click(&ctx, "前往页面管理", |ui| {
+    click(&ctx, "页面管理 › 待办与置物 ›", |ui| {
         jump = manage(&mut host, ui, false).or(jump);
     });
     assert_eq!(jump, Some(crate::extras::SETTINGS_TAB_PAGES));
@@ -193,6 +198,41 @@ fn management_module_pause_and_plugin_switch_keep_their_own_choices() -> Result<
     click_at(&ctx, egui::pos2(363., 145.), &mut draw);
     assert!(opened);
     assert_eq!(host.focus.as_deref(), Some("example.payday"));
+    fs::remove_dir_all(dir)?;
+    Ok(())
+}
+
+#[test]
+fn invalid_record_can_be_removed_from_the_installed_list() -> Result<()> {
+    let dir = std::env::temp_dir().join(format!(
+        "daozai-manage-invalid-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos()
+    ));
+    let mut host = LocalPlugins::open(dir.clone());
+    host.install(&Path::new(env!("CARGO_MANIFEST_DIR")).join("spike/examples/payday/plugin.json"))?;
+    drop(host);
+    let record = dir.join("local-example.payday.json");
+    fs::write(&record, "{}")?;
+    let mut host = LocalPlugins::open(dir.clone());
+    assert!(host.invalid.contains("example.payday"));
+    let ctx = egui::Context::default();
+    crate::theme::load_fonts(&ctx);
+    let mut draw = |ui: &mut egui::Ui| {
+        host.manage(
+            ui,
+            true,
+            true,
+            #[cfg(all(windows, feature = "sdk-material"))]
+            None,
+        );
+    };
+    assert!(has_text(&frame(&ctx, vec![], &mut draw), "需要处理"));
+    click(&ctx, "移除记录", &mut draw);
+    assert!(host.invalid.is_empty());
+    assert!(!record.exists());
     fs::remove_dir_all(dir)?;
     Ok(())
 }
@@ -241,14 +281,18 @@ fn market_buttons_install_and_update_an_existing_sample() -> Result<()> {
         assert!(!host.market_busy(), "测试集市操作未完成");
     };
     let official = frame(&ctx, vec![], |ui| draw(&mut host, ui));
-    assert!(has_text(&official, "刷新目录"));
+    assert!(ctx
+        .read_response(egui::Id::new("plugin-market-refresh"))
+        .is_some());
     assert!(!has_text(&official, "发薪倒计时"));
     assert!(!has_text(&official, "导入测试集市目录…"));
-    click_button(&mut host, "我的插件 · 0");
-    click_button(&mut host, "开发者模式");
+    click_button(&mut host, "已安装 0");
+    click_button(&mut host, "开发者工具");
     let developers = frame(&ctx, vec![], |ui| draw(&mut host, ui));
     assert!(has_text(&developers, "导入测试集市目录…"));
-    click_button(&mut host, "打开测试集市");
+    click_button(&mut host, "关闭");
+    click_button(&mut host, "集市");
+    click_button(&mut host, "本地测试");
     assert!(has_text(
         &frame(&ctx, vec![], |ui| draw(&mut host, ui)),
         "本地测试集市"
@@ -256,7 +300,7 @@ fn market_buttons_install_and_update_an_existing_sample() -> Result<()> {
     click_button(&mut host, "安装");
     finish(&mut host);
     assert!(!host.records["example.payday"].enabled);
-    click_button(&mut host, "返回我的插件");
+    click_button(&mut host, "已安装");
     click_button(&mut host, "启用");
     assert!(host.records["example.payday"].enabled);
 
@@ -269,10 +313,12 @@ fn market_buttons_install_and_update_an_existing_sample() -> Result<()> {
     let second = files.join("second.zip");
     market::pack(&updated, &second)?;
     market::submit(&second, &catalog)?;
-    click_button(&mut host, "打开测试集市");
+    click_button(&mut host, "集市");
+    click_button(&mut host, "本地测试");
     click_button(&mut host, "刷新目录");
     let available = frame(&ctx, vec![], |ui| draw(&mut host, ui));
-    assert!(has_text(&available, "已安装 v1.0.0"));
+    assert!(has_text(&available, "更新"));
+    assert!(has_text(&available, "已安装 1"));
     click_button(&mut host, "更新");
     finish(&mut host);
 
