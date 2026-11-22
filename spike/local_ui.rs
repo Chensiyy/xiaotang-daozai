@@ -184,23 +184,20 @@ fn ok_color(ui: &egui::Ui) -> Color32 {
     )
 }
 
-/// 名称旁的小标签，例如「官方」「验收样例」「插件」。
+/// 名称旁的小标签，例如「官方」「验收样例」「插件」。高度贴着文字，不撑高标题行。
 fn small_tag(ui: &mut egui::Ui, label: &str) {
-    egui::Frame::new()
-        .fill(color(
-            ui.ctx(),
-            Color32::from_rgb(57, 49, 81),
-            Color32::from_rgb(237, 232, 249),
-        ))
-        .inner_margin(egui::Margin::symmetric(6, 1))
-        .corner_radius(4.0)
-        .show(ui, |ui| {
-            ui.label(egui::RichText::new(label).size(10.5).strong().color(color(
-                ui.ctx(),
-                Color32::from_rgb(215, 201, 252),
-                Color32::from_rgb(91, 80, 140),
-            )));
-        });
+    let ctx = ui.ctx().clone();
+    let fg = color(&ctx, Color32::from_rgb(215, 201, 252), Color32::from_rgb(91, 80, 140));
+    let bg = color(&ctx, Color32::from_rgb(57, 49, 81), Color32::from_rgb(237, 232, 249));
+    let galley = ui.fonts(|fonts| {
+        fonts.layout_no_wrap(label.to_owned(), egui::FontId::proportional(10.5), fg)
+    });
+    let size = galley.size() + egui::vec2(12.0, 2.0);
+    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    ui.painter().rect_filled(rect, 4.0, bg);
+    let pos = rect.min + egui::vec2(6.0, 1.0);
+    ui.painter().galley(pos, galley.clone(), fg);
+    ui.painter().galley(pos + egui::vec2(0.3, 0.0), galley, fg);
 }
 
 /// 最多显示 `rows` 行的说明文字，固定占满这些行的高度，同一排卡片底部对齐。
@@ -235,6 +232,19 @@ fn segmented(
     dots: &[bool],
     size: f32,
 ) -> Option<usize> {
+    segmented_counts(ui, id, options, &[], selected, dots, size)
+}
+
+/// 切换条，`counts` 里的数字用小一号的弱化颜色跟在名字后面。
+fn segmented_counts(
+    ui: &mut egui::Ui,
+    id: &str,
+    options: &[String],
+    counts: &[Option<usize>],
+    selected: usize,
+    dots: &[bool],
+    size: f32,
+) -> Option<usize> {
     let ctx = ui.ctx().clone();
     let mut chosen = None;
     egui::Frame::new()
@@ -254,8 +264,19 @@ fn segmented(
                         muted_color(ui)
                     };
                     let galley = ui.fonts(|fonts| fonts.layout_no_wrap(option.clone(), font, text_color));
+                    let count_color = muted_color(ui);
+                    let count = counts.get(index).copied().flatten().map(|count| {
+                        ui.fonts(|fonts| {
+                            fonts.layout_no_wrap(
+                                count.to_string(),
+                                egui::FontId::proportional(size - 2.0),
+                                count_color,
+                            )
+                        })
+                    });
                     let dot = dots.get(index).copied().unwrap_or(false);
-                    let extra = if dot { 10.0 } else { 0.0 };
+                    let count_w = count.as_ref().map_or(0.0, |count| count.size().x + 5.0);
+                    let extra = if dot { 10.0 } else { 0.0 } + count_w;
                     let pad = if size < 13.0 { 10.0 } else { 14.0 };
                     let height = if size < 13.0 { 22.0 } else { 26.0 };
                     let desired = egui::vec2(galley.size().x + pad * 2.0 + extra, height);
@@ -295,7 +316,15 @@ fn segmented(
                         // 选中项加粗：同一行文字叠一像素绘制，宽度不跳动。
                         ui.painter().galley(text_pos + egui::vec2(0.35, 0.0), galley.clone(), text_color);
                     }
+                    let text_w = galley.size().x;
                     ui.painter().galley(text_pos, galley, text_color);
+                    if let Some(count) = count {
+                        let pos = egui::pos2(
+                            text_pos.x + text_w + 5.0,
+                            rect.center().y - count.size().y / 2.0,
+                        );
+                        ui.painter().galley(pos, count, muted_color(ui));
+                    }
                     if dot {
                         ui.painter().circle_filled(
                             egui::pos2(rect.right() - pad - 3.0, rect.center().y),
@@ -444,10 +473,58 @@ enum PluginPage {
     TestMarket,
 }
 
+/// 「开发者工具」入口：代码图标加正常字色，悬停变紫并出现下划线，一看就能点。
 #[cfg(windows)]
-fn open_plugin_details(ui: &egui::Ui, id: &str) {
-    ui.data_mut(|data| data.insert_temp(egui::Id::new("plugin-market-open-detail"), id.to_owned()));
-    ui.ctx().request_repaint();
+fn developer_link(ui: &mut egui::Ui) -> bool {
+    let text = "开发者工具";
+    let id = egui::Id::new("plugin-developer-link");
+    let hovered = ui.ctx().read_response(id).is_some_and(|r| r.hovered());
+    let tint = if hovered {
+        plugin_accent(ui)
+    } else {
+        ui.visuals().strong_text_color()
+    };
+    let galley = ui.fonts(|fonts| {
+        fonts.layout_no_wrap(text.to_owned(), egui::FontId::proportional(12.5), tint)
+    });
+    let size = egui::vec2(18.0 + galley.size().x, galley.size().y.max(18.0));
+    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    let response = ui
+        .interact(rect, id, egui::Sense::click())
+        .on_hover_cursor(egui::CursorIcon::PointingHand);
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, text));
+    let c = egui::pos2(rect.left() + 6.0, rect.center().y);
+    let stroke = egui::Stroke::new(1.4, tint);
+    let painter = ui.painter();
+    painter.line_segment([c + egui::vec2(-1.0, -4.0), c + egui::vec2(-5.0, 0.0)], stroke);
+    painter.line_segment([c + egui::vec2(-5.0, 0.0), c + egui::vec2(-1.0, 4.0)], stroke);
+    painter.line_segment([c + egui::vec2(3.0, -4.0), c + egui::vec2(7.0, 0.0)], stroke);
+    painter.line_segment([c + egui::vec2(7.0, 0.0), c + egui::vec2(3.0, 4.0)], stroke);
+    let text_pos = egui::pos2(rect.left() + 18.0, rect.center().y - galley.size().y / 2.0);
+    let text_w = galley.size().x;
+    painter.galley(text_pos, galley, tint);
+    if hovered {
+        let y = text_pos.y + 17.0;
+        painter.hline(text_pos.x..=text_pos.x + text_w, y, egui::Stroke::new(1.0, tint));
+    }
+    if response.has_focus() {
+        painter.rect_stroke(rect.expand(2.0), 4.0, egui::Stroke::new(1.0, plugin_accent(ui)), egui::StrokeKind::Outside);
+    }
+    response.clicked()
+}
+
+/// 设置归属在界面上的名字，顺序与设置侧栏一致。
+const OWNERS: [(&str, &str); 3] = [
+    ("appearance", "外观"),
+    ("calendar", "日程"),
+    ("tasks", "待办与置物"),
+];
+
+fn owner_label(owner: &str) -> Option<&'static str> {
+    OWNERS
+        .iter()
+        .find(|(key, _)| *key == owner)
+        .map(|(_, label)| *label)
 }
 
 /// 已安装分组的小标题，例如「外观 · 材质同时只用一个」。
@@ -634,6 +711,61 @@ impl LocalPlugins {
         false
     }
 
+    fn visible_ids(&self) -> Vec<String> {
+        self.records
+            .iter()
+            .filter(|(_, r)| {
+                r.package.as_ref().is_some_and(|p| {
+                    cfg!(all(windows, feature = "sdk-material")) || !p.manifest.is_material()
+                })
+            })
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
+
+    #[cfg(windows)]
+    fn current_page(&self, ui: &egui::Ui, nothing_installed: bool) -> PluginPage {
+        ui.data(|data| data.get_temp::<PluginPage>(egui::Id::new("settings-plugins-market")))
+            .unwrap_or(if nothing_installed && self.invalid.is_empty() {
+                PluginPage::Market
+            } else {
+                PluginPage::Mine
+            })
+    }
+
+    /// 标题行右侧的「集市 / 已安装」切换条。已安装后面跟弱化的数量，有可更新的插件时带紫点。
+    pub fn header_tabs(&mut self, ui: &mut egui::Ui) {
+        #[cfg(windows)]
+        {
+            let ids = self.visible_ids();
+            let key = egui::Id::new("settings-plugins-market");
+            let previous = self.current_page(ui, ids.is_empty());
+            let updates = ids.iter().filter(|id| self.market_update(id).is_some()).count();
+            let options = ["集市".to_owned(), "已安装".to_owned()];
+            let counts = [None, Some(ids.len() + self.invalid.len())];
+            let selected = usize::from(previous == PluginPage::Mine);
+            if let Some(index) = segmented_counts(
+                ui,
+                "settings-plugin-tabs",
+                &options,
+                &counts,
+                selected,
+                &[false, updates > 0],
+                13.0,
+            ) {
+                let page = if index == 0 { PluginPage::Market } else { PluginPage::Mine };
+                market_browse_ui::close_detail(ui);
+                if page == PluginPage::Market {
+                    forget_covers(ui);
+                    self.refresh_official_catalog();
+                }
+                ui.data_mut(|data| data.insert_temp(key, page));
+            }
+        }
+        #[cfg(not(windows))]
+        let _ = ui;
+    }
+
     /// 设置 → 插件。顶部「集市 / 已安装」两段切换；已安装按设置归属分组，
     /// 每行只有路径（前往设置）、开关和「···」三样。
     pub fn manage(
@@ -643,18 +775,11 @@ impl LocalPlugins {
         #[cfg(all(windows, feature = "sdk-material"))] active_material: Option<&str>,
     ) -> Option<usize> {
         let mut jump = None;
-        let ids: Vec<_> = self
-            .records
-            .iter()
-            .filter(|(_, r)| {
-                r.package.as_ref().is_some_and(|p| {
-                    cfg!(all(windows, feature = "sdk-material")) || !p.manifest.is_material()
-                })
-            })
-            .map(|(id, _)| id.clone())
-            .collect();
+        let ids = self.visible_ids();
         #[cfg(windows)]
-        let (page_id, page) = {
+        let page_id = egui::Id::new("settings-plugins-market");
+        #[cfg(windows)]
+        let page = {
             let was_busy = self.market_busy();
             self.poll_market();
             if self.market_pending() {
@@ -663,43 +788,12 @@ impl LocalPlugins {
             if was_busy && !self.market_busy() {
                 ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
             }
-            let id = egui::Id::new("settings-plugins-market");
-            let previous =
-                ui.data(|data| data.get_temp::<PluginPage>(id))
-                    .unwrap_or(if ids.is_empty() && self.invalid.is_empty() {
-                        PluginPage::Market
-                    } else {
-                        PluginPage::Mine
-                    });
-            let detail = ui.data_mut(|data| {
-                data.remove_temp::<String>(egui::Id::new("plugin-market-open-detail"))
-            });
-            let mut page = if detail.is_some() { PluginPage::Market } else { previous };
+            let page = self.current_page(ui, ids.is_empty());
+            ui.data_mut(|data| data.insert_temp(page_id, page));
             if page == PluginPage::Mine && self.records.values().any(|record| record.official_market) {
                 self.ensure_official_catalog();
             }
-            let updates = ids.iter().filter(|id| self.market_update(id).is_some()).count();
-            let options = [
-                "集市".to_owned(),
-                format!("已安装 {}", ids.len() + self.invalid.len()),
-            ];
-            let selected = usize::from(page == PluginPage::Mine);
-            if let Some(index) = segmented(ui, "settings-plugin-tabs", &options, selected, &[false, updates > 0], 13.0) {
-                page = if index == 0 { PluginPage::Market } else { PluginPage::Mine };
-            }
-            if page != previous {
-                market_browse_ui::close_detail(ui);
-                if page == PluginPage::Market {
-                    forget_covers(ui);
-                    self.refresh_official_catalog();
-                }
-            }
-            ui.data_mut(|data| data.insert_temp(id, page));
-            if let Some(detail) = detail.filter(|_| page == PluginPage::Market) {
-                market_browse_ui::select_detail(ui, &detail);
-            }
-            ui.add_space(12.0);
-            (id, page)
+            page
         };
         if !self.notice.is_empty() {
             settings_hint(ui, &self.notice);
@@ -742,19 +836,31 @@ impl LocalPlugins {
                 }
             });
         }
-        let (materials, cards): (Vec<_>, Vec<_>) = ids.into_iter().partition(|id| {
+        // 按插件清单写明的设置归属分组，顺序与设置侧栏一致；不认识的归属单独成组，不并进别的组。
+        let owner_of = |id: &String| {
             self.records[id]
                 .package
                 .as_ref()
-                .is_some_and(|package| package.manifest.is_material())
-        });
-        for (title, note, group) in [
-            ("外观", "材质同时只用一个", materials),
-            ("待办与置物", "", cards),
-        ] {
+                .map(|package| package.manifest.owner.clone())
+                .unwrap_or_default()
+        };
+        let mut groups: Vec<(String, Vec<String>)> = OWNERS
+            .iter()
+            .map(|(key, _)| ((*key).to_owned(), Vec::new()))
+            .collect();
+        for id in ids {
+            let owner = owner_of(&id);
+            match groups.iter_mut().find(|(key, _)| *key == owner) {
+                Some((_, group)) => group.push(id),
+                None => groups.push((owner, vec![id])),
+            }
+        }
+        for (group_owner, group) in groups {
             if group.is_empty() {
                 continue;
             }
+            let title = owner_label(&group_owner).unwrap_or(group_owner.as_str());
+            let note = if group_owner == "appearance" { "材质同时只用一个" } else { "" };
             group_header(ui, title, note);
             plugin_list(ui, |ui| {
                 for (index, id) in group.iter().enumerate() {
@@ -801,19 +907,12 @@ impl LocalPlugins {
             );
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                ui.spacing_mut().item_spacing.x = 6.0;
-                ui.spacing_mut().button_padding = egui::vec2(0.0, 2.0);
-                if ui
-                    .add(
-                        egui::Button::new(egui::RichText::new("开发者工具").size(12.0).color(muted_color(ui)))
-                            .frame(false),
-                    )
-                    .clicked()
-                {
+                ui.spacing_mut().item_spacing.x = 8.0;
+                if developer_link(ui) {
                     ui.data_mut(|data| data.insert_temp(egui::Id::new("plugin-developer-tools"), true));
                 }
                 ui.label(
-                    egui::RichText::new("· 安装本地插件、导入测试集市")
+                    egui::RichText::new("安装本地插件、导入测试集市")
                         .size(11.5)
                         .color(muted_color(ui)),
                 );
@@ -822,6 +921,8 @@ impl LocalPlugins {
                 ui.data_mut(|data| data.insert_temp(page_id, PluginPage::TestMarket));
             }
         }
+        #[cfg(windows)]
+        self.detail_drawer(ui, true);
         #[cfg(all(windows, feature = "sdk-material"))]
         {
             if self.confirm_material_permission(ui) {
@@ -846,6 +947,7 @@ impl LocalPlugins {
         let package = r.package.as_ref().unwrap();
         let manifest = &package.manifest;
         let material = manifest.is_material();
+        let owner_key = manifest.owner.clone();
         let has_settings = !manifest.settings.is_empty();
         let key = egui::Id::new(("installed", &r.origin, id, &manifest.version));
         let cover = package.cover.clone();
@@ -881,24 +983,34 @@ impl LocalPlugins {
         #[cfg(windows)]
         let author = market_browse_ui::display_author(&author, official_mark).to_owned();
         let paused = !material && !owner;
+        // 路径和跳转都按插件清单写明的设置归属，不写死某一页。
+        let owner_key = owner_key.as_str();
+        let place = owner_label(owner_key).unwrap_or(owner_key);
         let (path, tip) = if material {
-            ("设置 › 外观 › 材质 ›", "前往外观设置")
+            ("设置 › 外观 › 材质 ›".to_owned(), "前往外观设置".to_owned())
         } else if paused {
             (
-                "页面管理 › 待办与置物 ›",
-                "「待办与置物」在页面管理里关着，打开后插件才会运行",
+                format!("页面管理 › {place} ›"),
+                format!("「{place}」在页面管理里关着，打开后插件才会运行"),
             )
         } else {
-            ("设置 › 待办与置物 ›", "前往设置")
+            (format!("设置 › {place} ›"), "前往设置".to_owned())
+        };
+        let settings_page = match owner_key {
+            "calendar" => crate::app::CALENDAR_PAGE,
+            _ => crate::app::TODO_PAGE,
         };
 
-        ui.horizontal(|ui| {
+        let row_h = if runtime_error.is_some() { 58.0 } else { 42.0 };
+        let row_w = ui.available_width();
+        ui.allocate_ui_with_layout(
+            egui::vec2(row_w, row_h),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+            ui.set_min_height(row_h);
             ui.spacing_mut().item_spacing.x = 12.0;
-            ui.vertical(|ui| {
-                ui.add_space(1.0);
-                plugin_cover(ui, key, 64.0, egui::CornerRadius::same(6), "暂无封面", !on, || {
-                    Some(cover.as_ref().map(|cover| cover.bytes().to_vec()).ok_or(()))
-                });
+            plugin_cover(ui, key, 64.0, egui::CornerRadius::same(6), "暂无封面", !on, || {
+                Some(cover.as_ref().map(|cover| cover.bytes().to_vec()).ok_or(()))
             });
             #[cfg(windows)]
             let actions_w = if update.is_some() { 152.0 } else { 96.0 };
@@ -906,11 +1018,13 @@ impl LocalPlugins {
             let actions_w = 96.0;
             let info_w = (ui.available_width() - actions_w).max(80.0);
             ui.allocate_ui_with_layout(
-                egui::vec2(info_w, 40.0),
+                egui::vec2(info_w, row_h),
                 egui::Layout::top_down(egui::Align::Min),
                 |ui| {
                     ui.set_width(info_w);
                     ui.spacing_mut().item_spacing.y = 3.0;
+                    let text_h = if runtime_error.is_some() { 52.0 } else { 36.0 };
+                    ui.add_space(((row_h - text_h) / 2.0).max(0.0));
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 6.0;
                         let title = egui::RichText::new(&name).size(13.5).strong();
@@ -932,7 +1046,7 @@ impl LocalPlugins {
                         #[cfg(windows)]
                         market_browse_ui::show_badge(ui, official_mark, preview_sample);
                     });
-                    if path_button(ui, path, paused, tip) {
+                    if path_button(ui, &path, paused, &tip) {
                         if material {
                             *jump = Some(crate::extras::SETTINGS_TAB_APPEARANCE);
                         } else if paused {
@@ -941,7 +1055,7 @@ impl LocalPlugins {
                             if on && has_settings {
                                 self.focus = Some(id.to_owned());
                             }
-                            *jump = Some(crate::app::PAGE_SETTINGS_TABS[crate::app::TODO_PAGE]);
+                            *jump = Some(crate::app::PAGE_SETTINGS_TABS[settings_page]);
                         }
                     }
                     if let Some(e) = &runtime_error {
@@ -954,7 +1068,7 @@ impl LocalPlugins {
                 #[cfg(windows)]
                 ui.menu_button(egui::RichText::new("···").color(muted_color(ui)), |ui| {
                     if listed && ui.button("查看详情").clicked() {
-                        open_plugin_details(ui, id);
+                        market_browse_ui::select_detail(ui, id);
                         ui.close_menu();
                     }
                     if ui.button("反馈问题").clicked() {
@@ -1001,12 +1115,18 @@ impl LocalPlugins {
                     }
                 }
             });
-        });
+            },
+        );
     }
 
     /// 重启检查没通过的记录：插件已暂停运行，可以从集市重装或移除记录。
     fn invalid_row(&mut self, ui: &mut egui::Ui, id: &str) {
-        ui.horizontal(|ui| {
+        let row_w = ui.available_width();
+        ui.allocate_ui_with_layout(
+            egui::vec2(row_w, 42.0),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+            ui.set_min_height(42.0);
             ui.spacing_mut().item_spacing.x = 12.0;
             plugin_cover(
                 ui,
@@ -1055,7 +1175,8 @@ impl LocalPlugins {
                     }
                 }
             });
-        });
+            },
+        );
     }
 
     /// 卸载确认：二选一，每项写明后果。

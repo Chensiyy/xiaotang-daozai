@@ -73,63 +73,68 @@ pub(super) fn request_plugin_feedback(ui: &egui::Ui, id: &str, name: &str, versi
     ui.ctx().request_repaint();
 }
 
+/// 插件反馈弹窗：三种反馈各是一张可点的选项卡，点了直接去对应入口；
+/// 没有 GitHub 账号时可以复制反馈信息转交。
 pub(super) fn plugin_feedback(ui: &egui::Ui) {
+    use crate::extras::{settings_apply_style, settings_hint, settings_modal_frame, settings_modal_title};
     let id = egui::Id::new("plugin-feedback");
     let Some(mut feedback) = ui.data(|data| data.get_temp::<Feedback>(id)) else {
         return;
     };
-    let modal = egui::Modal::new(id.with("dialog")).show(ui.ctx(), |ui| {
-        ui.set_width(330.0);
-        ui.heading("插件反馈");
-        ui.label(format!("{} · v{}", feedback.name, feedback.version));
-        ui.add_space(6.0);
-        let before = feedback.topic;
-        ui.horizontal_wrapped(|ui| {
-            for topic in [Topic::Plugin, Topic::Install, Topic::Private] {
-                ui.selectable_value(&mut feedback.topic, topic, topic.title());
+    let ctx = ui.ctx().clone();
+    let mut done = false;
+    let modal = egui::Modal::new(id.with("dialog"))
+        .frame(settings_modal_frame(&ctx))
+        .backdrop_color(egui::Color32::from_black_alpha(110))
+        .show(&ctx, |ui| {
+            ui.set_width(360.0);
+            settings_apply_style(ui);
+            let mut close = settings_modal_title(ui, "插件反馈");
+            settings_hint(
+                ui,
+                &format!(
+                    "{} · v{}，插件 ID 和岛仔版本会自动填好。",
+                    feedback.name, feedback.version
+                ),
+            );
+            ui.add_space(4.0);
+            for (topic, detail) in [
+                (
+                    Topic::Plugin,
+                    "在 GitHub 补充使用场景或复现步骤，提交后通知插件维护者。问题单公开可见。",
+                ),
+                (Topic::Install, "装不上、更新失败，由岛仔维护者跟进。"),
+                (Topic::Private, "复制插件信息并打开私密报告，只有维护者能看到。"),
+            ] {
+                if super::option_card(ui, topic.title(), detail, false) {
+                    feedback.topic = topic;
+                    if topic == Topic::Private {
+                        ui.ctx().copy_text(feedback.draft());
+                    }
+                    ui.ctx()
+                        .open_url(egui::OpenUrl::new_tab(feedback.form_url().to_string()));
+                    done = true;
+                }
             }
-        });
-        if feedback.topic != before {
-            feedback.copied = false;
-        }
-        ui.add_space(4.0);
-        let private = feedback.topic == Topic::Private;
-        let help = match feedback.topic {
-            Topic::Plugin => {
-                "在 GitHub 补充使用场景或复现步骤，提交后会通知插件维护者。问题单公开可见。"
-            }
-            Topic::Install => "在 GitHub 补充遇到的错误和操作步骤，由岛仔维护者跟进。",
-            Topic::Private => "在 GitHub 私密报告中粘贴插件信息，补充情况后提交给维护者。",
-        };
-        ui.label(egui::RichText::new(help).weak());
-        ui.add_space(7.0);
-        let mut close = false;
-        ui.horizontal_wrapped(|ui| {
-            let open = if private {
-                "复制并打开私密报告"
-            } else {
-                "打开 GitHub 草稿"
-            };
-            if ui.button(open).clicked() {
-                if private {
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                let copy = if feedback.copied {
+                    "已复制反馈信息"
+                } else {
+                    "没有 GitHub？复制反馈信息"
+                };
+                if ui.add(egui::Button::new(copy).frame(false)).clicked() {
+                    feedback.topic = Topic::Plugin;
                     ui.ctx().copy_text(feedback.draft());
                     feedback.copied = true;
                 }
-                ui.ctx()
-                    .open_url(egui::OpenUrl::new_tab(feedback.form_url().to_string()));
-            }
-            if ui.button("复制反馈信息").clicked() {
-                ui.ctx().copy_text(feedback.draft());
-                feedback.copied = true;
-            }
-            close = ui.button("关闭").clicked();
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    close |= ui.button("关闭").clicked();
+                });
+            });
+            close
         });
-        if feedback.copied {
-            ui.label(egui::RichText::new("已复制反馈信息").weak());
-        }
-        close
-    });
-    let close = modal.inner || modal.should_close();
+    let close = done || modal.inner || modal.should_close();
     ui.data_mut(|data| {
         if close {
             data.remove::<Feedback>(id);
