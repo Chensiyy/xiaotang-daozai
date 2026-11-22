@@ -11126,6 +11126,10 @@ fn performance_custom_selection_controls_both_docks_and_persists() {
 #[path="bluetooth_ui_tests.rs"]
 mod bluetooth_ui_tests;
 
+#[cfg(all(windows, feature = "sdk-js"))]
+#[path = "quota_plugin_ui_tests.rs"]
+mod quota_plugin_ui_tests;
+
 #[path="module_settings_tests.rs"]
 mod module_settings_tests;
 #[path="module_mail_tests.rs"]

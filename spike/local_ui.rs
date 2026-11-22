@@ -542,11 +542,12 @@ fn developer_link(ui: &mut egui::Ui) -> bool {
 }
 
 /// 设置归属在界面上的名字，顺序与设置侧栏一致。
-const OWNERS: [(&str, &str); 5] = [
+const OWNERS: [(&str, &str); 6] = [
     ("appearance", "外观"),
     ("pages", "页面管理"),
     ("calendar", "日程"),
     ("tasks", "待办与置物"),
+    ("quota", "AI 额度"),
     ("wireless", "无线设备"),
 ];
 
@@ -806,6 +807,7 @@ impl LocalPlugins {
         ui: &mut egui::Ui,
         tasks_on: bool,
         calendar_on: bool,
+        quota_on: bool,
         #[cfg(all(windows, feature = "sdk-material"))] active_material: Option<&str>,
     ) -> Option<usize> {
         let mut jump = None;
@@ -907,6 +909,7 @@ impl LocalPlugins {
                             id,
                             tasks_on,
                             calendar_on,
+                            quota_on,
                             #[cfg(all(windows, feature = "sdk-material"))]
                             active_material,
                             &mut jump,
@@ -978,6 +981,7 @@ impl LocalPlugins {
         id: &str,
         tasks_on: bool,
         calendar_on: bool,
+        quota_on: bool,
         #[cfg(all(windows, feature = "sdk-material"))] active_material: Option<&str>,
         jump: &mut Option<usize>,
     ) {
@@ -990,6 +994,7 @@ impl LocalPlugins {
         let retired = manifest.is_retired_lunar_preview();
         let module_on = match owner_key.as_str() {
             "calendar" => calendar_on,
+            "quota" => quota_on,
             "pages" | "wireless" => true,
             _ => tasks_on,
         };
@@ -1045,6 +1050,7 @@ impl LocalPlugins {
         };
         let settings_tab = match owner_key {
             "calendar" => crate::app::PAGE_SETTINGS_TABS[crate::app::CALENDAR_PAGE],
+            "quota" => crate::app::PAGE_SETTINGS_TABS[crate::app::QUOTA_PAGE],
             "pages" => crate::extras::SETTINGS_TAB_PAGES,
             _ => crate::app::PAGE_SETTINGS_TABS[crate::app::TODO_PAGE],
         };

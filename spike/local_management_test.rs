@@ -105,6 +105,7 @@ fn management_buttons_jump_disable_and_confirm_uninstall() -> Result<()> {
             ui,
             true,
             true,
+            true,
             #[cfg(all(windows, feature = "sdk-material"))]
             None,
         );
@@ -115,6 +116,7 @@ fn management_buttons_jump_disable_and_confirm_uninstall() -> Result<()> {
         click(&ctx, label, |ui| {
             jumped |= host.manage(
                 ui,
+                true,
                 true,
                 true,
                 #[cfg(all(windows, feature = "sdk-material"))]
@@ -161,6 +163,7 @@ fn management_module_pause_and_plugin_switch_keep_their_own_choices() -> Result<
         host.manage(
             ui,
             owner,
+            true,
             true,
             #[cfg(all(windows, feature = "sdk-material"))]
             None,
@@ -232,6 +235,7 @@ fn invalid_record_can_be_removed_from_the_installed_list() -> Result<()> {
             ui,
             true,
             true,
+            true,
             #[cfg(all(windows, feature = "sdk-material"))]
             None,
         );
@@ -273,6 +277,7 @@ fn market_buttons_install_and_update_an_existing_sample() -> Result<()> {
         host.header_tabs(ui);
         host.manage(
             ui,
+            true,
             true,
             true,
             #[cfg(all(windows, feature = "sdk-material"))]
@@ -466,6 +471,7 @@ fn official_market_only_requests_uncached_data_or_explicit_refresh() -> Result<(
             ui,
             true,
             true,
+            true,
             #[cfg(feature = "sdk-material")]
             None,
         );
@@ -615,7 +621,7 @@ fn material_management_waits_for_permission_and_offers_to_enable_compatibility()
     let manage_click = |host: &mut LocalPlugins, label: &str| {
         let mut jump = None;
         click(&ctx, label, |ui| {
-            jump = host.manage(ui, true, true, None).or(jump)
+            jump = host.manage(ui, true, true, true, None).or(jump)
         });
         jump
     };
@@ -725,6 +731,7 @@ fn guide_opens_from_the_market_copies_a_prompt_and_stacks_the_template_form() {
         host.header_tabs(ui);
         host.manage(
             ui,
+            true,
             true,
             true,
             #[cfg(feature = "sdk-material")]
