@@ -531,11 +531,12 @@ fn developer_link(ui: &mut egui::Ui) -> bool {
 }
 
 /// 设置归属在界面上的名字，顺序与设置侧栏一致。
-const OWNERS: [(&str, &str); 4] = [
+const OWNERS: [(&str, &str); 5] = [
     ("appearance", "外观"),
     ("pages", "页面管理"),
     ("calendar", "日程"),
     ("tasks", "待办与置物"),
+    ("wireless", "无线设备"),
 ];
 
 fn owner_label(owner: &str) -> Option<&'static str> {
@@ -971,11 +972,12 @@ impl LocalPlugins {
         let package = r.package.as_ref().unwrap();
         let manifest = &package.manifest;
         let material = manifest.is_material();
+        let wireless = manifest.is_wireless();
         let owner_key = manifest.owner.clone();
         let retired = manifest.is_retired_lunar_preview();
         let module_on = match owner_key.as_str() {
             "calendar" => calendar_on,
-            "pages" => true,
+            "pages" | "wireless" => true,
             _ => tasks_on,
         };
         let has_settings = !manifest.settings.is_empty();
@@ -1079,6 +1081,8 @@ impl LocalPlugins {
                     });
                     if retired {
                         settings_hint(ui, "已撤回 · 等待更新");
+                    } else if wireless {
+                        settings_hint(ui, "扩展 2.4G 接收器型号");
                     } else if owner_key == "pages" && !on {
                         settings_hint(ui, "启用后可在页面管理设置");
                     } else if path_button(ui, &path, paused, &tip) {

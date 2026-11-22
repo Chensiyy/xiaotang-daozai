@@ -54,7 +54,8 @@
         "music",
         "quota",
         "notifications",
-        "weather"
+        "weather",
+        "wireless"
       ]
     },
     "capabilities": {
@@ -70,6 +71,7 @@
           "appearance.skin",
           "appearance.material",
           "navigation.shortcuts",
+          "wireless.receivers",
           "storage",
           "timer",
           "event",
@@ -416,7 +418,7 @@
             "const": "assets"
           },
           "capabilities": {
-            "not": {"contains": {"const": "navigation.shortcuts"}}
+            "not": {"contains": {"enum": ["navigation.shortcuts", "wireless.receivers"]}}
           }
         }
       },
@@ -468,6 +470,30 @@
           "entry": {"const": "shortcuts.json"},
           "capabilities": {"const": ["navigation.shortcuts"]},
           "dataVersion": {"const": 1},
+          "permissions": {"maxProperties": 0},
+          "settings": {"maxItems": 0}
+        },
+        "not": {"anyOf": [{"required": ["assets"]}, {"required": ["actions"]}]}
+      }
+    },
+    {
+      "if": {
+        "anyOf": [
+          {"properties": {"id": {"const": "daozai.wireless-receivers"}}},
+          {"properties": {"owner": {"const": "wireless"}}},
+          {"properties": {"capabilities": {"contains": {"const": "wireless.receivers"}}}}
+        ]
+      },
+      "then": {
+        "required": ["entry", "settings"],
+        "properties": {
+          "id": {"const": "daozai.wireless-receivers"},
+          "runtime": {"const": "assets"},
+          "owner": {"const": "wireless"},
+          "entry": {"const": "wireless-receivers.json"},
+          "capabilities": {"const": ["wireless.receivers"]},
+          "dataVersion": {"const": 1},
+          "refreshSeconds": {"const": 60},
           "permissions": {"maxProperties": 0},
           "settings": {"maxItems": 0}
         },

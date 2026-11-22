@@ -456,8 +456,10 @@ fn read_catalog_zip(path: &Path) -> Result<Vec<u8>> {
 }
 
 fn supported(manifest: &Manifest) -> Result<()> {
-    if (manifest.runtime != "js" && !manifest.is_page_shortcuts()) || manifest.entry.contains('/') {
-        return Err(fail("集市仅接受入口在包根目录的卡片插件和快捷切换插件"));
+    if (manifest.runtime != "js" && !manifest.is_page_shortcuts() && !manifest.is_wireless())
+        || manifest.entry.contains('/')
+    {
+        return Err(fail("集市支持入口在包根目录的卡片插件、快捷切换插件和无线设备兼容包"));
     }
     Ok(())
 }
@@ -506,7 +508,7 @@ fn zip_bytes(zip: &mut ZipArchive<Cursor<&[u8]>>, name: &str, limit: u64) -> Res
 }
 
 fn smoke(package: &Package) -> Result<()> {
-    if package.manifest.is_page_shortcuts() {
+    if package.manifest.is_page_shortcuts() || package.manifest.is_wireless() {
         return Ok(());
     }
     let values: Values = package

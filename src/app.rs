@@ -200,7 +200,6 @@ pub enum Cmd {
     #[cfg(windows)]
     OpenPluginNotice { source: String, id: String, session: String },
     OpenUrl(String),
-    WirelessCompatInstall,
     /// 需要键盘输入：外壳应让窗口可激活并取得焦点。
     Focus,
     Reveal(PathBuf),
@@ -952,8 +951,6 @@ pub struct App {
     /// 上一次看到的蓝牙设备，用来只在连接/断开时提示一次。
     pub(crate) bt_shown: Vec<crate::bt::Device>,
     pub(crate) wireless_devices: Vec<crate::bt::Device>,
-    pub wireless_compat: crate::bt::compat::Store,
-    pub wireless_compat_error: Option<String>,
     pub(crate) wireless_offset: usize,
     pub(crate) wireless_focus: Option<String>,
     /// 展开电量页的时刻，用于入场动效；离开页面或收起后清空。
@@ -1119,8 +1116,6 @@ impl App {
             music_seek_quiet_until: 0.0,
             music_restart_at: None,
             bt_shown: Vec::new(), wireless_devices:Vec::new(),wireless_offset:0,wireless_focus:None,wireless_enter_at:None,wireless_fx:Default::default(),wireless_alerted:Default::default(),wireless_seen_at:Default::default(),
-            wireless_compat: crate::bt::compat::Store::load(),
-            wireless_compat_error: None,
             bt_initialized: false,
             mail: MailState { accounts: mail::load_accounts(), ..Default::default() },
             mail_lines_cache: Vec::new(),
@@ -1131,6 +1126,15 @@ impl App {
             updates: crate::updates::State::load(model::config_dir().join("update-check.json")),
             performance: Default::default(), resident: Default::default(), resident_power:(None,false),
         }
+    }
+
+    #[cfg(windows)]
+    pub fn wireless_compat_store(&self) -> crate::bt::compat::Store {
+        #[cfg(feature = "sdk-js")]
+        return self.plugins.wireless_store();
+
+        #[cfg(not(feature = "sdk-js"))]
+        crate::bt::compat::Store::default()
     }
 
     #[cfg(all(windows, feature = "sdk-js", feature = "sdk-material"))]

@@ -84,7 +84,10 @@ fn entry_description<'a>(entry: &'a market::Entry) -> &'a str {
         .presentation
         .as_ref()
         .and_then(|details| details.description.as_deref())
-        .unwrap_or("在岛上显示信息。")
+        .unwrap_or(match entry.owner() {
+            Some("wireless") => "扩展 2.4G USB 接收器型号。",
+            _ => "在岛上显示信息。",
+        })
 }
 
 fn compact(value: Option<u64>) -> String {
@@ -754,12 +757,18 @@ impl LocalPlugins {
             .show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
                 ui.spacing_mut().item_spacing.y = 6.0;
-                let place = self
-                    .entry_owner(entry)
-                    .and_then(|owner| owner_label(&owner))
-                    .map(|label| format!("设置 › {label}"));
+                let owner = self.entry_owner(entry);
+                let (location_label, place) = if owner.as_deref() == Some("wireless") {
+                    ("管理在", Some("设置 › 插件 › 已安装".to_owned()))
+                } else {
+                    let place = owner
+                        .as_deref()
+                        .and_then(owner_label)
+                        .map(|label| format!("设置 › {label}"));
+                    ("设置在", place)
+                };
                 for (label, value) in [
-                    ("设置在", place.as_deref()),
+                    (location_label, place.as_deref()),
                     ("新增页面", Some("不会")),
                     ("权限", Some("无需外部权限")),
                 ]
@@ -790,7 +799,12 @@ impl LocalPlugins {
                 self.market_favorite_button(ui, entry);
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if catalog.is_official() && ui.add(egui::Button::new("反馈问题").frame(false)).clicked() {
+                if entry.id == WIRELESS_PLUGIN_ID {
+                    ui.hyperlink_to(
+                        "反馈设备适配",
+                        "https://github.com/Renly1994/xiaotang-daozai/issues/267",
+                    );
+                } else if catalog.is_official() && ui.add(egui::Button::new("反馈问题").frame(false)).clicked() {
                     request_plugin_feedback(ui, &entry.id, &entry.name, &entry.version);
                 }
             });
