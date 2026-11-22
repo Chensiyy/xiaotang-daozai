@@ -84,7 +84,10 @@ fn entry_description<'a>(entry: &'a market::Entry) -> &'a str {
         .presentation
         .as_ref()
         .and_then(|details| details.description.as_deref())
-        .unwrap_or("在岛上显示信息。")
+        .unwrap_or(match entry.owner() {
+            Some("wireless") => "扩展 2.4G USB 接收器型号。",
+            _ => "在岛上显示信息。",
+        })
 }
 
 fn compact(value: Option<u64>) -> String {
