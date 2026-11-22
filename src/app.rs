@@ -928,6 +928,7 @@ pub struct App {
     /// v0.5.6：日历（CalDAV）配置、未来 24 小时事件与设置表单。
     pub(crate) calendar: CalendarState,
     pub(crate) quota: crate::quota_ui::State,
+    pub(crate) quota_plugins: crate::plugin_quota_host::PluginQuotaHost,
     /// 天气页的当前数据与后台拉取状态。
     pub(crate) weather: crate::weather::State,
     pub(crate) weather_source: crate::weather_source_ui::State,
@@ -1069,6 +1070,7 @@ impl App {
             mail_lines_cache: Vec::new(),
             calendar: CalendarState::load(),
             quota: crate::quota_ui::State::load(),
+            quota_plugins: crate::plugin_quota_host::PluginQuotaHost::load(),
             weather,
             weather_source,
             updates: crate::updates::State::load(model::config_dir().join("update-check.json")),
@@ -1693,6 +1695,7 @@ impl App {
         if !visible && self.settings.visible_pages.iter().filter(|enabled|**enabled).count()==1
             && self.settings.visible_pages[page] { return; }
         self.settings.visible_pages[page]=visible;
+        if !visible && page==QUOTA_PAGE {self.quota_plugins.pause();}
         // 关掉专注模块时一并停止正在进行的计时，避免页面不可见却到点弹提醒。
         if !visible && page==FOCUS_PAGE {self.pomo.running=false;}
         if !self.settings.visible_pages[self.page] {
@@ -1928,6 +1931,7 @@ impl App {
         self.t = env.t;
         self.fullscreen_hidden=env.fullscreen_hidden;
         self.quota_tick();
+        self.quota_plugins.tick(self.quota_active());
         self.weather_tick();
         self.current_hour=env.hour();
         self.system_idle=env.idle_seconds;

@@ -1587,7 +1587,11 @@ impl App {
                     11=>{
                         let on=self.settings_feature_header(ui,crate::app::QUOTA_PAGE,"每 3 分钟自动更新剩余额度",|_,_|{});
                         ui.add_space(4.0);
-                        ui.add_enabled_ui(on,|ui|self.quota_settings(ui));
+                        ui.add_enabled_ui(on,|ui|{
+                            self.quota_settings(ui);
+                            #[cfg(windows)]
+                            crate::plugin_quota_settings::settings(&mut self.quota_plugins,ui);
+                        });
                     }
                     10=>{
                         ui.label(egui::RichText::new("选择需要的页面和状态组件。").size(12.0).color(settings_color(ctx,Color32::from_gray(180),Color32::from_gray(75))));

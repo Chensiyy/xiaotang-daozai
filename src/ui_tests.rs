@@ -10361,3 +10361,7 @@ fn every_module_settings_tab_maps_to_its_page(){
 pub(crate) fn open_quota_details(h:&H){
     for account in &h.app.quota.config.accounts {h.ctx.data_mut(|d|d.insert_temp(egui::Id::new(("quota-account-open",account.id.clone())),true));}
 }
+
+#[cfg(windows)]
+#[path = "quota_plugin_ui_tests.rs"]
+mod quota_plugin_ui_tests;

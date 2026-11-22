@@ -41,6 +41,10 @@ pub mod renderer;
 pub mod otp;
 pub mod quota;
 mod quota_ui;
+mod quota_plugin;
+mod plugin_quota_host;
+#[cfg(windows)]
+mod plugin_quota_settings;
 pub mod weather;
 mod weather_ui;
 mod weather_source_ui;
