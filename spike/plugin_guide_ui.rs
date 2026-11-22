@@ -225,6 +225,7 @@ fn sdk_capabilities(ui: &mut egui::Ui) {
         ("卡片与标注", "待办信息卡、日历日期标注，支持定时刷新"),
         #[cfg(windows)]
         ("授权取数", "只读用户选定的文件或本机 HTTP 数据"),
+        ("AI 额度", "为 AI 额度面板添加自定义数据来源"),
         ("页面快捷切换", "在岛上添加底部页面入口，配置选中配色"),
         #[cfg(all(windows, feature = "sdk-material"))]
         ("外观材质", "本地安装自定义 GPU 材质，需开启 DX12 兼容渲染"),
