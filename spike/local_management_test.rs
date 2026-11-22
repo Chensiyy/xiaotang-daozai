@@ -736,18 +736,31 @@ fn guide_opens_from_the_market_copies_a_prompt_and_stacks_the_template_form() {
     assert!(!has_text(&market, "做一个岛仔插件"));
     click_in(&ctx, WINDOW, "看教程", |ui| draw(&mut host, ui));
     let guide = frame_in(&ctx, WINDOW, vec![], |ui| draw(&mut host, ui));
+    let capabilities_title = "当前版本已开放的 SDK 能力";
     for expected in [
-        "做一个岛仔插件", "当前版本已开放的 SDK 能力", "卡片与标注", "AI 额度", "页面快捷切换",
+        "做一个岛仔插件", capabilities_title, "一句话交给 AI 做", "JS 卡片模板",
+        "复制这段话", "从模板创建", "投稿指南",
+    ] {
+        assert!(has_text(&guide, expected), "{expected}");
+    }
+    assert!(!has_text(&guide, "卡片与标注"));
+
+    click_in(&ctx, WINDOW, capabilities_title, |ui| draw(&mut host, ui));
+    let expanded = frame_in(&ctx, WINDOW, vec![], |ui| draw(&mut host, ui));
+    for expected in [
+        "卡片与标注", "AI 额度", "页面快捷切换",
         #[cfg(windows)]
         "授权取数",
         #[cfg(windows)]
         "本机接入",
         #[cfg(all(windows, feature = "sdk-material"))]
         "外观材质",
-        "一句话交给 AI 做", "JS 卡片模板", "复制这段话", "从模板创建", "投稿指南",
     ] {
-        assert!(has_text(&guide, expected), "{expected}");
+        assert!(has_text(&expanded, expected), "{expected}");
     }
+    click_in(&ctx, WINDOW, capabilities_title, |ui| draw(&mut host, ui));
+    let collapsed = frame_in(&ctx, WINDOW, vec![], |ui| draw(&mut host, ui));
+    assert!(!has_text(&collapsed, "卡片与标注"));
 
     // 复制出来的那段话带示例想法和校验命令。
     let _ = frame_in(&ctx, WINDOW, vec![], |ui| draw(&mut host, ui));
