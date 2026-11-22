@@ -302,7 +302,6 @@ impl App {
         self.enqueue_alert(a, false);
     }
     pub(crate) fn enqueue_alert(&mut self, a: Alert, system: bool) {
-        const MAX_PENDING_ALERTS: usize = 8;
         // 通知仅保存在本次运行的内存中。
         if matches!(a.source, AlertSource::Internal | AlertSource::MailCode(..)) {
             self.history.push_front(Alert { source: AlertSource::Internal, ..a.clone() });
@@ -310,6 +309,7 @@ impl App {
         self.history.truncate(50);
         if self.fullscreen_hidden && a.health().is_some(){return;}
         if self.settings.notifications {
+            const MAX_PENDING_ALERTS: usize = 8;
             #[cfg(windows)]
             if let AlertSource::Plugin { source, .. } = &a.source {
                 let pending = self.alerts.iter_mut().find(|alert| {
