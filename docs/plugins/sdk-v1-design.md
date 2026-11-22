@@ -31,7 +31,7 @@ function refresh({ settings, today }) {
 | 独立模块、列表、详情、表单 · 待宿主实现 | 清单声明 module 与按钮 `actions:["save"]`。示意 `function action(i){return {page:{kind:"detail",text:i.form.text},storage:{note:i.form.text}}}` | 岛上功能栏查看、编辑，侧栏调偏好，页面管理启停 |
 | 日程来源 · 待宿主实现 | `function refresh(i){return {calendar:[{id:"anniversary",title:i.settings.title,date:i.settings.target}]}}` | 日程里的来源，按来源和条目 ID 更新 |
 | 歌词来源 · 待宿主实现 | `function refresh(i){return {lyrics:{trackId:i.track.id,lines:i.source.lines}}}`。换歌后宿主只接收当前曲目的结果 | 原音乐页 |
-| AI 额度来源 · 待宿主实现 | `function refresh(i){return {quota:{windows:[{label:"本周",period_secs:604800,remaining_pct:i.source.remaining}]}}}` | 原额度面板 |
+| AI 额度来源 · 测试版 | 清单使用 `"owner":"quota"` 和 `"capabilities":["quota.source","timer"]`，`refresh` 返回 `quota`。 | 原 AI 额度面板中按插件名称显示来源页签 |
 | 专注事件和提醒 · 待宿主实现 | 在清单的 permissions 中声明 `{"events":["focus.finished"],"notifications":true}`，能力列出 event、notification 和 storage。示意 `function event(i){return {notice:"专注已完成",storage:{count:(i.storage?.count ?? 0)+1}}}` | 专注设置选择是否自动记录，岛上显示提醒 |
 | 本地只读数据源 · Windows 测试版 | 清单声明 `"permissions":{"source.read":"file"}` 或 `"permissions":{"source.read":"loopback"}`。宿主将已授权数据传给 `refresh` 的 `source` 输入。 | 「设置 → 插件 → 已安装 → 授权数据源」 |
 | 皮肤、表情、图标 · 待宿主实现 | 无代码包清单片段 `{"runtime":"assets","capabilities":["appearance.skin"],"assets":["theme.json"]}`。表情与图标分别声明 appearance.pet、appearance.icon | 原外观选择器，可切回内置素材 |
@@ -98,6 +98,25 @@ function refresh({ source }) {
 
 停用插件、关闭归属页面、撤权或更换授权会停止旧来源的后续读取，并丢弃已经发出的读取结果。数据源失联时只影响该插件的输入，下一次刷新可以恢复。
 
+### AI 额度来源
+
+在 JS 清单中声明 `"owner":"quota"` 和 `"capabilities":["quota.source","timer"]`。需要取数时，加上上一节的 `source.read` 权限。插件的 `refresh` 返回 `{quota: ...}`，额度面板用插件清单中的名称展示来源。
+
+```js
+function refresh({ source }) {
+  if (source.status !== "ready") return { quota: null };
+  const { remaining, total, resetAt } = JSON.parse(source.text);
+  return { quota: { windows: [
+    { label: "当前周期", remaining, limit: total, unit: "积分", reset_at: resetAt }
+  ] } };
+}
+```
+
+- `windows` 可提供 1 至 3 项，每项填写 `label`。百分比使用 `remaining_pct`，范围为 0 到 100。真实数值使用非负的 `remaining` 和 `unit`，可另填正数 `limit`，保留原单位。
+- 每项可填 `period_secs` 和 `reset_at`，分别是周期秒数和重置 Unix 时间戳。整份额度可选 `expires_at`，用于显示到期 Unix 时间戳。到期与重置各自独立。
+- 可返回 `quota: null` 撤下当前读数。申请取数权限的插件，在未授权或读取失败时由宿主管理撤下；其他来源的数据和选中设置可继续使用。暂停额度页或停用插件时，该来源会撤下。面板手动刷新会同时触发已启用的额度插件。
+- 额度输出保留在本次运行中。若插件声明了 `storage`，脚本可额外返回自己的私有存储。打包校验时源状态为 `unconfigured`，入口应能处理该状态。
+
 ## 6. 数据能留多久
 
 用户可以停用插件一段时间再回来。宿主根据插件 ID 分开保存设置和私有数据，每次成功调用只替换本插件的数据。保留数据卸载后，从原清单位置重装开发包，或从原测试集市目录重装同 ID 试用包，可以找回原值。
@@ -147,7 +166,7 @@ function refresh({settings}) {
 }
 ```
 
-旧额度草案已标记废弃。迁移时从旧命令中提取请求说明和余额计算，把账户授权交给宿主，把计算改成 refresh，根据输入的服务响应返回额度数据。额度来源和真实联网待实现。旧凭据应由用户重新授权，通用的本体缺陷仍可独立修复。[旧草案说明](README.md)
+旧额度草案已标记废弃。迁移时从旧命令中提取余额计算，把接入端输出接到用户授权的本地文件或回环接口，把计算改成 refresh 并返回额度数据。旧凭据由接入端继续管理。[旧草案说明](README.md)
 
 可直接交给 AI 的提示词：
 

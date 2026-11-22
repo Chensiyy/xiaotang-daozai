@@ -15,6 +15,7 @@ mod source_read;
 #[path = "local_ui.rs"]
 mod ui;
 use super::{fail, Result};
+use crate::quota_plugin::PluginQuota;
 use cover::{CoverPng, COVER_FILE};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -226,7 +227,10 @@ pub struct MaterialSpec<'a> {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Output {
+    #[serde(default)]
     card: String,
+    #[serde(default)]
+    quota: Option<PluginQuota>,
     #[serde(default)]
     storage: Value,
 }
@@ -329,6 +333,10 @@ impl Manifest {
         }
     }
 
+    fn is_quota_source(&self) -> bool {
+        self.owner == "quota"
+    }
+
     fn source_limit(&self) -> u64 {
         if self.is_material() {
             MATERIAL_SOURCE_LIMIT
@@ -416,6 +424,15 @@ impl Manifest {
                     "请核对材质归属、屏幕底片权限、能力、弹簧参数和投影强度",
                 ));
             }
+        } else if m.is_quota_source() {
+            if m.runtime != "js"
+                || m.material.is_some()
+                || (!m.permissions.is_empty() && m.source_kind().is_none())
+                || m.capabilities.iter().filter(|cap| cap.as_str() == "quota.source").count() != 1
+                || !m.capabilities.iter().all(|cap| matches!(cap.as_str(), "quota.source" | "settings" | "timer" | "storage"))
+            {
+                return Err(fail("AI 额度插件需使用 quota 归属、JS 入口与 quota.source 能力"));
+            }
         } else if m.runtime != "js"
             || !matches!(m.owner.as_str(), "tasks" | "calendar")
             || m.material.is_some()
@@ -427,7 +444,7 @@ impl Manifest {
                 .all(|c| matches!(c.as_str(), "card" | "settings" | "timer" | "storage"))
         {
             return Err(fail(
-                "仅支持本地 v1 待办卡片、日程卡片、材质和快捷切换插件，请核对清单",
+                "请核对插件运行环境、设置归属和能力声明",
             ));
         }
         let mut keys = std::collections::BTreeSet::new();
@@ -639,7 +656,9 @@ impl Package {
         runtime.set_max_stack_size(128 * 1024);
         let ctx = rquickjs::Context::full(&runtime)?;
         let mut input = json!({"settings":values,"storage":storage,"today":today});
-        if self.manifest.source_kind().is_some() {
+        let require_source = self.manifest.source_kind().is_some();
+        let ready = !require_source || matches!(&source, SourceInput::Ready { .. });
+        if require_source {
             input["source"] = serde_json::to_value(source)?;
         }
         let input = input.to_string();
@@ -653,8 +672,17 @@ impl Package {
         if raw.len() > 16 * 1024 {
             return Err(fail("插件输出超过 16 KiB"));
         }
-        let output: Output = serde_json::from_str(&raw)?;
-        if output.card.trim().is_empty() || output.card.chars().count() > 160 {
+        let mut output: Output = serde_json::from_str(&raw)?;
+        if self.manifest.is_quota_source() {
+            if !output.card.is_empty() || output.quota.as_ref().is_some_and(|quota| !quota.valid()) {
+                return Err(fail("额度来源需要返回格式有效的 quota 或 null"));
+            }
+            if !ready {
+                output.quota = None;
+            }
+        } else if output.quota.is_some() {
+            return Err(fail("此插件未声明额度来源能力"));
+        } else if output.card.trim().is_empty() || output.card.chars().count() > 160 {
             return Err(fail("卡片文字需要 1 至 160 字"));
         }
         if !output.storage.is_null() && !self.manifest.capabilities.iter().any(|s| s == "storage") {
@@ -699,6 +727,7 @@ pub struct LocalPlugins {
     records: BTreeMap<String, Record>,
     active_page_shortcuts: Option<String>,
     cards: BTreeMap<String, String>,
+    quota: BTreeMap<String, PluginQuota>,
     calendar_day: String,
     next: BTreeMap<String, Instant>,
     errors: BTreeMap<String, String>,
@@ -733,6 +762,7 @@ impl LocalPlugins {
             records: BTreeMap::new(),
             active_page_shortcuts: None,
             cards: BTreeMap::new(),
+            quota: BTreeMap::new(),
             calendar_day: String::new(),
             next: BTreeMap::new(),
             errors: BTreeMap::new(),
@@ -952,6 +982,7 @@ impl LocalPlugins {
             job.cancelled.store(true, Ordering::Release);
         }
         self.cards.remove(id);
+        self.quota.remove(id);
         self.next.remove(id);
         self.errors.remove(id);
         self.drafts.remove(id);
@@ -1114,6 +1145,9 @@ impl LocalPlugins {
                 .is_some_and(|package| package.manifest.owner == owner)
         };
         self.cards.retain(|id, _| !belongs(id));
+        if owner == "quota" {
+            self.quota.clear();
+        }
         self.next.retain(|id, _| !belongs(id));
         for (id, job) in &self.jobs {
             if belongs(id) {
@@ -1122,7 +1156,12 @@ impl LocalPlugins {
         }
     }
 
-    pub fn tick(&mut self, tasks_on: bool, calendar_on: bool, today: &str) {
+    #[cfg(test)]
+    fn tick(&mut self, tasks_on: bool, calendar_on: bool, today: &str) {
+        self.tick_features(tasks_on, calendar_on, false, today);
+    }
+
+    pub(crate) fn tick_features(&mut self, tasks_on: bool, calendar_on: bool, quota_on: bool, today: &str) {
         #[cfg(windows)]
         self.poll_market();
         if !tasks_on {
@@ -1133,6 +1172,9 @@ impl LocalPlugins {
             if calendar_on {
                 self.calendar_day = today.to_owned();
             }
+        }
+        if !quota_on {
+            self.pause_owner("quota");
         }
         let finished: Vec<_> = self
             .jobs
@@ -1155,20 +1197,27 @@ impl LocalPlugins {
                             .map_err(|e| e.to_string())?;
                         self.records.get_mut(&id).unwrap().storage = rendered.output.storage;
                     }
-                    Ok(rendered.output.card)
+                    Ok((rendered.output.card, rendered.output.quota))
                 });
             match result {
-                Ok(card) => {
+                Ok((card, quota)) => {
                     self.errors.remove(&id);
-                    self.cards.insert(id, card);
+                    if let Some(quota) = quota {
+                        self.quota.insert(id, quota);
+                    } else if card.is_empty() {
+                        self.quota.remove(&id);
+                    } else {
+                        self.cards.insert(id, card);
+                    }
                 }
                 Err(e) => {
                     self.cards.remove(&id);
+                    self.quota.remove(&id);
                     self.errors.insert(id, e);
                 }
             }
         }
-        if (!tasks_on && !calendar_on) || self.jobs.len() >= 2 {
+        if (!tasks_on && !calendar_on && !quota_on) || self.jobs.len() >= 2 {
             return;
         }
         let now = Instant::now();
@@ -1182,6 +1231,7 @@ impl LocalPlugins {
                         let owner_on = match pkg.manifest.owner.as_str() {
                             "tasks" => tasks_on && !pkg.manifest.is_retired_lunar_preview(),
                             "calendar" => calendar_on,
+                            "quota" => quota_on,
                             _ => false,
                         };
                         owner_on
@@ -1255,6 +1305,21 @@ impl LocalPlugins {
             }
         }
     }
+
+    pub(crate) fn quota_sources(&self) -> impl Iterator<Item = (&str, &str, &PluginQuota)> {
+        self.quota.iter().filter_map(|(id, quota)| {
+            let record = self.records.get(id).filter(|record| record.enabled)?;
+            let package = record.package.as_ref()?;
+            Some((id.as_str(), package.manifest.name.as_str(), quota))
+        })
+    }
+
+    pub(crate) fn refresh_quota(&mut self) {
+        self.next.retain(|id, _| {
+            !self.records.get(id).and_then(|record| record.package.as_ref())
+                .is_some_and(|package| package.manifest.is_quota_source())
+        });
+    }
     pub fn has_card(&self) -> bool {
         self.cards.keys().any(|id| {
             self.records[id]
@@ -1302,3 +1367,6 @@ mod tests;
 #[cfg(all(test, windows))]
 #[path = "source_lifecycle_tests.rs"]
 mod source_lifecycle_tests;
+#[cfg(all(test, windows))]
+#[path = "quota_source_tests.rs"]
+mod quota_source_tests;

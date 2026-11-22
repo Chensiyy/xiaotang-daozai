@@ -12,6 +12,8 @@ const CLAUDE_LOCAL_NOTICE:&str="由于 Claude 对网络使用环境要求较高�
 pub(crate) struct State {
     cache_path:Option<std::path::PathBuf>,
     pub config:Config,pub rows:HashMap<String,Result<Snapshot,String>>,pub busy:HashSet<String>,
+    #[cfg(feature = "sdk-js")]
+    selected_plugin: Option<(String, String)>,
     pub provider:Provider,pub alias:String,pub source:String,pub note:String,
     pub relay_manual:bool,
     pub relay_user_token:bool,pub relay_user_id:String,
@@ -243,32 +245,37 @@ fn deepseek_badge(c:&Card,skin:crate::model::Skin,x:f32,y:f32,size:f32){
         c.painter.image(texture.id(),egui::Rect::from_min_size(min,egui::Vec2::splat(pixels as f32/ppp)),egui::Rect::from_min_max(egui::Pos2::ZERO,egui::pos2(1.0,1.0)),Color32::WHITE);
     }
 }
-fn ring(c:&Card,a:&Account,snapshot:Option<&Snapshot>,x:f32,y:f32,size:f32,colors:[Color32;2]){
-    let windows=snapshot.map(Snapshot::rings).unwrap_or_default();let dual=windows.len()>1;
+fn quota_rings(c:&Card,x:f32,y:f32,size:f32,colors:[Color32;2],remaining:impl ExactSizeIterator<Item=f32>){
+    let dual=remaining.len()>1;
     let stroke=if dual{if size<35.0{2.2}else{6.5}}else{(size*0.102).clamp(3.0,6.5)};
     let radius=size/2.0-stroke/2.0-1.0;
     let gap=if size<35.0{1.5}else{3.0};
     let start=-std::f32::consts::FRAC_PI_2;
-    for i in 0..if dual{2}else{1}{
+    for (i,value) in remaining.take(2).enumerate(){
         let r=radius-i as f32*(stroke+gap);
-        if let Some(w)=windows.get(i){
-            let col=colors[i];let dark=crate::paint::mix(col,Color32::BLACK,0.8);
-            if w.remaining>=100.0{c.ring(x,y,r,stroke,col);}else if w.remaining<=0.0{c.ring(x,y,r,stroke,dark);}else{
-                let end=start+std::f32::consts::TAU*w.remaining/100.0;
-                c.arc(x,y,r,end,start+std::f32::consts::TAU,stroke,dark);
-                c.arc(x,y,r,start,end,stroke,col);
-                for angle in [start,end]{c.circle(x+r*angle.cos(),y+r*angle.sin(),stroke/2.0,col);}
-            }
+        let col=colors[i];let dark=crate::paint::mix(col,Color32::BLACK,0.8);
+        if value>=100.0{c.ring(x,y,r,stroke,col);}else if value<=0.0{c.ring(x,y,r,stroke,dark);}else{
+            let end=start+std::f32::consts::TAU*value/100.0;
+            c.arc(x,y,r,end,start+std::f32::consts::TAU,stroke,dark);
+            c.arc(x,y,r,start,end,stroke,col);
+            for angle in [start,end]{c.circle(x+r*angle.cos(),y+r*angle.sin(),stroke/2.0,col);}
         }
     }
+}
+fn quota_ring_number(c:&Card,x:f32,y:f32,value:&str){
+    let large=if value.len()>2{22.0}else{28.0};
+    let number_width=c.text_w(value,large,W::Bold);let width=number_width+c.text_w("%",11.0,W::Semibold)+2.0;
+    let left=x-width/2.0;c.centered_text(left,y,value,large,W::Bold,theme::WHITE,H::Left);
+    c.centered_text(left+number_width+2.0,y+3.0,"%",11.0,W::Semibold,theme::GRAY,H::Left);
+}
+fn ring(c:&Card,a:&Account,snapshot:Option<&Snapshot>,x:f32,y:f32,size:f32,colors:[Color32;2]){
+    let windows=snapshot.map(Snapshot::rings).unwrap_or_default();let dual=windows.len()>1;
+    quota_rings(c,x,y,size,colors,windows.iter().map(|w|w.remaining));
     if a.provider==Provider::Kiro{logo(c,a.provider,x,y,if size<35.0{if dual{10.0}else{12.0}}else if dual{24.0}else{34.0});}
     else if matches!(a.provider,Provider::ZCode|Provider::Antigravity)&&windows.is_empty(){logo(c,a.provider,x,y,if size<35.0{size-3.0}else{size*0.72});}
     else if size<35.0 {logo(c,a.provider,x,y,if dual{10.0}else{12.0});}else if dual {logo(c,a.provider,x,y,24.0);}else if let Some(w)=windows.first(){
         let value=if a.provider==Provider::Antigravity{w.value_text().trim_end_matches('%').to_owned()}else{format!("{:.0}",w.remaining)};
-        let large=if value.len()>2{22.0}else{28.0};
-        let number_width=c.text_w(&value,large,W::Bold);let width=number_width+c.text_w("%",11.0,W::Semibold)+2.0;
-        let left=x-width/2.0;c.centered_text(left,y,&value,large,W::Bold,theme::WHITE,H::Left);
-        c.centered_text(left+number_width+2.0,y+3.0,"%",11.0,W::Semibold,theme::GRAY,H::Left);
+        quota_ring_number(c,x,y,&value);
     }else{c.centered_text(x,y,"—",24.0,W::Semibold,theme::DIM,H::Center);}
 }
 fn reset_text(at:Option<i64>,now:&chrono::DateTime<chrono::Local>)->String {
@@ -277,6 +284,46 @@ fn reset_text(at:Option<i64>,now:&chrono::DateTime<chrono::Local>)->String {
     if at.timestamp()<=now.timestamp(){return "等待刷新".into();}
     let format=if at.date_naive()==now.date_naive(){"今天 %H:%M 重置"}else if at.year()==now.year(){"%-m月%-d日 %H:%M 重置"}else{"%Y/%-m/%-d %H:%M 重置"};
     at.format(format).to_string()
+}
+#[cfg(feature = "sdk-js")]
+fn plugin_quota_colors()->[Color32;2]{
+    [theme::CYAN,crate::paint::mix(theme::CYAN,Color32::WHITE,0.16)]
+}
+#[cfg(feature = "sdk-js")]
+fn draw_plugin_quota(c:&Card,name:&str,quota:&crate::quota_plugin::PluginQuota){
+    let colors=plugin_quota_colors();
+    let remaining:Vec<_>=quota.windows.iter().filter_map(|window|window.percent()).take(2).collect();
+    quota_rings(c,103.0,105.0,70.0,colors,remaining.iter().copied());
+    if let [percent]=remaining.as_slice(){
+        let value=if *percent>0.0&&*percent<1.0{"<1".into()}else{format!("{percent:.0}")};
+        quota_ring_number(c,103.0,105.0,&value);
+    }else{
+        c.centered_text(103.0,105.0,"额度",12.0,W::Semibold,theme::GRAY,H::Center);
+    }
+    c.text(157.0,64.0,&c.fit(&format!("{name} · 插件"),12.0,W::Semibold,197.0),12.0,W::Semibold,theme::WHITE,H::Left);
+    let now=chrono::Local::now();
+    for (i,window) in quota.windows.iter().enumerate(){
+        let y=83.0+i as f32*23.0;
+        let value=window.value_text();
+        let value_width=112.0;
+        let preferred_size=15.0;
+        let value_size=(preferred_size*(value_width-2.0)/c.text_w(&value,preferred_size,W::Semibold).max(value_width-2.0)).max(11.0);
+        let shown=c.fit(&value,value_size,W::Semibold,value_width);
+        let label_width=190.0-c.text_w(&shown,value_size,W::Semibold);
+        let color=if window.remaining==Some(0.0)||window.percent()==Some(0.0){Color32::from_rgb(255,166,77)}else{theme::WHITE};
+        c.text(157.0,y,&c.fit(&window.label,11.0,W::Semibold,label_width.max(0.0)),11.0,W::Semibold,theme::WHITE,H::Left);
+        c.text(355.0,y,&shown,value_size,W::Semibold,color,H::Right);
+        if window.reset_at.is_some(){
+            c.text(157.0,y+12.0,&c.fit(&reset_text(window.reset_at,&now),9.0,W::Regular,197.0),9.0,W::Regular,theme::GRAY,H::Left);
+        }
+        if shown!=value{
+            c.hit(235.0,y-13.0,122.0,16.0,("plugin-quota-value",i)).on_hover_text(value);
+        }
+    }
+    if let Some(at)=quota.expires_at.and_then(|at|chrono::DateTime::from_timestamp(at,0)){
+        let text=format!("{} 到期",at.with_timezone(&chrono::Local).format("%Y/%-m/%-d %H:%M"));
+        c.text(157.0,154.0,&c.fit(&text,9.0,W::Regular,197.0),9.0,W::Regular,theme::GRAY,H::Left);
+    }
 }
 fn snapshot_details(snapshot:&Snapshot)->String{
     if let Some(relay)=&snapshot.relay{return relay.full();}
@@ -503,12 +550,47 @@ impl App {
             let summary=self.quota_ring_summary(a,snapshot);
             if bar_tooltip(c.hit(x-14.0,1.0,28.0+extra,28.0,("quota-pin",&a.id)),format!("{} · {}\n{}",a.provider.name(),a.alias,summary)).clicked(){chosen=Some(a.id.clone());}
         }
-        if let Some(id)=chosen{self.quota.config.selected=id;self.quota.config.save();self.show_page(6);}
+        if let Some(id)=chosen{
+            #[cfg(feature = "sdk-js")]
+            {self.quota.selected_plugin=None;}
+            self.quota.config.selected=id;self.quota.config.save();self.show_page(6);
+        }
     }
     pub(crate) fn page_quota(&mut self,c:&Card,header:&Card){
-        if header.hit(303.0,8.0,32.0,21.0,"quota-refresh").on_hover_text("刷新额度").clicked(){self.pending.push(Cmd::QuotaRefresh);}
+        if header.hit(303.0,8.0,32.0,21.0,"quota-refresh").on_hover_text("刷新额度").clicked(){
+            #[cfg(feature = "sdk-js")]
+            self.plugins.refresh_quota();
+            self.pending.push(Cmd::QuotaRefresh);
+        }
         header.text(319.0,23.0,if self.quota.busy.is_empty(){"刷新"}else{"更新中"},10.5,W::Regular,theme::GRAY,H::Center);
-        let Some(selected)=self.quota.config.selected_index() else{
+        #[derive(Clone,Copy)]
+        enum Source {
+            Account(usize),
+            #[cfg(feature = "sdk-js")]
+            Plugin(usize),
+        }
+        let sources:Vec<_>=self.quota.config.ordered_indices(false).into_iter().map(Source::Account).collect();
+        #[cfg(feature = "sdk-js")]
+        let plugin_sources:Vec<_>=self.plugins.quota_sources().collect();
+        let selected_account=self.quota.config.selected_index();
+        let builtin_position=selected_account.and_then(|selected|sources.iter().position(|source|matches!(source,Source::Account(index) if *index==selected)));
+        #[cfg(feature = "sdk-js")]
+        let (sources,position)={
+            let selected=self.quota.selected_plugin.as_ref()
+                .filter(|(_, account)| account == &self.quota.config.selected)
+                .and_then(|(selected, _)| plugin_sources.iter().position(|(id,_,_)|*id==selected));
+            if selected.is_none(){
+                self.quota.selected_plugin=None;
+            }
+            let mut sources=sources;
+            let plugin_start=sources.len();
+            sources.extend((0..plugin_sources.len()).map(Source::Plugin));
+            let position=selected.map(|index|plugin_start+index).or(builtin_position);
+            (sources,position)
+        };
+        #[cfg(not(feature = "sdk-js"))]
+        let position=builtin_position;
+        let Some(pos)=position.or_else(||(!sources.is_empty()).then_some(0)) else{
             c.text(43.0,61.0,"还没有添加 AI 账号",13.0,W::Bold,theme::WHITE,H::Left);
             c.text(43.0,80.0,"连接 AI 账号，查看剩余额度",10.5,W::Regular,theme::GRAY,H::Left);
             let(r,b)=crate::paint::material_capsule(c,43.0,92.0,94.0,24.0,"add-quota-account",theme::BTN,theme::BTN_HOVER,
@@ -516,11 +598,48 @@ impl App {
                 #[cfg(all(windows, feature = "sdk-material"))] ControlRole::QuotaAdd);
             b.text(90.0,108.0,"添加账号",10.0,W::Semibold,theme::WHITE,H::Center);if r.clicked(){self.settings_tab=11;self.open_settings();}return;
         };
-        let indices=self.quota.config.ordered_indices(false);
-        let pos=indices.iter().position(|i|*i==selected).unwrap_or(0);let start=pos/3*3;let mut picked=None;
-        if indices.len()>3{for (x,offset,label)in [(42.0,-1isize,"‹"),(357.0,1,"›")]{if c.hit(x-7.0,30.0,18.0,19.0,("quota-account-next",offset)).clicked(){picked=Some(indices[(pos as isize+offset).rem_euclid(indices.len() as isize) as usize]);}c.text(x+2.0,44.0,label,13.0,W::Regular,theme::GRAY,H::Center);}}
-        for (column,index)in indices.iter().skip(start).take(3).enumerate(){let a=&self.quota.config.accounts[*index];let x=59.0+column as f32*99.0;let on=*index==selected;let colors=accent_colors(&self.quota.config,a);let color=colors[0];let(r,b)=crate::paint::capsule(c,x,30.0,94.0,21.0,&format!("quota-account-{}",a.id),if on{Color32::from_rgb(color.r()/5,color.g()/5,color.b()/5)}else{Color32::BLACK},theme::BTN_HOVER);let text=b.fit(&a.alias,10.5,W::Regular,84.0);b.text(x+47.0,45.0,&text,10.5,W::Regular,if on{colors[1]}else{theme::GRAY},H::Center);if r.on_hover_text(format!("{} · {}",a.provider.name(),a.alias)).clicked(){picked=Some(*index);}}
-        if let Some(i)=picked{self.quota.config.selected=self.quota.config.accounts[i].id.clone();self.quota.config.save();}
+        let start=pos/3*3;
+        let mut picked=None;
+        if sources.len()>3{for (x,offset,label)in [(42.0,-1isize,"‹"),(357.0,1,"›")]{if c.hit(x-7.0,30.0,18.0,19.0,("quota-account-next",offset)).clicked(){picked=Some((pos as isize+offset).rem_euclid(sources.len() as isize) as usize);}c.text(x+2.0,44.0,label,13.0,W::Regular,theme::GRAY,H::Center);}}
+        for (column,source) in sources.iter().skip(start).take(3).enumerate(){
+            let (name,hit,tip,colors)=match *source{
+                Source::Account(index)=>{
+                    let a=&self.quota.config.accounts[index];
+                    (a.alias.as_str(),format!("quota-account-{}",a.id),format!("{} · {}",a.provider.name(),a.alias),accent_colors(&self.quota.config,a))
+                },
+                #[cfg(feature = "sdk-js")]
+                Source::Plugin(index)=>{
+                    let (id,name,_)=plugin_sources[index];
+                    (name,format!("quota-plugin-{id}"),format!("{name} · 插件"),plugin_quota_colors())
+                },
+            };
+            let x=59.0+column as f32*99.0;let on=start+column==pos;let color=colors[0];
+            let(r,b)=crate::paint::capsule(c,x,30.0,94.0,21.0,&hit,if on{Color32::from_rgb(color.r()/5,color.g()/5,color.b()/5)}else{Color32::BLACK},theme::BTN_HOVER);
+            let text=b.fit(name,10.5,W::Regular,84.0);
+            b.text(x+47.0,45.0,&text,10.5,W::Regular,if on{colors[1]}else{theme::GRAY},H::Center);
+            if r.on_hover_text(tip).clicked(){picked=Some(start+column);}
+        }
+        if let Some(index)=picked{
+            match sources[index]{
+                Source::Account(i)=>{
+                    #[cfg(feature = "sdk-js")]
+                    {self.quota.selected_plugin=None;}
+                    self.quota.config.selected=self.quota.config.accounts[i].id.clone();
+                    self.quota.config.save();
+                },
+                #[cfg(feature = "sdk-js")]
+                Source::Plugin(i)=>{self.quota.selected_plugin=Some((plugin_sources[i].0.to_owned(),self.quota.config.selected.clone()));},
+            }
+        }
+        let selected=match sources[pos]{
+            Source::Account(index)=>index,
+            #[cfg(feature = "sdk-js")]
+            Source::Plugin(index)=>{
+                let (_,name,quota)=plugin_sources[index];
+                draw_plugin_quota(c,name,quota);
+                return;
+            },
+        };
         let a=&self.quota.config.accounts[selected];let result=self.quota.rows.get(&a.id);let snapshot=result.and_then(|r|r.as_ref().ok());
         let colors=accent_colors(&self.quota.config,a);
         if let Some(s)=snapshot.filter(|s|s.at>0){
@@ -708,7 +827,11 @@ impl App {
         ui.horizontal_wrapped(|ui|{
             if ui.button("＋ 添加账号").clicked(){self.quota_open_connection(None);}
             if ui.button("识别本机账号").clicked(){self.quota.note=self.quota.config.discover().message();}
-            if ui.add_enabled(self.quota.busy.is_empty(),egui::Button::new("刷新额度")).clicked(){self.pending.push(Cmd::QuotaRefresh);}
+            if ui.add_enabled(self.quota.busy.is_empty(),egui::Button::new("刷新额度")).clicked(){
+                #[cfg(feature = "sdk-js")]
+                self.plugins.refresh_quota();
+                self.pending.push(Cmd::QuotaRefresh);
+            }
         });ui.add_space(8.0);
         let accounts=self.quota.config.accounts.clone();let mut remove=None;let mut connect=None;let mut reorder=None;
         for mut a in accounts{
@@ -748,7 +871,11 @@ impl App {
                         // 从右往左排：按钮先靠右放好，名称输入框占用剩余宽度，按钮再宽也不会顶出卡片。
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{
                             if ui.add_enabled(self.quota.api_connecting.is_none()&&self.quota.workbuddy_connecting.is_none()&&self.quota.deepseek_connecting.is_none()&&self.quota.gemini_connecting.is_none()&&self.quota.doubao_connecting.is_none()&&self.quota.login.is_none(),egui::Button::new("移除")).clicked(){remove=Some(a.id.clone());}
-                            if ui.selectable_label(self.quota.config.selected==a.id,"当前").clicked(){self.quota.config.selected=a.id.clone();}
+                            if ui.selectable_label(self.quota.config.selected==a.id,"当前").clicked(){
+                                #[cfg(feature = "sdk-js")]
+                                {self.quota.selected_plugin=None;}
+                                self.quota.config.selected=a.id.clone();
+                            }
                             ui.add_sized([ui.available_width().max(55.0),26.0],egui::TextEdit::singleline(&mut a.alias).hint_text("账号名称")).on_hover_text("直接修改账号名称");
                         });
                     });
@@ -1306,6 +1433,8 @@ impl App {
         }
         let hit=c.hit(cx-17.0,mid-height/2.0,34.0,height,("quota-side",&a.id));
         if bar_tooltip(hit,format!("{} · {}\n{}",a.provider.name(),a.alias,summary)).clicked(){
+            #[cfg(feature = "sdk-js")]
+            {self.quota.selected_plugin=None;}
             self.quota.config.selected=a.id.clone();self.quota.config.save();self.show_page(6);
         }
     }

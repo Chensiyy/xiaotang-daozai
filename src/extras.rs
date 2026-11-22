@@ -1775,7 +1775,8 @@ impl App {
                     SETTINGS_TAB_PLUGINS=>{
                         let on=self.module_on(crate::app::TODO_PAGE);
                         let calendar_on=self.module_on(crate::app::CALENDAR_PAGE);
-                        if let Some(tab)=self.plugins.manage(ui,on,calendar_on,
+                        let quota_on=self.quota_active();
+                        if let Some(tab)=self.plugins.manage(ui,on,calendar_on,quota_on,
                             #[cfg(all(windows,feature="sdk-material"))] self.material_active_id.as_deref().filter(|_| self.material_capture_forced),
                         ){self.settings_tab=tab;}
                     }
@@ -1787,7 +1788,11 @@ impl App {
                     11=>{
                         let on=self.settings_feature_header(ui,crate::app::QUOTA_PAGE,"每 3 分钟自动更新剩余额度",|_,_|{});
                         ui.add_space(4.0);
-                        ui.add_enabled_ui(on,|ui|self.quota_settings(ui));
+                        ui.add_enabled_ui(on,|ui|{
+                            self.quota_settings(ui);
+                            #[cfg(feature="sdk-js")]
+                            self.plugins.settings(ui,"quota",on);
+                        });
                     }
                     SETTINGS_TAB_PAGES=>{
                         ui.label(egui::RichText::new("选择需要的页面和状态组件。").size(12.0).color(settings_color(ctx,Color32::from_gray(180),Color32::from_gray(75))));
