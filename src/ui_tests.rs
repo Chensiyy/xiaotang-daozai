@@ -6246,6 +6246,52 @@ fn frame_control_draw(h:&mut H,cursor:Option<Pos2>,events:Vec<egui::Event>) {
     h.shapes=output.shapes;
 }
 
+#[cfg(feature = "sdk-js")]
+const SHORTCUT_FIXTURE_ID: &str = "example.page-shortcuts";
+
+#[cfg(feature = "sdk-js")]
+fn install_page_shortcuts_fixture(h: &mut H) {
+    let source = crate::model::config_dir().join("shortcut-plugin-source");
+    std::fs::create_dir_all(&source).unwrap();
+    let manifest = serde_json::json!({
+        "id": SHORTCUT_FIXTURE_ID, "name":"快捷切换", "author":"测试", "version":"1.0.0",
+        "api":1, "runtime":"assets", "entry":"shortcuts.json", "cover":"cover.png",
+        "owner":"pages", "capabilities":["navigation.shortcuts"], "dataVersion":1,
+        "permissions":{}, "settings":[]
+    });
+    let colors = crate::app::PAGE_SHORTCUT_KEYS.iter().enumerate()
+        .map(|(index, &key)| (key, format!("#D0{:02X}7D", index*12))).collect::<std::collections::BTreeMap<_,_>>();
+    let path = source.join("plugin.json");
+    std::fs::write(&path,manifest.to_string()).unwrap();
+    std::fs::write(source.join("shortcuts.json"),serde_json::json!({"colors":colors}).to_string()).unwrap();
+    std::fs::write(source.join("cover.png"),include_bytes!("../spike/examples/payday/cover.png")).unwrap();
+    h.app.plugins.install(&path).unwrap();
+}
+
+#[cfg(feature = "sdk-js")]
+#[test]
+fn bottom_page_shortcuts_follow_the_installed_plugin_and_saved_preference() {
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=H::new();
+    h.app.show_page(crate::app::MUSIC_PAGE);
+    assert_eq!(h.app.expanded_height(),PH);
+    install_page_shortcuts_fixture(&mut h);
+    assert_eq!(h.app.expanded_height(),PH,"安装后仍应等待用户启用");
+    h.app.plugins.enable(SHORTCUT_FIXTURE_ID,true).unwrap();
+    assert_eq!(h.app.expanded_height(),PH+24.0);
+    h.app.set_page_visible(crate::app::TODO_PAGE,false);
+    assert_eq!(h.app.expanded_height(),PH+24.0,"快捷切换应独立于待办模块");
+    h.app.settings.show_page_shortcuts=false;
+    h.app.settings.save();
+    h.app=App::new(&h.ctx,Options { fetch_lyrics:false, pet_idle:1e9 });
+    assert!(h.app.plugins.active_page_shortcut_colors().is_some());
+    assert_eq!(h.app.expanded_height(),PH,"重启应保留隐藏图标偏好");
+    h.app.settings.show_page_shortcuts=true;
+    h.app.plugins.enable(SHORTCUT_FIXTURE_ID,false).unwrap();
+    assert_eq!(h.app.expanded_height(),PH,"停用后应保留原页码点布局");
+}
+
+#[cfg(feature = "sdk-js")]
 #[test]
 fn bottom_page_shortcuts_share_a_row_with_dots_on_every_dock() {
     use crate::app::{FOCUS_PAGE,MUSIC_PAGE,TODO_PAGE};
@@ -6275,6 +6321,8 @@ fn bottom_page_shortcuts_share_a_row_with_dots_on_every_dock() {
 
     for dock in [Dock::Top,Dock::Bottom,Dock::Left,Dock::Right] {
         let mut h=H::new();
+        install_page_shortcuts_fixture(&mut h);
+        h.app.plugins.enable(SHORTCUT_FIXTURE_ID,true).unwrap();
         h.app.settings.dock=dock;
         assert!(h.app.settings.show_page_shortcuts);
         h.app.settings.visible_pages=std::array::from_fn(|page|pages.contains(&page));
@@ -6322,17 +6370,17 @@ fn bottom_page_shortcuts_share_a_row_with_dots_on_every_dock() {
     }
 }
 
+#[cfg(feature = "sdk-js")]
 #[test]
 fn bottom_page_shortcuts_fit_the_performance_panel_with_all_pages_enabled() {
     use crate::app::{PAGE_NAMES, PERFORMANCE_PAGE};
     use crate::model::Dock;
 
-    let accents=(0..PAGE_NAMES.len()).map(crate::paint::page_shortcut_accent).collect::<std::collections::HashSet<_>>();
-    assert_eq!(accents.len(),PAGE_NAMES.len(),"每个功能页应有对应的选中强调色");
-
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     for dock in [Dock::Top,Dock::Bottom] {
         let mut h=H::new();
+        install_page_shortcuts_fixture(&mut h);
+        h.app.plugins.enable(SHORTCUT_FIXTURE_ID,true).unwrap();
         h.app.settings.dock=dock;
         h.app.settings.visible_pages.fill(true);
         h.app.show_page(PERFORMANCE_PAGE);

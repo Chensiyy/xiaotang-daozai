@@ -2,7 +2,7 @@
 
 use super::{
     bounded, cover::COVER_LIMIT, fail, valid_id, CoverPng, Manifest, Package, Result, Values,
-    COVER_FILE, SCRIPT_SOURCE_LIMIT,
+    COVER_FILE,
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
 use ring::digest::{digest, SHA256};
@@ -456,8 +456,8 @@ fn read_catalog_zip(path: &Path) -> Result<Vec<u8>> {
 }
 
 fn supported(manifest: &Manifest) -> Result<()> {
-    if manifest.runtime != "js" || manifest.entry.contains('/') {
-        return Err(fail("集市仅接受根目录含一个 JavaScript 入口的卡片插件"));
+    if (manifest.runtime != "js" && !manifest.is_page_shortcuts()) || manifest.entry.contains('/') {
+        return Err(fail("集市仅接受入口在包根目录的卡片插件和快捷切换插件"));
     }
     Ok(())
 }
@@ -477,16 +477,9 @@ fn decode_zip(raw: &[u8]) -> Result<Package> {
     }
     let manifest = Manifest::decode(&zip_text(&mut zip, "plugin.json", MANIFEST_LIMIT)?)?;
     supported(&manifest)?;
-    let source = zip_text(&mut zip, &manifest.entry, SCRIPT_SOURCE_LIMIT)?;
-    if source.trim().is_empty() {
-        return Err(fail("插件入口文件为空"));
-    }
+    let source = zip_text(&mut zip, &manifest.entry, manifest.source_limit())?;
     let cover = CoverPng::decode(zip_bytes(&mut zip, COVER_FILE, COVER_LIMIT)?)?;
-    Ok(Package {
-        manifest,
-        source,
-        cover: Some(cover),
-    })
+    Package::from_entry(manifest, source, cover)
 }
 
 fn zip_text(zip: &mut ZipArchive<Cursor<&[u8]>>, name: &str, limit: u64) -> Result<String> {
@@ -513,6 +506,9 @@ fn zip_bytes(zip: &mut ZipArchive<Cursor<&[u8]>>, name: &str, limit: u64) -> Res
 }
 
 fn smoke(package: &Package) -> Result<()> {
+    if package.manifest.is_page_shortcuts() {
+        return Ok(());
+    }
     let values: Values = package
         .manifest
         .settings

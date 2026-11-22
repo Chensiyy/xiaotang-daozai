@@ -11,6 +11,101 @@ fn settle(host: &mut LocalPlugins, today: &str) {
     }
 }
 
+fn write_shortcut_package(dir: &Path, id: &str, version: &str, colors: Value) -> Result<PathBuf> {
+    fs::create_dir_all(dir)?;
+    fs::write(dir.join(COVER_FILE), include_bytes!("examples/payday/cover.png"))?;
+    fs::write(
+        dir.join(PAGE_SHORTCUT_ENTRY),
+        serde_json::to_vec(&json!({ "colors": colors }))?,
+    )?;
+    let path = dir.join("plugin.json");
+    fs::write(
+        &path,
+        serde_json::to_vec(&json!({
+            "id": id, "name": "快捷切换", "author": "示例", "version": version,
+            "api": 1, "runtime": "assets", "entry": PAGE_SHORTCUT_ENTRY,
+            "cover": COVER_FILE, "owner": "pages", "capabilities": ["navigation.shortcuts"],
+            "dataVersion": 1, "permissions": {}, "settings": [],
+        }))?,
+    )?;
+    Ok(path)
+}
+
+#[test]
+fn page_shortcuts_are_data_only_and_follow_the_installed_switch() -> Result<()> {
+    let root = std::env::temp_dir().join(format!(
+        "daozai-shortcuts-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos()
+    ));
+    let (first, second) = ("example.first", "example.second");
+    let path = write_shortcut_package(&root.join("first"), first, "1.0.0", json!({"music":"#FA3E72"}))?;
+    let other = write_shortcut_package(&root.join("second"), second, "1.0.0", json!({"weather":"#4c9be8"}))?;
+    let entry = root.join("first").join(PAGE_SHORTCUT_ENTRY);
+    for invalid in [
+        json!({}),
+        json!({"colors": {}}),
+        json!({"colors": {"music":"#abc"}}),
+        json!({"colors": {"music": [250, 62, 114]}}),
+        json!({"colors": {"unknown":"#FA3E72"}}),
+        json!({"colors": {"music":"#FA3E72"}, "command": "refresh"}),
+    ] {
+        fs::write(&entry, serde_json::to_vec(&invalid)?)?;
+        assert!(Package::read(&path).is_err(), "{invalid}");
+    }
+    fs::write(&entry, r##"{"colors":{"music":"#FA3E72"}}"##)?;
+    let manifest: Value = serde_json::from_slice(&fs::read(&path)?)?;
+    for (field, value) in [
+        ("owner", json!("tasks")),
+        ("entry", json!("nested/shortcuts.json")),
+        ("permissions", json!({"screen.backdrop": true})),
+        ("capabilities", json!(["navigation.shortcuts", "timer"])),
+        ("refreshSeconds", json!(61)),
+    ] {
+        let mut invalid = manifest.clone();
+        invalid[field] = value;
+        assert!(Manifest::decode(&invalid.to_string()).is_err(), "{field}");
+    }
+
+    let storage = root.join("installed");
+    let mut host = LocalPlugins::open(storage.clone());
+    host.install(&path)?;
+    host.install(&other)?;
+    assert!(host.active_page_shortcut_colors().is_none());
+    host.enable(first, true)?;
+    assert_eq!(host.active_page_shortcut_colors().unwrap()["music"], [250, 62, 114]);
+    assert!(host.enable(second, true).is_err());
+    assert!(!host.records[second].enabled);
+    host.tick(true, true, "2026-11-22");
+    assert!(host.jobs.is_empty());
+
+    let mut host = LocalPlugins::open(storage.clone());
+    assert_eq!(host.active_page_shortcut_colors().unwrap()["music"], [250, 62, 114]);
+    host.enable(first, false)?;
+    assert!(host.active_page_shortcut_colors().is_none());
+    host.enable(second, true)?;
+    assert_eq!(host.active_page_shortcut_colors().unwrap()["weather"], [76, 155, 232]);
+    host.uninstall(second, true)?;
+    assert!(host.active_page_shortcut_colors().is_none());
+    host.install(&other)?;
+    host.enable(second, true)?;
+    host.uninstall(second, false)?;
+    assert!(host.active_page_shortcut_colors().is_none());
+
+    host.enable(first, true)?;
+    let record_path = host.path(first);
+    let mut tampered: Value = serde_json::from_slice(&fs::read(&record_path)?)?;
+    tampered["package"]["source"] = json!(r##"{"colors":{"music":"#NOPE"}}"##);
+    fs::write(record_path, serde_json::to_vec(&tampered)?)?;
+    let host = LocalPlugins::open(storage);
+    assert!(host.invalid.contains(first));
+    assert!(host.active_page_shortcut_colors().is_none());
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
 #[cfg(windows)]
 mod test_market {
     use super::*;
@@ -91,6 +186,39 @@ mod test_market {
     fn status(host: &LocalPlugins) -> MarketStatus {
         let catalog = host.market_catalog(false).unwrap();
         host.market_status(&catalog, &catalog.entries[0])
+    }
+
+    #[test]
+    fn market_can_package_install_and_update_page_shortcut_assets() -> Result<()> {
+        let fixture = Fixture::new()?;
+        let id = "example.shortcuts";
+        let mut host = LocalPlugins::open(fixture.root.join("installed"));
+        for (version, color, expected) in [
+            ("1.0.0", "#FA3E72", [250, 62, 114]),
+            ("1.1.0", "#4C9BE8", [76, 155, 232]),
+        ] {
+            let path = write_shortcut_package(
+                &fixture.root.join("shortcut-source"),
+                id,
+                version,
+                json!({"music": color}),
+            )?;
+            let zip = fixture.root.join(format!("shortcuts-{version}.zip"));
+            assert!(market::validate_project(&path)?.contains(id));
+            market::pack(&path, &zip)?;
+            market::submit(&zip, &fixture.index)?;
+            host.set_market_catalog(&fixture.index)?;
+            host.market_action(false, id)?;
+            settle_market(&mut host);
+            assert_eq!(status(&host), MarketStatus::Installed, "{}", host.notice);
+            if version == "1.0.0" {
+                assert!(host.active_page_shortcut_colors().is_none());
+                host.enable(id, true)?;
+            }
+            assert_eq!(host.active_page_shortcut_colors().unwrap()["music"], expected);
+            assert!(host.records[id].enabled);
+        }
+        Ok(())
     }
 
     #[test]

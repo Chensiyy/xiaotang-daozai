@@ -35,6 +35,7 @@ function refresh({ settings, today }) {
 | 专注事件和提醒 · 待宿主实现 | 在清单的 permissions 中声明 `{"events":["focus.finished"],"notifications":true}`，能力列出 event、notification 和 storage。示意 `function event(i){return {notice:"专注已完成",storage:{count:(i.storage?.count ?? 0)+1}}}` | 专注设置选择是否自动记录，岛上显示提醒 |
 | 受控网络、只读文件 · 待宿主实现 | 清单声明数据来源和权限。宿主先取数，再作为 source 交给函数。示意 `function refresh(i){return {card:i.source.status}}` | 用户确认域名或选择文件后查看结果 |
 | 皮肤、表情、图标 · 待宿主实现 | 无代码包清单片段 `{"runtime":"assets","capabilities":["appearance.skin"],"assets":["theme.json"]}`。表情与图标分别声明 appearance.pet、appearance.icon | 原外观选择器，可切回内置素材 |
+| 底部快捷切换 · 已实现 | 声明 `runtime: "assets"`、`owner: "pages"` 和 `navigation.shortcuts`，在 `shortcuts.json` 配置选中配色 | 展开岛仔，点击底部图标直达已启用页面。设置归属「页面管理」 |
 | GPU 材质 · 已实现 | 清单用 `runtime: "material"`、`owner: "appearance"`、`appearance.material` 能力和 `screen.backdrop` 权限。WGSL 入口实现 `material()`，沿用[材质接口](gpu-material.md) | 「设置 → 外观 → 材质」，同一时间选用一个材质，需开启 Direct3D 12 兼容渲染 |
 
 拟议的 action 接收按钮 ID、表单值，event 接收事件名及内容，二者和 refresh 都返回一次调用的展示结果和要保存的数据。表中标为待实现的字段用于讨论。宿主需要支持对应的清单字段和输入输出后，作者才可以试装这些示例。
@@ -101,7 +102,7 @@ version 是插件版本，api 是需要的接口主版本，dataVersion 是存�
 
 每个插件都必须提交一张封面。清单必须声明 `"cover": "cover.png"`，图片放在包根目录，使用有效 PNG，最大 256 KiB，最大 1920×1080。界面以 16:9 居中裁切，建议作者直接使用 16:9 并将主体放在画面中间。缺失或无效的封面会阻止试装、打包、提交和更新。旧版已装插件继续运行，原来缺图的条目显示占位，升级后显示新包的封面。
 
-宿主检查字段、ID、默认值、版本、入口和封面，并拒绝越出包目录的文件。重启时重新检查安装快照，出现无效记录提示重新安装。测试集市 ZIP 包含包根的 `plugin.json`、`cover.png` 和清单指定的 JavaScript 入口。宿主核对目录中的大小与 SHA-256，直接在内存中读取包内容。正式资源包和独立模块的字段见清单格式检查表。
+宿主检查字段、ID、默认值、版本、入口和封面，并拒绝越出包目录的文件。重启时重新检查安装快照，出现无效记录提示重新安装。测试集市 ZIP 包含包根的 `plugin.json`、`cover.png` 和清单指定的 JavaScript 或快捷切换 JSON 入口。宿主核对目录中的大小与 SHA-256，直接在内存中读取包内容。正式资源包和独立模块的字段见清单格式检查表。
 
 材质包包含 `plugin.json`、`cover.png`、一个大小不超过 64 KiB 的 `.wgsl` 入口，以及可选的文本说明文件。默认值必须是范围内的有限数字，步长为正且不大于范围宽度。`unit` 最多 4 个字符，仅显示在滑块数值后。`precision` 为 0 至 3 的整数，省略时按 `step` 的小数位数显示。显示格式不改变参数值。控件弹簧刚度范围为 0.2 至 3，阻尼范围为 0.1 至 1。
 
@@ -144,7 +145,7 @@ function refresh({settings}) {
 
 用户在「设置 → 插件 → 已安装 → 开发者工具」导入目录，集市切到「本地测试」。安装后在「已安装」管理。升级从同一目录领取同 ID、版本更高的包。更新验证通过后才替换安装快照，保留原启用选择、已保存的设置和私有数据。新增字段使用新版默认值。校验、试跑或兼容检查失败时保留旧包。
 
-测试集市接受无外部权限的 QuickJS 待办和日程插件，索引及 ZIP 应来自用户信任的本机目录。SHA-256 核对包是否与索引一致。材质与无线设备兼容包有各自的本地安装入口。无线设备兼容包通过顶层 `cover_png` 字段内嵌标准 Base64 编码的 PNG，解码后采用相同的图片大小与尺寸限制。
+测试集市接受无外部权限的 QuickJS 待办和日程插件，以及快捷切换插件。索引及 ZIP 应来自用户信任的本机目录。SHA-256 核对包是否与索引一致。材质与无线设备兼容包有各自的本地安装入口。无线设备兼容包通过顶层 `cover_png` 字段内嵌标准 Base64 编码的 PNG，解码后采用相同的图片大小与尺寸限制。
 
 ### 正式分发
 

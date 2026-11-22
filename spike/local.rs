@@ -21,10 +21,13 @@ use std::{
     fs,
     io::Read,
     path::{Component, Path, PathBuf},
+    sync::OnceLock,
     time::{Duration, Instant},
 };
 
 const MATERIAL_SOURCE_LIMIT: u64 = 64 * 1024;
+const PAGE_SHORTCUT_SOURCE_LIMIT: u64 = 4 * 1024;
+const PAGE_SHORTCUT_ENTRY: &str = "shortcuts.json";
 const SCRIPT_SOURCE_LIMIT: u64 = 256 * 1024;
 const BACKDROP_PERMISSION: &str = "screen.backdrop";
 const API_VERSION: u32 = 1;
@@ -126,6 +129,8 @@ struct Package {
     source: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     cover: Option<CoverPng>,
+    #[serde(skip)]
+    page_shortcut_colors: OnceLock<BTreeMap<String, [u8; 3]>>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 struct Record {
@@ -158,12 +163,19 @@ impl Record {
                 && manifest.cover.is_some() == package.cover.is_some()
                 && !package.source.trim().is_empty()
                 && package.source.len() as u64 <= manifest.source_limit()
+                && package.validate_page_shortcut_colors().is_ok()
                 && manifest.settings.iter().all(|field| {
                     self.values
                         .get(&field.key)
                         .is_some_and(|value| valid_field(field, value))
                 })
         })
+    }
+
+    fn is_page_shortcuts(&self) -> bool {
+        self.package
+            .as_ref()
+            .is_some_and(|package| package.manifest.is_page_shortcuts())
     }
 
     #[cfg(feature = "sdk-material")]
@@ -264,9 +276,15 @@ impl Manifest {
         self.runtime == "material"
     }
 
+    fn is_page_shortcuts(&self) -> bool {
+        self.runtime == "assets" && self.capabilities.as_slice() == ["navigation.shortcuts"]
+    }
+
     fn source_limit(&self) -> u64 {
         if self.is_material() {
             MATERIAL_SOURCE_LIMIT
+        } else if self.is_page_shortcuts() {
+            PAGE_SHORTCUT_SOURCE_LIMIT
         } else {
             SCRIPT_SOURCE_LIMIT
         }
@@ -295,7 +313,18 @@ impl Manifest {
             return Err(fail("请核对插件 ID、作者、版本和 API 版本"));
         }
         let material = m.is_material();
-        if material {
+        if m.runtime == "assets" {
+            if !m.is_page_shortcuts()
+                || m.owner != "pages"
+                || m.entry != PAGE_SHORTCUT_ENTRY
+                || m.refresh_seconds != default_refresh()
+                || !m.permissions.is_empty()
+                || !m.settings.is_empty()
+                || m.material.is_some()
+            {
+                return Err(fail("快捷切换插件仅接受页面管理归属、单一导航能力和无权限的资源入口"));
+            }
+        } else if material {
             if m.owner != "appearance"
                 || m.permissions.len() != 1
                 || m.permissions
@@ -335,7 +364,7 @@ impl Manifest {
                 .all(|c| matches!(c.as_str(), "card" | "settings" | "timer" | "storage"))
         {
             return Err(fail(
-                "仅支持本地 v1 待办卡片、日程卡片和材质插件，请核对清单",
+                "仅支持本地 v1 待办卡片、日程卡片、材质和快捷切换插件，请核对清单",
             ));
         }
         let mut keys = std::collections::BTreeSet::new();
@@ -362,9 +391,16 @@ impl Manifest {
                 && s.bytes()
                     .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
         };
+        let suffix = if material {
+            ".wgsl"
+        } else if m.is_page_shortcuts() {
+            ".json"
+        } else {
+            ".js"
+        };
         if !m
             .entry
-            .strip_suffix(if material { ".wgsl" } else { ".js" })
+            .strip_suffix(suffix)
             .is_some_and(|name| name.split('/').all(allowed_name))
             || !entry
                 .components()
@@ -443,14 +479,54 @@ impl Package {
             validate_material_files(&base, &base.join("plugin.json"), &resolved)?;
         }
         let source = bounded(&resolved, manifest.source_limit())?;
+        Self::from_entry(manifest, source, cover)
+    }
+
+    fn from_entry(manifest: Manifest, source: String, cover: CoverPng) -> Result<Self> {
         if source.trim().is_empty() {
             return Err(fail("插件入口文件为空"));
         }
-        Ok(Self {
+        let package = Self {
             source,
             manifest,
             cover: Some(cover),
-        })
+            page_shortcut_colors: OnceLock::new(),
+        };
+        package.validate_page_shortcut_colors()?;
+        Ok(package)
+    }
+
+    fn validate_page_shortcut_colors(&self) -> Result<()> {
+        if !self.manifest.is_page_shortcuts() || self.page_shortcut_colors.get().is_some() {
+            return Ok(());
+        }
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct ShortcutEntry {
+            colors: BTreeMap<String, String>,
+        }
+
+        let ShortcutEntry { colors } = serde_json::from_str(&self.source)
+            .map_err(|_| fail("快捷切换入口应包含 colors 对象"))?;
+        if colors.is_empty() {
+            return Err(fail("请为至少一个功能页提供选中颜色"));
+        }
+        let palette = colors
+            .into_iter()
+            .map(|(page, color)| {
+                if !crate::app::PAGE_SHORTCUT_KEYS.contains(&page.as_str()) {
+                    return Err(fail(&format!("未识别的快捷切换页面：{page}")));
+                }
+                let hex = color
+                    .strip_prefix('#')
+                    .filter(|hex| hex.len() == 6 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()))
+                    .ok_or_else(|| fail(&format!("{page} 的选中颜色须为 #RRGGBB")))?;
+                let [_, red, green, blue] = u32::from_str_radix(hex, 16)?.to_be_bytes();
+                Ok((page, [red, green, blue]))
+            })
+            .collect::<Result<_>>()?;
+        let _ = self.page_shortcut_colors.set(palette);
+        Ok(())
     }
 
     fn cover_png(&self) -> Option<Vec<u8>> {
@@ -528,6 +604,7 @@ pub struct LocalPlugins {
     invalid: std::collections::BTreeSet<String>,
     dir: PathBuf,
     records: BTreeMap<String, Record>,
+    active_page_shortcuts: Option<String>,
     cards: BTreeMap<String, String>,
     calendar_day: String,
     next: BTreeMap<String, Instant>,
@@ -559,6 +636,7 @@ impl LocalPlugins {
             selected_material: Self::read_material_id(&dir),
             dir,
             records: BTreeMap::new(),
+            active_page_shortcuts: None,
             cards: BTreeMap::new(),
             calendar_day: String::new(),
             next: BTreeMap::new(),
@@ -599,6 +677,7 @@ impl LocalPlugins {
         if let Err(e) = read {
             s.notice = e.to_string()
         }
+        s.refresh_page_shortcuts();
         #[cfg(windows)]
         s.restore_market_catalog();
         s
@@ -607,11 +686,39 @@ impl LocalPlugins {
         self.dir.join(format!("local-{id}.json"))
     }
     fn put(&mut self, id: &str, r: Record) -> Result<()> {
+        let shortcuts_changed = r.is_page_shortcuts()
+            || self.records.get(id).is_some_and(Record::is_page_shortcuts);
+        if r.enabled
+            && r.is_page_shortcuts()
+            && self.active_page_shortcuts.as_deref().is_some_and(|active| active != id)
+        {
+            return Err(fail("只能启用一个快捷切换插件，请先停用当前使用的插件"));
+        }
         crate::model::atomic_write(&self.path(id), &serde_json::to_vec(&r)?)?;
         self.records.insert(id.into(), r);
+        if shortcuts_changed {
+            self.refresh_page_shortcuts();
+        }
         #[cfg(windows)]
         self.cancel_market(id);
         Ok(())
+    }
+
+    fn refresh_page_shortcuts(&mut self) {
+        self.active_page_shortcuts = self
+            .records
+            .iter()
+            .find(|(_, record)| record.enabled && record.is_page_shortcuts())
+            .map(|(id, _)| id.clone());
+    }
+
+    pub(crate) fn active_page_shortcut_colors(&self) -> Option<&BTreeMap<String, [u8; 3]>> {
+        self.records
+            .get(self.active_page_shortcuts.as_deref()?)?
+            .package
+            .as_ref()?
+            .page_shortcut_colors
+            .get()
     }
 
     #[cfg(feature = "sdk-material")]
@@ -822,6 +929,9 @@ impl LocalPlugins {
         } else {
             fs::remove_file(self.path(id))?;
             self.records.remove(id);
+            if r.is_page_shortcuts() {
+                self.refresh_page_shortcuts();
+            }
             #[cfg(windows)]
             self.cancel_market(id);
         }

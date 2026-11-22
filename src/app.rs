@@ -83,6 +83,10 @@ fn pill_shadow(painter:&egui::Painter,rect:Rect,radius:f32,strength:f32){
     }
 }
 pub(crate) const PAGE_NAMES: [&str; 11] = ["音乐", "专注", "健康", "置物架", "待办", "邮箱", "AI 额度", "日程", "天气", "系统性能", "无线设备"];
+pub(crate) const PAGE_SHORTCUT_KEYS: [&str; PAGE_NAMES.len()] = [
+    "music", "focus", "health", "shelf", "tasks", "mail", "quota", "calendar", "weather",
+    "performance", "wireless",
+];
 pub(crate) const PAGE_SETTINGS_TABS: [usize; 11] = [1,2,3,5,4,7,11,8,12,15,crate::extras::SETTINGS_TAB_WIRELESS];
 
 // ---------- 动效参数 ----------
@@ -2039,8 +2043,17 @@ impl App {
         self.page_scroll_area=None;
     }
 
+    fn active_page_shortcut_colors(&self) -> Option<&std::collections::BTreeMap<String, [u8; 3]>> {
+        #[cfg(feature = "sdk-js")]
+        return self.plugins.active_page_shortcut_colors();
+        #[cfg(not(feature = "sdk-js"))]
+        { None }
+    }
+
     fn page_shortcuts_enabled(&self) -> bool {
-        self.settings.show_page_shortcuts && self.settings.visible_pages.iter().filter(|&&visible| visible).nth(1).is_some()
+        self.settings.show_page_shortcuts
+            && self.active_page_shortcut_colors().is_some()
+            && self.settings.visible_pages.iter().filter(|&&visible| visible).nth(1).is_some()
     }
 
     pub(crate) fn expanded_height(&self)->f32 {
@@ -3750,7 +3763,9 @@ impl App {
                     .on_hover_cursor(egui::CursorIcon::PointingHand);
                 let (hover, press) = row.hover_t(&button);
                 let (ink, bg) = if page == self.page {
-                    let accent = paint::page_shortcut_accent(page);
+                    let accent = self.active_page_shortcut_colors()
+                        .and_then(|colors| colors.get(PAGE_SHORTCUT_KEYS[page]))
+                        .map_or(theme::GRAY, |&[r, g, b]| Color32::from_rgb(r, g, b));
                     (paint::mix(accent, theme::WHITE, 0.45), paint::alpha(accent, 0.30))
                 } else {
                     (paint::mix(Color32::from_gray(174), theme::WHITE, hover),
