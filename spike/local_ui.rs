@@ -187,6 +187,12 @@ fn ok_color(ui: &egui::Ui) -> Color32 {
     )
 }
 
+/// 插件提供的设置项，不论落在哪个设置页（待办、日程、外观材质……），标题旁都用它标出来源。
+/// 新增插件设置入口时也调用这里，不单独画。
+pub(crate) fn plugin_tag(ui: &mut egui::Ui) {
+    small_tag(ui, "插件");
+}
+
 /// 名称旁的小标签，例如「官方」「验收样例」「插件」。高度贴着文字，不撑高标题行。
 fn small_tag(ui: &mut egui::Ui, label: &str) {
     let ctx = ui.ctx().clone();
@@ -1409,7 +1415,7 @@ impl LocalPlugins {
             },
         );
         settings_control_row(ui, "材质", 68.0, |ui| {
-            egui::ComboBox::from_id_salt("appearance-material")
+            let combo = egui::ComboBox::from_id_salt("appearance-material")
                 .selected_text(title)
                 .width(ui.available_width().min(220.0))
                 .truncate()
@@ -1425,7 +1431,11 @@ impl LocalPlugins {
                         }
                     }
                 })
-                .response
+                .response;
+            if selected.is_some() {
+                plugin_tag(ui);
+            }
+            combo
         });
         if choice != selected {
             self.request_material(ui, choice.as_deref());
@@ -1544,7 +1554,7 @@ impl LocalPlugins {
                             .horizontal(|ui| {
                                 ui.spacing_mut().item_spacing.x = 8.0;
                                 ui.strong(&m.name);
-                                small_tag(ui, "插件");
+                                plugin_tag(ui);
                             })
                             .response;
                         if self.focus.as_deref() == Some(&id) {

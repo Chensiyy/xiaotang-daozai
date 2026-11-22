@@ -634,7 +634,7 @@ fn material_management_waits_for_permission_and_offers_to_enable_compatibility()
     let settings = frame(&ctx, vec![], |ui| {
         host.material_settings(ui, None, false);
     });
-    for expected in ["0.50px", "0.500"] {
+    for expected in ["0.50px", "0.500", "插件"] {
         assert!(
             settings.shapes.iter().any(|shape| {
                 matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == expected)
