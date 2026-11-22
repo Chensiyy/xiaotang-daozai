@@ -13,7 +13,7 @@ pub(crate) struct State {
     cache_path:Option<std::path::PathBuf>,
     pub config:Config,pub rows:HashMap<String,Result<Snapshot,String>>,pub busy:HashSet<String>,
     #[cfg(feature = "sdk-js")]
-    pub(crate) selected_plugin: Option<String>,
+    selected_plugin: Option<(String, String)>,
     pub provider:Provider,pub alias:String,pub source:String,pub note:String,
     pub relay_manual:bool,
     pub relay_user_token:bool,pub relay_user_id:String,
@@ -576,8 +576,9 @@ impl App {
         let builtin_position=selected_account.and_then(|selected|sources.iter().position(|source|matches!(source,Source::Account(index) if *index==selected)));
         #[cfg(feature = "sdk-js")]
         let (sources,position)={
-            let selected=self.quota.selected_plugin.as_deref().and_then(|selected|
-                plugin_sources.iter().position(|(id,_,_)|*id==selected));
+            let selected=self.quota.selected_plugin.as_ref()
+                .filter(|(_, account)| account == &self.quota.config.selected)
+                .and_then(|(selected, _)| plugin_sources.iter().position(|(id,_,_)|*id==selected));
             if selected.is_none(){
                 self.quota.selected_plugin=None;
             }
@@ -627,7 +628,7 @@ impl App {
                     self.quota.config.save();
                 },
                 #[cfg(feature = "sdk-js")]
-                Source::Plugin(i)=>{self.quota.selected_plugin=Some(plugin_sources[i].0.to_owned());},
+                Source::Plugin(i)=>{self.quota.selected_plugin=Some((plugin_sources[i].0.to_owned(),self.quota.config.selected.clone()));},
             }
         }
         let selected=match sources[pos]{
