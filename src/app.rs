@@ -3431,11 +3431,13 @@ impl App {
                     .on_hover_text(PAGE_NAMES[page])
                     .on_hover_cursor(egui::CursorIcon::PointingHand);
                 let (hover, press) = row.hover_t(&button);
-                let active = page == self.page;
-                let ink = if active { Color32::from_rgb(163, 239, 228) }
-                    else { paint::mix(Color32::from_gray(174), theme::WHITE, hover) };
-                let bg = if active { Color32::from_rgb(28, 56, 52) }
-                    else { Color32::from_white_alpha((hover * 25.0) as u8) };
+                let (ink, bg) = if page == self.page {
+                    let accent = paint::page_shortcut_accent(page);
+                    (paint::mix(accent, theme::WHITE, 0.45), paint::alpha(accent, 0.30))
+                } else {
+                    (paint::mix(Color32::from_gray(174), theme::WHITE, hover),
+                        Color32::from_white_alpha((hover * 25.0) as u8))
+                };
                 row.fill(center - 10.5, dot_y - 9.0, 21.0, 18.0, 5.0, bg);
                 paint::page_shortcut_icon(&row.scaled(center, dot_y, 1.0 - 0.08 * press), page, center, dot_y, ink);
                 if button.clicked() { clicked = Some(page); }

@@ -516,6 +516,26 @@ pub fn note(c: &Card, cx: f32, cy: f32, size: f32, color: Color32) {
     c.poly(&[(cx - s * 0.11 - 0.8, cy - s * 0.30), (cx + s * 0.39 + 0.8, cy - s * 0.42), (cx + s * 0.39 + 0.8, cy - s * 0.30), (cx - s * 0.11 - 0.8, cy - s * 0.18)], color);
 }
 
+/// 选中态的强调色沿用设置里的功能图标配色。
+pub(crate) fn page_shortcut_accent(page: usize) -> Color32 {
+    use crate::app::{
+        CALENDAR_PAGE, FOCUS_PAGE, MAIL_PAGE, MUSIC_PAGE, QUOTA_PAGE, SHELF_PAGE, TODO_PAGE,
+        WATER_PAGE, WEATHER_PAGE,
+    };
+    match page {
+        MUSIC_PAGE => Color32::from_rgb(250, 62, 114),
+        FOCUS_PAGE => Color32::from_rgb(255, 138, 48),
+        WATER_PAGE => Color32::from_rgb(47, 179, 90),
+        SHELF_PAGE => Color32::from_rgb(91, 110, 225),
+        TODO_PAGE => Color32::from_rgb(35, 197, 117),
+        MAIL_PAGE => Color32::from_rgb(20, 163, 163),
+        QUOTA_PAGE => Color32::from_rgb(61, 143, 101),
+        CALENDAR_PAGE => Color32::from_rgb(240, 138, 36),
+        WEATHER_PAGE => Color32::from_rgb(76, 155, 232),
+        _ => theme::GRAY,
+    }
+}
+
 /// 底部快捷切换使用适合小尺寸的单色图标。
 pub(crate) fn page_shortcut_icon(c: &Card, page: usize, x: f32, y: f32, color: Color32) {
     use crate::app::{CALENDAR_PAGE, FOCUS_PAGE, MAIL_PAGE, MUSIC_PAGE, QUOTA_PAGE, SHELF_PAGE, TODO_PAGE, WATER_PAGE, WEATHER_PAGE};
