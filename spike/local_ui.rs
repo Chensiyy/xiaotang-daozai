@@ -27,6 +27,17 @@ use plugin_feedback_ui::{plugin_feedback, request_plugin_feedback};
 const COVERS: &str = "settings-plugin-covers";
 type CoverCache = std::collections::VecDeque<(egui::Id, Option<egui::TextureHandle>)>;
 
+#[cfg(windows)]
+#[derive(Clone)]
+struct SourceDialog {
+    plugin: String,
+    url: String,
+    error: String,
+}
+
+#[cfg(windows)]
+const SOURCE_DIALOG: &str = "plugin-source-dialog";
+
 fn forget_covers(ui: &egui::Ui) {
     ui.data_mut(|data| data.remove::<CoverCache>(egui::Id::new(COVERS)));
 }
@@ -947,6 +958,8 @@ impl LocalPlugins {
         }
         #[cfg(windows)]
         self.detail_drawer(ui, true);
+        #[cfg(windows)]
+        self.source_dialog(ui);
         #[cfg(all(windows, feature = "sdk-material"))]
         {
             if self.confirm_material_permission(ui) {
@@ -981,6 +994,8 @@ impl LocalPlugins {
             _ => tasks_on,
         };
         let has_settings = !manifest.settings.is_empty();
+        #[cfg(windows)]
+        let has_source = manifest.source_kind().is_some();
         let key = egui::Id::new(("installed", &r.origin, id, &manifest.version));
         let cover = package.cover.clone();
         let runtime_error = self.errors.get(id).cloned();
@@ -1085,16 +1100,32 @@ impl LocalPlugins {
                         settings_hint(ui, "扩展 2.4G 接收器型号");
                     } else if owner_key == "pages" && !on {
                         settings_hint(ui, "启用后可在页面管理设置");
-                    } else if path_button(ui, &path, paused, &tip) {
-                        if material {
-                            *jump = Some(crate::extras::SETTINGS_TAB_APPEARANCE);
-                        } else if paused {
-                            *jump = Some(crate::extras::SETTINGS_TAB_PAGES);
+                    } else {
+                        #[cfg(windows)]
+                        let navigate = if has_source {
+                            ui.horizontal(|ui| {
+                                let label = if self.source_grant(id).is_some() { "数据源已授权 ›" } else { "授权数据源 ›" };
+                                if path_button(ui, label, false, "管理这个插件可读取的数据源") {
+                                    self.open_source_dialog(ui, id);
+                                }
+                                has_settings && path_button(ui, &path, paused, &tip)
+                            }).inner
                         } else {
-                            if on && has_settings {
-                                self.focus = Some(id.to_owned());
+                            path_button(ui, &path, paused, &tip)
+                        };
+                        #[cfg(not(windows))]
+                        let navigate = path_button(ui, &path, paused, &tip);
+                        if navigate {
+                            if material {
+                                *jump = Some(crate::extras::SETTINGS_TAB_APPEARANCE);
+                            } else if paused {
+                                *jump = Some(crate::extras::SETTINGS_TAB_PAGES);
+                            } else {
+                                if on && has_settings {
+                                    self.focus = Some(id.to_owned());
+                                }
+                                *jump = Some(settings_tab);
                             }
-                            *jump = Some(settings_tab);
                         }
                     }
                     if let Some(e) = &runtime_error {
@@ -1106,6 +1137,10 @@ impl LocalPlugins {
                 ui.spacing_mut().item_spacing.x = 6.0;
                 #[cfg(windows)]
                 ui.menu_button(egui::RichText::new("···").color(muted_color(ui)), |ui| {
+                    if has_source && ui.button("管理数据源").clicked() {
+                        self.open_source_dialog(ui, id);
+                        ui.close_menu();
+                    }
                     if listed && ui.button("查看详情").clicked() {
                         market_browse_ui::select_detail(ui, id);
                         ui.close_menu();
@@ -1156,6 +1191,106 @@ impl LocalPlugins {
             });
             },
         );
+    }
+
+    #[cfg(windows)]
+    fn open_source_dialog(&self, ui: &egui::Ui, id: &str) {
+        let url = match self.source_grant(id) {
+            Some(SourceGrant::Loopback(url)) => url.clone(),
+            _ => String::new(),
+        };
+        ui.data_mut(|data| {
+            data.insert_temp(egui::Id::new(SOURCE_DIALOG), SourceDialog {
+                plugin: id.to_owned(),
+                url,
+                error: String::new(),
+            });
+        });
+    }
+
+    #[cfg(windows)]
+    fn source_dialog(&mut self, ui: &mut egui::Ui) {
+        use crate::extras::{settings_modal_frame, settings_modal_title};
+        let key = egui::Id::new(SOURCE_DIALOG);
+        let Some(mut dialog) = ui.data(|data| data.get_temp::<SourceDialog>(key)) else { return; };
+        let id = &dialog.plugin;
+        let Some(kind) = self.source_kind(id) else {
+            ui.data_mut(|data| data.remove::<SourceDialog>(key));
+            return;
+        };
+        let name = &self.records[id].package.as_ref().unwrap().manifest.name;
+        let grant = self.source_grant(id);
+        let ctx = ui.ctx().clone();
+        let mut pick = false;
+        let mut approve = false;
+        let mut revoke = false;
+        let modal = egui::Modal::new(key.with("window"))
+            .frame(settings_modal_frame(&ctx))
+            .backdrop_color(Color32::from_black_alpha(110))
+            .show(&ctx, |ui| {
+                ui.set_width(395.0);
+                settings_apply_style(ui);
+                let mut close = settings_modal_title(ui, "只读数据源");
+                ui.add(egui::Label::new(name).truncate());
+                settings_hint(ui, "仅在插件和所属页面均开启时刷新。");
+                if let Some(grant) = grant {
+                    ui.label("已授权读取");
+                    let target = match grant {
+                        SourceGrant::File(path) => path.to_string_lossy(),
+                        SourceGrant::Loopback(url) => url.as_str().into(),
+                    };
+                    ui.add(egui::Label::new(target.as_ref()).truncate()).on_hover_text(target.as_ref());
+                }
+                match kind {
+                    SourceKind::File => {
+                        pick = ui.button("选择并授权读取文件…").clicked();
+                        settings_hint(ui, "只读你选中的一个本地 UTF-8 文件。");
+                    }
+                    SourceKind::Loopback => {
+                        ui.add(egui::TextEdit::singleline(&mut dialog.url)
+                            .char_limit(2048).desired_width(385.0)
+                            .hint_text("http://127.0.0.1:8080/status"));
+                        approve = ui.add_enabled(!dialog.url.trim().is_empty(),
+                            egui::Button::new("授权读取此地址")).clicked();
+                        settings_hint(ui, "仅向填写的本机地址发送 GET 请求。");
+                    }
+                }
+                if !dialog.error.is_empty() {
+                    ui.colored_label(warn_color(ui), &dialog.error);
+                }
+                ui.horizontal(|ui| {
+                    if grant.is_some() {
+                        revoke = ui.button("撤销授权").clicked();
+                    }
+                    close |= ui.button("完成").clicked();
+                });
+                close
+            });
+        let changed = if pick {
+            match crate::system::pick_files_for("选择要授权读取的本地文件", false) {
+                Ok(paths) => paths.first().map(|path| source_read::grant_file(path).map(Some)),
+                Err(error) => Some(Err(error.to_string())),
+            }
+        } else if approve {
+            Some(source_read::grant_url(&dialog.url).map(Some))
+        } else if revoke {
+            Some(Ok(None))
+        } else {
+            None
+        };
+        if let Some(changed) = changed {
+            dialog.error = changed.and_then(|grant| self.set_source_grant(id, grant).map_err(|err| err.to_string()))
+                .err().unwrap_or_default();
+            if revoke && dialog.error.is_empty() {
+                dialog.url.clear();
+            }
+            ctx.request_repaint_of(egui::ViewportId::ROOT);
+        }
+        if modal.inner || modal.should_close() {
+            ui.data_mut(|data| data.remove::<SourceDialog>(key));
+        } else {
+            ui.data_mut(|data| data.insert_temp(key, dialog));
+        }
     }
 
     /// 重启检查没通过的记录：插件已暂停运行，可以从集市重装或移除记录。

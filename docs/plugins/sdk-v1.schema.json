@@ -98,6 +98,10 @@
     "permissions": {
       "type": "object",
       "properties": {
+        "source.read": {
+          "enum": ["file", "loopback"],
+          "description": "Windows 测试版 JS 卡片的单一只读来源，由用户在安装后选择文件或授权完整回环 HTTP 地址。"
+        },
         "hosts": {
           "type": "array",
           "items": {

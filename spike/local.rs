@@ -10,18 +10,21 @@ mod market_metrics;
 #[cfg(windows)]
 #[path = "market_state.rs"]
 mod market_state;
+#[path = "source_read.rs"]
+mod source_read;
 #[path = "local_ui.rs"]
 mod ui;
 use super::{fail, Result};
 use cover::{CoverPng, COVER_FILE};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use source_read::{SourceGrant, SourceKind};
 use std::{
     collections::BTreeMap,
     fs,
     io::Read,
     path::{Component, Path, PathBuf},
-    sync::OnceLock,
+    sync::{Arc, OnceLock, atomic::{AtomicBool, Ordering}},
     time::{Duration, Instant},
 };
 
@@ -30,6 +33,7 @@ const PAGE_SHORTCUT_SOURCE_LIMIT: u64 = 4 * 1024;
 const PAGE_SHORTCUT_ENTRY: &str = "shortcuts.json";
 const SCRIPT_SOURCE_LIMIT: u64 = 256 * 1024;
 const BACKDROP_PERMISSION: &str = "screen.backdrop";
+const SOURCE_PERMISSION: &str = "source.read";
 const API_VERSION: u32 = 1;
 const WIRELESS_PLUGIN_ID: &str = "daozai.wireless-receivers";
 
@@ -149,6 +153,8 @@ struct Record {
     storage: Value,
     #[serde(default)]
     material_granted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_grant: Option<SourceGrant>,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -156,6 +162,14 @@ fn is_false(value: &bool) -> bool {
 }
 
 impl Record {
+    fn source_kind(&self) -> Option<SourceKind> {
+        self.package.as_ref()?.manifest.source_kind()
+    }
+
+    fn source_grant(&self) -> Option<&SourceGrant> {
+        self.source_grant.as_ref().filter(|grant| Some(grant.kind()) == self.source_kind())
+    }
+
     fn valid(&self, id: &str) -> bool {
         self.package.as_ref().is_none_or(|package| {
             let manifest = &package.manifest;
@@ -213,6 +227,14 @@ struct Output {
     card: String,
     #[serde(default)]
     storage: Value,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+enum SourceInput {
+    Unconfigured,
+    Ready { text: String },
+    Offline,
 }
 
 fn bounded(path: &Path, max: u64) -> Result<String> {
@@ -292,6 +314,17 @@ impl Manifest {
 
     fn is_page_shortcuts(&self) -> bool {
         self.runtime == "assets" && self.capabilities.as_slice() == ["navigation.shortcuts"]
+    }
+
+    fn source_kind(&self) -> Option<SourceKind> {
+        if !cfg!(windows) || self.runtime != "js" || self.permissions.len() != 1 {
+            return None;
+        }
+        match self.permissions.get(SOURCE_PERMISSION)?.as_str()? {
+            "file" => Some(SourceKind::File),
+            "loopback" => Some(SourceKind::Loopback),
+            _ => None,
+        }
     }
 
     fn source_limit(&self) -> u64 {
@@ -384,7 +417,7 @@ impl Manifest {
         } else if m.runtime != "js"
             || !matches!(m.owner.as_str(), "tasks" | "calendar")
             || m.material.is_some()
-            || !m.permissions.is_empty()
+            || (!m.permissions.is_empty() && m.source_kind().is_none())
             || !m.capabilities.iter().any(|c| c == "card")
             || !m
                 .capabilities
@@ -589,13 +622,27 @@ impl Package {
     }
 
     fn render(&self, values: &Values, storage: &Value, today: &str) -> Result<Output> {
+        self.render_input(values, storage, today, SourceInput::Unconfigured)
+    }
+
+    fn render_input(
+        &self,
+        values: &Values,
+        storage: &Value,
+        today: &str,
+        source: SourceInput,
+    ) -> Result<Output> {
         let runtime = rquickjs::Runtime::new()?;
         runtime.set_memory_limit(4 * 1024 * 1024);
         runtime.set_max_stack_size(128 * 1024);
         let end = Instant::now() + Duration::from_millis(30);
         runtime.set_interrupt_handler(Some(Box::new(move || Instant::now() >= end)));
         let ctx = rquickjs::Context::full(&runtime)?;
-        let input = json!({"settings":values,"storage":storage,"today":today}).to_string();
+        let mut input = json!({"settings":values,"storage":storage,"today":today});
+        if self.manifest.source_kind().is_some() {
+            input["source"] = serde_json::to_value(source)?;
+        }
+        let input = input.to_string();
         let raw = ctx.with(|c| -> rquickjs::Result<String> {
             c.eval::<(), _>(self.source.as_bytes())?;
             c.globals().set("__input", input)?;
@@ -627,7 +674,8 @@ struct Rendered {
     staged: Option<Staged>,
 }
 struct Job {
-    valid: bool,
+    cancelled: Arc<AtomicBool>,
+    reading_source: bool,
     result: std::thread::JoinHandle<std::result::Result<Rendered, String>>,
 }
 pub struct LocalPlugins {
@@ -898,8 +946,8 @@ impl LocalPlugins {
         Ok(())
     }
     fn forget_view(&mut self, id: &str) {
-        if let Some(job) = self.jobs.get_mut(id) {
-            job.valid = false;
+        if let Some(job) = self.jobs.get(id) {
+            job.cancelled.store(true, Ordering::Release);
         }
         self.cards.remove(id);
         self.next.remove(id);
@@ -927,6 +975,7 @@ impl LocalPlugins {
             package: None,
             storage: Value::Null,
             material_granted: false,
+            source_grant: None,
         };
         if let Some(old) = self.records.get(&id) {
             if old.package.is_some() {
@@ -970,6 +1019,31 @@ impl LocalPlugins {
         self.forget_view(id);
         Ok(())
     }
+
+    #[cfg(windows)]
+    fn source_kind(&self, id: &str) -> Option<SourceKind> {
+        self.records.get(id)?.source_kind()
+    }
+
+    #[cfg(windows)]
+    fn source_grant(&self, id: &str) -> Option<&SourceGrant> {
+        self.records.get(id)?.source_grant()
+    }
+
+    #[cfg(windows)]
+    fn set_source_grant(&mut self, id: &str, grant: Option<SourceGrant>) -> Result<()> {
+        let mut record = self.installed(id)?;
+        let kind = record.source_kind().ok_or_else(|| fail("此插件未声明数据源"))?;
+        if grant.as_ref().is_some_and(|grant| grant.kind() != kind) {
+            return Err(fail("数据源类型与插件申请不一致"));
+        }
+        if record.source_grant != grant {
+            record.source_grant = grant;
+            self.put(id, record)?;
+            self.forget_view(id);
+        }
+        Ok(())
+    }
     fn save(&mut self, id: &str, v: Values) -> Result<()> {
         let mut r = self.installed(id)?;
         if !r
@@ -998,6 +1072,7 @@ impl LocalPlugins {
             r.package = None;
             r.enabled = false;
             r.material_granted = false;
+            r.source_grant = None;
             self.put(id, r)?
         } else {
             fs::remove_file(self.path(id))?;
@@ -1038,9 +1113,9 @@ impl LocalPlugins {
         };
         self.cards.retain(|id, _| !belongs(id));
         self.next.retain(|id, _| !belongs(id));
-        for (id, job) in &mut self.jobs {
+        for (id, job) in &self.jobs {
             if belongs(id) {
-                job.valid = false;
+                job.cancelled.store(true, Ordering::Release);
             }
         }
     }
@@ -1065,7 +1140,7 @@ impl LocalPlugins {
             .collect();
         for id in finished {
             let job = self.jobs.remove(&id).unwrap();
-            if !job.valid {
+            if job.cancelled.load(Ordering::Acquire) {
                 continue;
             }
             let result = job
@@ -1115,7 +1190,15 @@ impl LocalPlugins {
             })
             .map(|(id, _)| id.clone())
             .collect();
-        for id in due.into_iter().take(2 - self.jobs.len()) {
+        for id in due {
+            if self.jobs.len() >= 2 {
+                break;
+            }
+            let reading_source = self.records[&id].source_grant().is_some();
+            // 慢数据源只占一个后台名额，普通插件仍可刷新。
+            if reading_source && self.jobs.values().any(|job| job.reading_source) {
+                continue;
+            }
             let mut r = self.records[&id].clone();
             let today = today.to_owned();
             let pkg = r.package.as_ref().unwrap();
@@ -1128,13 +1211,28 @@ impl LocalPlugins {
             let stage = self
                 .path(&id)
                 .with_extension(format!("{}-{seq}.pending", std::process::id()));
-            let result = std::thread::spawn(move || {
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let worker_cancelled = Arc::clone(&cancelled);
+            let result = std::thread::Builder::new().name("daozai-plugin-read".into()).spawn(move || {
+                let source = match r.source_grant() {
+                    Some(grant) => match grant.read(&worker_cancelled) {
+                        Ok(text) => SourceInput::Ready { text },
+                        Err(_) => SourceInput::Offline,
+                    },
+                    None => SourceInput::Unconfigured,
+                };
+                if worker_cancelled.load(Ordering::Acquire) {
+                    return Err("读取已取消".into());
+                }
                 let output = r
                     .package
                     .as_ref()
                     .unwrap()
-                    .render(&r.values, &r.storage, &today)
+                    .render_input(&r.values, &r.storage, &today, source)
                     .map_err(|e| e.to_string())?;
+                if worker_cancelled.load(Ordering::Acquire) {
+                    return Err("读取已取消".into());
+                }
                 let staged = if r.storage != output.storage {
                     r.storage = output.storage.clone();
                     let data = serde_json::to_vec(&r).map_err(|e| e.to_string())?;
@@ -1145,13 +1243,14 @@ impl LocalPlugins {
                 };
                 Ok(Rendered { output, staged })
             });
-            self.jobs.insert(
-                id,
-                Job {
-                    valid: true,
-                    result,
-                },
-            );
+            match result {
+                Ok(result) => {
+                    self.jobs.insert(id, Job { cancelled, reading_source, result });
+                }
+                Err(_) => {
+                    self.errors.insert(id, "暂时无法启动插件刷新，请稍后重试".into());
+                }
+            }
         }
     }
     pub fn has_card(&self) -> bool {
@@ -1184,9 +1283,20 @@ impl LocalPlugins {
     }
 }
 
+impl Drop for LocalPlugins {
+    fn drop(&mut self) {
+        for job in self.jobs.values() {
+            job.cancelled.store(true, Ordering::Release);
+        }
+    }
+}
+
 #[cfg(test)]
 #[path = "local_management_test.rs"]
 mod management_test;
 #[cfg(test)]
 #[path = "local_tests.rs"]
 mod tests;
+#[cfg(all(test, windows))]
+#[path = "source_lifecycle_tests.rs"]
+mod source_lifecycle_tests;

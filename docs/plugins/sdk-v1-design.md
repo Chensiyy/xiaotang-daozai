@@ -4,7 +4,7 @@
 
 SDK 是岛仔提供给插件作者的一组公开约定。宿主指运行插件的岛仔。你提供一份清单和几段函数，岛仔负责调用、画界面和保存结果。
 
-第一版采用**每次调用都从头运行**的写法。函数只根据输入计算并返回结果，需要记住的内容放进返回值的 `storage`。两次调用之间，脚本变量会消失。宿主负责读写磁盘、安排刷新和接收用户点击。当前试用版可运行无外部权限的 QuickJS 待办卡片和日程日期标注。QuickJS 是执行 JavaScript 的引擎。[运行环境实测](runtime-spike.md) · [本地安装](local-install.md)
+第一版采用**每次调用都从头运行**的写法。函数只根据输入计算并返回结果，需要记住的内容放进返回值的 `storage`。两次调用之间，脚本变量会消失。宿主负责安排刷新、读取已授权的数据源和接收用户点击。当前 Windows 测试版可运行 QuickJS 待办卡片和日程日期标注。[运行环境实测](runtime-spike.md) · [本地安装](local-install.md)
 
 ## 2. 我能写哪些功能
 
@@ -33,7 +33,7 @@ function refresh({ settings, today }) {
 | 歌词来源 · 待宿主实现 | `function refresh(i){return {lyrics:{trackId:i.track.id,lines:i.source.lines}}}`。换歌后宿主只接收当前曲目的结果 | 原音乐页 |
 | AI 额度来源 · 待宿主实现 | `function refresh(i){return {quota:{windows:[{label:"本周",period_secs:604800,remaining_pct:i.source.remaining}]}}}` | 原额度面板 |
 | 专注事件和提醒 · 待宿主实现 | 在清单的 permissions 中声明 `{"events":["focus.finished"],"notifications":true}`，能力列出 event、notification 和 storage。示意 `function event(i){return {notice:"专注已完成",storage:{count:(i.storage?.count ?? 0)+1}}}` | 专注设置选择是否自动记录，岛上显示提醒 |
-| 受控网络、只读文件 · 待宿主实现 | 清单声明数据来源和权限。宿主先取数，再作为 source 交给函数。示意 `function refresh(i){return {card:i.source.status}}` | 用户确认域名或选择文件后查看结果 |
+| 本地只读数据源 · Windows 测试版 | 清单声明 `"permissions":{"source.read":"file"}` 或 `"permissions":{"source.read":"loopback"}`。宿主将已授权数据传给 `refresh` 的 `source` 输入。 | 「设置 → 插件 → 已安装 → 授权数据源」 |
 | 皮肤、表情、图标 · 待宿主实现 | 无代码包清单片段 `{"runtime":"assets","capabilities":["appearance.skin"],"assets":["theme.json"]}`。表情与图标分别声明 appearance.pet、appearance.icon | 原外观选择器，可切回内置素材 |
 | 底部快捷切换 · 已实现 | 声明 `runtime: "assets"`、`owner: "pages"` 和 `navigation.shortcuts`，在 `shortcuts.json` 配置选中配色 | 展开岛仔，点击底部图标直达已启用页面。设置归属「页面管理」 |
 | GPU 材质 · 已实现 | 清单用 `runtime: "material"`、`owner: "appearance"`、`appearance.material` 能力和 `screen.backdrop` 权限。WGSL 入口实现 `material()`，沿用[材质接口](gpu-material.md) | 「设置 → 外观 → 材质」，同一时间选用一个材质，需开启 Direct3D 12 兼容渲染 |
@@ -76,9 +76,27 @@ function refresh({ settings, today }) {
 
 权限说明用户允许岛仔替这个插件做哪些事。安装前看作者、归属和权限摘要，首次启用确认具体用途，更新时新增的权限单独确认。撤权后岛仔停止取数并丢弃旧请求的结果。
 
-本地 JS 卡片插件只接受空权限。材质插件首次启用时单独确认 `screen.backdrop` 权限，岛背后的像素只在本机用于材质绘制，着色器可采样底片纹理，像素不保存、不上传。
+JS 卡片可用空权限，或申请一个本地只读数据源。材质插件首次启用时单独确认 `screen.backdrop` 权限，岛背后的像素只在本机用于材质绘制，着色器可采样底片纹理，像素不保存、不上传。
 
-正式版拟允许清单列出 HTTPS 网站的完整域名、订阅事件、用户选择的只读文件。岛仔按插件身份检查每个请求，只连接允许的域名和端口，跳转时重新检查，拒绝本机和内网地址，限制大小与等待时间。文件由系统选择器返回，岛仔检查实际文件位置和读取资格，插件只取得批准的数据。凭据由岛仔保存在 Windows 凭据管理器，日志去掉路径、密钥和用户正文。正式版还要核对域名实际连接到的地址，以及用户选定的文件最终指向的位置，防止改用另一个地址或文件。授权只对用户选中的插件有效。拓竹所需的本机软件读取权限另见第 13 节。
+### 本地只读数据源
+
+一款待办或日程插件可申请一种数据源。安装和启用不自动授权。在「设置 → 插件 → 已安装」为该插件选择一个普通本地文件，或输入完整的本机 HTTP 地址并确认授权。授权可随时撤销，卸载会清除授权。
+
+- `file` 读取系统选择器选中的一个 UTF-8 文件，拒绝网络盘、目录和重解析路径。数据文件可以在原路径更新。
+- `loopback` 对用户确认的完整地址做 GET，例如 `http://127.0.0.1:8080/status`。支持 `127.0.0.1`、`[::1]` 和 `localhost`，直接连接回环地址，设置 2 秒请求预算，拒绝重定向、URL 账号密码和非回环地址。
+- 两种来源的读取上限均为 128 KiB。脚本只收到状态和文本，路径、地址及文件和网络操作留在宿主。建议只选择打算交给这个插件处理的数据。
+
+`refresh` 的 `source` 输入有三种状态。未授权为 `{status:"unconfigured"}`，无法读取为 `{status:"offline"}`，读取成功为 `{status:"ready",text:"…"}`。未申请此权限的旧插件输入无变化。校验和打包时用 `unconfigured` 检查入口，插件需处理空数据。加上 `timer` 可按 `refreshSeconds` 刷新，最短 60 秒。
+
+```js
+function refresh({ source }) {
+  if (source.status === "unconfigured") return { card: "请授权数据源" };
+  if (source.status === "offline") return { card: "数据源暂不可用" };
+  return { card: source.text.trim().slice(0, 80) || "暂无数据" };
+}
+```
+
+停用插件、关闭归属页面、撤权或更换授权会停止旧来源的后续读取，并丢弃已经发出的读取结果。数据源失联时只影响该插件的输入，下一次刷新可以恢复。
 
 ## 6. 数据能留多久
 
@@ -145,7 +163,7 @@ function refresh({settings}) {
 
 用户在「设置 → 插件 → 已安装 → 开发者工具」导入目录，集市切到「本地测试」。安装后在「已安装」管理。升级从同一目录领取同 ID、版本更高的包。更新验证通过后才替换安装快照，保留原启用选择、已保存的设置和私有数据。新增字段使用新版默认值。校验、试跑或兼容检查失败时保留旧包。
 
-测试集市接受无外部权限的 QuickJS 待办和日程插件、快捷切换插件以及无线设备兼容包。索引及 ZIP 应来自用户信任的本机目录。SHA-256 核对包是否与索引一致。材质使用本地安装入口。
+测试集市接受 QuickJS 待办和日程插件、快捷切换插件以及无线设备兼容包。申请本地数据源的 JS 插件仍需用户安装后单独授权。索引及 ZIP 应来自用户信任的本机目录。SHA-256 核对包是否与索引一致。材质使用本地安装入口。
 
 官方无线设备兼容包通过插件集市分发，在「已安装」管理。ZIP 包含 `plugin.json`、`wireless-receivers.json` 和 `cover.png`，只为本体补充核实过的 2.4G USB 接收器型号。
 
