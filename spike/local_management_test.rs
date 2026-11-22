@@ -755,7 +755,7 @@ fn guide_opens_from_the_market_copies_a_prompt_and_stacks_the_template_form() {
     click_in(&ctx, WINDOW, capabilities_title, |ui| draw(&mut host, ui));
     let expanded = frame_in(&ctx, WINDOW, vec![], |ui| draw(&mut host, ui));
     for expected in [
-        "卡片与标注", "AI 额度", "页面快捷切换",
+        "卡片与标注", "AI 额度", "导航扩展",
         #[cfg(windows)]
         "授权取数",
         #[cfg(windows)]
