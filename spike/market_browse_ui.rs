@@ -799,7 +799,12 @@ impl LocalPlugins {
                 self.market_favorite_button(ui, entry);
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if catalog.is_official() && ui.add(egui::Button::new("反馈问题").frame(false)).clicked() {
+                if entry.id == WIRELESS_PLUGIN_ID {
+                    ui.hyperlink_to(
+                        "反馈设备适配",
+                        "https://github.com/Renly1994/xiaotang-daozai/issues/267",
+                    );
+                } else if catalog.is_official() && ui.add(egui::Button::new("反馈问题").frame(false)).clicked() {
                     request_plugin_feedback(ui, &entry.id, &entry.name, &entry.version);
                 }
             });
