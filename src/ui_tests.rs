@@ -6327,6 +6327,9 @@ fn bottom_page_shortcuts_fit_the_performance_panel_with_all_pages_enabled() {
     use crate::app::{PAGE_NAMES, PERFORMANCE_PAGE};
     use crate::model::Dock;
 
+    let accents=(0..PAGE_NAMES.len()).map(crate::paint::page_shortcut_accent).collect::<std::collections::HashSet<_>>();
+    assert_eq!(accents.len(),PAGE_NAMES.len(),"每个功能页应有对应的选中强调色");
+
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     for dock in [Dock::Top,Dock::Bottom] {
         let mut h=H::new();

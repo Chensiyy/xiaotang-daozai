@@ -674,7 +674,7 @@ pub fn note(c: &Card, cx: f32, cy: f32, size: f32, color: Color32) {
 pub(crate) fn page_shortcut_accent(page: usize) -> Color32 {
     use crate::app::{
         BLUETOOTH_PAGE, CALENDAR_PAGE, FOCUS_PAGE, MAIL_PAGE, MUSIC_PAGE, PERFORMANCE_PAGE,
-        WATER_PAGE, WEATHER_PAGE,
+        QUOTA_PAGE, SHELF_PAGE, TODO_PAGE, WATER_PAGE, WEATHER_PAGE,
     };
     match page {
         MUSIC_PAGE => Color32::from_rgb(250, 62, 114),
