@@ -3107,6 +3107,71 @@ fn wheel_between_different_heights_keeps_the_unread_bubble_in_place() {
 }
 
 #[test]
+fn page_turn_fades_old_content_in_place_and_slides_new_content_without_rebound() {
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=H::new();
+    h.app.settings.pet=false;
+    let labels=["暂无音乐","专注时间"];
+    let body_text=|h:&H,page:usize| h.shapes.iter().find_map(|shape|match &shape.shape {
+        egui::Shape::Text(text) if text.galley.text()==labels[page] && text.fallback_color.a()>2
+            =>Some((text.pos.x,text.fallback_color.a())),
+        _=>None,
+    });
+    h.hover(H::local(210.0,18.0),1.2);
+
+    for (wheel,target,direction) in [(false,1,1.0),(false,0,-1.0),(true,1,1.0),(true,0,-1.0)] {
+        let previous=h.app.page();
+        let (old_x,old_alpha)=body_text(&h,previous).expect("切页前应能看到正文");
+        if wheel {
+            h.hover(H::local(210.0,18.0),0.05);
+            h.wheel(-40.0*direction);
+        } else {
+            h.click(H::local(if direction>0.0 {398.0}else{21.0},68.0));
+        }
+        assert_eq!(h.app.page(),target);
+
+        let mut saw_fade=false;
+        let mut incoming=Vec::new();
+        for _ in 0..40 {
+            if let Some((x,alpha))=body_text(&h,previous) {
+                assert!((x-old_x).abs()<0.05,"旧页正文应在原位淡出：{old_x} → {x}");
+                saw_fade|=alpha<old_alpha;
+            }
+            if let Some((x,_))=body_text(&h,target) {incoming.push(x);}
+            h.frame(vec![]);
+        }
+        assert!(saw_fade && body_text(&h,previous).is_none(),"旧页应先淡出再消失");
+        let (target_x,alpha)=body_text(&h,target).expect("翻页完成后应能看到新页正文");
+        assert!(alpha==255 && incoming.len()>6);
+        let distance=|x:f32| direction*(x-target_x);
+        assert!(distance(incoming[0])>5.0,"新页应从翻页方向对应的一侧滑入");
+        for positions in incoming.windows(2) {
+            let (before,after)=(distance(positions[0]),distance(positions[1]));
+            assert!(after>=-0.001 && after<=before+0.001,"新页不应越过终点或向回移动：{before} → {after}");
+        }
+    }
+
+    // 滚轮可以在正文滑入、标题尚未出现时反向切回。
+    h.wheel(-40.0);
+    for _ in 0..4 {h.frame(vec![]);}
+    assert_eq!(h.app.page(),1);
+    let (sliding_x,_)=body_text(&h,1).expect("反向前应已出现专注正文");
+    h.wheel(40.0);
+    assert_eq!(h.app.page(),0);
+    let (fading_x,_)=body_text(&h,1).expect("反向后应保留专注正文淡出");
+    assert!((fading_x-sliding_x).abs()<5.0,"淡出位置应接续上一个滑入帧");
+    for _ in 0..12 {
+        if let Some((x,_))=body_text(&h,1) {
+            assert!((x-fading_x).abs()<0.05,"中途反向后旧正文应停在当前位置");
+        }
+        assert!(!h.shapes.iter().any(|shape|matches!(&shape.shape,egui::Shape::Text(text)
+            if text.galley.text()=="番茄" && text.fallback_color.a()>2)),"尚未出现的旧标题不应闪现");
+        h.frame(vec![]);
+    }
+    assert!(body_text(&h,1).is_none(),"中途反向也应完成旧页淡出");
+}
+
+#[test]
 fn wheel_page_transition_keeps_interactive_frames_after_input_stops() {
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     let mut h=H::new();
