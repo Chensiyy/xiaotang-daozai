@@ -693,10 +693,6 @@ impl LocalPlugins {
             }
             if page != previous {
                 market_browse_ui::close_detail(ui);
-                if page == PluginPage::Market {
-                    forget_covers(ui);
-                    self.refresh_official_catalog();
-                }
             }
             ui.data_mut(|data| data.insert_temp(id, page));
             if let Some(detail) = detail.filter(|_| page == PluginPage::Market) {
@@ -721,9 +717,6 @@ impl LocalPlugins {
                     forget_covers(ui);
                     self.notice.clear();
                     let target = if official { PluginPage::Market } else { PluginPage::TestMarket };
-                    if official {
-                        self.refresh_official_catalog();
-                    }
                     ui.data_mut(|data| data.insert_temp(page_id, target));
                     ui.ctx().request_repaint();
                 }
@@ -740,8 +733,6 @@ impl LocalPlugins {
                 settings_hint(ui, "装好后可以在这里管理。");
                 #[cfg(windows)]
                 if ui.add(market_button(ui, "去插件集市")).clicked() {
-                    forget_covers(ui);
-                    self.refresh_official_catalog();
                     ui.data_mut(|data| data.insert_temp(page_id, PluginPage::Market));
                 }
             });
