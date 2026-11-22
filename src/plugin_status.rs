@@ -1,4 +1,6 @@
-//! 插件详情页的只读数据契约。
+//! 插件详情页的数据与布局契约。
+
+use serde::{Deserialize, Serialize};
 
 const MAX_TIMESTAMP: i64 = 253_402_300_799;
 
@@ -42,6 +44,112 @@ pub(crate) struct PluginStatus {
 pub(crate) struct StatusMetric {
     pub label: String,
     pub value: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct StatusLayout {
+    pub components: Vec<StatusComponent>,
+    #[serde(default)]
+    pub style: StatusStyle,
+}
+
+impl StatusLayout {
+    pub(crate) fn validate(&self) -> Result<(), &'static str> {
+        if !(1..=6).contains(&self.components.len()) {
+            return Err("状态页布局需要 1 至 6 个组件");
+        }
+        for (index, component) in self.components.iter().enumerate() {
+            if self.components[..index].iter().any(|previous| {
+                std::mem::discriminant(previous) == std::mem::discriminant(component)
+            }) {
+                return Err("状态页布局中每种组件只能出现一次");
+            }
+            if matches!(component, StatusComponent::Metrics { columns } if !(1..=2).contains(columns))
+            {
+                return Err("状态页指标只能使用 1 列或 2 列");
+            }
+        }
+        if self.style.accent.is_some() && self.style.accent_rgb().is_none() {
+            return Err("状态页强调色需为 #RRGGBB 格式");
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum StatusComponent {
+    State {},
+    Summary {},
+    Progress {
+        #[serde(default)]
+        variant: ProgressVariant,
+    },
+    Metrics {
+        #[serde(default = "default_metric_columns")]
+        columns: u8,
+    },
+    Alert {},
+    UpdatedAt {},
+}
+
+fn default_metric_columns() -> u8 {
+    2
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum ProgressVariant {
+    #[default]
+    Ring,
+    Bar,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct StatusStyle {
+    #[serde(
+        default,
+        deserialize_with = "present_accent",
+        skip_serializing_if = "Option::is_none"
+    )]
+    accent: Option<String>,
+    #[serde(default)]
+    pub density: StatusDensity,
+    #[serde(default)]
+    pub surface: StatusSurface,
+}
+
+fn present_accent<'de, D: serde::Deserializer<'de>>(input: D) -> Result<Option<String>, D::Error> {
+    String::deserialize(input).map(Some)
+}
+
+impl StatusStyle {
+    pub(crate) fn accent_rgb(&self) -> Option<[u8; 3]> {
+        let hex = self.accent.as_deref()?.strip_prefix('#')?;
+        if hex.len() != 6 || !hex.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+            return None;
+        }
+        let [_, red, green, blue] = u32::from_str_radix(hex, 16).ok()?.to_be_bytes();
+        Some([red, green, blue])
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum StatusDensity {
+    #[default]
+    Comfortable,
+    Compact,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum StatusSurface {
+    #[default]
+    Card,
+    Plain,
 }
 
 impl PluginStatus {

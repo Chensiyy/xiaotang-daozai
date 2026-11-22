@@ -88,6 +88,64 @@
       "uniqueItems": true
     },
     "refreshSeconds": {"type":"integer","minimum":60,"maximum":86400,"default":60},
+    "statusLayout": {
+      "type": "object",
+      "description": "状态详情页的组件顺序与样式。缺省时使用默认模板。",
+      "properties": {
+        "components": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 6,
+          "items": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {"type": {"enum": ["state", "summary", "alert", "updated_at"]}},
+                "required": ["type"],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {"const": "progress"},
+                  "variant": {"enum": ["ring", "bar"], "default": "ring"}
+                },
+                "required": ["type"],
+                "additionalProperties": false
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "type": {"const": "metrics"},
+                  "columns": {"enum": [1, 2], "default": 2}
+                },
+                "required": ["type"],
+                "additionalProperties": false
+              }
+            ]
+          },
+          "allOf": [
+            {"contains": {"properties": {"type": {"const": "state"}}}, "minContains": 0, "maxContains": 1},
+            {"contains": {"properties": {"type": {"const": "summary"}}}, "minContains": 0, "maxContains": 1},
+            {"contains": {"properties": {"type": {"const": "progress"}}}, "minContains": 0, "maxContains": 1},
+            {"contains": {"properties": {"type": {"const": "metrics"}}}, "minContains": 0, "maxContains": 1},
+            {"contains": {"properties": {"type": {"const": "alert"}}}, "minContains": 0, "maxContains": 1},
+            {"contains": {"properties": {"type": {"const": "updated_at"}}}, "minContains": 0, "maxContains": 1}
+          ]
+        },
+        "style": {
+          "type": "object",
+          "properties": {
+            "accent": {"type": "string", "pattern": "^#[0-9A-Fa-f]{6}$", "minLength": 7, "maxLength": 7},
+            "density": {"enum": ["comfortable", "compact"], "default": "comfortable"},
+            "surface": {"enum": ["card", "plain"], "default": "card"}
+          },
+          "additionalProperties": false
+        }
+      },
+      "required": ["components"],
+      "additionalProperties": false
+    },
     "actions": {
       "description": "待宿主实现。列出可供用户点击或提交的动作名称。",
       "type": "array", "uniqueItems": true, "maxItems": 32,
@@ -370,6 +428,10 @@
   ],
   "additionalProperties": false,
   "allOf": [
+    {
+      "if": {"required": ["statusLayout"]},
+      "then": {"properties": {"owner": {"const": "status"}}}
+    },
     {
       "if": {"properties": {"runtime": {"const": "material"}}},
       "then": {
