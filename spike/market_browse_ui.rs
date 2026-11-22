@@ -785,12 +785,18 @@ impl LocalPlugins {
             .show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
                 ui.spacing_mut().item_spacing.y = 6.0;
-                let place = self
-                    .entry_owner(entry)
-                    .and_then(|owner| owner_label(&owner))
-                    .map(|label| format!("设置 › {label}"));
+                let owner = self.entry_owner(entry);
+                let (location_label, place) = if owner.as_deref() == Some("wireless") {
+                    ("管理在", Some("设置 › 插件 › 已安装".to_owned()))
+                } else {
+                    let place = owner
+                        .as_deref()
+                        .and_then(owner_label)
+                        .map(|label| format!("设置 › {label}"));
+                    ("设置在", place)
+                };
                 for (label, value) in [
-                    ("设置在", place.as_deref()),
+                    (location_label, place.as_deref()),
                     ("新增页面", Some("不会")),
                     ("权限", Some("无需外部权限")),
                 ]

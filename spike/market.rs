@@ -2,7 +2,7 @@
 
 use super::{
     bounded, cover::COVER_LIMIT, fail, valid_id, CoverPng, Manifest, Package, Result, Values,
-    COVER_FILE, SCRIPT_SOURCE_LIMIT,
+    COVER_FILE,
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
 use ring::digest::{digest, SHA256};
@@ -456,8 +456,10 @@ fn read_catalog_zip(path: &Path) -> Result<Vec<u8>> {
 }
 
 fn supported(manifest: &Manifest) -> Result<()> {
-    if manifest.runtime != "js" || manifest.entry.contains('/') {
-        return Err(fail("集市仅接受根目录含一个 JavaScript 入口的卡片插件"));
+    if !manifest.is_wireless() && (manifest.runtime != "js" || manifest.entry.contains('/')) {
+        return Err(fail(
+            "集市支持根目录含单个入口的 JavaScript 卡片插件和无线设备兼容包",
+        ));
     }
     Ok(())
 }
@@ -477,16 +479,20 @@ fn decode_zip(raw: &[u8]) -> Result<Package> {
     }
     let manifest = Manifest::decode(&zip_text(&mut zip, "plugin.json", MANIFEST_LIMIT)?)?;
     supported(&manifest)?;
-    let source = zip_text(&mut zip, &manifest.entry, SCRIPT_SOURCE_LIMIT)?;
+    let source = zip_text(&mut zip, &manifest.entry, manifest.source_limit())?;
     if source.trim().is_empty() {
         return Err(fail("插件入口文件为空"));
     }
     let cover = CoverPng::decode(zip_bytes(&mut zip, COVER_FILE, COVER_LIMIT)?)?;
-    Ok(Package {
+    let package = Package {
         manifest,
         source,
         cover: Some(cover),
-    })
+    };
+    if package.manifest.is_wireless() {
+        package.wireless_table()?;
+    }
+    Ok(package)
 }
 
 fn zip_text(zip: &mut ZipArchive<Cursor<&[u8]>>, name: &str, limit: u64) -> Result<String> {
@@ -513,6 +519,9 @@ fn zip_bytes(zip: &mut ZipArchive<Cursor<&[u8]>>, name: &str, limit: u64) -> Res
 }
 
 fn smoke(package: &Package) -> Result<()> {
+    if package.manifest.is_wireless() {
+        return package.wireless_table().map(|_| ());
+    }
     let values: Values = package
         .manifest
         .settings

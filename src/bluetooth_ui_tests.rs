@@ -165,7 +165,7 @@ fn wireless_receiver_shows_presence_and_stays_out_of_resident_controls() {
 }
 
 #[test]
-fn wireless_compat_lifecycle_preserves_bluetooth_and_builtin_receivers() {
+fn wireless_page_tracks_receiver_extensions_without_losing_bluetooth_or_builtin_receivers() {
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     let mut h=H::new();
     let bluetooth=fixture().remove(0);
@@ -187,25 +187,11 @@ fn wireless_compat_lifecycle_preserves_bluetooth_and_builtin_receivers() {
         assert!(labels.iter().any(|s|s=="82%"));
         assert_eq!(labels.iter().filter(|s|s.as_str()=="2.4G").count(),h.receivers.len());
     };
-    assert!(h.app.wireless_compat.version().is_none());
     check(&mut h,false);
-
-    h.app.wireless_compat.test_install_builtin();
-    assert!(h.app.wireless_compat.version().is_some());
-    check(&mut h,false);
-
-    h.app.wireless_compat.set_enabled(true).unwrap();
     check(&mut h,true);
     h.app.wireless_focus=Some(extension.id.clone());
-    h.app.wireless_compat.set_enabled(false).unwrap();
     check(&mut h,false);
     assert!(h.app.wireless_focus.is_none());
-
-    h.app.wireless_compat.set_enabled(true).unwrap();
-    check(&mut h,true);
-    h.app.wireless_compat.uninstall().unwrap();
-    assert!(h.app.wireless_compat.version().is_none());
-    check(&mut h,false);
 }
 
 #[test]
@@ -426,13 +412,7 @@ fn wireless_settings_controls_are_in_their_own_page() {
         (10,"wireless-page-management",vec!["无线设备电量"],vec!["常驻样式","常驻设备","电量提醒","安装兼容包…"]),
         (crate::extras::SETTINGS_TAB_WIRELESS,"wireless-settings",vec!["岛上常驻","常驻样式","常驻设备","电量提醒"],vec!["蓝牙设备连接","设备兼容","反馈设备适配","本地插件"]),
         (6,"wireless-notifications",vec!["蓝牙设备连接"],vec!["无线设备电量","电量提醒"]),
-        (crate::extras::SETTINGS_TAB_WIRELESS,"wireless-settings-compat-enabled",vec!["设备兼容","反馈设备适配"],vec!["本地插件"]),
     ] {
-        if name=="wireless-settings-compat-enabled" {
-            if std::env::var_os("DAOZAI_BLUETOOTH_PREVIEW_DIR").is_none() {continue;}
-            h.app.wireless_compat.test_install_builtin();
-            h.app.wireless_compat.set_enabled(true).unwrap();
-        }
         h.app.settings_tab=tab;
         for _ in 0..3 {
             let _=h.ctx.run(Default::default(),|ctx|h.app.settings_ui(ctx,false));
@@ -455,7 +435,7 @@ fn wireless_settings_controls_are_in_their_own_page() {
 }
 
 #[test]
-fn wireless_compat_settings_follow_install_and_enable_state() {
+fn wireless_compat_management_stays_outside_base_settings() {
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     let mut h=H::new();
     let output=wireless_settings_capture(&mut h,920.0);
@@ -467,29 +447,26 @@ fn wireless_compat_settings_follow_install_and_enable_state() {
         }
         texts(h)
     };
-    let check=|h:&mut H,installed:bool,enabled:bool|{
-        let wireless=labels(h,crate::extras::SETTINGS_TAB_WIRELESS);
-        for label in ["设备兼容","反馈设备适配"] {
-            assert_eq!(wireless.iter().any(|s|s==label),enabled,"无线设备设置中的 {label}");
-        }
-        assert!(!wireless.iter().any(|s|matches!(s.as_str(),"安装兼容包…"|"更新…"|"卸载")));
-
-        let general=labels(h,0);
-        assert!(general.iter().any(|s|s=="本地插件"));
-        assert_eq!(general.iter().any(|s|s=="安装兼容包…"),!installed);
-        for label in ["无封面","启用兼容包","更新…","卸载"] {
-            assert_eq!(general.iter().any(|s|s==label),installed,"本地插件中的 {label}");
+    let check=|h:&mut H|{
+        for tab in [0,crate::extras::SETTINGS_TAB_WIRELESS] {
+            let settings=labels(h,tab);
+            for label in ["本地插件","设备兼容","反馈设备适配","安装兼容包…","启用兼容包","卸载"] {
+                assert!(!settings.iter().any(|s|s==label),"设置页 {tab} 意外显示 {label}");
+            }
         }
     };
-    check(&mut h,false,false);
-    h.app.wireless_compat.test_install_builtin();
-    check(&mut h,true,false);
-    h.app.wireless_compat.set_enabled(true).unwrap();
-    check(&mut h,true,true);
-    h.app.wireless_compat.set_enabled(false).unwrap();
-    check(&mut h,true,false);
-    h.app.wireless_compat.uninstall().unwrap();
-    check(&mut h,false,false);
+    check(&mut h);
+    #[cfg(all(windows, feature="sdk-js"))]
+    {
+        let store=h.app.wireless_compat_store();
+        let extension=serde_json::json!({
+            "id":"daozai.wireless-receivers","api_version":1,"version":"1.1.0",
+            "receivers":[{"vid":"046D","pid":"C542","name":"罗技 Nano 接收器"}]
+        });
+        let raw=serde_json::to_vec(&extension).unwrap();
+        store.set(Some(crate::bt::compat::Package::parse(&raw).unwrap()));
+        check(&mut h);
+    }
 }
 
 #[test]

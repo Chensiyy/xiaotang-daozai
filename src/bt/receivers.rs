@@ -209,13 +209,12 @@ fn run_scans(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bt::compat::fixtures::Files;
+    use crate::bt::compat::builtin_data;
     use serde_json::json;
 
     #[test]
     fn receiver_snapshot_native_catalog_covers_all_23_without_plugin() {
-        let data = Files::builtin();
-        let rows = data["receivers"].as_array().unwrap();
+        let rows = builtin_data();
         let instances: Vec<_> = rows
             .iter()
             .map(|row| {
@@ -239,8 +238,7 @@ mod tests {
 
     #[test]
     fn receiver_worker_tracks_compat_pack_lifecycle() {
-        let files = Files::new();
-        let store = files.store();
+        let store = Store::default();
         let scans = std::sync::atomic::AtomicUsize::new(0);
         std::thread::scope(|scope| {
             let (tx, rx) = mpsc::sync_channel(1);
@@ -279,37 +277,38 @@ mod tests {
             let baseline = snapshot();
             assert_eq!(baseline.len(), 1);
             assert_eq!(baseline[0].name, "小米无线键鼠套装 2");
-            let mut data = Files::external();
-            data["version"] = json!("1.1.0");
-            data["receivers"] = json!([
-                {"vid":"2717","pid":"5055","name":"兼容包里的同型号名称"},
-                {"vid":"046D","pid":"C542","name":"罗技 Nano 接收器"}
-            ]);
-            store.install(&files.write(&data)).unwrap();
-            assert!(!store.enabled());
-            store.set_enabled(true).unwrap();
+            let mut data = json!({
+                "id":"daozai.wireless-receivers","api_version":1,"version":"1.1.0",
+                "receivers":[
+                    {"vid":"2717","pid":"5055","name":"兼容包里的同型号名称"},
+                    {"vid":"046D","pid":"C542","name":"罗技 Nano 接收器"}
+                ]
+            });
+            let parse = |data: &serde_json::Value| {
+                Package::parse(&serde_json::to_vec(data).unwrap()).unwrap()
+            };
+            store.set(Some(parse(&data)));
 
             let updated = snapshot();
             assert_eq!(updated.len(), 2);
             assert_eq!(updated[0].name, "罗技 Nano 接收器");
             assert_eq!(updated[0].id, r"usb:USB\VID_046D&PID_C542\DEVICE_1");
             assert_eq!(updated[1], baseline[0]);
-            assert_eq!(files.store().version().as_deref(), Some("1.1.0"));
+            assert_eq!(store.package().unwrap().version(), "1.1.0");
 
             data["version"] = json!("1.2.0");
             data["receivers"][1]["name"] = json!("罗技 Nano 无线接收器");
-            store.install(&files.write(&data)).unwrap();
+            store.set(Some(parse(&data)));
             let latest = snapshot();
             assert_eq!(latest[0].name, "罗技 Nano 无线接收器");
             assert_eq!(latest[1], baseline[0]);
 
-            store.set_enabled(false).unwrap();
+            store.set(None);
             assert_eq!(snapshot(), baseline);
-            store.set_enabled(true).unwrap();
+            store.set(Some(parse(&data)));
             assert_eq!(snapshot(), latest);
-            store.uninstall().unwrap();
+            store.set(None);
             assert_eq!(snapshot(), baseline);
-            store.test_install_builtin();
             assert!(store.package().is_none());
         });
     }
@@ -317,8 +316,7 @@ mod tests {
     #[test]
     #[ignore = "需本机插有小米无线键鼠套装 2 的接收器"]
     fn receiver_live_usb_builtin_survives_plugin_lifecycle() {
-        let files = Files::new();
-        let store = files.store();
+        let store = Store::default();
         let assert_xiaomi = || {
             let devices =
                 receiver_snapshot(store.package().as_deref(), present_usb_instances().unwrap());
@@ -331,16 +329,14 @@ mod tests {
             assert_eq!(xiaomi[0].battery, None);
         };
         assert_xiaomi();
-        let mut data = Files::external();
-        data["version"] = json!("1.0.1");
-        data["receivers"] = json!([{"vid":"2717","pid":"5055","name":"兼容包里的同型号名称"}]);
-        store.install(&files.write(&data)).unwrap();
+        let data = json!({
+            "id":"daozai.wireless-receivers","api_version":1,"version":"1.0.1",
+            "receivers":[{"vid":"2717","pid":"5055","name":"兼容包里的同型号名称"}]
+        });
+        let package = Package::parse(&serde_json::to_vec(&data).unwrap()).unwrap();
+        store.set(Some(package));
         assert_xiaomi();
-        store.set_enabled(true).unwrap();
-        assert_xiaomi();
-        store.set_enabled(false).unwrap();
-        assert_xiaomi();
-        store.uninstall().unwrap();
+        store.set(None);
         assert_xiaomi();
     }
 

@@ -222,6 +222,97 @@ fn market_author_packages_and_submits_immutable_versions() -> Result<()> {
 }
 
 #[test]
+fn market_installs_wireless_compatibility_as_a_resource_package() -> Result<()> {
+    use super::super::{market_state::MarketStatus, LocalPlugins};
+
+    const ID: &str = "daozai.wireless-receivers";
+    let fixture = Fixture::new()?;
+    let manifest_path = fixture.0.join("plugin.json");
+    let source_path = fixture.0.join("wireless-receivers.json");
+    let catalog_path = fixture.0.join("catalog.json");
+    fs::write(
+        fixture.0.join(COVER_FILE),
+        include_bytes!("examples/payday/cover.png"),
+    )?;
+    let publish = |version: &str, data_version: &str| -> Result<()> {
+        let manifest = json!({
+             "id": ID,
+             "name": "无线设备兼容包",
+             "author": "岛仔",
+             "version": version,
+             "api": 1,
+             "runtime": "assets",
+             "entry": "wireless-receivers.json",
+             "cover": "cover.png",
+             "owner": "wireless",
+             "capabilities": ["wireless.receivers"],
+             "dataVersion": 1,
+             "permissions": {},
+             "settings": []
+        });
+        let data = json!({
+            "id": ID,
+            "api_version": 1,
+            "version": data_version,
+            "receivers": [{"vid": "046D", "pid": "C542", "name": "罗技 Nano 接收器"}]
+        });
+        fs::write(&manifest_path, serde_json::to_vec(&manifest)?)?;
+        fs::write(&source_path, serde_json::to_vec(&data)?)?;
+        let bundle = fixture.0.join(format!("wireless-{version}.zip"));
+        pack(&manifest_path, &bundle)?;
+        submit(&bundle, &catalog_path)
+    };
+
+    assert!(publish("1.1.0", "1.0.0").is_err());
+    publish("1.0.0", "1.0.0")?;
+    let catalog = Catalog::open(&catalog_path)?;
+    let entry = &catalog.entries[0];
+    assert_eq!(entry.owner(), Some("wireless"));
+    assert!(catalog.load(entry)?.manifest.is_wireless());
+
+    let storage = fixture.0.join("installed");
+    let mut host = LocalPlugins::open(storage.clone());
+    let wireless = host.wireless_store();
+    assert!(wireless.package().is_none());
+    assert!(host.install(&manifest_path).is_err());
+    host.set_market_catalog(&catalog_path)?;
+    let apply_market_action = |host: &mut LocalPlugins| -> Result<()> {
+        host.market_action(false, ID)?;
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while host.market_busy() {
+            host.poll_market();
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        Ok(())
+    };
+    apply_market_action(&mut host)?;
+    assert_eq!(host.market_status(&catalog, entry), MarketStatus::Installed);
+    assert!(!host.records[ID].enabled);
+    assert!(wireless.package().is_none());
+    host.enable(ID, true)?;
+    assert_eq!(wireless.package().unwrap().version(), "1.0.0");
+    host.enable(ID, false)?;
+    assert!(wireless.package().is_none());
+    host.enable(ID, true)?;
+
+    publish("1.1.0", "1.1.0")?;
+    host.refresh_market_catalog()?;
+    apply_market_action(&mut host)?;
+    assert_eq!(wireless.package().unwrap().version(), "1.1.0");
+    let mut reopened = LocalPlugins::open(storage);
+    let record = &reopened.records[ID];
+    assert!(record.enabled);
+    assert_eq!(record.package.as_ref().unwrap().manifest.version, "1.1.0");
+    let wireless = reopened.wireless_store();
+    assert_eq!(wireless.package().unwrap().version(), "1.1.0");
+    reopened.uninstall(ID, false)?;
+    assert!(!reopened.records.contains_key(ID));
+    assert!(wireless.package().is_none());
+    Ok(())
+}
+
+#[test]
 fn market_rejects_invalid_archives_and_catalogs() -> Result<()> {
     let fixture = Fixture::new()?;
     let manifest = fixture.project("1.0.0")?;

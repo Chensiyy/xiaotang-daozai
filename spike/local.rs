@@ -28,6 +28,7 @@ const MATERIAL_SOURCE_LIMIT: u64 = 64 * 1024;
 const SCRIPT_SOURCE_LIMIT: u64 = 256 * 1024;
 const BACKDROP_PERMISSION: &str = "screen.backdrop";
 const API_VERSION: u32 = 1;
+const WIRELESS_PLUGIN_ID: &str = "daozai.wireless-receivers";
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -155,6 +156,7 @@ impl Record {
             let manifest = &package.manifest;
             manifest.id == id
                 && manifest.validate().is_ok()
+                && self.valid_wireless_package(package)
                 && manifest.cover.is_some() == package.cover.is_some()
                 && !package.source.trim().is_empty()
                 && package.source.len() as u64 <= manifest.source_limit()
@@ -164,6 +166,14 @@ impl Record {
                         .is_some_and(|value| valid_field(field, value))
                 })
         })
+    }
+
+    fn valid_wireless_package(&self, package: &Package) -> bool {
+        #[cfg(windows)]
+        if package.manifest.is_wireless() {
+            return self.from_market && package.wireless_table().is_ok();
+        }
+        !package.manifest.is_wireless()
     }
 
     #[cfg(feature = "sdk-material")]
@@ -264,6 +274,10 @@ impl Manifest {
         self.runtime == "material"
     }
 
+    fn is_wireless(&self) -> bool {
+        self.runtime == "assets" && self.id == WIRELESS_PLUGIN_ID
+    }
+
     fn source_limit(&self) -> u64 {
         if self.is_material() {
             MATERIAL_SOURCE_LIMIT
@@ -295,7 +309,21 @@ impl Manifest {
             return Err(fail("请核对插件 ID、作者、版本和 API 版本"));
         }
         let material = m.is_material();
-        if material {
+        let wireless = m.is_wireless();
+        if wireless {
+            if !cfg!(windows)
+                || m.owner != "wireless"
+                || m.entry != "wireless-receivers.json"
+                || m.capabilities != ["wireless.receivers"]
+                || m.material.is_some()
+                || !m.permissions.is_empty()
+                || !m.settings.is_empty()
+            {
+                return Err(fail("请核对无线设备兼容包的清单"));
+            }
+        } else if m.id == WIRELESS_PLUGIN_ID {
+            return Err(fail("此插件 ID 专用于无线设备兼容包"));
+        } else if material {
             if m.owner != "appearance"
                 || m.permissions.len() != 1
                 || m.permissions
@@ -362,9 +390,10 @@ impl Manifest {
                 && s.bytes()
                     .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
         };
+        let suffix = if wireless { ".json" } else if material { ".wgsl" } else { ".js" };
         if !m
             .entry
-            .strip_suffix(if material { ".wgsl" } else { ".js" })
+            .strip_suffix(suffix)
             .is_some_and(|name| name.split('/').all(allowed_name))
             || !entry
                 .components()
@@ -424,6 +453,15 @@ fn validate_material_files(dir: &Path, manifest: &Path, shader: &Path) -> Result
 }
 
 impl Package {
+    #[cfg(windows)]
+    fn wireless_table(&self) -> Result<crate::bt::compat::Package> {
+        let table = crate::bt::compat::Package::parse(self.source.as_bytes()).map_err(fail)?;
+        if table.version() != self.manifest.version {
+            return Err(fail("无线设备兼容数据与插件清单版本不一致"));
+        }
+        Ok(table)
+    }
+
     fn read(path: &Path) -> Result<Self> {
         let manifest = Manifest::decode(&bounded(path, 32 * 1024)?)?;
         let entry = Path::new(&manifest.entry);
@@ -516,6 +554,8 @@ struct Job {
 pub struct LocalPlugins {
     jobs: BTreeMap<String, Job>,
     #[cfg(windows)]
+    wireless: crate::bt::compat::Store,
+    #[cfg(windows)]
     market_catalog: Option<std::sync::Arc<market::Catalog>>,
     #[cfg(windows)]
     official_market: market_state::OfficialMarket,
@@ -544,6 +584,8 @@ impl LocalPlugins {
     pub fn open(dir: PathBuf) -> Self {
         let mut s = Self {
             jobs: BTreeMap::new(),
+            #[cfg(windows)]
+            wireless: Default::default(),
             #[cfg(windows)]
             market_catalog: None,
             #[cfg(windows)]
@@ -600,9 +642,29 @@ impl LocalPlugins {
             s.notice = e.to_string()
         }
         #[cfg(windows)]
-        s.restore_market_catalog();
+        {
+            s.restore_market_catalog();
+            s.sync_wireless();
+        }
         s
     }
+
+    #[cfg(windows)]
+    pub(crate) fn wireless_store(&self) -> crate::bt::compat::Store {
+        self.wireless.clone()
+    }
+
+    #[cfg(windows)]
+    fn sync_wireless(&self) {
+        let table = self
+            .records
+            .get(WIRELESS_PLUGIN_ID)
+            .filter(|record| record.from_market && record.enabled)
+            .and_then(|record| record.package.as_ref())
+            .and_then(|package| package.wireless_table().ok());
+        self.wireless.set(table);
+    }
+
     fn path(&self, id: &str) -> PathBuf {
         self.dir.join(format!("local-{id}.json"))
     }
@@ -610,7 +672,12 @@ impl LocalPlugins {
         crate::model::atomic_write(&self.path(id), &serde_json::to_vec(&r)?)?;
         self.records.insert(id.into(), r);
         #[cfg(windows)]
-        self.cancel_market(id);
+        {
+            self.cancel_market(id);
+            if id == WIRELESS_PLUGIN_ID {
+                self.sync_wireless();
+            }
+        }
         Ok(())
     }
 
@@ -732,6 +799,9 @@ impl LocalPlugins {
     pub(crate) fn install(&mut self, path: &Path) -> Result<()> {
         let path = path.canonicalize()?;
         let pkg = Package::read(&path)?;
+        if pkg.manifest.is_wireless() {
+            return Err(fail("请从插件集市安装无线设备兼容包"));
+        }
         if !cfg!(all(windows, feature = "sdk-material")) && pkg.manifest.is_material() {
             return Err(fail("当前版本未启用 Windows GPU 材质支持"));
         }
@@ -823,7 +893,12 @@ impl LocalPlugins {
             fs::remove_file(self.path(id))?;
             self.records.remove(id);
             #[cfg(windows)]
-            self.cancel_market(id);
+            {
+                self.cancel_market(id);
+                if id == WIRELESS_PLUGIN_ID {
+                    self.sync_wireless();
+                }
+            }
         }
         self.forget_view(id);
         Ok(())
