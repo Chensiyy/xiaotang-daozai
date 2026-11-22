@@ -1,6 +1,6 @@
 //! 集市顶部的「做插件」入口和新手教程抽屉。
 //!
-//! 教程分「还没做好」「已经做好了」两种情况，同一位置、同一结构：能力分级、
+//! 教程分「还没做好」「已经做好了」两种情况，同一位置、同一结构：已开放能力、
 //! 一句话交给 AI 的卡片、可展开的完整步骤，底部固定开发者工具和投稿指南。
 
 use super::*;
@@ -220,30 +220,43 @@ pub(super) fn drawer_close(ui: &mut egui::Ui) -> bool {
         .clicked()
 }
 
-/// 能力分级的一行：左侧带颜色的小标题，右侧说明。
-fn tier(ui: &mut egui::Ui, label: &str, tint: Color32, text: &str) {
+fn sdk_capabilities(ui: &mut egui::Ui) {
+    let capabilities = [
+        ("卡片与标注", "待办信息卡、日历日期标注，支持定时刷新"),
+        #[cfg(windows)]
+        ("授权取数", "只读用户选定的文件或本机 HTTP 数据"),
+        ("页面快捷切换", "在岛上添加底部页面入口，配置选中配色"),
+        #[cfg(all(windows, feature = "sdk-material"))]
+        ("外观材质", "本地安装自定义 GPU 材质，需开启 DX12 兼容渲染"),
+        #[cfg(windows)]
+        ("本机接入", "独立接入端可发通知、更新状态卡、接收点击操作"),
+    ];
     egui::Frame::new()
         .fill(card_color(ui))
         .stroke(egui::Stroke::new(1.0, line_color(ui)))
         .corner_radius(8.0)
-        .inner_margin(egui::Margin::symmetric(10, 8))
+        .inner_margin(egui::Margin::symmetric(12, 9))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.horizontal_top(|ui| {
-                ui.spacing_mut().item_spacing.x = 8.0;
-                let (rect, _) = ui.allocate_exact_size(egui::vec2(56.0, 18.0), egui::Sense::hover());
-                ui.painter().text(
-                    rect.left_center(),
-                    egui::Align2::LEFT_CENTER,
-                    label,
-                    egui::FontId::proportional(11.5),
-                    tint,
-                );
-                ui.add(
-                    egui::Label::new(egui::RichText::new(text).size(12.0).color(muted_color(ui)))
-                        .wrap(),
-                );
-            });
+            ui.spacing_mut().item_spacing.y = 4.0;
+            ui.label(egui::RichText::new("当前版本已开放的 SDK 能力").size(13.5).strong());
+            ui.add_space(2.0);
+            for (label, description) in capabilities {
+                ui.horizontal_top(|ui| {
+                    let (rect, _) = ui.allocate_exact_size(egui::vec2(76.0, 18.0), egui::Sense::hover());
+                    ui.painter().text(
+                        rect.left_center(),
+                        egui::Align2::LEFT_CENTER,
+                        label,
+                        egui::FontId::proportional(11.5),
+                        ui.visuals().text_color(),
+                    );
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(description).size(12.0).color(muted_color(ui)))
+                            .wrap(),
+                    );
+                });
+            }
         });
 }
 
@@ -372,9 +385,7 @@ impl LocalPlugins {
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 6.0;
-                    tier(ui, "现在能做", ok_color(ui), "待办里的信息卡片（倒计时、提醒、小统计），日程里的日期标注，外观材质");
-                    tier(ui, "正在接入", warn_color(ui), "访问你允许的网站、读取你选定的文件、独立功能页、换肤和表情图标。规范已定，岛仔支持后教程会更新");
-                    tier(ui, "不会开放", color(ui.ctx(), Color32::from_rgb(201, 139, 139), Color32::from_rgb(170, 70, 70)), "随意控制其他程序、读写整个硬盘，保护大家的电脑安全");
+                    sdk_capabilities(ui);
                     ui.add_space(8.0);
                     self.guide_ai_card(ui, &mut state, template.as_deref(), exe.as_deref(), now);
                     ui.add_space(6.0);
@@ -430,10 +441,10 @@ impl LocalPlugins {
                     ui.spacing_mut().item_spacing.x = 8.0;
                     let title = if state.have { "一句话交给 AI 改造" } else { "一句话交给 AI 做" };
                     ui.label(egui::RichText::new(title).size(13.5).strong());
-                    small_tag(ui, "最简单");
+                    small_tag(ui, "JS 卡片模板");
                 });
                 let hint = if state.have {
-                    "把你原来的代码文件夹也告诉 AI，它会先判断能不能做成插件，再搬进模板。用到「正在接入」的能力时，它会告诉你哪部分暂时做不了。"
+                    "把原代码的文件夹位置也告诉 AI，请它对照当前 SDK 判断哪些逻辑适合迁移到卡片模板。"
                 } else {
                     "先点下方「从模板创建」生成插件文件夹，再把这段话发给 Claude Code、Cursor 等 AI 编程助手。模板位置和校验命令岛仔已经帮你填好。"
                 };
