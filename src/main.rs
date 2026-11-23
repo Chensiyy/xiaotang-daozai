@@ -1160,7 +1160,7 @@ impl eframe::App for Shell {
                     daozai::resources::PLUGIN_FRAME_US.load(std::sync::atomic::Ordering::Relaxed) as f64/1000.0,
                     native_cost.as_secs_f64()*1000.0,settings_cost.as_secs_f64()*1000.0));
         }
-        // 切换动画中帧间隔偏长时，分开记下上一帧逻辑和逻辑之外（绘制、读回、提交、等待）各占多少。
+        // 设了 DAOZAI_FRAME_TRACE 时逐帧记下动画帧：上一帧逻辑和逻辑之外（绘制、读回、提交、等待）各占多少。
         thread_local!{
             static PREVIOUS_FRAME:std::cell::Cell<Option<(Instant,Duration)>>=const{std::cell::Cell::new(None)};
             static PREVIOUS_PARTS:std::cell::Cell<[Duration;4]>=const{std::cell::Cell::new([Duration::ZERO;4])};
@@ -1171,7 +1171,7 @@ impl eframe::App for Shell {
             || ctx.requested_repaint_last_pass() && std::env::var_os("DAOZAI_FRAME_TRACE").is_some();
         if let Some((start,logic))=PREVIOUS_FRAME.get().filter(|_|animating) {
             let interval=frame_start.duration_since(start);
-            if interval>=Duration::from_millis(25) || std::env::var_os("DAOZAI_FRAME_TRACE").is_some() {
+            if std::env::var_os("DAOZAI_FRAME_TRACE").is_some() {
                 let (page,open)=self.app.debug_state();
                 daozai::resources::append_log(&daozai::model::config_dir().join("diagnostics"),"frames",
                     &format!("间隔 {:.0} ms｜页面 {}｜展开 {}｜上帧逻辑 {:.1}（前置 {:.1}、设置窗口 {:.1}、其余 {:.1}、材质与提醒 {:.1}）｜逻辑之外 {:.1}｜本帧岛体 {:.1}（插件 {:.1}）｜窗口 {:.1}｜本帧前置：{}｜过渡 {} 交互起点 {} 兼容 {}",
