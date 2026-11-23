@@ -564,6 +564,8 @@ impl eframe::App for Shell {
         self.app.poll_plugin_notices();
         daozai::resources::FRAMES.fetch_add(1,std::sync::atomic::Ordering::Relaxed);
         let frame_start=Instant::now();
+        let mut marks:Vec<(&str,Duration)>=Vec::with_capacity(10);
+        macro_rules! mark {($name:expr)=>{marks.push(($name,frame_start.elapsed()));}}
         if self.resource_at.ready(Duration::from_secs(30)){
             let (count,bytes)={let textures=ctx.tex_manager();let textures=textures.read();(textures.num_allocated(),textures.allocated().map(|(_,info)|info.bytes_used()).sum())};
             daozai::resources::TEXTURES.store(count,std::sync::atomic::Ordering::Relaxed);
@@ -597,6 +599,7 @@ impl eframe::App for Shell {
             if !delay.is_zero(){std::thread::sleep(delay);}
             self.frame_at=Instant::now();
         }
+        mark!("帧间隔等待");
         #[cfg(windows)]
         self.poll_tray();
         #[cfg(windows)]
@@ -648,6 +651,7 @@ impl eframe::App for Shell {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             }
         }
+        mark!("定位");
         #[cfg(not(windows))]
         if !self.placed {
             if let Some(mon)=ctx.input(|i|i.viewport().monitor_size) {
@@ -691,6 +695,7 @@ impl eframe::App for Shell {
             } else {
                 self.backdrop=None;
             }
+            mark!("系统状态与取样");
             let wireless_on=self.app.module_on(app::BLUETOOTH_PAGE);
             if self.app.settings.bluetooth_notifications || wireless_on {
                 if self.bt_rx.is_none() {self.bt_rx=Some(daozai::bt::spawn());}
@@ -712,6 +717,7 @@ impl eframe::App for Shell {
                 self.receiver_rx=None;
                 self.receivers.clear();
             }
+            mark!("蓝牙与无线");
             let previous_pending=self.app.pending_messengers.clone();
             for event in self.messengers.poll_taskbar(ctx,&self.app.settings){match event{
                 TaskbarEvent::Status(client,status)=>self.app.set_messenger_status(client,status),
@@ -800,10 +806,13 @@ impl eframe::App for Shell {
                 if !success{self.app.say(message);}
             }
         }
+        mark!("消息客户端");
         let env = self.env(ctx);
+        mark!("环境");
         #[cfg(windows)]
         if self.native.as_ref().is_some_and(|w|w.page_scroll_cancelled()) {self.app.cancel_page_scroll();}
         self.reconcile_modules(ctx);
+        mark!("模块对齐");
         // v0.5.5 邮件：开关 / 间隔 / 账号清单变了就重新对齐收信线程，再把事件交给界面。
         // 每帧只比较不复制，确有变化时才复制账号清单。
         if let Some(mail)=&self.mail {
@@ -843,8 +852,10 @@ impl eframe::App for Shell {
             }
             while let Some(ev)=self.quota.try_recv(self.app.quota_config()){self.app.quota_event(ev);}
         }
+        mark!("邮件日程额度");
         let mut out = None;
         let pre_cost=frame_start.elapsed();
+        let pre_parts={let mut last=Duration::ZERO;marks.iter().filter_map(|(name,at)|{let part=at.saturating_sub(last);last=*at;(part>=Duration::from_micros(500)).then(||format!("{name} {:.1}",part.as_secs_f64()*1000.0))}).collect::<Vec<_>>().join("、")};
         #[cfg(all(windows, feature = "sdk-material"))]
         if !env.material_active {
             if let Some(material) = &mut self.material { material.suspend(); }
@@ -1151,12 +1162,12 @@ impl eframe::App for Shell {
             if interval>=Duration::from_millis(25) {
                 let (page,open)=self.app.debug_state();
                 daozai::resources::append_log(&daozai::model::config_dir().join("diagnostics"),"frames",
-                    &format!("间隔 {:.0} ms｜页面 {}｜展开 {}｜上帧逻辑 {:.1}（前置 {:.1}、设置窗口 {:.1}、其余 {:.1}、材质与提醒 {:.1}）｜逻辑之外 {:.1}｜本帧岛体 {:.1}（插件 {:.1}）｜窗口 {:.1}",
+                    &format!("间隔 {:.0} ms｜页面 {}｜展开 {}｜上帧逻辑 {:.1}（前置 {:.1}、设置窗口 {:.1}、其余 {:.1}、材质与提醒 {:.1}）｜逻辑之外 {:.1}｜本帧岛体 {:.1}（插件 {:.1}）｜窗口 {:.1}｜本帧前置：{}",
                         interval.as_secs_f64()*1000.0,page,open,logic.as_secs_f64()*1000.0,
                         parts[0].as_secs_f64()*1000.0,parts[1].as_secs_f64()*1000.0,parts[2].as_secs_f64()*1000.0,parts[3].as_secs_f64()*1000.0,
                         interval.saturating_sub(logic).as_secs_f64()*1000.0,draw_cost.as_secs_f64()*1000.0,
                         daozai::resources::PLUGIN_FRAME_US.load(std::sync::atomic::Ordering::Relaxed) as f64/1000.0,
-                        native_cost.as_secs_f64()*1000.0));
+                        native_cost.as_secs_f64()*1000.0,pre_parts));
             }
         }
         PREVIOUS_FRAME.set(Some((frame_start,elapsed)));
