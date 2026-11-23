@@ -277,7 +277,12 @@ fn status_page_egui_button_submits_form_and_updates_output() -> Result<()> {
     crate::theme::load_fonts(&ctx);
     let mut draw = |ui: &mut egui::Ui| {
         let card = Card::new(ui, egui::Pos2::ZERO, ui.max_rect());
-        host.draw_status_controls(&card, ID);
+        host.draw_status_controls(
+            &card,
+            ID,
+            crate::plugin_status_ui::StatusBackdrop { palette: None, island: eframe::egui::Color32::BLACK },
+            false,
+        );
     };
     let before = frame(&ctx, vec![], &mut draw);
     assert!(has_text(&before, "便签 0 / 8"));
@@ -295,7 +300,12 @@ fn status_page_egui_button_submits_form_and_updates_output() -> Result<()> {
 
     let after = frame(&ctx, vec![], |ui| {
         let card = Card::new(ui, egui::Pos2::ZERO, ui.max_rect());
-        host.draw_status_controls(&card, ID);
+        host.draw_status_controls(
+            &card,
+            ID,
+            crate::plugin_status_ui::StatusBackdrop { palette: None, island: eframe::egui::Color32::BLACK },
+            false,
+        );
     });
     assert!(has_text(&after, "便签 1 / 8"));
     assert!(has_text(&after, "今天整理素材"));
@@ -305,7 +315,12 @@ fn status_page_egui_button_submits_form_and_updates_output() -> Result<()> {
     assert_eq!(record.storage["items"][0]["text"], "今天整理素材");
     click(&ctx, "今天整理素材", |ui| {
         let card = Card::new(ui, egui::Pos2::ZERO, ui.max_rect());
-        host.draw_status_controls(&card, ID);
+        host.draw_status_controls(
+            &card,
+            ID,
+            crate::plugin_status_ui::StatusBackdrop { palette: None, island: eframe::egui::Color32::BLACK },
+            false,
+        );
     });
     settle(&mut host);
     assert_eq!(shown(&host), "便签 0 / 8");

@@ -204,7 +204,7 @@ fn https_manifest_combination_and_public_sample() -> Result<()> {
     )?;
     let input = SourceInput::Ready { text: r#"{"stargazers_count":123}"#.into() };
     assert_eq!(
-        package.render_input(&Values::new(), &Value::Null, TODAY, input)?.card,
+        package.render_input(&Values::new(), &Value::Null, TODAY, input, Call::Refresh)?.card,
         "Rust · 123 星标"
     );
     let original: Value = serde_json::from_str(manifest)?;
@@ -245,16 +245,16 @@ fn gold_example_tracks_at_most_48_fresh_prices_and_shows_crossings() -> Result<(
     let storage = json!({"points": (31..=78).rev().map(|age| {
         json!({"price": 749.0, "at": now.timestamp_millis() - age * 1000})
     }).collect::<Vec<_>>()});
-    let output = package.render_input(&settings, &storage, TODAY, source(&quote))?;
+    let output = package.render_input(&settings, &storage, TODAY, source(&quote), Call::Refresh)?;
     let status = output.status.unwrap();
     assert_eq!(status.metrics[0].value, "751.50 元");
     assert_eq!(status.alert.as_deref(), Some("金价达到 750 元/克"));
     assert_eq!(output.storage["points"].as_array().unwrap().len(), 48);
-    let same_quote = package.render_input(&settings, &output.storage, TODAY, source(&quote))?;
+    let same_quote = package.render_input(&settings, &output.storage, TODAY, source(&quote), Call::Refresh)?;
     assert_eq!(same_quote.storage, output.storage);
     assert!(same_quote.status.unwrap().alert.is_none());
     quote["data_state"]["status"] = json!("stale");
-    let stale = package.render_input(&settings, &output.storage, TODAY, source(&quote))?;
+    let stale = package.render_input(&settings, &output.storage, TODAY, source(&quote), Call::Refresh)?;
     assert_eq!(stale.storage, output.storage);
     assert!(stale.status.is_none());
     Ok(())
