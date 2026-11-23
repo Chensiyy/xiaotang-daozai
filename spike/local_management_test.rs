@@ -106,6 +106,7 @@ fn script_settings_controls_save_values_in_the_owner_page() -> Result<()> {
          "min":1, "max":10, "step":1, "unit":"天", "precision":0},
         {"key":"time", "label":"提醒时间", "type":"time", "default":"08:00"},
         {"key":"weekdays", "label":"重复日期", "type":"weekdays", "default":"1,3"},
+        {"key":"note", "label":"说明", "type":"text", "default":"第一行\n第二行", "multiline":true},
         {"key":"list", "label":"城市列表", "type":"list", "default":"[]", "maxItems":2,
          "item":[{"key":"city","label":"城市","type":"text","default":"北京"}]}
     ]))?;
@@ -143,6 +144,9 @@ fn script_settings_controls_save_values_in_the_owner_page() -> Result<()> {
     click(&ctx, "添加一行", &mut draw);
     click(&ctx, "保存设置", &mut draw);
 
+    let mut changed = host.records[ID].values.clone();
+    changed.insert("note".into(), "改过的第一行\n保留第二行".into());
+    host.save(ID, changed)?;
     drop(host);
     let host = LocalPlugins::open(dir.clone());
     let values = &host.records[ID].values;
@@ -151,6 +155,7 @@ fn script_settings_controls_save_values_in_the_owner_page() -> Result<()> {
     assert_eq!(values["number"], "7");
     assert_eq!(values["time"], "08:15");
     assert_eq!(values["weekdays"], "1,3,7");
+    assert_eq!(values["note"], "改过的第一行\n保留第二行");
     assert_eq!(serde_json::from_str::<Value>(&values["list"])?, json!([{"city":"北京"}]));
     drop(host);
     fs::remove_dir_all(dir)?;

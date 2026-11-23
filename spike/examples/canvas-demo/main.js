@@ -8,7 +8,7 @@ function refresh() {
         canvas: {
             height: 172,
             nodes: [
-                { text: "趋势与进度", at: [0, 24], size: 20, weight: 700, fill: "$text" },
+                { text: "趋势与进度", at: [0, 24], size: 20, weight: 700, font: "站酷快乐体", fill: "$text" },
                 { image: "badge.svg", rect: [348, 0, 34, 30], fit: "contain" },
                 { rect: [0, 38, 226, 129], r: [12, 12, 8, 8], fill: "$card", shadow: "sm" },
                 { rect: [236, 38, 151, 129], r: 12, fill: "$card" },

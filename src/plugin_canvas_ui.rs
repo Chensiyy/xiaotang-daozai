@@ -99,6 +99,7 @@ struct View {
     pixels: f32,
     size: Vec2,
     theme: CanvasTheme,
+    fonts: u64,
 }
 
 #[derive(Clone)]
@@ -146,11 +147,13 @@ pub(crate) fn draw(
 ) -> bool {
     let ctx = c.ui.ctx();
     let pixels = ctx.pixels_per_point();
+    let fonts = ctx.fonts(|fonts| fonts.families().into_iter().filter(theme::canvas_font_family).collect::<Vec<_>>());
     let view = View {
         scale: c.s,
         pixels,
         size: area.size(),
         theme,
+        fonts: egui::Id::new(&fonts).value(),
     };
     let id = c.ui.make_persistent_id(("plugin-canvas", id));
     let cache_id = egui::Id::new("plugin-canvas-scenes");
@@ -185,7 +188,7 @@ pub(crate) fn draw(
     let mut timed_out = cache.failures >= 2;
     if !timed_out {
         if cache.scene.is_none() {
-            cache.scene = Builder::new(view, start).build(canvas).map(Arc::new);
+            cache.scene = Builder::new(view, start, &fonts).build(canvas).map(Arc::new);
         }
         if let Some(scene) = &cache.scene {
             timed_out = !scene.draw(c, offset, clip, Some(start), &mut image);
@@ -304,20 +307,22 @@ impl Scene {
     }
 }
 
-struct Builder {
+struct Builder<'a> {
     view: View,
     start: Instant,
     tessellator: Tessellator,
     scene: Scene,
+    fonts: &'a [egui::FontFamily],
 }
 
-impl Builder {
-    fn new(view: View, start: Instant) -> Self {
+impl<'a> Builder<'a> {
+    fn new(view: View, start: Instant, fonts: &'a [egui::FontFamily]) -> Self {
         let tessellator = Tessellator::new(view.pixels, Default::default(), [1; 2], Vec::new());
         Self {
             view,
             start,
             tessellator,
+            fonts,
             scene: Scene::default(),
         }
     }
@@ -363,7 +368,7 @@ impl Builder {
             .fill
             .as_ref()
             .map(|paint| theme.pigment(paint, transform, opacity));
-        let stroke = style
+        let mut stroke = style
             .stroke
             .as_ref()
             .map(|paint| theme.pigment(paint, transform, opacity));
@@ -394,7 +399,7 @@ impl Builder {
                 align,
                 max_width,
                 lines,
-                ..
+                font,
             } => {
                 let size = (size.initial().clamp(6.0, 96.0) * transform.scale)
                     .min(256.0 / self.view.pixels);
@@ -408,7 +413,7 @@ impl Builder {
                     .map_or(f32::INFINITY, |v| v.initial() * transform.scale);
                 let mut job = egui::text::LayoutJob::simple(
                     crate::rtl_text::display(text).into_owned(),
-                    theme::font(size, weight),
+                    theme::canvas_font(size, weight, font.as_deref(), self.fonts),
                     Color32::PLACEHOLDER,
                     max_width,
                 );
@@ -450,6 +455,19 @@ impl Builder {
                     ));
                 }
                 return Some(());
+            }
+            Kind::Icon { path: commands, rect } => {
+                let rect = geometry::rect(rect);
+                let scale = rect.width().min(rect.height()) / 24.0;
+                if scale <= 0.0 {
+                    return Some(());
+                }
+                let top_left = rect.center() - vec2(12.0, 12.0) * scale;
+                let local = [top_left.x, top_left.y].map(crate::plugin_canvas::Num::Literal);
+                if fill.is_none() && stroke.is_none() {
+                    stroke = Some(Pigment::Solid(theme.token(&Token::Text).gamma_multiply(opacity)));
+                }
+                (path(commands, transform.child(&local, 0.0, scale), self.view.pixels, self.start)?, None)
             }
             Kind::Rect { rect, r } => (vec![rectangle(rect, r, transform)], None),
             Kind::Circle([x, y, r]) => (

@@ -59,6 +59,8 @@ mod plugin_canvas;
 #[cfg(feature = "sdk-js")]
 mod plugin_canvas_ui;
 #[cfg(feature = "sdk-js")]
+mod plugin_setting_catalog;
+#[cfg(feature = "sdk-js")]
 mod plugin_status;
 #[cfg(feature = "sdk-js")]
 mod plugin_status_ui;

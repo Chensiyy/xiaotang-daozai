@@ -104,6 +104,8 @@ pub(crate) struct StatusField {
     pub label: String,
     pub value: Option<String>,
     pub max: usize,
+    #[serde(default)]
+    pub multiline: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -359,7 +361,11 @@ fn valid_host_action(open: Option<&str>, copy: Option<&str>) -> bool {
 
 impl StatusField {
     pub(crate) fn accepts(&self, value: &str) -> bool {
-        value.chars().count() <= self.max && !value.chars().any(char::is_control)
+        value.chars().count() <= self.max && value.chars().all(|ch| self.accepts_char(ch))
+    }
+
+    pub(crate) fn accepts_char(&self, ch: char) -> bool {
+        !ch.is_control() || self.multiline && ch == '\n'
     }
 }
 

@@ -10,6 +10,14 @@ use eframe::egui;
 use std::collections::{BTreeSet, VecDeque};
 use url::{Host, Url};
 
+fn apply_multiline_draft(status: &mut PluginStatus, form: &Values) {
+    for field in status.fields.iter_mut().filter(|field| field.multiline) {
+        if let Some(value) = form.get(&field.key) {
+            field.value = Some(value.clone());
+        }
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) enum EventName {
     #[serde(rename = "focus.finished")]
@@ -256,6 +264,15 @@ impl LocalPlugins {
     pub(crate) fn status_height(&self, id: &str) -> f32 {
         let layout = self.status_layout(id);
         let status = self.status_page(id).and_then(|(_, status, _)| status);
+        let draft = status
+            .zip(self.interactions.forms.get(id))
+            .filter(|(status, _)| status.fields.iter().any(|field| field.multiline))
+            .map(|(status, form)| {
+                let mut status = status.clone();
+                apply_multiline_draft(&mut status, form);
+                status
+            });
+        let status = draft.as_ref().or(status);
         let default_controls = layout.is_none()
             && status.is_none_or(|status| status.canvas.is_none())
             && self
@@ -265,7 +282,7 @@ impl LocalPlugins {
                 .is_some_and(|package| package.manifest.has_capability("action"));
         plugin_status_ui::status_page_height(layout, status)
             + if default_controls {
-                plugin_status_ui::DEFAULT_FORM_HEIGHT
+                plugin_status_ui::DEFAULT_FORM_HEIGHT + status.map_or(0.0, plugin_status_ui::extra_fields_height)
             } else {
                 0.0
             }
@@ -310,7 +327,7 @@ impl LocalPlugins {
             );
             return InteractionResponse::default();
         };
-        let status = controls.clone();
+        let mut status = controls.clone();
         let layout = layout.cloned();
         let revision = self.status[id].as_ref().unwrap().0;
         let enabled = self.action_available(id);
@@ -325,6 +342,7 @@ impl LocalPlugins {
                     .map(|field| (field.key.clone(), field.value.clone().unwrap_or_default()))
                     .collect()
             });
+        apply_multiline_draft(&mut status, form);
         let mut interaction = Interaction::new(id, revision, form, enabled);
         plugin_status_ui::draw_interactive_status_page(
             c,

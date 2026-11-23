@@ -4,17 +4,38 @@ use eframe::egui;
 
 use crate::{
     paint::{self, Card, H},
-    plugin_status::{PluginStatus, StatusItem},
+    plugin_status::{PluginStatus, StatusField, StatusItem},
     theme::{self, size, W},
 };
 
 pub(super) const MAX_FIELDS: usize = 3;
 pub(super) const ACTION_HEIGHT: f32 = 26.0;
 const FIELD_HEIGHT: f32 = 31.0;
+const MULTILINE_ROW_HEIGHT: f32 = 15.0;
 pub(crate) const DEFAULT_FORM_HEIGHT: f32 = FIELD_HEIGHT * MAX_FIELDS as f32 + ACTION_HEIGHT;
 
-pub(super) fn fields_height(count: usize) -> f32 {
-    FIELD_HEIGHT * count as f32
+fn field_extra_height(field: &StatusField, text: &str) -> f32 {
+    if !field.multiline {
+        return 0.0;
+    }
+    // 状态页字段使用固定内容宽度，中文占两个半角字符的宽度。
+    let rows: usize = text.split('\n').map(|line| {
+        line.chars().map(|ch| if ch.is_ascii() { 1usize } else { 2 }).sum::<usize>()
+            .div_ceil(36).max(1)
+    }).sum();
+    (rows.clamp(1, 6) - 1) as f32 * MULTILINE_ROW_HEIGHT
+}
+
+pub(crate) fn extra_fields_height(status: &PluginStatus) -> f32 {
+    status.fields.iter().map(|field| {
+        field_extra_height(field, field.value.as_deref().unwrap_or_default())
+    }).sum()
+}
+
+pub(super) fn fields_height(status: Option<&PluginStatus>) -> f32 {
+    status.map_or(FIELD_HEIGHT * MAX_FIELDS as f32, |status| {
+        FIELD_HEIGHT * status.fields.len() as f32 + extra_fields_height(status)
+    })
 }
 
 #[derive(Default)]
@@ -154,10 +175,12 @@ impl<'a> Interaction<'a> {
         body_width
     }
 
-    pub(super) fn fields(&mut self, c: &Card, status: &PluginStatus, x: f32, y: f32, width: f32) {
+    pub(super) fn fields(&mut self, c: &Card, status: &PluginStatus, x: f32, mut y: f32, width: f32) {
         let label_width = 82.0;
-        for (index, field) in status.fields.iter().enumerate() {
-            let top = y + index as f32 * FIELD_HEIGHT;
+        for field in &status.fields {
+            let extra = field_extra_height(field, field.value.as_deref().unwrap_or_default());
+            let top = y;
+            y += FIELD_HEIGHT + extra;
             let label = c.fit(&field.label, size::SMALL, W::Regular, label_width - 6.0);
             c.centered_text(
                 x,
@@ -175,7 +198,7 @@ impl<'a> Interaction<'a> {
                 &field.key,
                 c.live,
             ));
-            let rect = c.rect(x + label_width, top, width - label_width, 24.0);
+            let rect = c.rect(x + label_width, top, width - label_width, 24.0 + extra);
             let mut ui = egui::Ui::new(
                 c.ui.ctx().clone(),
                 id,
@@ -187,21 +210,63 @@ impl<'a> Interaction<'a> {
             ui.set_clip_rect(rect.intersect(c.painter.clip_rect()));
             ui.multiply_opacity(c.painter.opacity());
             let value = self.form.entry(field.key.clone()).or_default();
-            let input = egui::TextEdit::singleline(value)
-                .id(id.with("value"))
+            let input_id = id.with("value");
+            let submit = field.multiline && c.live && self.enabled
+                && ui.memory(|memory| memory.has_focus(input_id))
+                && ui.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, egui::Key::Enter));
+            let input = if field.multiline {
+                egui::TextEdit::multiline(value)
+            } else {
+                egui::TextEdit::singleline(value)
+            }
+                .id(input_id)
                 .font(c.font(size::BODY, W::Regular))
-                .vertical_align(egui::Align::Center)
                 .text_color(theme::WHITE)
                 .desired_width(rect.width())
                 .desired_rows(1)
                 .char_limit(field.max)
                 .interactive(c.live && self.enabled);
-            let response = ui.put(rect, input).on_hover_text(&field.label);
+            let response = if field.multiline {
+                egui::ScrollArea::vertical().id_salt(id.with("scroll"))
+                    .max_height(rect.height()).auto_shrink([false, false])
+                    .show(&mut ui, |ui| ui.add(input)).inner
+            } else {
+                ui.put(rect, input.vertical_align(egui::Align::Center))
+            }.on_hover_text(&field.label);
             if response.changed() {
-                value.retain(|ch| !ch.is_control());
+                value.retain(|ch| field.accepts_char(ch));
+                if field.multiline {
+                    ui.ctx().request_repaint();
+                }
+            }
+            if submit {
+                if let Some(index) = status.actions.iter().position(|action| action.open.is_none() && action.copy.is_none()) {
+                    self.clicked = Some(ClickTarget::Button(index));
+                }
             }
             self.response.gained_focus |= response.gained_focus();
             self.response.focused |= c.live && self.enabled && response.has_focus();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn multiline_status_field_grows_until_six_rows() {
+        let field: StatusField = serde_json::from_value(serde_json::json!({
+            "key":"note","label":"便签","max":100,"multiline":true
+        })).unwrap();
+        assert!(field.accepts("第一行\n第二行"));
+        assert!(!field.accepts("第一行\u{0000}"));
+        assert_eq!(field_extra_height(&field, "单行"), 0.0);
+        assert_eq!(field_extra_height(&field, "第一行\n第二行"), MULTILINE_ROW_HEIGHT);
+        assert_eq!(field_extra_height(&field, &"空行\n".repeat(10)), 5.0 * MULTILINE_ROW_HEIGHT);
+        let legacy: StatusField = serde_json::from_value(serde_json::json!({
+            "key":"note","label":"便签","max":100
+        })).unwrap();
+        assert!(!legacy.accepts("旧版\n单行"));
     }
 }

@@ -1,8 +1,13 @@
 use super::{fail, fs, valid_id, LocalPlugins, Path, Result, Surface};
-use crate::plugin_status::{StatusCountdown, StatusCounter};
+use crate::{
+    plugin_canvas::Canvas,
+    plugin_canvas_ui::{self, CanvasTheme},
+    plugin_status::{StatusCountdown, StatusCounter},
+};
 use serde::Deserialize;
 use std::{
     collections::BTreeMap,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -14,11 +19,43 @@ const ORDER_FILE: &str = "island-pinned.json";
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct Pinned {
-    text: String,
+    text: Option<String>,
     value: Option<PinnedValue>,
     icon: Option<PinnedIcon>,
     #[serde(default)]
     sensitive: bool,
+    canvas: Option<Slides>,
+}
+
+#[derive(Clone)]
+struct Slide {
+    width: f32,
+    canvas: Arc<Canvas>,
+}
+
+impl<'de> Deserialize<'de> for Slide {
+    fn deserialize<D: serde::Deserializer<'de>>(input: D) -> std::result::Result<Self, D::Error> {
+        use serde::de::Error;
+        let value = serde_json::Value::deserialize(input)?;
+        let (width, canvas) = Canvas::parse_pinned(value).map_err(Error::custom)?;
+        Ok(Self { width, canvas: Arc::new(canvas) })
+    }
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(untagged)]
+enum Slides {
+    Single(Slide),
+    Rotation(Vec<Slide>),
+}
+
+impl Slides {
+    fn all(&self) -> &[Slide] {
+        match self {
+            Self::Single(slide) => std::slice::from_ref(slide),
+            Self::Rotation(slides) => slides,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -53,7 +90,11 @@ fn valid_text(text: &str, max: usize) -> bool {
 
 impl Pinned {
     pub(super) fn valid(&self) -> bool {
-        valid_text(&self.text, 12)
+        if let Some(slides) = &self.canvas {
+            return !slides.all().is_empty() && self.text.is_none()
+                && self.value.is_none() && self.icon.is_none();
+        }
+        self.text.as_deref().is_some_and(|text| valid_text(text, 12))
             && self.value.as_ref().is_none_or(|value| match value {
                 PinnedValue::Text(text) => valid_text(text, 24),
                 PinnedValue::Number(number) => number.is_finite(),
@@ -62,14 +103,37 @@ impl Pinned {
             })
     }
 
+    pub(super) fn validate_canvas(&self, package: &super::Package) -> Result<()> {
+        if let Some(slides) = &self.canvas {
+            if !package.manifest.has_capability("status.canvas") {
+                return Err(fail("常驻画布需要声明 status.canvas"));
+            }
+            for slide in slides.all() {
+                slide.canvas.validate_images(|name| package.canvas_images.contains_key(name))
+                    .map_err(|error| fail(&error))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn page_count(&self) -> usize {
+        self.canvas.as_ref().map_or(1, |slides| slides.all().len())
+    }
+
+    #[cfg(test)]
     fn display(&self, now: chrono::DateTime<chrono::Utc>) -> (PinnedDisplay, Option<Duration>) {
+        self.display_slide(now, 0)
+    }
+
+    fn display_slide(&self, now: chrono::DateTime<chrono::Utc>, index: usize) -> (PinnedDisplay, Option<Duration>) {
         let second = now.timestamp();
+        let title = self.text.clone().unwrap_or_default();
         let hide = self.sensitive
             || matches!(&self.value,
             Some(PinnedValue::Live(LiveValue::Counter(counter))) if counter.sensitive);
         let (text, value, next) = if hide {
             if self.value.is_some() {
-                (self.text.clone(), Some(MASKED_VALUE.into()), None)
+                (title, Some(MASKED_VALUE.into()), None)
             } else {
                 (MASKED_VALUE.into(), None, None)
             }
@@ -86,12 +150,18 @@ impl Pinned {
                     countdown.repaint_at(second),
                 ),
             };
-            (self.text.clone(), value, next)
+            (title, value, next)
         };
         let display = PinnedDisplay {
             text,
             value,
             icon: self.icon,
+            plugin: String::new(),
+            images: BTreeMap::new(),
+            slide: self.canvas.as_ref().filter(|_| !hide).map(|slides| slides.all()[index].clone()),
+            slide_width: self.canvas.as_ref().map(|slides| {
+                slides.all().iter().map(|slide| slide.width).fold(0.0, f32::max)
+            }),
         };
         (
             display,
@@ -106,9 +176,17 @@ pub(crate) struct PinnedDisplay {
     pub text: String,
     pub value: Option<String>,
     pub icon: Option<PinnedIcon>,
+    pub(crate) plugin: String,
+    images: super::canvas_images::CanvasImages,
+    slide: Option<Slide>,
+    slide_width: Option<f32>,
 }
 
 impl PinnedDisplay {
+    pub(crate) fn width(&self, available: f32) -> f32 {
+        self.slide_width.map_or(available, |width| width.min(available))
+    }
+
     #[cfg(test)]
     pub(crate) fn caption(&self) -> String {
         self.value.as_ref().map_or_else(
@@ -124,12 +202,23 @@ impl PinnedDisplay {
         y: f32,
         width: f32,
         vertical: bool,
-    ) {
+        theme: CanvasTheme,
+    ) -> bool {
         use crate::{
             app,
             paint::{self, H},
             theme::{self, W},
         };
+        let click = card.hit(x - width / 2.0, y - 11.0, width, 22.0,
+            ("plugin-pinned", self.plugin.as_str())).clicked();
+        if let Some(slide) = &self.slide {
+            let card = card.scaled(x, y, (width / slide.width).min(1.0));
+            let area = card.rect(x - slide.width / 2.0, y - 11.0, slide.width, 22.0);
+            plugin_canvas_ui::draw(&card, &format!("{}:pinned", self.plugin), &slide.canvas, area, theme, |name| {
+                self.images.get(name)?.texture(card.ui.ctx(), name)
+            });
+            return click;
+        }
         let icon = self.icon.map(|icon| match icon {
             PinnedIcon::Clock => app::FOCUS_PAGE,
             PinnedIcon::Chart => app::PERFORMANCE_PAGE,
@@ -195,6 +284,7 @@ impl PinnedDisplay {
                 H::Left,
             );
         }
+        click
     }
 }
 
@@ -254,9 +344,14 @@ impl PinnedState {
             return None;
         }
         let elapsed = instant.saturating_duration_since(*self.started.get_or_insert(instant));
-        let index = (elapsed.as_secs() / ROTATION.as_secs()) as usize % self.active.len();
-        let (display, update) = self.output[&self.active[index]].display(now);
-        let rotate = (self.active.len() > 1).then(|| {
+        let turn = (elapsed.as_secs() / ROTATION.as_secs()) as usize;
+        let index = turn % self.active.len();
+        let id = &self.active[index];
+        let output = &self.output[id];
+        let slide = (turn / self.active.len()) % output.page_count();
+        let (mut display, update) = output.display_slide(now, slide);
+        display.plugin.clone_from(id);
+        let rotate = (self.active.len() > 1 || output.page_count() > 1).then(|| {
             ROTATION - Duration::from_millis((elapsed.as_millis() % ROTATION.as_millis()) as u64)
         });
         let next = update.into_iter().chain(rotate).min();
@@ -269,8 +364,12 @@ impl LocalPlugins {
         &mut self,
         suppressed: bool,
     ) -> Option<(PinnedDisplay, Option<Duration>)> {
-        self.pinned
-            .display(suppressed, Instant::now(), chrono::Utc::now())
+        let (mut display, update) = self.pinned.display(suppressed, Instant::now(), chrono::Utc::now())?;
+        if display.slide.is_some() {
+            let package = self.records.get(&display.plugin)?.package.as_ref()?;
+            display.images.clone_from(&package.canvas_images);
+        }
+        Some((display, update))
     }
 
     pub(super) fn pinned_name(&self, id: &str) -> Option<&str> {
@@ -346,6 +445,86 @@ mod tests {
     use crate::app::{App, Env, Options, TODO_PAGE, WIN_H, WIN_W};
     use eframe::egui;
     use serde_json::json;
+
+    #[test]
+    fn pinned_canvas_limits_size_and_rotates_its_slides() {
+        let canvas = |width, height, count| json!({
+            "width":width, "height":height,
+            "nodes": vec![json!({"rect":[0,0,10,10]}); count]
+        });
+        for (width, height, count) in [(0,22,1), (157,22,1), (30,23,1), (30,22,61)] {
+            assert!(Canvas::parse_pinned(canvas(width,height,count)).is_err());
+        }
+        assert!(Canvas::parse_pinned(canvas(156,22,60)).is_ok());
+        assert!(Canvas::parse_pinned(json!({"width":30,"nodes":[{"rect":[0,0,10,10],"hit":{"action":"test"}}]})).is_err());
+        let pinned: Pinned = serde_json::from_value(json!({"canvas":[canvas(70,22,1),canvas(80,22,2)]})).unwrap();
+        assert!(pinned.valid());
+        let mut state = PinnedState::default();
+        state.order.push("test.canvas".into());
+        state.output.insert("test.canvas".into(), pinned);
+        let instant = Instant::now();
+        let now = chrono::Utc::now();
+        let (first, next) = state.display(false, instant, now).unwrap();
+        assert_eq!(first.width(156.0), 80.0);
+        assert_eq!(first.slide.unwrap().width, 70.0);
+        assert_eq!(next, Some(ROTATION));
+        assert_eq!(state.display(false, instant + ROTATION, now).unwrap().0.slide.unwrap().width, 80.0);
+    }
+
+    #[test]
+    fn pinned_canvas_demo_fits_top_and_side() -> Result<()> {
+        use crate::skin_paint::{CREAM, GLASS_DARK};
+        let fixture = Fixture::new()?;
+        let mut host = LocalPlugins::open(fixture.0.join("installed"));
+        let id = "example.canvas-pinned-demo";
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("spike/examples/canvas-pinned-demo/plugin.json");
+        host.install(&path)?;
+        host.enable(id, true)?;
+        host.set_pinned(id, true)?;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let display = loop {
+            host.tick(true, true, "2026-11-24");
+            if let Some((display, _)) = host.pinned_display(false) {
+                break display;
+            }
+            assert!(Instant::now() < deadline, "等待常驻画布超时：{:?}", host.errors.get(id));
+            std::thread::sleep(Duration::from_millis(2));
+        };
+        for (skin, palette) in [("cream", CREAM), ("glass-dark", GLASS_DARK)] {
+            for (dock, w, h) in [("top", 117_u32, 30_u32), ("left", 44, 42), ("right", 44, 42)] {
+                let ctx = egui::Context::default();
+                crate::theme::load_fonts(&ctx);
+                let bounds = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w as f32, h as f32));
+                let [r, g, b] = palette.paper;
+                let color = egui::Color32::from_rgb(r, g, b);
+                let mut raster = crate::preview_raster::Raster::new(w as usize, h as usize);
+                for _ in 0..2 {
+                    let out = ctx.run(egui::RawInput { screen_rect: Some(bounds), ..Default::default() }, |ctx| {
+                        egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
+                            let card = crate::paint::Card::new(ui, egui::Pos2::ZERO, bounds);
+                            card.fill(0.0, 0.0, w as f32, h as f32, 10.0, color);
+                            display.draw(&card, bounds.center().x, bounds.center().y,
+                                display.width(w as f32 - 8.0), dock != "top",
+                                CanvasTheme { palette: Some(palette), accent: None, background: color });
+                        });
+                    });
+                    raster.update_textures(&out.textures_delta);
+                    let primitives = ctx.tessellate(out.shapes, out.pixels_per_point);
+                    assert!(primitives.iter().all(|primitive| bounds.contains_rect(primitive.clip_rect)));
+                    if let Some(dir) = std::env::var_os("DAOZAI_CANVAS_SCREENSHOTS") {
+                        raster.buf.fill([0.0; 4]);
+                        raster.draw(&primitives, out.pixels_per_point);
+                        let mut rgba = Vec::new();
+                        raster.to_rgba8(&mut rgba);
+                        image::RgbaImage::from_raw(w, h, rgba).unwrap().save(
+                            Path::new(&dir).join(format!("C-canvas-pinned-{skin}-{dock}.png")))?;
+                    }
+                    raster.free_textures(&out.textures_delta);
+                }
+            }
+        }
+        Ok(())
+    }
 
     struct Fixture(std::path::PathBuf);
 

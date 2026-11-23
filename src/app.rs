@@ -2188,7 +2188,10 @@ impl App {
     pub fn frame(&mut self, ui: &mut egui::Ui, win: Rect, env: &Env) -> FrameOut {
         let ctx = ui.ctx().clone();
         #[cfg(feature="sdk-js")]
-        self.pet.expressions.set_sheets(self.plugins.appearance_pet());
+        {
+            self.pet.expressions.set_sheets(self.plugins.appearance_pet());
+            self.plugins.sync_canvas_fonts(&ctx);
+        }
         #[cfg(all(windows, feature = "sdk-material"))]
         {
             self.material_appearance = if env.material_active { env.material_appearance } else { Default::default() };
@@ -2294,7 +2297,7 @@ impl App {
                 || !fits;
             self.pinned_display = self.plugins.pinned_display(suppress).map(|(value, repaint)| {
                 if let Some(delay) = repaint { ctx.request_repaint_after(delay); }
-                if !self.side() { layout.append_slot(bar::PINNED, width); }
+                if !self.side() { layout.append_slot(bar::PINNED, value.width(width)); }
                 value
             });
         }
@@ -3725,11 +3728,23 @@ impl App {
             if let Some(x)=layout.x[bar::WEATHER] { self.draw_pill_weather(&c,local_cx+x,&layout); }
             #[cfg(feature="sdk-js")]
             if let (Some(x), Some(display)) = (layout.x[bar::PINNED], &self.pinned_display) {
-                display.draw(&c, local_cx+x, 15.0, layout.widths[bar::PINNED], false);
+                if display.draw(&c, local_cx+x, 15.0, layout.widths[bar::PINNED], false, self.pinned_canvas_theme()) {
+                    let id=display.plugin.clone();
+                    self.show_status_page(&id);
+                }
             }
         }
         if self.pomo.running && compact_alpha>0.004 {
             crate::focus_bar::draw(&base.faded(compact_alpha),local_cx+layout.x[bar::FOCUS].unwrap(),15.0,self.t,&self.pomo,self.phase_secs(self.pomo.phase),false);
+        }
+    }
+
+    #[cfg(feature="sdk-js")]
+    pub(crate) fn pinned_canvas_theme(&self) -> crate::plugin_canvas_ui::CanvasTheme {
+        crate::plugin_canvas_ui::CanvasTheme {
+            palette: self.island_palette(),
+            accent: None,
+            background: self.island_overlay_fill(),
         }
     }
 

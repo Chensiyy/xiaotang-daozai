@@ -24,6 +24,7 @@ use zip::{write::SimpleFileOptions, CompressionMethod, ZipArchive, ZipWriter};
 const MANIFEST_LIMIT: u64 = 32 * 1024;
 const ZIP_LIMIT: u64 = 832 * 1024;
 const CANVAS_ZIP_LIMIT: u64 = ZIP_LIMIT + super::canvas_images::IMAGE_LIMIT + 32 * 1024;
+const FONT_ZIP_LIMIT: u64 = super::font_assets::PACKAGE_LIMIT + 32 * 1024;
 const CATALOG_LIMIT: u64 = 64 * 1024;
 const AVATAR_LIMIT: u64 = 64 * 1024;
 const CATALOG_FORMAT: u32 = 1;
@@ -200,7 +201,7 @@ impl Catalog {
                 || entry.name.chars().count() > 80
                 || entry.author.trim().is_empty()
                 || entry.author.chars().count() > 80
-                || !(1..=CANVAS_ZIP_LIMIT).contains(&entry.size)
+                || !(1..=FONT_ZIP_LIMIT).contains(&entry.size)
                 || entry.sha256.len() != 64
                 || !entry
                     .sha256
@@ -227,7 +228,7 @@ impl Catalog {
             return Err(fail("此插件版本已撤回"));
         }
         let raw = match &self.official_index {
-            Some(index) => download_catalog_asset(index, &entry.zip_name(), CANVAS_ZIP_LIMIT)?,
+            Some(index) => download_catalog_asset(index, &entry.zip_name(), entry.size)?,
             None => read_catalog_zip(&entry.path_in(&self.path))?,
         };
         if raw.len() as u64 != entry.size || sha256(&raw) != entry.sha256 {
@@ -463,7 +464,7 @@ fn read_catalog_zip(path: &Path) -> Result<Vec<u8>> {
     if !fs::symlink_metadata(path)?.is_file() || path.canonicalize()?.parent() != path.parent() {
         return Err(fail("测试集市插件包必须是同目录的普通文件"));
     }
-    read_limited(File::open(path)?, CANVAS_ZIP_LIMIT)
+    read_limited(File::open(path)?, FONT_ZIP_LIMIT)
 }
 
 fn supported(manifest: &Manifest) -> Result<()> {
@@ -477,7 +478,7 @@ fn supported(manifest: &Manifest) -> Result<()> {
 }
 
 fn decode_zip(raw: &[u8]) -> Result<Package> {
-    if raw.len() as u64 > CANVAS_ZIP_LIMIT {
+    if raw.len() as u64 > FONT_ZIP_LIMIT {
         return Err(fail("插件 ZIP 超过大小限制"));
     }
     let mut zip = ZipArchive::new(Cursor::new(raw))
@@ -491,10 +492,14 @@ fn decode_zip(raw: &[u8]) -> Result<Package> {
     let manifest = Manifest::decode(&zip_text(&mut zip, "plugin.json", MANIFEST_LIMIT)?)?;
     supported(&manifest)?;
     let canvas = manifest.has_capability("status.canvas");
-    if !canvas && raw.len() as u64 > ZIP_LIMIT {
+    let font = manifest.has_capability("appearance.font");
+    if canvas && raw.len() as u64 > CANVAS_ZIP_LIMIT {
+        return Err(fail("画布插件 ZIP 超过大小限制"));
+    }
+    if !canvas && !font && raw.len() as u64 > ZIP_LIMIT {
         return Err(fail("插件 ZIP 超过 832 KiB"));
     }
-    if !canvas && zip.len() != 3 + manifest.data.len() {
+    if !canvas && !font && zip.len() != 3 + manifest.data.len() {
         return Err(fail("插件 ZIP 只能包含清单、入口、封面和声明的数据文件"));
     }
     let mut images = Vec::new();
@@ -518,6 +523,16 @@ fn decode_zip(raw: &[u8]) -> Result<Package> {
     package.canvas_images = super::canvas_images::decode_all(images, |name, remaining| {
         zip_bytes(&mut zip, name, remaining)
     })?;
+    if let Some(entry) = package.font_entry() {
+        let licenses: Vec<_> = super::font_assets::LICENSES.into_iter()
+            .filter(|name| zip.by_name(name).is_ok()).collect();
+        if zip.len() != 3 + package.data.len() + entry.files().count() + licenses.len() {
+            return Err(fail("字体 ZIP 包含未声明的文件"));
+        }
+        package.font_assets = super::font_assets::read(entry, licenses.into_iter(), package.font_base_size()?, |name, limit| {
+            zip_bytes(&mut zip, name, limit)
+        })?;
+    }
     Ok(package)
 }
 
@@ -787,6 +802,10 @@ pub(super) fn pack(manifest_path: &Path, output: &Path) -> Result<()> {
             zip.write_all(image.bytes())?;
         }
     }
+    for (name, font) in &package.font_assets {
+        zip.start_file(name, options)?;
+        zip.write_all(font.bytes())?;
+    }
     let raw = zip.finish()?.into_inner();
     decode_zip(&raw)?;
     write_new(output, &raw)
@@ -795,7 +814,7 @@ pub(super) fn pack(manifest_path: &Path, output: &Path) -> Result<()> {
 }
 
 pub(super) fn submit(input: &Path, path: &Path) -> Result<()> {
-    let raw = read_limited(File::open(input)?, CANVAS_ZIP_LIMIT)?;
+    let raw = read_limited(File::open(input)?, FONT_ZIP_LIMIT)?;
     let package = decode_zip(&raw)?;
     smoke(&package)?;
     let manifest = package.manifest;
