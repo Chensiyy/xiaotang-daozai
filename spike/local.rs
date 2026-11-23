@@ -1725,14 +1725,14 @@ impl LocalPlugins {
                     Some(SourceGrant::HttpsSources { .. }) => {
                         let package = r.package.as_ref().unwrap();
                         let source = r.network().unwrap().read_sources(
-                            &package.manifest.id, &r.values, &worker_cancelled, &mut fetch, now, interval,
+                            &package.manifest.id, &r.values, &worker_cancelled, &mut fetch, interval,
                         );
                         let _ = send_fetch.send(fetch);
                         source
                     }
                     #[cfg(windows)]
                     Some(grant @ SourceGrant::Https { .. }) => {
-                        let source = fetch.read("", now, interval, || r.read_source(grant, &worker_cancelled));
+                        let source = fetch.read("", Instant::now(), interval, || r.read_source(grant, &worker_cancelled));
                         let _ = send_fetch.send(fetch);
                         source
                     }

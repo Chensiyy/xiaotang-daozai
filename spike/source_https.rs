@@ -186,10 +186,9 @@ impl Network {
         settings: &Values,
         cancelled: &AtomicBool,
         fetch: &mut FetchState,
-        now: Instant,
         interval: Duration,
     ) -> SourceInput {
-        fetch.read_sources(self.sources.as_deref().unwrap_or_default(), now, interval, |source| {
+        fetch.read_sources(self.sources.as_deref().unwrap_or_default(), Instant::now, interval, |source| {
             self.expand(&source.url, settings)
                 .and_then(|url| self.read_address(id, url, cancelled))
         })
@@ -295,12 +294,12 @@ impl FetchState {
     fn read_sources(
         &mut self,
         sources: &[NetworkSource],
-        now: Instant,
+        mut now: impl FnMut() -> Instant,
         interval: Duration,
         mut read: impl FnMut(&NetworkSource) -> io::Result<String>,
     ) -> SourceInput {
         SourceInput::Multiple(sources.iter().map(|source| {
-            let value = self.read(&source.key, now, interval, || read(source));
+            let value = self.read(&source.key, now(), interval, || read(source));
             (source.key.clone(), value)
         }).collect())
     }
@@ -623,7 +622,7 @@ mod tests {
         let mut fx_reads = 0;
         for seconds in (0..=180).step_by(60) {
             let now = start + Duration::from_secs(seconds);
-            let input = state.read_sources(&sources, now, interval, |source| {
+            let input = state.read_sources(&sources, || now, interval, |source| {
                 if source.key == "fx" {
                     fx_reads += 1;
                     if seconds < 180 {
@@ -639,6 +638,33 @@ mod tests {
         assert_eq!(fx_reads, 3);
         assert_eq!(state.next_due(), Some(start + Duration::from_secs(240)));
         assert!(state.last_success.is_some());
+    }
+
+    #[test]
+    fn later_sources_keep_their_own_minimum_interval() {
+        let sources = [
+            NetworkSource { key: "gold".into(), url: String::new() },
+            NetworkSource { key: "fx".into(), url: String::new() },
+        ];
+        let start = Instant::now();
+        let interval = Duration::from_secs(60);
+        let clock = std::cell::Cell::new(start);
+        let mut state = FetchState::default();
+
+        state.read_sources(&sources, || clock.get(), interval, |source| {
+            if source.key == "gold" {
+                clock.set(start + Duration::from_secs(10));
+            }
+            Ok("ready".into())
+        });
+        clock.set(start + interval);
+        let mut queried = Vec::new();
+        state.read_sources(&sources, || clock.get(), interval, |source| {
+            queried.push(source.key.clone());
+            Ok("ready".into())
+        });
+        assert_eq!(queried, ["gold"]);
+        assert_eq!(state.next_due(), Some(start + Duration::from_secs(70)));
     }
 
     #[test]

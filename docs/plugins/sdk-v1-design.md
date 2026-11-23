@@ -120,7 +120,7 @@ JS 卡片可用空权限，或申请一个本地只读数据源。材质插件�
   "permissions": {"source.read": "https"},
   "network": {
     "hosts": ["www.goldapi.io"],
-    "sources": [{"key": "gold", "url": "https://www.goldapi.io/api/XAU/CNY"}],
+    "sources": [{"key": "gold", "url": "https://www.goldapi.io/api/price/XAU/CNY"}],
     "credential": {
       "label": "GoldAPI.io API Key",
       "header": "x-access-token",
@@ -132,9 +132,9 @@ JS 卡片可用空权限，或申请一个本地只读数据源。材质插件�
 }
 ```
 
-[国际现货金价样例](../../spike/examples/gold-price)可直接试装。XAUS 的 `/api/v1/spot?currency=CNY&unit=gram` 可返回人民币每克的国际现货参考报价。XAUS 要求至少缓存 60 秒，高用量商业集成应按其公平使用说明联系服务方。[XAUS API 公平使用说明](https://xaus.com/api/#fair-use)
+[国际现货金价样例](../../spike/examples/gold-price)使用第 1 步的提醒和第 3 步的折线，两项接入后即可试装。XAUS 的 `/api/v1/spot?currency=CNY&unit=gram` 可返回人民币每克的国际现货参考报价。XAUS 要求至少缓存 60 秒，高用量商业集成应按其公平使用说明联系服务方。[XAUS API 公平使用说明](https://xaus.com/api/#fair-use)
 
-样例将近 48 个新报价存到 `storage.points`，并在价格穿越设置的阈值时返回状态告警。使用折线组件时可将这些报价映射到 `status.series`。声明 `notice` 能力后，可在穿越阈值的同一次输出里用报价时刻作为提醒 ID。
+样例把最近 48 个新报价存入 `storage.points` 并绘制趋势。价格向上或向下穿越阈值时，岛仔显示一次性提醒，报价时刻用于提醒去重。独立验证本步 HTTPS 时可试装[仓库动态样例](../../spike/examples/https-repository)。
 
 `network.sources` 按清单中的 key 向脚本提供 `sources`，例如 `sources.gold`。文件、本机 HTTP 和旧版单一 HTTPS 仍使用 `source`。每个来源未授权为 `{status:"unconfigured"}`，无法读取为 `{status:"offline"}`，读取成功为 `{status:"ready",text:"…"}`。校验和打包时传入 `unconfigured`。单个来源失败后独立退避，间隔依次为正常值的 1、2、4、8 倍，退避上限为 30 分钟，并遵守用户设置的正常间隔。成功一次后恢复正常周期。
 

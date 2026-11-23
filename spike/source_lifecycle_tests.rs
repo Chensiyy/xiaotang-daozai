@@ -224,39 +224,51 @@ fn https_manifest_combination_and_public_sample() -> Result<()> {
 }
 
 #[test]
-fn gold_example_tracks_at_most_48_fresh_prices_and_shows_crossings() -> Result<()> {
+fn gold_example_charts_fresh_prices_and_notifies_once_per_crossing() -> Result<()> {
     let package = Package::from_entry(
         Manifest::decode(include_str!("examples/gold-price/plugin.json"))?,
         include_str!("examples/gold-price/main.js").into(),
         CoverPng::decode(include_bytes!("examples/gold-price/cover.png").to_vec())?,
     )?;
-    let settings = Values::from([("threshold".into(), "750".into())]);
     let now = chrono::Utc::now();
+    let settings = Values::from([("threshold".into(), "750".into())]);
     let at = (now - chrono::TimeDelta::seconds(30)).to_rfc3339();
     let mut quote = json!({
         "xau": {"price": 751.5, "currency": "CNY", "unit": "gram"},
         "updated_at": at, "data_state": {"status": "fresh", "as_of": at}, "fx_stale": false
     });
-    let source = |quote: &Value| {
-        SourceInput::Multiple(BTreeMap::from([
-            ("gold".into(), SourceInput::Ready { text: quote.to_string() }),
-        ]))
+    let run = |quote: &Value, storage: &Value| {
+        let source = SourceInput::Multiple(BTreeMap::from([(
+            "gold".into(), SourceInput::Ready { text: quote.to_string() },
+        )]));
+        package.render_input(&settings, storage, TODAY, source, Call::Refresh)
     };
     let storage = json!({"points": (31..=78).rev().map(|age| {
         json!({"price": 749.0, "at": now.timestamp_millis() - age * 1000})
     }).collect::<Vec<_>>()});
-    let output = package.render_input(&settings, &storage, TODAY, source(&quote), Call::Refresh)?;
-    let status = output.status.unwrap();
+    let rising = run(&quote, &storage)?;
+    let status = rising.status.as_ref().unwrap();
     assert_eq!(status.metrics[0].value, "751.50 元");
+    let series = status.series.as_ref().unwrap();
+    assert_eq!(series.len(), 48);
+    assert_eq!(series[47], 751.5);
+    assert_eq!(rising.storage["points"].as_array().unwrap().len(), 48);
+    assert!(rising.notice.is_some());
     assert_eq!(status.alert.as_deref(), Some("金价达到 750 元/克"));
-    assert_eq!(output.storage["points"].as_array().unwrap().len(), 48);
-    let same_quote = package.render_input(&settings, &output.storage, TODAY, source(&quote), Call::Refresh)?;
-    assert_eq!(same_quote.storage, output.storage);
-    assert!(same_quote.status.unwrap().alert.is_none());
+    let repeated = run(&quote, &rising.storage)?;
+    assert_eq!(repeated.storage, rising.storage);
+    assert!(repeated.notice.is_none());
+
+    quote["price_as_of"] = json!((now - chrono::TimeDelta::seconds(20)).to_rfc3339());
+    quote["xau"]["price"] = json!(749);
+    let falling = run(&quote, &rising.storage)?;
+    assert!(falling.notice.is_some());
+    assert_eq!(falling.status.as_ref().unwrap().alert.as_deref(), Some("金价跌至 750 元/克"));
     quote["data_state"]["status"] = json!("stale");
-    let stale = package.render_input(&settings, &output.storage, TODAY, source(&quote), Call::Refresh)?;
-    assert_eq!(stale.storage, output.storage);
+    let stale = run(&quote, &falling.storage)?;
+    assert_eq!(stale.storage, falling.storage);
     assert!(stale.status.is_none());
+    assert!(stale.notice.is_none());
     Ok(())
 }
 
@@ -264,9 +276,11 @@ fn gold_example_tracks_at_most_48_fresh_prices_and_shows_crossings() -> Result<(
 fn adjustable_https_refresh_is_validated_persisted_and_kept_out_of_script_settings() -> Result<()> {
     let root = Fixture::new()?;
     let path = root.0.join("plugin.json");
-    let manifest = include_str!("examples/gold-price/plugin.json");
-    fs::write(&path, manifest)?;
-    fs::write(root.0.join("main.js"), include_str!("examples/gold-price/main.js"))?;
+    let mut manifest: Value = serde_json::from_str(include_str!("examples/gold-price/plugin.json"))?;
+    manifest["capabilities"] = json!(["status.page", "settings", "timer", "storage"]);
+    manifest.as_object_mut().unwrap().remove("statusLayout");
+    fs::write(&path, serde_json::to_vec(&manifest)?)?;
+    fs::write(root.0.join("main.js"), "function refresh() { return {status: null}; }")?;
     fs::write(root.0.join(COVER_FILE), include_bytes!("examples/gold-price/cover.png"))?;
     let mut host = root.host();
     host.install(&path)?;
@@ -281,7 +295,7 @@ fn adjustable_https_refresh_is_validated_persisted_and_kept_out_of_script_settin
     assert_eq!(host.records[id].refresh_interval(), Duration::from_secs(86400));
     assert!(!host.records[id].values.contains_key(source_https::REFRESH_FIELD));
     for invalid in [59, 86401] {
-        let mut manifest: Value = serde_json::from_str(manifest)?;
+        let mut manifest = manifest.clone();
         manifest["network"]["minRefreshSeconds"] = json!(invalid);
         assert!(Manifest::decode(&manifest.to_string()).is_err());
     }
