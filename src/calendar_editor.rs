@@ -2,12 +2,13 @@
 use crate::{app::{App,Cmd,CALENDAR_PAGE},local_calendar::{self,Draft},paint::{self,Card,H},theme::{self,W}};
 use eframe::egui::{self,Color32};
 use chrono::{Datelike, Local, Months, NaiveDate, NaiveTime, Timelike};
+use crate::task_picker::WheelInput;
 
 const PICKER_SELECTED: Color32 = Color32::from_rgb(28,65,100);
 
 pub(crate) enum Picker {
     Date { end: bool, month: NaiveDate },
-    Time { end: bool, time: NaiveTime, minutes: bool },
+    Time { end: bool, time: NaiveTime, wheels: [WheelInput; 2] },
 }
 
 fn picker_button(c: &Card, x: f32, width: f32, id: &str, label: &str, color: Color32) -> bool {
@@ -46,6 +47,30 @@ fn picker_entry(c: &Card, end: bool, date: bool, y: f32) -> bool {
         c.path(&[(cx,cy-2.5),(cx,cy),(cx+2.1,cy+1.2)],1.0,color);
     }
     response.clicked()
+}
+
+fn time_wheel(c: &Card, x: f32, label: &str, value: u32, count: i64, wheel: &mut WheelInput) -> u32 {
+    const CENTER: f32 = 121.0;
+    const ROW: f32 = 21.0;
+    let response = c.hit_drag(x,68.5,78.0,105.0,("calendar-time-wheel",label));
+    let (scroll,drag) = wheel.steps(c,&response,ROW);
+    let click = response.clicked().then(||response.interact_pointer_pos()).flatten()
+        .map_or(0,|pos|((c.to_local(pos).y-CENTER)/ROW).round() as i64);
+    let keys = if response.has_focus() {
+        c.ui.input(|i| i64::from(i.key_pressed(egui::Key::ArrowDown))-i64::from(i.key_pressed(egui::Key::ArrowUp)))
+    } else {0};
+    let value = (i64::from(value)+scroll%count+drag%count+click+keys).rem_euclid(count);
+    c.centered_text(x+39.0,55.0,label,10.0,W::Regular,theme::GRAY,H::Center);
+    for offset in -2_i64..=2 {
+        let text = format!("{:02}",(value+offset).rem_euclid(count));
+        let (size,weight,color) = match offset.abs() {
+            0 => (18.0,W::Semibold,theme::WHITE),
+            1 => (12.0,W::Regular,theme::GRAY),
+            _ => (10.0,W::Regular,theme::DIM),
+        };
+        c.centered_text(x+39.0,CENTER+offset as f32*ROW,&text,size,weight,color,H::Center);
+    }
+    value as u32
 }
 
 impl Picker {
@@ -88,34 +113,20 @@ impl Picker {
                     return false;
                 }
             }
-            Self::Time {end,time,minutes} => {
-                for (show_minutes,x,label) in [(false,43.0,format!("{:02} 时",time.hour())),(true,112.0,format!("{:02} 分",time.minute()))] {
-                    let id = if show_minutes {"calendar-time-minutes"} else {"calendar-time-hours"};
-                    let color = if *minutes==show_minutes {PICKER_SELECTED} else {theme::BTN};
-                    if picker_button(c,x,63.0,id,&label,color) { *minutes = show_minutes; }
-                }
-                if picker_button(c,224.0,64.0,"calendar-time-cancel","取消",theme::BTN) { return false; }
-                if picker_button(c,298.0,72.0,"calendar-time-save","完成",PICKER_SELECTED) {
+            Self::Time {end,time,wheels} => {
+                c.fill(111.0,65.0,192.0,112.0,10.0,theme::CARD);
+                c.fill(120.0,108.0,174.0,26.0,6.0,PICKER_SELECTED);
+                c.centered_text(207.0,121.0,":",16.0,W::Semibold,theme::WHITE,H::Center);
+                let hour = time_wheel(c,124.0,"小时",time.hour(),24,&mut wheels[0]);
+                let minute = time_wheel(c,208.0,"分钟",time.minute(),60,&mut wheels[1]);
+                *time = NaiveTime::from_hms_opt(hour,minute,0).unwrap();
+                let footer = c.shifted(0.0,149.0);
+                if picker_button(&footer,224.0,64.0,"calendar-time-cancel","取消",theme::BTN) { return false; }
+                if picker_button(&footer,298.0,72.0,"calendar-time-save","完成",PICKER_SELECTED) {
                     let field = if *end {&mut draft.end_time} else {&mut draft.start_time};
                     *field = time.format("%H:%M").to_string();
                     draft.error.clear();
                     return false;
-                }
-                let (count,cols,x_step,top,y_step,width,height,selected) = if *minutes {
-                    (60,10,33.0,70.0,23.0,30.0,20.0,time.minute())
-                } else {
-                    (24,8,41.0,77.0,38.0,39.0,31.0,time.hour())
-                };
-                let mut choice = None;
-                for value in 0..count {
-                    let cell = (43.0+x_step*(value%cols) as f32,top+y_step*(value/cols) as f32,width,height);
-                    if picker_cell(c,cell,("calendar-time-option",*minutes,value),&format!("{value:02}"),selected==value) {
-                        choice = Some(value);
-                    }
-                }
-                if let Some(value) = choice {
-                    if *minutes { *time = time.with_minute(value).unwrap(); }
-                    else { *time = time.with_hour(value).unwrap(); *minutes = true; }
                 }
             }
         }
@@ -240,7 +251,7 @@ impl App {
             if !d.all_day && picker_entry(c,end,false,y) {
                 let field=if end {&d.end_time} else {&d.start_time};
                 let time=NaiveTime::parse_from_str(field.trim(),"%H:%M").unwrap_or_else(|_|Local::now().time());
-                d.picker=Some(Picker::Time {end,time,minutes:false});
+                d.picker=Some(Picker::Time {end,time,wheels:[WheelInput::default();2]});
             }
         }
         let options=if d.all_day{vec![(None,"不提醒"),(Some(0),"当天 09:00")]}else{vec![(None,"不提醒"),(Some(0),"准时"),(Some(5),"提前5分"),(Some(15),"提前15分"),(Some(30),"提前30分")]};

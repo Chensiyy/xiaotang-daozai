@@ -976,7 +976,7 @@ fn local_calendar_time_picker_confirms_independently_and_keeps_manual_entry() {
     draft.start_date = "2028-02-29".into();
     draft.end_date = "2028-02-29".into();
     draft.start_time = "09:13".into();
-    draft.end_time = "13:00".into();
+    draft.end_time = "00:00".into();
     let visible = |h: &H, label| h.shapes.iter().any(|shape| {
         matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == label)
     });
@@ -985,33 +985,42 @@ fn local_calendar_time_picker_confirms_independently_and_keeps_manual_entry() {
     h.click(H::local(269.0, 82.0));
     h.frame(vec![]);
     assert!(visible(&h, "开始时间"));
-    h.click(H::local(185.0, 130.0)); // 11 时
-    h.click(H::local(289.0, 172.0)); // 47 分
+    assert!(visible(&h, "小时") && visible(&h, "分钟"));
+    h.click(H::local(163.0, 163.0)); // 11 时
+    h.hover(H::local(247.0, 121.0), 0.2);
+    h.wheel(-40.0); // 14 分
     assert_eq!(h.app.calendar.draft.as_ref().unwrap().start_time, "09:13");
-    h.click(H::local(334.0, 49.0));
+    h.click(H::local(334.0, 198.0));
     h.frame(vec![]);
-    assert_eq!(h.app.calendar.draft.as_ref().unwrap().start_time, "11:47");
+    assert_eq!(h.app.calendar.draft.as_ref().unwrap().start_time, "11:14");
     assert!(visible(&h, "保存到本机"));
 
     h.click(H::local(269.0, 114.0));
     h.frame(vec![]);
     assert!(visible(&h, "结束时间"));
-    h.click(H::local(349.0, 130.0)); // 15 时
-    h.click(H::local(256.0, 126.0)); // 26 分
+    h.click(H::local(163.0, 142.0));
+    h.click(H::local(256.0, 198.0));
+    h.frame(vec![]);
+    assert!(visible(&h, "保存到本机"));
+    assert_eq!(h.app.calendar.draft.as_ref().unwrap().end_time, "00:00");
+
+    h.click(H::local(269.0, 114.0));
+    h.click(H::local(247.0, 142.0));
     h.frame(vec![egui::Event::Key {
         key: egui::Key::Escape, physical_key: None, pressed: true,
         repeat: false, modifiers: Default::default(),
     }]);
-    assert_eq!(h.app.calendar.draft.as_ref().unwrap().end_time, "13:00");
+    assert_eq!(h.app.calendar.draft.as_ref().unwrap().end_time, "00:00");
     assert!(visible(&h, "项目评审"));
 
     h.click(H::local(269.0, 114.0));
-    h.click(H::local(143.0, 49.0)); // 保留小时，只改分钟
-    h.click(H::local(256.0, 126.0));
-    h.click(H::local(334.0, 49.0));
+    h.click(H::local(163.0, 100.0)); // 00 时向上回到 23 时
+    h.hover(H::local(247.0, 121.0), 0.2);
+    h.wheel(40.0); // 00 分向上回到 59 分
+    h.click(H::local(334.0, 198.0));
     h.frame(vec![]);
     let draft = h.app.calendar.draft.as_ref().unwrap();
-    assert_eq!((&*draft.start_time, &*draft.end_time), ("11:47", "13:26"));
+    assert_eq!((&*draft.start_time, &*draft.end_time), ("11:14", "23:59"));
 
     h.click(H::local(233.0, 114.0));
     h.frame(vec![
@@ -1026,7 +1035,7 @@ fn local_calendar_time_picker_confirms_independently_and_keeps_manual_entry() {
     h.frame(vec![]);
     let entries = crate::local_calendar::load().unwrap();
     assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0].event.end.unwrap() - entries[0].event.start, 219 * 60);
+    assert_eq!(entries[0].event.end.unwrap() - entries[0].event.start, 252 * 60);
 }
 
 #[test]
@@ -6029,7 +6038,7 @@ fn calendar_layout_gallery() {
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     let dest=std::path::PathBuf::from(std::env::var_os("DAOZAI_CALENDAR_PREVIEW_DIR").expect("需指定预览目录"));
     std::fs::create_dir_all(&dest).unwrap();
-    let modes=["agenda","agenda-list","dingtalk","wecom","empty","loading","failed","disconnected","local-editor","local-editor-date","local-editor-minute","local","local-all-day","mixed"];
+    let modes=["agenda","agenda-list","dingtalk","wecom","empty","loading","failed","disconnected","local-editor","local-editor-date","local-editor-time","local","local-all-day","mixed"];
     let modes=if std::env::var_os("DAOZAI_LUNAR_CALENDAR_PREVIEW").is_some() {
         &["lunar","lunar-term","lunar-term-cream"][..]
     } else {
@@ -6067,6 +6076,7 @@ fn calendar_layout_gallery() {
             h.app.calendar.view.events.push(crate::mail::Meeting{all_day:false,title:"早上的会议".into(),start,end:Some(start+3600),at:String::new(),uid:"past".into()});
         }
         if mode.starts_with("local-editor"){h.app.open_calendar_editor(None);}
+        if mode=="local-editor-time" {h.app.calendar.draft.as_mut().unwrap().start_time="09:13".into();}
         if mode=="agenda-list" {
             h.app.calendar.agenda=true;
             h.app.settings.skin=crate::model::Skin::Cream;
@@ -6078,14 +6088,13 @@ fn calendar_layout_gallery() {
             let t=f as f64/60.0;
             let click = match (mode, f) {
                 ("local-editor-date", 67..=69) => Some(H::local(192.0, 82.0)),
-                ("local-editor-minute", 67..=69) => Some(H::local(269.0, 82.0)),
-                ("local-editor-minute", 75..=77) => Some(H::local(103.0, 130.0)), // 9 时
+                ("local-editor-time", 67..=69) => Some(H::local(269.0, 82.0)),
                 _ => None,
             };
             let events = click.map_or_else(Vec::new, |pos| match f {
-                67 | 75 => vec![egui::Event::PointerMoved(pos)],
+                67 => vec![egui::Event::PointerMoved(pos)],
                 _ => vec![egui::Event::PointerButton {
-                    pos, button: egui::PointerButton::Primary, pressed: matches!(f, 68 | 76),
+                    pos, button: egui::PointerButton::Primary, pressed: f == 68,
                     modifiers: Default::default(),
                 }],
             });
@@ -6106,12 +6115,12 @@ fn calendar_layout_gallery() {
                 if mode=="local-all-day" {
                     assert!(out.shapes.iter().any(|shape|matches!(&shape.shape,egui::Shape::Text(t) if t.galley.text()=="散步与读书")),"只有全天日程时也必须显示普通日程行");
                 }
-                let picker_label = match mode {
-                    "local-editor-date" => Some("开始日期"),
-                    "local-editor-minute" => Some("59"),
-                    _ => None,
+                let picker_labels: &[&str] = match mode {
+                    "local-editor-date" => &["开始日期"],
+                    "local-editor-time" => &["开始时间", "小时", "分钟", "09", "13"],
+                    _ => &[],
                 };
-                if let Some(label) = picker_label {
+                for &label in picker_labels {
                     assert!(out.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text)
                         if text.galley.text() == label && shape.clip_rect.contains_rect(text.visual_bounding_rect()))),
                         "预览应完整显示 {label}");
