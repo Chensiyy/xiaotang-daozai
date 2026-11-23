@@ -28,6 +28,8 @@ pub(super) enum SourceGrant {
     Loopback(String),
     #[cfg(windows)]
     Https { url: String },
+    #[cfg(windows)]
+    HttpsSources { hosts: Vec<String>, sources: Vec<super::source_https::NetworkSource> },
 }
 
 impl SourceGrant {
@@ -36,7 +38,7 @@ impl SourceGrant {
             Self::File(_) => SourceKind::File,
             Self::Loopback(_) => SourceKind::Loopback,
             #[cfg(windows)]
-            Self::Https { .. } => SourceKind::Https,
+            Self::Https { .. } | Self::HttpsSources { .. } => SourceKind::Https,
         }
     }
 
@@ -46,7 +48,7 @@ impl SourceGrant {
             Self::File(path) => read_file(path, cancelled),
             Self::Loopback(address) => read_http(address, cancelled),
             #[cfg(windows)]
-            Self::Https { .. } => Err(io::Error::other("HTTPS 数据源缺少网络配置")),
+            Self::Https { .. } | Self::HttpsSources { .. } => Err(io::Error::other("HTTPS 数据源缺少网络配置")),
         }
     }
 }

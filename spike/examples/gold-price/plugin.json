@@ -1,0 +1,26 @@
+{
+  "id": "example.gold-price",
+  "name": "国际现货金价",
+  "author": "岛仔",
+  "version": "1.0.0",
+  "api": 1,
+  "runtime": "js",
+  "entry": "main.js",
+  "cover": "cover.png",
+  "owner": "status",
+  "capabilities": ["status.page", "settings", "timer", "storage"],
+  "dataVersion": 1,
+  "permissions": {"source.read": "https"},
+  "refreshSeconds": 300,
+  "network": {
+    "hosts": ["xaus.com"],
+    "sources": [
+      {"key": "gold", "url": "https://xaus.com/api/v1/spot?currency=CNY&unit=gram&compact=1"}
+    ],
+    "minRefreshSeconds": 60
+  },
+  "attribution": {"label": "XAUS", "url": "https://xaus.com/api/"},
+  "settings": [
+    {"key": "threshold", "label": "提醒价位（元/克，0 为关闭）", "type": "text", "default": "0"}
+  ]
+}

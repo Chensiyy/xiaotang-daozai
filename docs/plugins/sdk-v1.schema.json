@@ -100,6 +100,20 @@
           }
         },
         "url": {"type": "string", "maxLength": 2048, "pattern": "^[Hh][Tt][Tt][Pp][Ss]://"},
+        "sources": {
+          "description": "实验。每个来源的 key 须唯一。URL 占位符只能出现在路径和查询串。",
+          "type": "array", "minItems": 1, "maxItems": 3,
+          "items": {
+            "type": "object",
+            "properties": {
+              "key": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,39}$"},
+              "url": {"type": "string", "maxLength": 2048, "pattern": "^[Hh][Tt][Tt][Pp][Ss]://"}
+            },
+            "required": ["key", "url"],
+            "additionalProperties": false
+          }
+        },
+        "minRefreshSeconds": {"type": "integer", "minimum": 60, "maximum": 86400},
         "credential": {
           "type": "object",
           "properties": {
@@ -112,6 +126,17 @@
         }
       },
       "required": ["hosts"],
+      "not": {"required": ["url", "sources"]},
+      "additionalProperties": false
+    },
+    "attribution": {
+      "description": "实验。HTTPS 数据来源标注，链接域名须在 network.hosts 内。",
+      "type": "object",
+      "properties": {
+        "label": {"type": "string", "minLength": 1, "maxLength": 80},
+        "url": {"type": "string", "maxLength": 2048, "pattern": "^[Hh][Tt][Tt][Pp][Ss]://"}
+      },
+      "required": ["label"],
       "additionalProperties": false
     },
     "statusLayout": {
@@ -465,7 +490,19 @@
         "required": ["network"],
         "properties": {"runtime": {"const": "js"}, "permissions": {"maxProperties": 1}}
       },
-      "else": {"not": {"required": ["network"]}}
+      "else": {
+        "not": {"required": ["attribution"]},
+        "if": {"required": ["network"]},
+        "then": {
+          "properties": {
+            "capabilities": {"contains": {"const": "action"}},
+            "network": {"not": {"anyOf": [
+              {"required": ["url"]}, {"required": ["sources"]},
+              {"required": ["credential"]}, {"required": ["minRefreshSeconds"]}
+            ]}}
+          }
+        }
+      }
     },
     {
       "if": {"required": ["statusLayout"]},

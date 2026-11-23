@@ -2135,8 +2135,14 @@ impl App {
         #[cfg(feature="sdk-js")]
         {
             if let Some(index)=self.page.checked_sub(PAGE_NAMES.len()) {
-                let layout=self.status_pages.get(index).and_then(|(id,_)|self.plugins.status_layout(id));
-                return crate::plugin_status_ui::status_page_height(layout);
+                let page=self.status_pages.get(index);
+                let layout=page.and_then(|(id,_)|self.plugins.status_layout(id));
+                let height=crate::plugin_status_ui::status_page_height(layout);
+                #[cfg(windows)]
+                if page.is_some_and(|(id,_)|self.plugins.source_attribution(id).is_some()) {
+                    return height+crate::plugin_status_ui::ATTRIBUTION_HEIGHT;
+                }
+                return height;
             }
             if self.page==TODO_PAGE && self.plugins.has_card(){return PH+46.0;}
         }
@@ -3899,7 +3905,12 @@ impl App {
         #[cfg(feature="sdk-js")]
         if let Some((id,_))=page.checked_sub(PAGE_NAMES.len()).and_then(|index|self.status_pages.get(index)) {
             if let Some((_,status,health))=self.plugins.status_page(id) {
-                crate::plugin_status_ui::draw_status_page(c,status,health,self.plugins.status_layout(id));
+                let layout=self.plugins.status_layout(id);
+                crate::plugin_status_ui::draw_status_page(c,status,health,layout);
+                #[cfg(windows)]
+                if let Some((label,url,time))=self.plugins.source_attribution(id) {
+                    crate::plugin_status_ui::draw_attribution(c,id,layout,label,url,time);
+                }
             }
             return;
         }

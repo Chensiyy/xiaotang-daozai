@@ -383,6 +383,7 @@ impl LocalPlugins {
                 storage: Value::Null,
                 material_granted: false,
                 source_grant: None,
+                source_refresh_seconds: None,
                 market_revoked: false,
                 status_page_disabled: false,
             }
@@ -441,24 +442,33 @@ impl LocalPlugins {
                 return Err("此插件版本已撤回".into());
             }
             record.market_revoked = false;
+            let mut previous_secret = None;
             // 校验期间，旧插件可能完成一次后台刷新，保留该次已保存的数据。
             if let Some(current) = self.records.get(&job.id) {
                 record.storage = current.storage.clone();
                 record.enabled = current.enabled;
                 record.source_grant = current.source_grant().cloned();
+                record.source_refresh_seconds = current.source_refresh_seconds;
+                let scope_changed = match (current.network(), record.network()) {
+                    (Some(before), Some(after)) => !before.same_authorization(after),
+                    (None, None) => false,
+                    _ => true,
+                };
                 let old_credential = current.network().and_then(|network| network.credential.as_ref());
-                let new_credential = record.network().and_then(|network| network.credential.as_ref());
-                if record.source_grant().is_none() || old_credential != new_credential {
-                    let had_secret = old_credential.is_some();
-                    self.forget_view(&job.id);
-                    if had_secret {
+                if record.source_grant().is_none() || scope_changed {
+                    if old_credential.is_some() {
+                        previous_secret = source_https::load_secret(&job.id).map_err(|error| error.to_string())?;
                         source_https::delete_secret(&job.id).map_err(|error| error.to_string())?;
                     }
                     record.source_grant = None;
                 }
             }
-            self.put(&job.id, record)
-                .map_err(|error| error.to_string())?;
+            if let Err(error) = self.put(&job.id, record) {
+                if let Some(secret) = previous_secret {
+                    source_https::save_secret(&job.id, &secret).map_err(|error| error.to_string())?;
+                }
+                return Err(error.to_string());
+            }
             self.invalid.remove(&job.id);
             self.forget_view(&job.id);
             Ok(())

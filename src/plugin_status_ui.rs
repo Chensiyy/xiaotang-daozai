@@ -12,6 +12,8 @@ use eframe::egui::Color32;
 use std::f32::consts::{FRAC_PI_2, TAU};
 
 pub(crate) const STATUS_PAGE_H: f32 = 236.0;
+#[cfg(windows)]
+pub(crate) const ATTRIBUTION_HEIGHT: f32 = 22.0;
 
 const LEFT: f32 = 42.0;
 const WIDTH: f32 = 335.0;
@@ -46,6 +48,33 @@ pub(crate) fn draw_status_page(
         draw_layout(c, status, layout);
     } else {
         draw_default(c, status);
+    }
+}
+
+#[cfg(windows)]
+pub(crate) fn draw_attribution(
+    c: &Card,
+    id: &str,
+    layout: Option<&StatusLayout>,
+    label: &str,
+    url: Option<&str>,
+    time: Option<&chrono::DateTime<chrono::Local>>,
+) {
+    let top = status_page_height(layout);
+    let mut width = WIDTH;
+    if let Some(time) = time {
+        let time = format!("最近取数 {}", time.format("%m-%d %H:%M"));
+        width -= c.text_w(&time, size::TINY, W::Regular) + 8.0;
+        c.centered_text(LEFT + WIDTH, top + 3.0, &time, size::TINY, W::Regular, theme::DIM, H::Right);
+    }
+    let label = c.fit(&format!("数据来源 {label}"), size::TINY, W::Regular, width);
+    let color = if url.is_some() { theme::BLUE } else { theme::DIM };
+    c.centered_text(LEFT, top + 3.0, &label, size::TINY, W::Regular, color, H::Left);
+    if let Some(url) = url {
+        let width = c.text_w(&label, size::TINY, W::Regular);
+        if c.hit(LEFT, top - 6.0, width, 18.0, ("plugin-source", id)).clicked() {
+            c.ui.ctx().open_url(eframe::egui::OpenUrl::new_tab(url));
+        }
     }
 }
 

@@ -747,7 +747,7 @@ impl LocalPlugins {
         let (id, body) = cards.nth(self.card_index).unwrap();
         c.fill(42., 130., 335., 40., 9., theme::CARD);
         let manifest = &self.records[id].package.as_ref().unwrap().manifest;
-        let has_settings = !manifest.settings.is_empty();
+        let has_settings = manifest.has_settings();
         c.text(
             52.,
             145.,
@@ -1208,6 +1208,20 @@ impl LocalPlugins {
                         };
                         #[cfg(not(windows))]
                         let navigate = path_button(ui, &path, paused, &tip);
+                        #[cfg(windows)]
+                        if let Some((label, url, time)) = self.source_attribution(id) {
+                            ui.horizontal_wrapped(|ui| {
+                                let label = format!("数据来源 {label}");
+                                if let Some(url) = url {
+                                    ui.hyperlink_to(label, url);
+                                } else {
+                                    settings_hint(ui, &label);
+                                }
+                                if let Some(time) = time {
+                                    settings_hint(ui, &format!("最近取数 {}", time.format("%m-%d %H:%M")));
+                                }
+                            });
+                        }
                         if navigate {
                             if material {
                                 *jump = Some(crate::extras::SETTINGS_TAB_APPEARANCE);
@@ -1336,6 +1350,7 @@ impl LocalPlugins {
                     let target = match grant {
                         SourceGrant::File(path) => path.to_string_lossy(),
                         SourceGrant::Loopback(url) | SourceGrant::Https { url } => url.as_str().into(),
+                        SourceGrant::HttpsSources { hosts, .. } => hosts.join("、").into(),
                     };
                     ui.add(egui::Label::new(target.as_ref()).truncate()).on_hover_text(target.as_ref());
                 }
@@ -1354,17 +1369,20 @@ impl LocalPlugins {
                     }
                     SourceKind::Https => {
                         let network = network.as_ref().unwrap();
-                        ui.add(egui::TextEdit::singleline(&mut dialog.url)
-                            .char_limit(2048).desired_width(385.0).hint_text("https://"));
+                        let multiple = network.sources.is_some();
+                        if !multiple {
+                            ui.add(egui::TextEdit::singleline(&mut dialog.url)
+                                .char_limit(2048).desired_width(385.0).hint_text("https://"));
+                        }
                         settings_hint(ui, &format!("允许的域名 · {}", network.hosts.join("、")));
                         if let Some(credential) = &network.credential {
                             ui.label(&credential.label);
                             ui.add(egui::TextEdit::singleline(&mut dialog.secret)
                                 .password(true).char_limit(2048).desired_width(385.0));
                         }
-                        approve = ui.add_enabled(!dialog.url.trim().is_empty()
+                        approve = ui.add_enabled((multiple || !dialog.url.trim().is_empty())
                             && (network.credential.is_none() || !dialog.secret.is_empty()),
-                            egui::Button::new("授权读取此地址")).clicked();
+                            egui::Button::new(if multiple { "授权读取这些来源" } else { "授权读取此地址" })).clicked();
                     }
                 }
                 if !dialog.error.is_empty() {
@@ -1894,7 +1912,7 @@ impl LocalPlugins {
                 r.enabled
                     && (owner != "status" || !r.status_page_disabled)
                     && r.package.as_ref().is_some_and(|p| {
-                        p.manifest.owner == owner && !p.manifest.settings.is_empty()
+                        p.manifest.owner == owner && p.manifest.has_settings()
                     })
             })
             .map(|(id, _)| id.clone())
@@ -1934,6 +1952,18 @@ impl LocalPlugins {
                                         .or_insert_with(|| f.default.clone()),
                                 )
                             });
+                        }
+                        #[cfg(windows)]
+                        if let Some(min) = r.network().and_then(|network| network.min_refresh_seconds) {
+                            let draft = fields.entry(source_https::REFRESH_FIELD.into())
+                                .or_insert_with(|| r.refresh_interval().as_secs().to_string());
+                            let mut seconds = draft.parse::<u32>().unwrap_or(min);
+                            settings_control_row(ui, "刷新间隔", 68., |ui| {
+                                ui.add(egui::DragValue::new(&mut seconds)
+                                    .range(min..=source_https::MAX_REFRESH_SECONDS)
+                                    .suffix(" 秒"))
+                            });
+                            *draft = seconds.to_string();
                         }
                         if ui.button("保存设置").clicked() {
                             let values = fields.clone();

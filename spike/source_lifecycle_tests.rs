@@ -224,6 +224,71 @@ fn https_manifest_combination_and_public_sample() -> Result<()> {
 }
 
 #[test]
+fn gold_example_tracks_at_most_48_fresh_prices_and_shows_crossings() -> Result<()> {
+    let package = Package::from_entry(
+        Manifest::decode(include_str!("examples/gold-price/plugin.json"))?,
+        include_str!("examples/gold-price/main.js").into(),
+        CoverPng::decode(include_bytes!("examples/gold-price/cover.png").to_vec())?,
+    )?;
+    let settings = Values::from([("threshold".into(), "750".into())]);
+    let now = chrono::Utc::now();
+    let at = (now - chrono::TimeDelta::seconds(30)).to_rfc3339();
+    let mut quote = json!({
+        "xau": {"price": 751.5, "currency": "CNY", "unit": "gram"},
+        "updated_at": at, "data_state": {"status": "fresh", "as_of": at}, "fx_stale": false
+    });
+    let source = |quote: &Value| {
+        SourceInput::Multiple(BTreeMap::from([
+            ("gold".into(), SourceInput::Ready { text: quote.to_string() }),
+        ]))
+    };
+    let storage = json!({"points": (31..=78).rev().map(|age| {
+        json!({"price": 749.0, "at": now.timestamp_millis() - age * 1000})
+    }).collect::<Vec<_>>()});
+    let output = package.render_input(&settings, &storage, TODAY, source(&quote))?;
+    let status = output.status.unwrap();
+    assert_eq!(status.metrics[0].value, "751.50 元");
+    assert_eq!(status.alert.as_deref(), Some("金价达到 750 元/克"));
+    assert_eq!(output.storage["points"].as_array().unwrap().len(), 48);
+    let same_quote = package.render_input(&settings, &output.storage, TODAY, source(&quote))?;
+    assert_eq!(same_quote.storage, output.storage);
+    assert!(same_quote.status.unwrap().alert.is_none());
+    quote["data_state"]["status"] = json!("stale");
+    let stale = package.render_input(&settings, &output.storage, TODAY, source(&quote))?;
+    assert_eq!(stale.storage, output.storage);
+    assert!(stale.status.is_none());
+    Ok(())
+}
+
+#[test]
+fn adjustable_https_refresh_is_validated_persisted_and_kept_out_of_script_settings() -> Result<()> {
+    let root = Fixture::new()?;
+    let path = root.0.join("plugin.json");
+    let manifest = include_str!("examples/gold-price/plugin.json");
+    fs::write(&path, manifest)?;
+    fs::write(root.0.join("main.js"), include_str!("examples/gold-price/main.js"))?;
+    fs::write(root.0.join(COVER_FILE), include_bytes!("examples/gold-price/cover.png"))?;
+    let mut host = root.host();
+    host.install(&path)?;
+    let id = "example.gold-price";
+    assert_eq!(host.records[id].refresh_interval(), Duration::from_secs(300));
+    for (seconds, valid) in [(59, false), (60, true), (86400, true), (86401, false)] {
+        let mut values = host.records[id].values.clone();
+        values.insert(source_https::REFRESH_FIELD.into(), seconds.to_string());
+        assert_eq!(host.save(id, values).is_ok(), valid);
+    }
+    let host = root.host();
+    assert_eq!(host.records[id].refresh_interval(), Duration::from_secs(86400));
+    assert!(!host.records[id].values.contains_key(source_https::REFRESH_FIELD));
+    for invalid in [59, 86401] {
+        let mut manifest: Value = serde_json::from_str(manifest)?;
+        manifest["network"]["minRefreshSeconds"] = json!(invalid);
+        assert!(Manifest::decode(&manifest.to_string()).is_err());
+    }
+    Ok(())
+}
+
+#[test]
 fn https_credential_is_external_and_revoke_stops_reads() -> Result<()> {
     let fixture = Fixture::new()?;
     let id = format!("example.https-{}", fixture.0.file_name().unwrap().to_string_lossy());

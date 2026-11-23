@@ -86,34 +86,41 @@ JS 卡片可用空权限，或申请一个本地只读数据源。材质插件�
 
 ### 只读数据源
 
-一款待办、日程、额度来源或状态详情插件可申请一种数据源。在「设置 → 插件 → 已安装」为插件选择一个普通本地文件，或确认完整的本机 HTTP 或 HTTPS 地址。授权可随时撤销，卸载会清除授权。
+待办、日程、额度来源和状态详情插件可以申请一类数据源。在「设置 → 插件 → 已安装」授权所选文件、本机 HTTP 地址或清单声明的 HTTPS 来源。授权可随时撤销，卸载会清除授权。
 
 - `file` 读取系统选择器选中的一个 UTF-8 文件，拒绝网络盘、目录和重解析路径。数据文件可以在原路径更新。
 - `loopback` 对用户确认的完整地址做 GET，例如 `http://127.0.0.1:8080/status`。支持 `127.0.0.1`、`[::1]` 和 `localhost`，直接连接回环地址，设置 2 秒请求预算，拒绝重定向、URL 账号密码和非回环地址。
 - `file` 和 `loopback` 的读取上限均为 128 KiB。
-- `https` 对用户确认的地址做 GET。清单须在 `network.hosts` 列出 1 至 4 个完整域名，逐个精确匹配，支持选填 `url` 预填地址。宿主使用 443 端口和公网解析结果，禁用代理和重定向，10 秒超时，正文最多 256 KiB，必须为 UTF-8。
+- `https` · 实验。清单在 `network.hosts` 列出 1 至 4 个完整域名，由用户一次授权 `network.sources` 声明的 1 至 3 个 GET 来源。每个来源使用唯一 `key`，路径和查询串可以用 `{settings.设置键}` 引用清单中声明的设置值，宿主按 UTF-8 百分号编码。旧清单仍可使用 `network.url` 预填单一地址。
+- HTTPS 每次请求都按白名单核对地址，只连接解析出的公网地址，使用 443 端口。每个来源禁用代理和重定向，超时 10 秒，响应最多 256 KiB UTF-8。
 - 脚本收到状态和响应文本。路径、地址、密钥及文件和网络操作留在宿主。
 
-需要密钥的清单可声明 `credential`。宿主将用户输入的密钥保存在 Windows 凭据管理器，按所配置的请求头和前缀发送。撤销授权或卸载会删除密钥，更新后地址移出白名单或凭据配置改变时需要重新授权。
+需要密钥的清单可声明 `credential`。宿主将密钥保存在 Windows 凭据管理器，按声明的请求头和前缀向每个来源发送。撤销授权或卸载会删除密钥。更新时改动域名白名单、来源或凭据配置，需要重新确认授权。以下是使用 GoldAPI.io 的清单片段。
 
 ```json
 {
   "permissions": {"source.read": "https"},
   "network": {
-    "hosts": ["api.example.com"],
-    "url": "https://api.example.com/v1/status",
+    "hosts": ["www.goldapi.io"],
+    "sources": [{"key": "gold", "url": "https://www.goldapi.io/api/XAU/CNY"}],
     "credential": {
-      "label": "服务访问令牌",
-      "header": "Authorization",
-      "prefix": "Bearer "
-    }
-  }
+      "label": "GoldAPI.io API Key",
+      "header": "x-access-token",
+      "prefix": ""
+    },
+    "minRefreshSeconds": 300
+  },
+  "attribution": {"label": "GoldAPI.io", "url": "https://www.goldapi.io/price/XAU/CNY"}
 }
 ```
 
-[HTTPS 仓库动态样例](../../spike/examples/https-repository)可直接试装。
+[国际现货金价样例](../../spike/examples/gold-price)可直接试装。XAUS 的 `/api/v1/spot?currency=CNY&unit=gram` 可返回人民币每克的国际现货参考报价。XAUS 要求至少缓存 60 秒，高用量商业集成应按其公平使用说明联系服务方。[XAUS API 公平使用说明](https://xaus.com/api/#fair-use)
 
-`refresh` 的 `source` 输入有三种状态。未授权为 `{status:"unconfigured"}`，无法读取为 `{status:"offline"}`，读取成功为 `{status:"ready",text:"…"}`。未申请此权限的旧插件输入无变化。校验和打包时用 `unconfigured` 检查入口，插件需处理空数据。加上 `timer` 可按 `refreshSeconds` 刷新，最短 60 秒。
+样例将近 48 个新报价存到 `storage.points`，并在价格穿越设置的阈值时返回状态告警。使用折线组件时可将这些报价映射到 `status.series`。声明 `notice` 能力后，可在穿越阈值的同一次输出里用报价时刻作为提醒 ID。
+
+`network.sources` 按清单中的 key 向脚本提供 `sources`，例如 `sources.gold`。文件、本机 HTTP 和旧版单一 HTTPS 仍使用 `source`。每个来源未授权为 `{status:"unconfigured"}`，无法读取为 `{status:"offline"}`，读取成功为 `{status:"ready",text:"…"}`。校验和打包时传入 `unconfigured`。单个来源失败后独立退避，间隔依次为正常值的 1、2、4、8 倍，退避上限为 30 分钟，并遵守用户设置的正常间隔。成功一次后恢复正常周期。
+
+`timer` 按 `refreshSeconds` 调度。声明 `minRefreshSeconds` 后，所属插件设置页提供「刷新间隔」，可在该值至 86400 秒之间选择，未设置时使用 `refreshSeconds` 下限校正后的值。清单可选填 `attribution`，宿主在状态页和已安装详情显示来源与最近成功取数时间。
 
 ```js
 function refresh({ source }) {
@@ -204,7 +211,7 @@ JS 清单使用 `"owner":"status"`，能力列出 `status.page`。可选的 `tim
 
 作者在清单填写间隔，宿主负责安排工作。当前定时卡支持 60 至 86400 秒，旧样例缺省为 60 秒。首次启用或修改设置会重新计算。界面读取最近结果，每个插件同时最多一次调用，全局最多两个后台计算。停用时画面立即撤下，稍后返回的结果作废。
 
-QuickJS 每次计算限时 30 毫秒，脚本可分配的内存上限为 4 MiB。本地卡片单次返回最多 16 KiB。正式版拟限制普通周期至少 60 秒，实时前台内容按需开放 1 秒。每插件拟允许一个网络请求，最长 10 秒，响应最多 256 KiB。拟保留 3 个固定插件卡位置和 1 个临时位置，满时让用户选择替换。私有数据拟限 5 MiB，写满后提示清理或导出。
+QuickJS 每次计算限时 30 毫秒，脚本可分配的内存上限为 4 MiB。本地卡片单次返回最多 16 KiB。普通周期至少 60 秒，实时前台内容按需开放 1 秒。HTTPS 每插件最多 3 个来源，每次请求最长 10 秒，响应最多 256 KiB。拟保留 3 个固定插件卡位置和 1 个临时位置，满时让用户选择替换。私有数据拟限 5 MiB，写满后提示清理或导出。
 
 连续三次脚本执行失败后暂停并提示重试，是待实现的正式版规则。监控程序没启动时应提示打开依赖，设备离线时显示上次更新时间并降低查询频率。两种情况均属于数据来源状态，由宿主另行处理。
 
@@ -271,7 +278,7 @@ function refresh({settings}) {
 
 用户打开「设置 → 插件 → 集市」时，岛仔优先显示本机保存的目录和统计，缺少缓存时自动加载一次。切换标签和关闭详情直接使用当前数据。点击「刷新目录」可重新检查 Gitee 目录和统计。断网或刷新失败时继续显示上次有效数据。安装前核对文件大小和 SHA-256，升级验证通过后才换包，保留已有数据和启用选择。验收版读取 `preview`，发布版读取 `stable`。[Gitee 下载镜像](https://gitee.com/xiaotangtoken/xiaotang-daozai-plugins)
 
-发布者签名和版本撤回规则仍待实现。
+发布者签名仍待实现。
 
 ### 详情、收藏与统计
 
