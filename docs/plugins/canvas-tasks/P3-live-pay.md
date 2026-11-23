@@ -1,6 +1,6 @@
 # P3：实时工资
 
-插件仓分支 `feat/official-live-pay`，插件 ID `daozai.live-pay`。依赖 A、B、C，以及 P1 的投稿校验。设计稿：「理想版 · 实时工资」。共同规则见 [README](README.md)。
+插件仓分支 `feat/official-live-pay`，插件 ID `daozai.live-pay`。逻辑层现在就能开工，画面层依赖 A、B、C；投稿依赖 P0。设计稿：「理想版 · 实时工资」。共同规则见 [README](README.md)。
 
 参考 `spike/examples/live-pay` 的计算部分。
 

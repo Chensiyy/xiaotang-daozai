@@ -18,20 +18,25 @@
 - 字体默认用岛仔自带的。用户安装字体包后，画布可以按名字引用这个字体，缺字时回退到岛仔字体。
 - 动画不能让岛一直重绘。静止时不出帧；有动画时，兼容渲染下要按交互帧交付，参考 `src/main.rs` 里 `page_animating` 的处理。
 
-## 任务与顺序
+## 阅读顺序
 
-| 任务 | 仓库 | 分支 | 依赖 |
+1. 本文：原则、分支和交付要求。
+2. [WORK-PLAN.md](WORK-PLAN.md)：按宿主后端、宿主前端、投稿校验、插件逻辑、插件画面、数据分层的分工和四周排期。**五个插件从第一天起同时开工。**
+3. 自己负责的任务说明，以及 `ui/` 里对应的设计稿。
+
+## 任务
+
+| 任务 | 仓库 | 分支 | 什么时候开工 |
 | --- | --- | --- | --- |
-| [A：画布核心](A-canvas-core.md) | 岛仔 | `feat/plugin-canvas` | 无 |
-| [B：实时绑定、动画与交互](B-canvas-live.md) | 岛仔 | `feat/plugin-canvas-live` | A |
-| [C：常驻小画布、字体包与设置补项](C-canvas-extras.md) | 岛仔 | `feat/plugin-canvas-extras` | A |
-| [P1：便签本](P1-notes.md) | 插件仓 | `feat/official-notes` | A、B、C |
-| [P2：现货金价](P2-gold.md) | 插件仓 | `feat/official-gold` | A、B、C |
-| [P3：实时工资](P3-live-pay.md) | 插件仓 | `feat/official-live-pay` | A、B、C |
-| [P4：世界时钟](P4-world-clock.md) | 插件仓 | `feat/official-world-clock` | A、B、C |
-| [P5：日子](P5-days.md) | 插件仓 | `feat/official-days` | A、B、C |
-
-先做 A。A 合进 `test/acceptance` 后，B 和 C 可以同时做。五个插件在 B、C 合入后同时开工；在此之前可以先写好脚本里的数据和设置部分。
+| [A：画布核心](A-canvas-core.md) | 岛仔 | `feat/plugin-canvas` | 立即 |
+| [B：实时绑定、动画与交互](B-canvas-live.md) | 岛仔 | `feat/plugin-canvas-live` | A 之后 |
+| [C：常驻小画布、字体包与设置补项](C-canvas-extras.md) | 岛仔 | `feat/plugin-canvas-extras` | A 之后，与 B 并行 |
+| [P0：投稿校验支持新插件](P0-submission.md) | 插件仓 | `feat/submission-status-canvas` | 立即 |
+| [P1：便签本](P1-notes.md) | 插件仓 | `feat/official-notes` | 逻辑层立即；画面层 A 之后 |
+| [P2：现货金价](P2-gold.md) | 插件仓 | `feat/official-gold` | 同上 |
+| [P3：实时工资](P3-live-pay.md) | 插件仓 | `feat/official-live-pay` | 同上 |
+| [P4：世界时钟](P4-world-clock.md) | 插件仓 | `feat/official-world-clock` | 同上 |
+| [P5：日子](P5-days.md) | 插件仓 | `feat/official-days` | 同上 |
 
 ## 分支与工作树
 

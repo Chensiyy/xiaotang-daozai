@@ -1,16 +1,6 @@
 # P1：便签本
 
-插件仓分支 `feat/official-notes`，插件 ID `daozai.notes`。依赖 A、B、C。设计稿：「理想版 · 便签本」。共同规则见 [README](README.md)。
-
-## 先做：插件仓投稿校验支持新插件
-
-现在 `scripts/submission.py` 只接受待办和日程归属的脚本插件。五个官方插件都要过这一关，由本任务先补上，其他插件任务等它合入。
-
-- 接受 `owner: "status"`。
-- 接受能力 `status.page`、`status.canvas`、`island.pinned`、`action`、`event`、`notice`、`timer`、`storage`、`settings`。
-- 接受清单的 `statusLayout`、`network`、`data`、`timezones` 字段。
-- 包里允许出现：`main.js`、`cover.png`、清单 `data` 声明的 JSON，以及画布引用的 PNG 和 SVG 图片。
-- 在 `scripts/test_plugin_approval.py` 或新的测试文件里，为以上每一项加通过和拒收两类用例。
+插件仓分支 `feat/official-notes`，插件 ID `daozai.notes`。逻辑层现在就能开工，画面层依赖 A、B、C；投稿依赖 P0。设计稿：「理想版 · 便签本」。共同规则见 [README](README.md)。
 
 ## 插件
 
