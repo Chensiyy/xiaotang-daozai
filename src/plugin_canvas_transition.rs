@@ -206,6 +206,17 @@ fn blend(next: &mut Node, old: &Node, t: f32, theme: CanvasTheme) {
         | (Kind::Line(rect), Kind::Line(from)) => numbers(rect, from, number),
         (Kind::Circle(rect), Kind::Circle(from)) => numbers(rect, from, number),
         (
+            Kind::Pet { at, size, .. },
+            Kind::Pet {
+                at: from,
+                size: old_size,
+                ..
+            },
+        ) => {
+            numbers(at, from, number);
+            number(size, old_size);
+        }
+        (
             Kind::Arc { c, r, start, sweep },
             Kind::Arc {
                 c: center,

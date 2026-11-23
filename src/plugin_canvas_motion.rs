@@ -10,10 +10,12 @@ use super::{
     draw_static,
     geometry::Transform,
     hit::{self, Input, InputState, NodeKey},
+    pet::{DrawPets, Runner},
     CanvasTheme, CACHE_LIMIT,
 };
 use crate::{
     paint::Card,
+    pet_expressions::ExpressionSheets,
     plugin_canvas::{
         live::{Burst, Hit, LoopKind},
         Align, Canvas, Color, Kind, Node, Num, Paint, Style,
@@ -25,7 +27,7 @@ use std::{
     borrow::Cow,
     collections::{BTreeMap, VecDeque},
     f32::consts::TAU,
-    sync::Arc,
+    sync::{Arc, Mutex},
     time::Duration,
 };
 
@@ -62,6 +64,7 @@ struct LiveState {
     transition_frame: Option<Arc<Canvas>>,
     rolls: BTreeMap<u64, Roll>,
     bursts: BTreeMap<u64, f64>,
+    pet: Arc<Mutex<Runner>>,
 }
 
 #[derive(Clone)]
@@ -78,6 +81,19 @@ pub(crate) fn draw_live(
     area: Rect,
     theme: CanvasTheme,
     options: LiveOptions,
+    image: impl FnMut(&str) -> Option<(egui::TextureId, Vec2)>,
+) -> LiveResult {
+    draw_live_with_pet(c, id, canvas, area, theme, options, None, image)
+}
+
+pub(crate) fn draw_live_with_pet(
+    c: &Card<'_>,
+    id: &str,
+    canvas: &Arc<Canvas>,
+    area: Rect,
+    theme: CanvasTheme,
+    options: LiveOptions,
+    sheets: Option<Arc<ExpressionSheets>>,
     image: impl FnMut(&str) -> Option<(egui::TextureId, Vec2)>,
 ) -> LiveResult {
     let input = Input {
@@ -100,6 +116,15 @@ pub(crate) fn draw_live(
     let visible = c.live && area.intersect(c.painter.clip_rect()).is_positive();
     let mut result = LiveResult::default();
     let time = c.ui.input(|state| state.time);
+    let pet = Arc::clone(&state.pet);
+    let mut runner = pet.lock().unwrap_or_else(|poison| poison.into_inner());
+    let mut pets = DrawPets {
+        runner: &mut runner,
+        time,
+        live: visible,
+        sheets,
+        next: None,
+    };
     if visible {
         let (evaluated, next) = canvas.evaluate(options.now, c.s * ctx.pixels_per_point());
         result.repaint_after = next;
@@ -151,7 +176,7 @@ pub(crate) fn draw_live(
             None
         };
         state.visible_frame = Some(Arc::clone(&prepared));
-        result.timed_out = draw_static(c, id, &prepared, area, theme, image);
+        result.timed_out = draw_static(c, id, &prepared, area, theme, &mut pets, image);
         if !result.timed_out {
             if let Some(tip) = tip {
                 tip.draw(&input);
@@ -165,6 +190,10 @@ pub(crate) fn draw_live(
             result.schedule(Duration::from_nanos(33_333_334));
         }
         result.animating |= looping;
+        if let Some(delay) = pets.next {
+            result.schedule(delay);
+            result.animating |= delay <= Duration::from_nanos(33_333_334);
+        }
     } else {
         result.timed_out = draw_static(
             c,
@@ -172,6 +201,7 @@ pub(crate) fn draw_live(
             state.visible_frame.as_ref().unwrap_or(canvas),
             area,
             theme,
+            &mut pets,
             image,
         );
     }
@@ -330,7 +360,12 @@ impl LiveState {
 }
 
 fn flow(node: &mut Node, phase: f32) {
-    if let Kind::Text { at, max_width: Some(width), .. } = &mut node.kind {
+    if let Kind::Text {
+        at,
+        max_width: Some(width),
+        ..
+    } = &mut node.kind
+    {
         at[0] = num(at[0].initial() + width.initial() * (1.0 - 2.0 * phase));
         return;
     }

@@ -6,8 +6,10 @@ mod geometry;
 mod hit;
 #[path = "plugin_canvas_motion.rs"]
 mod motion;
+#[path = "plugin_canvas_pet.rs"]
+mod pet;
 
-pub(crate) use motion::{draw_live, LiveOptions, LiveResult};
+pub(crate) use motion::{draw_live, draw_live_with_pet, LiveOptions, LiveResult};
 
 use crate::{
     paint::Card,
@@ -150,6 +152,7 @@ enum Item {
         color: Color32,
         clip: Clip,
     },
+    Pet(pet::Placement),
 }
 
 /// 非交互画布用于常驻条，点击仍由常驻位处理。
@@ -183,6 +186,7 @@ fn draw_static(
     canvas: &Arc<Canvas>,
     area: Rect,
     theme: CanvasTheme,
+    pets: &mut pet::DrawPets<'_>,
     mut image: impl FnMut(&str) -> Option<(egui::TextureId, Vec2)>,
 ) -> bool {
     let ctx = c.ui.ctx();
@@ -237,7 +241,7 @@ fn draw_static(
             cache.geometry = geometry;
         }
         if let Some(scene) = &cache.scene {
-            timed_out = !scene.draw(c, offset, clip, Some(start), &mut image);
+            timed_out = !scene.draw(c, offset, clip, Some(start), theme, pets, &mut image);
             if !timed_out {
                 cache.previous = Some(Arc::clone(scene));
                 cache.failures = 0;
@@ -255,7 +259,7 @@ fn draw_static(
     if timed_out {
         if let Some(previous) = &cache.previous {
             // 上一帧已细分的几何仍可复用；纹理跟随正在显示的包。
-            previous.draw(c, offset, clip, None, &mut image);
+            previous.draw(c, offset, clip, None, theme, pets, &mut image);
         } else {
             let local = c.to_local(clip.center());
             c.centered_text(
@@ -282,8 +286,14 @@ impl Scene {
         offset: Vec2,
         area: Rect,
         start: Option<Instant>,
+        theme: CanvasTheme,
+        pets: &mut pet::DrawPets<'_>,
         mut image: impl FnMut(&str) -> Option<(egui::TextureId, Vec2)>,
     ) -> bool {
+        enum PaintItem<'a> {
+            Shape(Shape),
+            Pet(&'a pet::Placement),
+        }
         let mut shapes = Vec::with_capacity(self.items.len());
         for (local_clip, item) in &self.items {
             let clip = local_clip.translate(offset).intersect(area);
@@ -299,7 +309,7 @@ impl Scene {
                     if offset != Vec2::ZERO {
                         shape.translate(offset);
                     }
-                    shapes.push((clip, shape));
+                    shapes.push((clip, PaintItem::Shape(shape)));
                 }
                 Item::Text {
                     job,
@@ -311,7 +321,7 @@ impl Scene {
                     if let Some(shape) = text_shape(
                         c, job, *base, *angle, pigment, offset, clip, group_clip, start,
                     ) {
-                        shapes.push(shape);
+                        shapes.push((shape.0, PaintItem::Shape(shape.1)));
                     }
                 }
                 Item::Image {
@@ -330,9 +340,10 @@ impl Scene {
                         for vertex in &mut mesh.vertices {
                             vertex.pos += offset;
                         }
-                        shapes.push((clip, Shape::mesh(mesh)));
+                        shapes.push((clip, PaintItem::Shape(Shape::mesh(mesh))));
                     }
                 }
+                Item::Pet(place) => shapes.push((clip, PaintItem::Pet(place))),
             }
         }
         if start.is_some_and(|start| start.elapsed() >= FRAME_BUDGET) {
@@ -341,12 +352,24 @@ impl Scene {
         let layer = c.painter.layer_id();
         let first = skin_paint::shape_count(c.ui.ctx(), layer);
         let mut shapes = shapes.into_iter().peekable();
-        while let Some((clip, shape)) = shapes.next() {
-            c.painter
-                .with_clip_rect(clip)
-                .extend(std::iter::once(shape).chain(std::iter::from_fn(|| {
-                    shapes.next_if(|(next, _)| *next == clip).map(|(_, s)| s)
-                })));
+        while let Some((clip, item)) = shapes.next() {
+            match item {
+                PaintItem::Shape(shape) => {
+                    c.painter
+                        .with_clip_rect(clip)
+                        .extend(std::iter::once(shape).chain(std::iter::from_fn(|| {
+                            shapes
+                                .next_if(|(next, item)| {
+                                    *next == clip && matches!(item, PaintItem::Shape(_))
+                                })
+                                .and_then(|(_, item)| match item {
+                                    PaintItem::Shape(shape) => Some(shape),
+                                    PaintItem::Pet(_) => None,
+                                })
+                        })))
+                }
+                PaintItem::Pet(place) => pets.paint(c, place, offset, clip, theme),
+            }
         }
         skin_paint::tone_since(c.ui.ctx(), layer, first, |color, _| color);
         true
@@ -512,6 +535,34 @@ impl Builder {
                             color: Color32::WHITE.gamma_multiply(opacity),
                             clip: clip.clone(),
                         },
+                    ));
+                }
+                return Some(());
+            }
+            Kind::Pet {
+                at,
+                size,
+                mood,
+                motion,
+            } => {
+                let size = size.initial() * transform.scale;
+                let at = transform.point(at);
+                if size > 0.0
+                    && Rect::from_center_size(at, vec2(size * 1.5, size * 1.4))
+                        .intersects(clip.rect)
+                {
+                    self.scene.items.push((
+                        clip.rect,
+                        Item::Pet(pet::Placement {
+                            id: node.id.clone(),
+                            at,
+                            size,
+                            angle: transform.angle,
+                            clip: clip.clone(),
+                            mood: *mood,
+                            motion: *motion,
+                            opacity,
+                        }),
                     ));
                 }
                 return Some(());

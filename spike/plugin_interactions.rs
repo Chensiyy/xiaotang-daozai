@@ -308,6 +308,7 @@ impl LocalPlugins {
         let logs = &self.devtools.logs;
         let revision = self.status.get(id).and_then(|state| state.as_ref().ok()).map_or(0, |state| state.0);
         let enabled = self.action_available(id);
+        let pet_sheets = self.appearance_pet();
         let mut live = LiveResult::default();
         let mut paint_canvas = |card: &Card<'_>, canvas: &Arc<Canvas>, area, theme| {
             let ctx = card.ui.ctx();
@@ -317,7 +318,7 @@ impl LocalPlugins {
                 allow_action: enabled,
                 interactive: card.live,
             };
-            live = crate::plugin_canvas_ui::draw_live(card, id, canvas, area, theme, options, |name| {
+            live = crate::plugin_canvas_ui::draw_live_with_pet(card, id, canvas, area, theme, options, pet_sheets.clone(), |name| {
                 package.canvas_images.get(name)?.texture(ctx, name)
             });
             if live.timed_out && !record.from_market {

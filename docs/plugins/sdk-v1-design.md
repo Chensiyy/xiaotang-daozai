@@ -302,6 +302,7 @@ function refresh() {
 - 文字节点添加 `roll:true` 后，变化的数字在 220 毫秒内向上翻动。给节点添加稳定的 `id`，宿主可跨输出匹配同一节点。
 - `animate:{ms:300,ease:"spring"}` 可让位置、尺寸、角度、透明度和颜色平滑过渡，新增或移除节点会淡入淡出。时长 120 至 1200 毫秒，缓动支持 linear 和 spring。
 - `loop:{kind:"pulse",period_ms:1600}` 支持 pulse、flow、bob、spin。周期至少 800 毫秒，一个画布最多 8 个循环节点，循环最多 30 帧每秒。带 `id` 的节点可用 `burst:"confetti"` 播放一次彩纸。
+- `{"pet":{"at":[226,24],"size":28,"mood":"expressions","motion":"run","id":"runner"}}` 由宿主绘制并沿用用户的表情包。尺寸为 12 至 96，`at` 是角色中心并支持绑定。表情可选轮换（`expressions`）、睡觉（`sleeping`）、开心（`happy`）或现有表情名。动作为原地跑跳（`run`）、浮动（`bob`）或静止（`none`）。每个展开画布最多一只，活动时计入循环预算。
 - `hit:{action:"select"}`、`hit:{open:"https://example.com"}`、`hit:{copy:"复制这段"}` 三选一，复用标准组件交互规则。需要声明 `action` 能力，链接须在清单的 `network.hosts` 内，复制最多 2000 字。每画布最多 64 个点按区域，输出更新后旧点击失效。
 - 节点可用 `hover:{opacity:1,lift:2,fill:"$accent"}` 调节悬停外观。折线可用 `tips:[{x:140,label:"12:40",value:"4,106.2"}]` 声明宿主的悬停读数。
 - 带 `clip` 的分组可加 `scroll:{axis:"y",content:420}`。滚轮在区域内移动内容，插件刷新会保留滚动位置。

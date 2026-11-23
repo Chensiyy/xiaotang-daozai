@@ -377,6 +377,10 @@ impl Frame<'_> {
                     }
                 }
                 Kind::Image { rect, .. } => self.bounds(rect),
+                Kind::Pet { at, size, .. } => {
+                    self.coords(at);
+                    self.literal(size, 12.0, 96.0, self.pixels);
+                }
                 Kind::Group {
                     group,
                     clip,

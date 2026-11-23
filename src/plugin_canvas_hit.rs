@@ -380,6 +380,11 @@ pub(super) fn bounds(c: &Card<'_>, node: &Node, transform: Transform) -> Rect {
         .map_or(0.0, |_| node.style.width.initial() * transform.scale * 0.5);
     let box_rect = match &node.kind {
         Kind::Rect { rect, .. } | Kind::Image { rect, .. } => transform.bounds(rect),
+        Kind::Pet { at, size, .. } => {
+            let center = transform.point(at);
+            let size = size.initial() * transform.scale;
+            Rect::from_center_size(center, egui::vec2(size, size * 0.7))
+        }
         Kind::Circle([x, y, r]) => Rect::from_center_size(
             transform.xy(x.initial(), y.initial()),
             egui::Vec2::splat(2.0 * r.initial() * transform.scale),

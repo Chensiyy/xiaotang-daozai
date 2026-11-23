@@ -470,6 +470,7 @@
         {"required": ["path"]},
         {"required": ["text"]},
         {"required": ["image"]},
+        {"required": ["pet"]},
         {"required": ["group"]}
       ],
       "dependentRequired": {
@@ -523,6 +524,16 @@
           "pattern": "^(?!.*\\.\\.)(?!.*[. ]/)(?!.*[\\u0000-\\u001F\\u007F-\\u009F])[^/\\\\:<>\"|?*]+(?:/[^/\\\\:<>\"|?*]+)*\\.(?:[Pp][Nn][Gg]|[Ss][Vv][Gg])$"
         },
         "fit": {"enum": ["cover", "contain"], "default": "contain"},
+        "pet": {
+          "type": "object", "required": ["at", "size"], "additionalProperties": false,
+          "properties": {
+            "at": {"$ref": "#/$defs/canvasPoint"},
+            "size": {"$ref": "#/$defs/canvasNumber", "minimum": 12, "maximum": 96},
+            "mood": {"enum": ["expressions", "sleeping", "happy", "wink", "smug", "blush", "delighted", "side-glance", "praised", "heart", "giggle", "shy-peek", "scan", "peek", "search"], "default": "expressions"},
+            "motion": {"enum": ["none", "run", "bob"], "default": "none"},
+            "id": {"type": "string", "minLength": 1}
+          }
+        },
         "group": {"type": "array", "maxItems": 1500, "items": {"$ref": "#/$defs/canvasNode"}},
         "clip": {"$ref": "#/$defs/canvasBounds"},
         "translate": {"$ref": "#/$defs/canvasPoint"},

@@ -188,3 +188,75 @@ fn plugin_canvas_static_frame_and_revision_safe_hit() {
     let (_, fresh) = frame(&ctx, &canvas, 0.4, 2, vec![event(false)], true);
     assert_eq!(fresh.hit, Some(Hit::Action("save".into())));
 }
+
+#[test]
+fn plugin_canvas_host_pet_uses_installed_sheet_and_sleep_stays_idle() {
+    let ctx = egui::Context::default();
+    theme::load_fonts(&ctx);
+    let image = image::RgbaImage::from_pixel(144, 1440, image::Rgba([12, 228, 97, 255]));
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    image.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+    let mut sheets = std::array::from_fn(|_| None);
+    sheets[crate::pet_expressions::Expression::Praised as usize] = Some(bytes.into_inner());
+    let sheets = Arc::new(sheets);
+    for (mood, animated) in [("praised", true), ("sleeping", false)] {
+        let canvas = Arc::new(
+            Canvas::parse(json!({"height":80,"nodes":[
+                {"pet":{"id":"runner","at":[45,40],"size":28,"mood":mood,"motion":"none"}}
+            ]}))
+            .unwrap(),
+        );
+        let panel = Rect::from_min_size(Pos2::ZERO, vec2(180.0, 80.0));
+        let mut result = LiveResult::default();
+        let out = ctx.run(
+            RawInput {
+                screen_rect: Some(panel),
+                ..Default::default()
+            },
+            |ctx| {
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::NONE)
+                    .show(ctx, |ui| {
+                        let c = Card::new(ui, Pos2::ZERO, panel);
+                        result = draw_live_with_pet(
+                            &c,
+                            "pet-sheet",
+                            &canvas,
+                            panel,
+                            CanvasTheme {
+                                palette: None,
+                                background: Color32::BLACK,
+                                accent: None,
+                            },
+                            LiveOptions {
+                                now: DateTime::from_timestamp(START, 0).unwrap(),
+                                revision: 1,
+                                allow_action: false,
+                                interactive: false,
+                            },
+                            Some(Arc::clone(&sheets)),
+                            |_| None,
+                        );
+                    });
+            },
+        );
+        if animated {
+            assert!(out
+                .textures_delta
+                .set
+                .iter()
+                .any(|(_, delta)| match &delta.image {
+                    egui::ImageData::Color(image) =>
+                        image.size == [144, 1440]
+                            && image.pixels.first() == Some(&Color32::from_rgb(12, 228, 97)),
+                    _ => false,
+                }));
+        } else {
+            assert!(out
+                .shapes
+                .iter()
+                .any(|entry| matches!(entry.shape, egui::Shape::Path(_))));
+            assert_eq!(result.repaint_after, None);
+        }
+    }
+}

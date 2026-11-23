@@ -51,6 +51,7 @@ impl Canvas {
             commands: 0,
             text: 0,
             loops: 0,
+            pets: 0,
             hits: 0,
             ids: BTreeSet::new(),
         };
@@ -327,6 +328,12 @@ pub(crate) enum Kind {
         rect: Bounds,
         fit: Fit,
     },
+    Pet {
+        at: Point,
+        size: Num,
+        mood: PetMood,
+        motion: PetMotion,
+    },
     Group {
         group: Vec<Node>,
         clip: Option<Bounds>,
@@ -357,6 +364,7 @@ struct RawNode {
     lines: Option<u8>,
     font: Option<String>,
     image: Option<String>,
+    pet: Option<RawPet>,
     #[serde(default)]
     fit: Fit,
     group: Option<Vec<RawNode>>,
@@ -388,6 +396,54 @@ struct RawNode {
     tips: Vec<Tip>,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum PetMotion {
+    #[default]
+    None,
+    Run,
+    Bob,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum PetMood {
+    #[default]
+    Expressions,
+    Sleeping,
+    Happy,
+    Expression(crate::pet_expressions::Expression),
+}
+
+impl<'de> Deserialize<'de> for PetMood {
+    fn deserialize<D: Deserializer<'de>>(input: D) -> Result<Self, D::Error> {
+        use crate::pet_expressions::Expression;
+        use serde::de::Error;
+        let name = String::deserialize(input)?;
+        match name.as_str() {
+            "expressions" => Ok(Self::Expressions),
+            "sleeping" => Ok(Self::Sleeping),
+            "happy" => Ok(Self::Happy),
+            name => Expression::ALL
+                .into_iter()
+                .find(|expression| expression.key() == name)
+                .map(Self::Expression)
+                .ok_or_else(|| D::Error::custom("无效的岛仔表情")),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawPet {
+    at: Point,
+    size: Num,
+    #[serde(default)]
+    mood: PetMood,
+    #[serde(default)]
+    motion: PetMotion,
+    id: Option<String>,
+}
+
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum RawRadii {
@@ -412,6 +468,7 @@ struct Budget<'a> {
     commands: usize,
     text: usize,
     loops: usize,
+    pets: usize,
     hits: usize,
     ids: BTreeSet<String>,
 }
@@ -598,6 +655,7 @@ impl Budget<'_> {
             raw.path.is_some(),
             raw.text.is_some(),
             raw.image.is_some(),
+            raw.pet.is_some(),
             raw.group.is_some(),
         ]
         .into_iter()
@@ -663,6 +721,37 @@ impl Budget<'_> {
         }
         if let Some(text) = raw.text.take() {
             return self.text(raw, text);
+        }
+        if let Some(pet) = raw.pet.take() {
+            self.pets += 1;
+            if self.pets > 1 {
+                return Err("每个画布最多放一只岛仔".into());
+            }
+            if raw.looping.is_some() {
+                return Err("岛仔动画通过 pet.motion 声明".into());
+            }
+            if pet.motion != PetMotion::None
+                || matches!(pet.mood, PetMood::Expressions | PetMood::Expression(_))
+            {
+                self.loops += 1;
+                if self.loops > 8 {
+                    return Err("画布最多同时循环 8 个节点".into());
+                }
+            }
+            if let Some(id) = pet.id {
+                if raw.id.as_ref().is_some_and(|other| *other != id) {
+                    return Err("岛仔节点的 id 不一致".into());
+                }
+                raw.id = Some(id);
+            }
+            self.coords(&pet.at)?;
+            self.number(&pet.size, 12.0, 96.0, "岛仔大小")?;
+            return Ok(Kind::Pet {
+                at: pet.at,
+                size: pet.size,
+                mood: pet.mood,
+                motion: pet.motion,
+            });
         }
         let group = self.nodes(raw.group.take().ok_or("画布分组缺少节点")?, depth + 1)?;
         let clip = raw.clip.take();

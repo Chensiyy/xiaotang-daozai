@@ -1,4 +1,41 @@
 use super::*;
+
+#[test]
+fn sdk_spike_canvas_pet_validates_mood_bindings_and_budget() {
+    use serde_json::json;
+    let runner = json!({"pet": {
+        "id": "runner", "at": [{"bind": "worked", "map": [20, 220]}, 24],
+        "size": 28, "mood": "praised", "motion": "run"
+    }});
+    let parse = |nodes| {
+        Canvas::parse(json!({
+            "height":80, "nodes":nodes, "binds":{"worked":{"progress":[100, 200]}}
+        }))
+    };
+    let canvas = parse(vec![runner.clone()]).unwrap();
+    assert_eq!(canvas.nodes[0].id.as_deref(), Some("runner"));
+    let (evaluated, _) = canvas.evaluate(chrono::DateTime::from_timestamp(150, 0).unwrap(), 1.0);
+    let Kind::Pet {
+        at, mood, motion, ..
+    } = &evaluated.nodes[0].kind
+    else {
+        panic!("缺少岛仔节点")
+    };
+    assert_eq!(at[0].initial(), 120.0);
+    assert_eq!(
+        *mood,
+        PetMood::Expression(crate::pet_expressions::Expression::Praised)
+    );
+    assert_eq!(*motion, PetMotion::Run);
+    assert!(parse(vec![runner.clone(), runner.clone()])
+        .unwrap_err()
+        .contains("一只"));
+    let mut too_many = vec![runner];
+    too_many
+        .extend((0..8).map(|_| json!({"circle":[5,5,2],"loop":{"kind":"pulse","period_ms":800}})));
+    assert!(parse(too_many).unwrap_err().contains("循环"));
+    assert!(parse(vec![json!({"pet":{"at":[0,0],"size":20,"mood":"unknown"}})]).is_err());
+}
 use serde_json::{json, Value};
 
 fn with_nodes(nodes: Value) -> Result<Canvas, String> {
