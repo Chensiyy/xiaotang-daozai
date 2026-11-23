@@ -250,8 +250,13 @@ fn gold_example_tracks_at_most_48_fresh_prices_and_shows_crossings() -> Result<(
     assert_eq!(status.metrics[0].value, "751.50 元");
     assert_eq!(status.alert.as_deref(), Some("金价达到 750 元/克"));
     assert_eq!(output.storage["points"].as_array().unwrap().len(), 48);
+    // 走势折线、穿价提醒和岛上常驻在同一次输出里。
+    assert_eq!(status.series.as_ref().map(Vec::len), Some(48));
+    assert!(output.notice.is_some());
+    assert!(output.pinned.is_some());
     let same_quote = package.render_input(&settings, &output.storage, TODAY, source(&quote), Call::Refresh)?;
     assert_eq!(same_quote.storage, output.storage);
+    assert!(same_quote.notice.is_none());
     assert!(same_quote.status.unwrap().alert.is_none());
     quote["data_state"]["status"] = json!("stale");
     let stale = package.render_input(&settings, &output.storage, TODAY, source(&quote), Call::Refresh)?;
