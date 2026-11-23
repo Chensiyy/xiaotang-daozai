@@ -749,7 +749,7 @@ impl LocalPlugins {
         let (id, body) = cards.nth(self.card_index).unwrap();
         c.fill(42., 130., 335., 40., 9., theme::CARD);
         let manifest = &self.records[id].package.as_ref().unwrap().manifest;
-        let has_settings = manifest.has_settings();
+        let has_settings = manifest.has_settings() || manifest.has_surface(Surface::IslandPinned);
         c.text(
             52.,
             145.,
@@ -1079,7 +1079,7 @@ impl LocalPlugins {
             "pages" | "wireless" | "appearance" => true,
             _ => tasks_on,
         };
-        let has_settings = !manifest.settings.is_empty();
+        let has_settings = !manifest.settings.is_empty() || manifest.has_surface(Surface::IslandPinned);
         #[cfg(windows)]
         let has_source = manifest.source_kind().is_some();
         let key = egui::Id::new(("installed", &r.origin, id, &manifest.version));
@@ -1574,6 +1574,8 @@ impl LocalPlugins {
         let mut local = false;
         let mut market = false;
         let mut author_action = None;
+        let mut watching = self.watch_files_enabled();
+        let logs = self.devtools.logs.snapshot();
         let modal = egui::Modal::new(key.with("modal"))
             .frame(settings_modal_frame(&ctx))
             .backdrop_color(Color32::from_black_alpha(110))
@@ -1588,12 +1590,12 @@ impl LocalPlugins {
                 close = settings_modal_title(ui, "开发者工具");
                 settings_hint(ui, "给插件作者自测用。本地安装的插件不经过集市审核。");
                 ui.add_space(4.0);
-                author_action = author.menu(ui);
+                author_action = author.menu(ui, &mut watching, &logs);
                 ui.add_space(4.0);
                 local = option_card(
                     ui,
                     "安装本地插件…",
-                    "选择开发目录里的 plugin.json，改动后从同一位置重装",
+                    "选择开发目录里的 plugin.json",
                     false,
                 );
                 market = option_card(
@@ -1608,6 +1610,10 @@ impl LocalPlugins {
                 });
             });
         let mut opened = false;
+        if watching != self.watch_files_enabled() {
+            self.set_watch_files(watching);
+            ctx.request_repaint_of(egui::ViewportId::ROOT);
+        }
         if let Some(action) = author_action {
             author.run(action);
             if let Some(dir) = author.created_dir() {
@@ -1920,7 +1926,8 @@ impl LocalPlugins {
                 r.enabled
                     && (owner != "status" || !r.status_page_disabled)
                     && r.package.as_ref().is_some_and(|p| {
-                        p.manifest.owner == owner && p.manifest.has_settings()
+                        p.manifest.owner == owner
+                            && (p.manifest.has_settings() || p.manifest.has_surface(Surface::IslandPinned))
                     })
             })
             .map(|(id, _)| id.clone())
@@ -1934,6 +1941,7 @@ impl LocalPlugins {
             ui.push_id(&id, |ui| {
                 let card = ui.scope(|ui| {
                     settings_card(ui, |ui| {
+                        let supports_pinned = self.pinned_name(&id).is_some();
                         let r = &self.records[&id];
                         let m = &r.package.as_ref().unwrap().manifest;
                         let header = ui
@@ -1968,7 +1976,7 @@ impl LocalPlugins {
                             });
                             *draft = seconds.to_string();
                         }
-                        if ui.button("保存设置").clicked() {
+                        if !m.settings.is_empty() && ui.button("保存设置").clicked() {
                             let values = fields.clone();
                             self.notice = match self.save(&id, values) {
                                 Ok(()) => {
@@ -1978,6 +1986,7 @@ impl LocalPlugins {
                                 Err(e) => e.to_string(),
                             };
                         }
+                        if supports_pinned { self.pinned_toggle(ui, &id); }
                     })
                 });
                 let flash = ui
@@ -2003,6 +2012,46 @@ impl LocalPlugins {
         }
         if !self.notice.is_empty() {
             ui.label(&self.notice);
+        }
+    }
+
+    fn pinned_toggle(&mut self, ui: &mut egui::Ui, id: &str) {
+        let enabled = self.pinned.order.iter().any(|item| item == id);
+        if plugin_setting_switch_row(ui, &format!("{id}:pinned"), "在岛上常驻显示", "岛收起时轮流显示", enabled) {
+            if let Err(error) = self.set_pinned(id, !enabled) { self.notice = error.to_string(); }
+            ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
+        }
+        if self.pinned.replacement.as_deref() == Some(id) {
+            ui.label("已设置 3 个插件，选择要替换的常驻位。");
+            let order = self.pinned.order.clone();
+            ui.horizontal_wrapped(|ui| {
+                for old in order {
+                    if ui.button(self.pinned_name(&old).unwrap_or(&old)).clicked() {
+                        if let Err(error) = self.replace_pinned(&old) { self.notice = error.to_string(); }
+                        ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
+                    }
+                }
+                if ui.button("取消").clicked() { self.pinned.replacement = None; }
+            });
+        }
+    }
+
+    pub(crate) fn pinned_order_settings(&mut self, ui: &mut egui::Ui) {
+        if self.pinned.order.is_empty() { return; }
+        ui.add_space(8.0);
+        ui.horizontal(|ui| { ui.strong("岛上常驻插件"); plugin_tag(ui); });
+        let order = self.pinned.order.clone();
+        for (index, id) in order.iter().enumerate() {
+            ui.push_id(id, |ui| ui.horizontal(|ui| {
+                ui.label(self.pinned_name(id).unwrap_or(id));
+                let earlier = ui.add_enabled(index > 0, egui::Button::new("上移")).clicked();
+                let later = ui.add_enabled(index + 1 < order.len(), egui::Button::new("下移")).clicked();
+                if earlier || later {
+                    let target = if earlier { index - 1 } else { index + 1 };
+                    if let Err(error) = self.move_pinned(index, target) { self.notice = error.to_string(); }
+                    ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
+                }
+            }));
         }
     }
 }

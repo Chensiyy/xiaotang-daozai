@@ -53,7 +53,12 @@ impl AuthorTools {
         self.draft.is_some()
     }
 
-    pub(super) fn menu(&mut self, ui: &mut egui::Ui) -> Option<Action> {
+    pub(super) fn menu(
+        &mut self,
+        ui: &mut egui::Ui,
+        watching: &mut bool,
+        logs: &[String],
+    ) -> Option<Action> {
         if option_card(
             ui,
             "从模板创建",
@@ -76,6 +81,21 @@ impl AuthorTools {
             if ui.link("投稿指南").clicked() {
                 ui.ctx().open_url(egui::OpenUrl::new_tab(GUIDE));
             }
+        });
+        ui.checkbox(watching, "监视文件变化");
+        ui.collapsing("脚本日志", |ui| {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(500));
+            if logs.is_empty() {
+                settings_hint(ui, "本地插件运行后，日志显示在这里。");
+            }
+            egui::ScrollArea::vertical()
+                .max_height(145.0)
+                .show(ui, |ui| {
+                    for line in logs {
+                        ui.label(line);
+                    }
+                });
         });
         self.show_notice(ui);
         action

@@ -5,6 +5,11 @@ mod interactions;
 pub(crate) mod appearance_assets;
 #[path = "capabilities.rs"]
 mod capabilities;
+#[path = "plugin_devtools.rs"]
+mod devtools;
+#[path = "pinned.rs"]
+mod pinned;
+pub(crate) use pinned::PinnedDisplay;
 #[path = "cover.rs"]
 mod cover;
 #[cfg(windows)]
@@ -334,6 +339,7 @@ struct Output {
     status: Option<PluginStatus>,
     #[serde(default)]
     notice: Option<ScriptNotice>,
+    pinned: Option<pinned::Pinned>,
     #[serde(default)]
     storage: Value,
     #[serde(default)]
@@ -808,17 +814,29 @@ impl Package {
         source: SourceInput,
         call: Call,
     ) -> Result<Output> {
-        let runtime = rquickjs::Runtime::new()?;
-        runtime.set_memory_limit(4 * 1024 * 1024);
-        runtime.set_max_stack_size(128 * 1024);
-        let ctx = rquickjs::Context::full(&runtime)?;
+        self.render_input_with(values, storage, today, source, call, None, &mut Vec::new())
+            .map(|(output, _)| output)
+    }
+
+    fn render_input_with(
+        &self,
+        values: &Values,
+        storage: &Value,
+        today: &str,
+        source: SourceInput,
+        call: Call,
+        mock: Option<&devtools::MockInput>,
+        logs: &mut Vec<String>,
+    ) -> Result<(Output, String)> {
         let mut input = json!({"settings":values,"storage":storage,"today":today});
         script_settings::time_input(&mut input, chrono::Utc::now(), self.manifest.timezones, &self.manifest.settings, values);
         if !self.data.is_empty() {
             input["data"] = serde_json::to_value(package_data::data_input(&self.data)?)?;
         }
         let require_source = self.manifest.source_kind().is_some();
-        let ready = !require_source || source.ready();
+        let ready = !require_source
+            || source.ready()
+            || mock.is_some_and(|mock| mock.sources.is_some());
         if require_source {
             #[cfg(windows)]
             if let Some(sources) = self.manifest.network.as_ref().and_then(|n| n.sources.as_ref()) {
@@ -838,14 +856,12 @@ impl Package {
             }
         }
         let invocation = call.prepare(&mut input);
-        let input = input.to_string();
-        let end = Instant::now() + Duration::from_millis(30);
-        runtime.set_interrupt_handler(Some(Box::new(move || Instant::now() >= end)));
-        let raw = ctx.with(|c| -> rquickjs::Result<String> {
-            c.eval::<(), _>(self.source.as_bytes())?;
-            c.globals().set("__input", c.json_parse(input)?)?;
-            c.eval(invocation)
-        })?;
+        if let Some(mock) = mock {
+            mock.apply(&mut input);
+        }
+        let raw = devtools::run_script(
+            self.source.as_bytes(), &self.manifest.entry, input.to_string(), invocation, logs,
+        )?;
         let (output, storage) = script_settings::split_output(&raw)?;
         let mut output: Output = serde_json::from_value(output)?;
         output.storage = storage;
@@ -885,9 +901,13 @@ impl Package {
         }) {
             return Err(fail("插件提醒需要 notice 能力以及格式有效的 id、title 和 body"));
         }
+        if output.pinned.as_ref().is_some_and(|pinned| !has(Surface::IslandPinned) || !pinned.valid()) {
+            return Err(fail("常驻位需要声明 island.pinned 并返回符合格式的 pinned"));
+        }
         if !ready {
             output.status = None;
             output.quota = None;
+            output.pinned = None;
         }
         if has(Surface::TasksCard) {
             // 只有卡片一种输出时必须有字；同时有其他输出时，空字表示这次不显示卡片。
@@ -908,7 +928,7 @@ impl Package {
         if !output.storage.is_null() && !self.manifest.capabilities.iter().any(|s| s == "storage") {
             return Err(fail("未声明私有存储"));
         }
-        Ok(output)
+        Ok((output, raw))
     }
 }
 
@@ -932,6 +952,8 @@ struct Job {
 }
 pub struct LocalPlugins {
     jobs: BTreeMap<String, Job>,
+    devtools: devtools::DevTools,
+    pinned: pinned::PinnedState,
     #[cfg(windows)]
     wireless: crate::bt::compat::Store,
     #[cfg(windows)]
@@ -973,6 +995,8 @@ impl LocalPlugins {
     pub fn open(dir: PathBuf) -> Self {
         let mut s = Self {
             jobs: BTreeMap::new(),
+            devtools: devtools::DevTools::default(),
+            pinned: pinned::PinnedState::open(&dir),
             #[cfg(windows)]
             wireless: Default::default(),
             #[cfg(windows)]
@@ -1040,6 +1064,7 @@ impl LocalPlugins {
         if let Err(e) = read {
             s.notice = e.to_string()
         }
+        s.restore_pins();
         s.refresh_page_shortcuts();
         s.retain_available_appearance();
         #[cfg(windows)]
@@ -1084,6 +1109,7 @@ impl LocalPlugins {
         }
         crate::model::atomic_write(&self.path(id), &serde_json::to_vec(&r)?)?;
         self.records.insert(id.into(), r);
+        self.restore_pins();
         if shortcuts_changed {
             self.refresh_page_shortcuts();
         }
@@ -1229,6 +1255,7 @@ impl LocalPlugins {
         self.quota.remove(id);
         self.status.remove(id);
         self.interactions.forget(id);
+        self.pinned.output.remove(id);
         self.next.remove(id);
         #[cfg(windows)]
         self.source_fetch.remove(id);
@@ -1449,6 +1476,7 @@ impl LocalPlugins {
             }
         }
         self.forget_view(id);
+        self.restore_pins();
         Ok(())
     }
     /// 移除重启检查没通过的安装记录。插件已经停止运行，这里只删掉留下的记录文件。
@@ -1483,6 +1511,7 @@ impl LocalPlugins {
         self.interactions.retain(|id| !belongs(id));
         #[cfg(windows)]
         self.source_fetch.retain(|id, _| !belongs(id));
+        self.pinned.output.retain(|id, _| !belongs(id));
         for (id, job) in &self.jobs {
             if belongs(id) {
                 job.cancelled.store(true, Ordering::Release);
@@ -1496,6 +1525,7 @@ impl LocalPlugins {
     }
 
     pub(crate) fn tick_features(&mut self, tasks_on: bool, calendar_on: bool, quota_on: bool, today: &str) {
+        self.poll_local_reloads(Instant::now());
         #[cfg(windows)]
         self.poll_market();
         let new_day = calendar_on && self.calendar_day != today;
@@ -1556,7 +1586,7 @@ impl LocalPlugins {
                     Ok(Some(output))
                 });
             match result {
-                Ok(Some(Output { card, marker, quota, status, notice, next_refresh_at, .. })) => {
+                Ok(Some(Output { card, marker, quota, status, notice, next_refresh_at, pinned, .. })) => {
                     self.interactions.forms.remove(&id);
                     #[cfg(windows)]
                     if let Some(notice) = notice {
@@ -1587,6 +1617,10 @@ impl LocalPlugins {
                         // 模块关着时这一位置的结果直接丢掉，重新打开时会补算。
                         let shown = surface == Surface::StatusPage || live.contains(&surface);
                         match surface {
+                            Surface::IslandPinned => match &pinned {
+                                Some(value) => { self.pinned.output.insert(id.clone(), value.clone()); }
+                                None => { self.pinned.output.remove(&id); }
+                            },
                             Surface::StatusPage => match &status {
                                 Some(status) => {
                                     self.interactions.revision += 1;
@@ -1624,6 +1658,7 @@ impl LocalPlugins {
                 Ok(None) => {
                     self.errors.remove(&id);
                     self.interactions.forms.remove(&id);
+                    self.pinned.output.remove(&id);
                     self.status.insert(id, Err(StatusHealth::Offline));
                 }
                 Err(e) => {
@@ -1632,6 +1667,7 @@ impl LocalPlugins {
                     self.quota.remove(&id);
                     self.status.remove(&id);
                     self.interactions.forms.remove(&id);
+                    self.pinned.output.remove(&id);
                     self.errors.insert(id, e);
                 }
             }
@@ -1681,6 +1717,8 @@ impl LocalPlugins {
             let (send_fetch, fetch_report) = std::sync::mpsc::channel();
             #[cfg(windows)]
             let mut fetch = self.source_fetch.get(&id).cloned().unwrap_or_default();
+            let script_logs = self.devtools.logs.clone();
+            let plugin_id = id.clone();
             let result = std::thread::Builder::new().name("daozai-plugin-read".into()).spawn(move || {
                 let source = match r.source_grant() {
                     #[cfg(windows)]
@@ -1714,16 +1752,20 @@ impl LocalPlugins {
                 {
                     return Ok(Rendered::StatusOffline);
                 }
+                let mut logs = Vec::new();
                 #[cfg(windows)]
                 let status_offline = package.manifest.is_status_page()
                     && matches!(&source, SourceInput::Multiple(_))
                     && !source.ready();
                 let output = package
-                    .render_input(&r.values, &r.storage, &today, source, call)
-                    .map_err(|e| e.to_string())?;
+                    .render_input_with(&r.values, &r.storage, &today, source, call, None, &mut logs);
                 if worker_cancelled.load(Ordering::Acquire) {
                     return Err("读取已取消".into());
                 }
+                if !r.from_market {
+                    script_logs.append(&plugin_id, logs);
+                }
+                let (output, _) = output.map_err(|error| error.to_string())?;
                 #[cfg(windows)]
                 if status_offline {
                     return Ok(Rendered::StatusOffline);

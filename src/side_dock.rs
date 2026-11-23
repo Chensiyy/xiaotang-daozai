@@ -17,19 +17,26 @@ pub const SIDE_W: f32 = 500.0;
 pub const SIDE_H: f32 = 600.0;
 /// 收起时竖向胶囊的厚度。
 pub const SIDE_BAR_W: f32 = 36.0;
+#[cfg(feature="sdk-js")]
+pub(crate) const PINNED_HEIGHT: f32 = 42.0;
 /// 岛体中心能离开屏幕竖直中线的预留：展开面板（最高约 236）与肩部、阴影留在屏幕内。
 pub const SIDE_HALF_EXTENT: f32 = 150.0;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) enum SideItem {
     Clock, Date(f32), Weather, Battery, Music, Focus, Bell, Wireless, Performance(f32),
+    #[cfg(feature="sdk-js")]
+    Pinned,
     /// AI 额度：账号下标（None 为「+N」）与高度。
     Quota(usize, f32),
 }
 
 impl SideItem {
-    fn height(self, clock_seconds: bool) -> f32 {
-        match self { Self::Performance(h) | Self::Date(h) => h, Self::Clock => if clock_seconds {46.0}else{32.0}, Self::Weather => 40.0, Self::Wireless=>37.0, Self::Battery => 20.0, Self::Music => 18.0, Self::Focus => 22.0, Self::Bell => 22.0, Self::Quota(_, h) => h }
+    pub(crate) fn height(self, clock_seconds: bool) -> f32 {
+        match self {
+            #[cfg(feature="sdk-js")]
+            Self::Pinned => PINNED_HEIGHT,
+            Self::Performance(h) | Self::Date(h) => h, Self::Clock => if clock_seconds {46.0}else{32.0}, Self::Weather => 40.0, Self::Wireless=>37.0, Self::Battery => 20.0, Self::Music => 18.0, Self::Focus => 22.0, Self::Bell => 22.0, Self::Quota(_, h) => h }
     }
 }
 
@@ -54,6 +61,8 @@ impl App {
         if self.pomo.running { items.push(SideItem::Focus); }
         items.extend(self.quota_side_items().into_iter().map(|(index, h)| SideItem::Quota(index, h)));
         if self.notification_bell().is_some() { items.push(SideItem::Bell); }
+        #[cfg(feature="sdk-js")]
+        if self.pinned_display.is_some() { items.push(SideItem::Pinned); }
         items
     }
 
@@ -156,6 +165,8 @@ impl App {
                 }
                 SideItem::Performance(h) => self.side_performance(c,cx,mid,h),
                 SideItem::Quota(index, h) => self.draw_quota_side(c, cx, mid, h, index),
+                #[cfg(feature="sdk-js")]
+                SideItem::Pinned => if let Some(display) = &self.pinned_display { display.draw(c, cx, mid, width, true); },
                 SideItem::Bell => {
                     if let Some(at)=self.notification_bell(){
                         paint::bell(&c.scaled(cx, mid, 1.1), cx, mid, theme::WHITE, paint::bell_swing(self.t - at));

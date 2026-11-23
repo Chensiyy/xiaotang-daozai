@@ -769,6 +769,7 @@ pub struct App {
     pub(crate) plugins: crate::sdk_spike::local::LocalPlugins,
     #[cfg(feature="sdk-js")]
     plugin_form_focused: bool,
+    pub(crate) pinned_display: Option<crate::sdk_spike::local::PinnedDisplay>,
     pub opts: Options,
     pub settings: model::Settings,
     /// 由主程序应用原生截图保护后再保存。
@@ -1017,6 +1018,7 @@ impl App {
             plugins: crate::sdk_spike::local::LocalPlugins::open(model::config_dir().join("local-plugins")),
             #[cfg(feature="sdk-js")]
             plugin_form_focused: false,
+            pinned_display: None,
             opts,
             render_compat_running: settings.render_compat,
             settings,
@@ -2225,6 +2227,8 @@ impl App {
         let mut cmds = Vec::new();
 
         self.tick(env, dt, elapsed);
+        #[cfg(feature="sdk-js")]
+        if self.plugins.watch_files_enabled() { ctx.request_repaint_after(std::time::Duration::from_millis(200)); }
         self.sync_device(env);
         self.update_mail_code_alerts(env);
         self.tick_alerts();
@@ -2273,6 +2277,21 @@ impl App {
         // 放不下整组时不挤压其他常驻项，整组隐藏。
         let wireless_w=self.wireless_bar_width();
         if !wireless.is_empty()&&wireless_w<=WIN_W-32.0-layout.width-12.0 {layout.append_bluetooth(wireless_w);}
+        #[cfg(feature="sdk-js")]
+        {
+            let width = (self.resident_limit() - layout.width - 12.0).min(156.0);
+            self.pinned_display = None;
+            let fits = if self.side() { self.side_bar_len() + crate::side_dock::PINNED_HEIGHT <= self.resident_limit() }
+                else { width >= 58.0 };
+            let suppress = self.open || self.effective_minimal() || self.notice.is_some() || self.hud_alpha > 0.003
+                || plugin_notice_detail || self.island_lyrics_active() || env.fullscreen_hidden || env.screen_locked
+                || !fits;
+            self.pinned_display = self.plugins.pinned_display(suppress).map(|(value, repaint)| {
+                if let Some(delay) = repaint { ctx.request_repaint_after(delay); }
+                if !self.side() { layout.append_slot(bar::PINNED, width); }
+                value
+            });
+        }
         if self.pet_enabled() {
             if let Some(a)=self.notice.as_ref().filter(|_|!self.compact_notices()&&!self.open){layout.x[bar::PET]=Some(22.0-(self.notice_size(a).0+self.pet_space())/2.0);}
             else if self.island_lyrics_active() {layout.x[bar::PET]=Some(60.0-self.lyric_bar_width()/2.0);}
@@ -3689,6 +3708,10 @@ impl App {
             if let Some(x)=layout.x[bar::PERFORMANCE] {self.performance_bar(&c,local_cx+x);}
             self.draw_wireless_bar(&c,local_cx,&layout);
             if let Some(x)=layout.x[bar::WEATHER] { self.draw_pill_weather(&c,local_cx+x,&layout); }
+            #[cfg(feature="sdk-js")]
+            if let (Some(x), Some(display)) = (layout.x[bar::PINNED], &self.pinned_display) {
+                display.draw(&c, local_cx+x, 15.0, layout.widths[bar::PINNED], false);
+            }
         }
         if self.pomo.running && compact_alpha>0.004 {
             crate::focus_bar::draw(&base.faded(compact_alpha),local_cx+layout.x[bar::FOCUS].unwrap(),15.0,self.t,&self.pomo,self.phase_secs(self.pomo.phase),false);

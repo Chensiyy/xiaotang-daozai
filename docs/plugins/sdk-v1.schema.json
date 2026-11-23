@@ -71,6 +71,7 @@
           "lyrics.source",
           "quota.source",
           "status.page",
+          "island.pinned",
           "appearance.skin",
           "appearance.material",
           "navigation.shortcuts",
@@ -562,7 +563,7 @@
           "dataVersion": {"const": 1},
           "entry": {"pattern": "^(?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_-]+\\.js$"},
           "capabilities": {
-            "items": {"enum": ["status.page", "card", "calendar.marker", "quota.source", "settings", "timer", "storage", "action", "event", "notice"]},
+            "items": {"enum": ["status.page", "card", "calendar.marker", "quota.source", "settings", "timer", "storage", "action", "event", "notice", "island.pinned"]},
             "contains": {"const": "status.page"}
           },
           "permissions": {

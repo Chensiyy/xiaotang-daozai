@@ -1,8 +1,8 @@
 //! 插件集市的目录读取、作者工具与包校验。
 
 use super::{
-    bounded, cover::COVER_LIMIT, fail, valid_id, CoverPng, Manifest, Package, Result, Values,
-    COVER_FILE,
+    bounded, cover::COVER_LIMIT, devtools, fail, valid_id, CoverPng, Manifest, Package, Result,
+    SourceInput, Values, COVER_FILE,
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
 use ring::digest::{digest, SHA256};
@@ -16,7 +16,7 @@ use std::{
     io::{self, Cursor, Read, Write},
     path::{Path, PathBuf},
     process::ExitCode,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use url::Url;
 use zip::{write::SimpleFileOptions, CompressionMethod, ZipArchive, ZipWriter};
@@ -566,6 +566,51 @@ pub(super) fn validate_project(path: &Path) -> Result<String> {
     ))
 }
 
+pub(super) fn test_project(path: &Path, mock_path: Option<&Path>) -> Result<String> {
+    if path.file_name().and_then(|name| name.to_str()) != Some("plugin.json") {
+        return Err(fail("请指定插件根目录的 plugin.json"));
+    }
+    let manifest: Value = serde_json::from_str(&bounded(path, MANIFEST_LIMIT)?)?;
+    let report = devtools::capability_report(&manifest);
+    let package = Package::read(path)
+        .map_err(|error| fail(&format!("{}：{error}\n{report}", path.display())))?;
+    let manifest = &package.manifest;
+    let heading = format!("{} v{} 校验通过\n{report}", manifest.id, manifest.version);
+    if manifest.runtime != "js" {
+        if mock_path.is_some() {
+            return Err(fail("模拟输入只适用于 JavaScript 插件"));
+        }
+        if manifest.is_material() && !cfg!(feature = "sdk-material") {
+            return Err(fail(&format!("当前版本未启用 GPU 材质支持\n{report}")));
+        }
+        return Ok(heading);
+    }
+    let mock = mock_path
+        .map(|path| serde_json::from_str::<devtools::MockInput>(&bounded(path, 2 * 1024 * 1024)?)
+            .map_err(|error| fail(&format!("模拟输入 {} 无效：{error}", path.display()))))
+        .transpose()?
+        .unwrap_or_default();
+    let values = package.settings_values(mock.settings.as_ref().unwrap_or(&Values::new()));
+    let today = match mock.now {
+        Some(now) => chrono::DateTime::from_timestamp_millis(now)
+            .ok_or_else(|| fail("模拟输入 now 超出 Unix 毫秒时间戳的范围"))?
+            .with_timezone(&chrono::Local),
+        None => chrono::Local::now(),
+    }.date_naive().to_string();
+    let mut lines = Vec::new();
+    let started = Instant::now();
+    let run = package.render_input_with(
+        &values, &mock.storage, &today, SourceInput::Unconfigured, super::interactions::Call::Refresh,
+        Some(&mock), &mut lines,
+    );
+    let elapsed = started.elapsed().as_secs_f64() * 1000.0;
+    let logs = if lines.is_empty() { String::new() } else {
+        format!("\n脚本日志\n{}", lines.join("\n"))
+    };
+    let (_, raw) = run.map_err(|error| fail(&format!("{error}\n{report}{logs}")))?;
+    Ok(format!("{heading}\nrefresh 用时 {elapsed:.2} ms\n{raw}{logs}"))
+}
+
 pub(super) fn create_template(
     parent: &Path,
     id: &str,
@@ -811,13 +856,16 @@ pub(in crate::sdk_spike) fn author_command(args: &[OsString]) -> Option<ExitCode
     // Windows 图形程序的显式作者命令与父终端共用控制台。
     unsafe { AttachConsole(u32::MAX) };
     let result = match (operation, &args[2..]) {
-        ("--plugin-test", [manifest]) => validate_project(Path::new(manifest)),
+        ("--plugin-test", [manifest]) => test_project(Path::new(manifest), None),
+        ("--plugin-test", [manifest, flag, mock]) if flag == "--input" => {
+            test_project(Path::new(manifest), Some(Path::new(mock)))
+        }
         ("--plugin-pack", [manifest, output]) => pack(Path::new(manifest), Path::new(output))
             .map(|_| format!("已生成插件包 {}", Path::new(output).display())),
         ("--plugin-submit", [zip, catalog]) => submit(Path::new(zip), Path::new(catalog))
             .map(|_| format!("已提交到测试集市 {}", Path::new(catalog).display())),
         _ => Err(fail(match operation {
-            "--plugin-test" => "用法：--plugin-test <plugin.json>",
+            "--plugin-test" => "用法：--plugin-test <plugin.json> [--input <mock.json>]",
             "--plugin-pack" => "用法：--plugin-pack <plugin.json> <输出 ZIP>",
             _ => "用法：--plugin-submit <插件 ZIP> <catalog.json>",
         })),
