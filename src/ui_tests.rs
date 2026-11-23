@@ -6298,6 +6298,44 @@ fn header_grip_has_uniform_fill_at_fractional_dpi() {
 }
 
 #[test]
+fn page_resize_mail_quota_wheel_keeps_clock_and_titles_anchored() {
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=H::new();
+    h.app.settings.island_size=105;
+    h.app.settings.clock_12h=false;
+    h.app.settings.clock_seconds=false;
+    h.app.settings.clock_period=0;
+    h.app.settings.show_battery=false;
+    h.app.settings.visible_pages.fill(true);
+    h.app.show_page(5);
+    h.hover(H::local(210.0,18.0),1.0);
+    let baseline=|h:&H,label:&str|h.shapes.iter().find_map(|shape|match &shape.shape{
+        egui::Shape::Text(t) if t.galley.text()==label && t.pos.y<30.0=>{
+            let glyph=t.galley.rows.first()?.glyphs.first()?;
+            Some(t.pos+Vec2::new(0.0,glyph.pos.y))
+        },
+        _=>None,
+    });
+    let clock=baseline(&h,"09:41").unwrap();
+    let title=baseline(&h,"邮箱").unwrap();
+    for (delta,page,label) in [(-40.0,6,"AI"),(40.0,5,"邮箱")] {
+        h.wheel(delta);
+        assert_eq!(h.app.page,page);
+        for _ in 0..40 {
+            let position=baseline(&h,"09:41").expect("切页时钟应逐帧可见");
+            assert!(position.distance(clock)<0.1,"时钟从 {clock:?} 移到了 {position:?}");
+            for name in ["邮箱","AI"] {
+                if let Some(position)=baseline(&h,name) {
+                    assert!(position.distance(title)<0.1,"标题 {name} 从 {title:?} 移到了 {position:?}");
+                }
+            }
+            h.frame(vec![]);
+        }
+        assert!(baseline(&h,label).is_some());
+    }
+}
+
+#[test]
 fn page_resize_quota_calendar_weather_keep_date_and_grip_fixed() {
     use crate::display_layout::Bounds;
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
@@ -10181,6 +10219,37 @@ fn quota_acceptance_new_api_user_balance_is_visible(){
     h.app.quota.config.selected="relay-user".into();h.app.quota.rows.insert("relay-user".into(),Ok(snapshot));h.app.show_page(6);h.hover(H::local(230.0,65.0),1.0);
     assert!(h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t)if t.galley.text()=="1.1 USD")));
     assert!(!h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t)if t.galley.text()=="余额暂不可查询")));
+}
+
+#[test]
+fn quota_acceptance_trae_cn_template_displays_remaining_credits(){
+    use crate::quota::{relay::script,Account,Provider};
+    let source="https://api.trae.cn";
+    let credential=script::Credential{
+        script:include_str!("../docs/quota-templates/trae-cn.js").into(),api_key:"session=synthetic".into(),
+        access_token:"synthetic-token".into(),user_id:String::new(),
+    };
+    let fetch=|body:&'static str|{
+        let agent=ureq::AgentBuilder::new().middleware(move |r:ureq::Request,_:ureq::MiddlewareNext|{
+            assert_eq!(r.url(),"https://api.trae.cn/trae/api/v2/pay/user_current_entitlement_list");
+            assert_eq!(r.method(),"POST");
+            assert_eq!(r.header("Cookie"),Some("session=synthetic"));
+            assert_eq!(r.header("Authorization"),Some("Cloud-IDE-JWT synthetic-token"));
+            ureq::Response::new(200,"OK",body)
+        }).build();
+        script::request(&agent,source,&credential,||false)
+    };
+    let snapshot=fetch(r#"{"is_credits_billing":true,"usage_summary":{"total_amount":10000,"consumed_amount":2000.25}}"#).unwrap();
+    assert_eq!(snapshot.relay.as_ref().unwrap().compact(),"7999.75 积分");
+    let empty=fetch(r#"{"is_credits_billing":true,"usage_summary":{"total_amount":0,"consumed_amount":0}}"#).unwrap();
+    assert_eq!(empty.relay.unwrap().compact(),"0 积分");
+    assert!(fetch(r#"{"is_credits_billing":true,"usage_summary":{"total_amount":10000}}"#).is_err());
+    assert!(fetch(r#"{"code":1001}"#).is_err());
+
+    let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();
+    h.app.quota.config.accounts=vec![Account{id:"trae".into(),provider:Provider::RelayCustom,alias:"TRAE 国区".into(),source:source.into(),slot:None,enabled:true,pinned:true}];
+    h.app.quota.config.selected="trae".into();h.app.quota.rows.insert("trae".into(),Ok(snapshot));h.app.show_page(6);h.hover(H::local(230.0,65.0),1.0);
+    assert!(h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t)if t.galley.text()=="7999.75 积分")));
 }
 
 #[test]

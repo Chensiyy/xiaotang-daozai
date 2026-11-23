@@ -80,6 +80,10 @@ pub use updates::record_install_size;
 #[cfg(windows)]
 pub mod native;
 #[cfg(windows)]
+mod window_bounds;
+#[cfg(windows)]
+mod crop_front_buffer;
+#[cfg(windows)]
 pub mod wechat;
 #[cfg(windows)]
 pub mod tray;

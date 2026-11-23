@@ -1008,6 +1008,14 @@ impl Context {
         self.write(move |ctx| reader(&ctx.viewport().graphics))
     }
 
+    /// 当前已绘制图形的外接矩形，包含各层的裁剪和坐标变换。
+    pub fn paint_bounds(&self) -> Rect {
+        self.read(|ctx| ctx.viewports.get(&ctx.viewport_id()).map_or(
+            Rect::NOTHING,
+            |viewport| viewport.graphics.paint_bounds(&ctx.memory.to_global),
+        ))
+    }
+
     /// Read-only access to [`PlatformOutput`].
     ///
     /// This is what egui outputs each pass and frame.

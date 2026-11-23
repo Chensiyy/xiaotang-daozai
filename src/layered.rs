@@ -228,6 +228,15 @@ impl Layered {
     /// 把一帧（RGBA，已预乘）交给显示窗口。画面没变返回 Ok(false)；
     /// 尺寸与岛仔窗口当前大小不符（读回之后窗口又改了大小）时跳过，等下一帧。
     pub fn present(&mut self, owner: HWND, size: [usize; 2], rgba: &[u8]) -> windows::core::Result<bool> {
+        self.present_inner(owner,size,rgba,false)
+    }
+
+    /// 外框交接时先亮出原位置的旧画面，再把主 HWND 的画面隐藏。
+    pub(crate) fn cover(&mut self, owner:HWND, size:[usize;2], rgba:&[u8])->windows::core::Result<bool> {
+        self.present_inner(owner,size,rgba,true)
+    }
+
+    fn present_inner(&mut self, owner:HWND, size:[usize;2], rgba:&[u8], cover:bool)->windows::core::Result<bool> {
         let (w, h) = (size[0] as i32, size[1] as i32);
         let mut rect = RECT::default();
         unsafe { GetWindowRect(owner, &mut rect)?; }
@@ -245,14 +254,14 @@ impl Layered {
             let (src, dst_pos, sz) = (POINT::default(), POINT { x: rect.left, y: rect.top }, SIZE { cx: w, cy: h });
             UpdateLayeredWindow(self.display, None, Some(&dst_pos), Some(&sz), self.dc, Some(&src), COLORREF(0), Some(&blend), ULW_ALPHA)?;
             // 首次接管时，先显示已有像素的显示层，再淡化仍可见的主窗口。
-            if self.last.is_none() && owner_visible(owner) {
+            if cover || self.last.is_none() && owner_visible(owner) {
                 SetWindowPos(self.display,HWND_TOPMOST,rect.left,rect.top,0,0,SWP_NOACTIVATE|SWP_NOSIZE|SWP_SHOWWINDOW)?;
             }
             // 显示窗口有了内容之后才把岛仔窗口自身藏起来，避免切换瞬间什么都看不到。
             hide_owner(owner, self.last.is_none())?;
         }
         self.last = Some(hash);
-        self.sync(owner, false);
+        if !cover {self.sync(owner, false);}
         Ok(true)
     }
 
