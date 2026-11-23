@@ -498,6 +498,16 @@ pub(crate) struct Pomo {
     pub phase: Phase,
     pub remaining: f32,
     pub running: bool,
+    #[cfg(feature="sdk-js")]
+    configured_minutes: u32,
+}
+
+impl Pomo {
+    pub(crate) fn reset_remaining(&mut self, seconds: f32) {
+        self.remaining=seconds;
+        #[cfg(feature="sdk-js")]
+        {self.configured_minutes=(seconds/60.0).round() as u32;}
+    }
 }
 
 /// 本地歌词（酷狗、汽水）每 5 秒复查，最多约 1 分钟；网络失败每 30 秒重试，最多约 5 分钟。手动点重试会重新计数。
@@ -755,6 +765,8 @@ const CENTER_TINT: (f32, f32, f32) = (88.0, 222.0, 140.0);
 pub struct App {
     #[cfg(feature="sdk-js")]
     pub(crate) plugins: crate::sdk_spike::local::LocalPlugins,
+    #[cfg(feature="sdk-js")]
+    plugin_form_focused: bool,
     pub opts: Options,
     pub settings: model::Settings,
     /// 由主程序应用原生截图保护后再保存。
@@ -1001,6 +1013,8 @@ impl App {
         Self {
             #[cfg(feature="sdk-js")]
             plugins: crate::sdk_spike::local::LocalPlugins::open(model::config_dir().join("local-plugins")),
+            #[cfg(feature="sdk-js")]
+            plugin_form_focused: false,
             opts,
             render_compat_running: settings.render_compat,
             settings,
@@ -1077,7 +1091,11 @@ impl App {
             fullscreen_hidden: false,
             sit_start: 0.0,
             sit_t: Spring::new(1.0, 400.0, 0.8),
-            pomo: Pomo { phase: Phase::Focus, remaining: focus_seconds, running: false }, settings_editing:false,
+            pomo: Pomo {
+                phase: Phase::Focus, remaining: focus_seconds, running: false,
+                #[cfg(feature="sdk-js")]
+                configured_minutes: (focus_seconds/60.0).round() as u32,
+            }, settings_editing:false,
             ring_shown: Spring::new(1.0, 160.0, 0.95),
             reset_spin: Spring::new(0.0, 160.0, 0.82),
             adding: false,
@@ -1909,6 +1927,8 @@ impl App {
     }
 
     pub fn is_editing(&self) -> bool {
+        #[cfg(feature="sdk-js")]
+        if self.plugin_form_focused { return true; }
         self.adding || self.editing.is_some() || self.todo_choosing || self.task_dialog.is_some() || self.calendar.draft.is_some() || self.settings_editing
     }
 
@@ -1963,6 +1983,8 @@ impl App {
     }
 
     pub(crate) fn cancel_edit(&mut self) {
+        #[cfg(feature="sdk-js")]
+        {self.plugin_form_focused=false;}
         self.settings_editing=false;
         self.adding = false;
         self.editing = None;
@@ -2135,8 +2157,9 @@ impl App {
         #[cfg(feature="sdk-js")]
         {
             if let Some(index)=self.page.checked_sub(PAGE_NAMES.len()) {
-                let layout=self.status_pages.get(index).and_then(|(id,_)|self.plugins.status_layout(id));
-                return crate::plugin_status_ui::status_page_height(layout);
+                return self.status_pages.get(index).map_or(
+                    crate::plugin_status_ui::STATUS_PAGE_H, |(id,_)|self.plugins.status_height(id),
+                );
             }
             if self.page==TODO_PAGE && self.plugins.has_card(){return PH+46.0;}
         }
@@ -2315,6 +2338,15 @@ impl App {
         }
         if self.music_volume_open && ctx.input_mut(|i|i.consume_key(egui::Modifiers::NONE,egui::Key::Escape)) {
             self.music_volume_open=false;
+        }
+        #[cfg(feature="sdk-js")]
+        if self.plugin_form_focused && !ctx.viewport(|viewport|viewport.ime_owns_keys)
+            && ctx.input_mut(|i|i.consume_key(egui::Modifiers::NONE,egui::Key::Escape))
+        {
+            ctx.memory_mut(|memory| {
+                if let Some(id)=memory.focused() {memory.surrender_focus(id);}
+            });
+            self.plugin_form_focused=false;
         }
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) && self.is_editing() {
             self.cancel_edit();
@@ -2562,6 +2594,8 @@ impl App {
         }
         let previous_scroll=self.content_scroll.take();
         let mut page_transition=false;
+        #[cfg(feature="sdk-js")]
+        {self.plugin_form_focused=false;}
         if plugin_notice_detail {
             #[cfg(windows)]
             if self.open && reveal > 0.6 {
@@ -3898,8 +3932,10 @@ impl App {
     fn render_page(&mut self, page: usize, c: &Card, header: &Card, env: &Env, cmds: &mut Vec<Cmd>) {
         #[cfg(feature="sdk-js")]
         if let Some((id,_))=page.checked_sub(PAGE_NAMES.len()).and_then(|index|self.status_pages.get(index)) {
-            if let Some((_,status,health))=self.plugins.status_page(id) {
-                crate::plugin_status_ui::draw_status_page(c,status,health,self.plugins.status_layout(id));
+            let interaction=self.plugins.draw_status_controls(c,id);
+            if c.live {
+                self.plugin_form_focused=interaction.focused;
+                if interaction.gained_focus {cmds.push(Cmd::Focus);}
             }
             return;
         }
@@ -3966,19 +4002,23 @@ impl App {
             self.water_ml = self.water.drunk_ml as f32;
             self.water_ring.snap(self.water.percent() / 100.0);
         }
+        #[cfg(feature="sdk-js")]
+        let mut focus_finished=None;
         if self.pomo.running && !self.module_on(FOCUS_PAGE) {self.pomo.running=false;}
         if self.pomo.running {
             self.pomo.remaining -= elapsed;
             if self.pomo.remaining <= 0.0 {
                 let next = match self.pomo.phase {
                     Phase::Focus => {
+                        #[cfg(feature="sdk-js")]
+                        {focus_finished=Some(self.pomo.configured_minutes);}
                         self.pet.react(PetState::Happy);
                         Phase::Rest
                     }
                     Phase::Rest => Phase::Focus,
                 };
                 self.pomo.phase = next;
-                self.pomo.remaining = self.phase_secs(next);
+                self.pomo.reset_remaining(self.phase_secs(next));
                 self.pomo.running = false;
                 self.alert("专注计时", format!("该{}了", next.label()), 1, true);
             }
@@ -4000,7 +4040,16 @@ impl App {
         let todo_on=self.module_on(TODO_PAGE);
         #[cfg(feature="sdk-js")]
         {
-            self.plugins.tick_features(todo_on,self.module_on(CALENDAR_PAGE),self.quota_active(),&env.today);
+            let calendar_on=self.module_on(CALENDAR_PAGE);
+            let quota_on=self.quota_active();
+            self.plugins.tick_features(todo_on,calendar_on,quota_on,&env.today);
+            if let Some(minutes)=focus_finished {
+                self.plugins.focus_finished(chrono::Utc::now().timestamp(),minutes,todo_on,calendar_on,quota_on);
+            }
+            #[cfg(windows)]
+            for notice in self.plugins.take_script_notices(self.settings.notifications,chrono::Utc::now().timestamp_millis()) {
+                self.receive_plugin_notice(notice);
+            }
             self.sync_status_pages();
         }
         let due: Vec<_> = self.todos.items.iter().enumerate().filter(|(_, item)| todo_on && item.reminder_due(&now)).map(|(i,item)| (i,item.text.clone())).collect();

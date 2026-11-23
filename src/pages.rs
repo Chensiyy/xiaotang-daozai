@@ -371,7 +371,7 @@ impl App {
         rc.circle(329.0, 50.0, 11.0, mix(Color32::from_rgb(28, 28, 30), Color32::from_rgb(50, 50, 54), h));
         paint::reset(&rc, 329.0, 50.0, -self.reset_spin.pos, Color32::from_gray(230));
         if r.clicked() {
-            self.pomo.remaining = self.phase_secs(self.pomo.phase);
+            self.pomo.reset_remaining(self.phase_secs(self.pomo.phase));
             self.pomo.running = false;
             self.reset_spin.target += TAU;
         }
@@ -399,7 +399,7 @@ impl App {
         let b2=b2.on_hover_text(if self.pomo.running{"暂停计时"}else{"开始计时"});
         if b2.clicked() {
             if self.pomo.remaining <= 0.0 {
-                self.pomo.remaining = self.phase_secs(self.pomo.phase);
+                self.pomo.reset_remaining(self.phase_secs(self.pomo.phase));
             }
             self.pomo.running = !self.pomo.running;
         }
@@ -408,7 +408,7 @@ impl App {
     fn set_phase(&mut self, ph: Phase) {
         if self.pomo.phase==ph {return;}
         self.pomo.phase = ph;
-        self.pomo.remaining = self.phase_secs(ph);
+        self.pomo.reset_remaining(self.phase_secs(ph));
         self.pomo.running = false;
     }
 

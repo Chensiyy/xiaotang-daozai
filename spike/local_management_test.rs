@@ -1,7 +1,7 @@
 use super::*;
 use eframe::egui;
 
-fn frame(
+pub(super) fn frame(
     ctx: &egui::Context,
     events: Vec<egui::Event>,
     draw: impl FnMut(&mut egui::Ui),
@@ -28,7 +28,7 @@ fn frame_in(
     )
 }
 
-fn click(ctx: &egui::Context, label: &str, mut draw: impl FnMut(&mut egui::Ui)) {
+pub(super) fn click(ctx: &egui::Context, label: &str, mut draw: impl FnMut(&mut egui::Ui)) {
     let _ = frame(ctx, vec![], &mut draw);
     let out = frame(ctx, vec![], &mut draw);
     let pos = out
@@ -55,7 +55,7 @@ fn click(ctx: &egui::Context, label: &str, mut draw: impl FnMut(&mut egui::Ui)) 
     click_at(ctx, pos, draw);
 }
 
-fn click_at(ctx: &egui::Context, pos: egui::Pos2, mut draw: impl FnMut(&mut egui::Ui)) {
+pub(super) fn click_at(ctx: &egui::Context, pos: egui::Pos2, mut draw: impl FnMut(&mut egui::Ui)) {
     for pressed in [true, false] {
         let _ = frame(
             ctx,
@@ -73,7 +73,7 @@ fn click_at(ctx: &egui::Context, pos: egui::Pos2, mut draw: impl FnMut(&mut egui
     }
 }
 
-fn has_text(output: &egui::FullOutput, label: &str) -> bool {
+pub(super) fn has_text(output: &egui::FullOutput, label: &str) -> bool {
     output
         .shapes
         .iter()

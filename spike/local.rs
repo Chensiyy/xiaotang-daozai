@@ -1,4 +1,6 @@
 //! 本地开发包的安装、状态及卡片执行。每次操作原子保存一个插件的快照。
+#[path = "plugin_interactions.rs"]
+mod interactions;
 #[path = "capabilities.rs"]
 mod capabilities;
 #[path = "cover.rs"]
@@ -21,6 +23,7 @@ use crate::plugin_status::{PluginStatus, StatusHealth, StatusLayout};
 use crate::quota_plugin::PluginQuota;
 use capabilities::Surface;
 use cover::{CoverPng, COVER_FILE};
+use interactions::{ActionNetwork, Call, EventName, InteractionState, NoticeHistory, ScriptNotice};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use source_read::{SourceGrant, SourceKind};
@@ -136,6 +139,18 @@ struct Manifest {
         skip_serializing_if = "Option::is_none"
     )]
     status_layout: Option<StatusLayout>,
+    #[serde(
+        default,
+        deserialize_with = "present_value",
+        skip_serializing_if = "Option::is_none"
+    )]
+    events: Option<[EventName; 1]>,
+    #[serde(
+        default,
+        deserialize_with = "present_value",
+        skip_serializing_if = "Option::is_none"
+    )]
+    network: Option<ActionNetwork>,
 }
 fn default_refresh() -> u32 {
     60
@@ -170,6 +185,8 @@ struct Record {
     source_grant: Option<SourceGrant>,
     #[serde(default, skip_serializing_if = "is_false")]
     status_page_disabled: bool,
+    #[serde(default, skip_serializing_if = "NoticeHistory::is_empty")]
+    notice_history: NoticeHistory,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -247,6 +264,8 @@ struct Output {
     quota: Option<PluginQuota>,
     #[serde(default)]
     status: Option<PluginStatus>,
+    #[serde(default)]
+    notice: Option<ScriptNotice>,
     #[serde(default)]
     storage: Value,
 }
@@ -404,11 +423,24 @@ impl Manifest {
             return Err(fail("请核对插件 ID、作者、版本和 API 版本"));
         }
         capabilities::check(&m.runtime, &m.owner, &m.capabilities).map_err(|e| fail(&e))?;
+        if m.has_capability("event") != m.events.is_some() {
+            return Err(fail("声明 event 时须在 events 中订阅一次 focus.finished"));
+        }
+        if m.network.as_ref().is_some_and(|network| {
+            !m.has_capability("action") || !network.valid_hosts()
+        }) {
+            return Err(fail("动作链接需要 action 能力及 1 至 4 个完整域名"));
+        }
         if let Some(layout) = &m.status_layout {
             if !m.is_status_page() {
                 return Err(fail("statusLayout 只适用于声明了 status.page 的插件"));
             }
             layout.validate().map_err(fail)?;
+            if !m.has_capability("action") && layout.components.iter().any(|component| {
+                matches!(component, crate::plugin_status::StatusComponent::Actions {} | crate::plugin_status::StatusComponent::Fields {})
+            }) {
+                return Err(fail("状态页的按钮和表单组件需要 action 能力"));
+            }
         }
         let material = m.is_material();
         if m.is_wireless() {
@@ -651,7 +683,7 @@ impl Package {
     }
 
     fn render(&self, values: &Values, storage: &Value, today: &str) -> Result<Output> {
-        self.render_input(values, storage, today, SourceInput::Unconfigured)
+        self.render_input(values, storage, today, SourceInput::Unconfigured, Call::Refresh)
     }
 
     fn render_input(
@@ -660,6 +692,7 @@ impl Package {
         storage: &Value,
         today: &str,
         source: SourceInput,
+        call: Call,
     ) -> Result<Output> {
         let runtime = rquickjs::Runtime::new()?;
         runtime.set_memory_limit(4 * 1024 * 1024);
@@ -671,13 +704,14 @@ impl Package {
         if require_source {
             input["source"] = serde_json::to_value(source)?;
         }
+        let invocation = call.prepare(&mut input);
         let input = input.to_string();
         let end = Instant::now() + Duration::from_millis(30);
         runtime.set_interrupt_handler(Some(Box::new(move || Instant::now() >= end)));
         let raw = ctx.with(|c| -> rquickjs::Result<String> {
             c.eval::<(), _>(self.source.as_bytes())?;
             c.globals().set("__input", input)?;
-            c.eval("JSON.stringify(refresh(JSON.parse(__input)))")
+            c.eval(invocation)
         })?;
         if raw.len() > 16 * 1024 {
             return Err(fail("插件输出超过 16 KiB"));
@@ -698,9 +732,13 @@ impl Package {
             if !has(Surface::StatusPage) {
                 return Err(fail("此插件未声明状态页能力"));
             }
+            if !self.manifest.has_capability("action") && status.has_interactions() {
+                return Err(fail("此插件未声明状态页交互能力"));
+            }
             if !status.valid() {
                 return Err(fail("状态页需要返回格式有效的 status 或 null"));
             }
+            self.manifest.check_action_links(status)?;
         }
         if let Some(quota) = &output.quota {
             if !has(Surface::Quota) {
@@ -709,6 +747,11 @@ impl Package {
             if !quota.valid() {
                 return Err(fail("额度来源需要返回格式有效的 quota 或 null"));
             }
+        }
+        if output.notice.as_ref().is_some_and(|notice| {
+            !self.manifest.has_capability("notice") || !notice.valid()
+        }) {
+            return Err(fail("插件提醒需要 notice 能力以及格式有效的 id、title 和 body"));
         }
         if !ready {
             output.status = None;
@@ -776,7 +819,8 @@ pub struct LocalPlugins {
     /// 上一轮开着的输出位置。模块重新打开时，让其他归属的插件立刻补算这个位置的内容。
     live: Vec<Surface>,
     quota: BTreeMap<String, PluginQuota>,
-    status: BTreeMap<String, std::result::Result<PluginStatus, StatusHealth>>,
+    status: BTreeMap<String, std::result::Result<(u64, PluginStatus), StatusHealth>>,
+    interactions: InteractionState,
     calendar_day: String,
     next: BTreeMap<String, Instant>,
     errors: BTreeMap<String, String>,
@@ -815,6 +859,7 @@ impl LocalPlugins {
             live: Vec::new(),
             quota: BTreeMap::new(),
             status: BTreeMap::new(),
+            interactions: InteractionState::default(),
             calendar_day: String::new(),
             next: BTreeMap::new(),
             errors: BTreeMap::new(),
@@ -1037,6 +1082,7 @@ impl LocalPlugins {
         self.markers.remove(id);
         self.quota.remove(id);
         self.status.remove(id);
+        self.interactions.forget(id);
         self.next.remove(id);
         self.errors.remove(id);
         self.drafts.remove(id);
@@ -1064,6 +1110,7 @@ impl LocalPlugins {
             material_granted: false,
             source_grant: None,
             status_page_disabled: false,
+            notice_history: NoticeHistory::default(),
         };
         if let Some(old) = self.records.get(&id) {
             if old.package.is_some() {
@@ -1073,6 +1120,7 @@ impl LocalPlugins {
                 return Err(fail("保留数据属于原本地清单，请从原位置重装"));
             }
             record.storage = old.storage.clone();
+            record.notice_history = old.notice_history.clone();
             record.values = old.values.clone();
         } else if self.path(&id).exists() && !self.invalid.contains(&id) {
             return Err(fail("已有无法读取的插件记录"));
@@ -1222,6 +1270,8 @@ impl LocalPlugins {
             _ => {}
         }
         self.next.retain(|id, _| !belongs(id));
+        self.status.retain(|id, _| !belongs(id));
+        self.interactions.retain(|id| !belongs(id));
         for (id, job) in &self.jobs {
             if belongs(id) {
                 job.cancelled.store(true, Ordering::Release);
@@ -1288,7 +1338,14 @@ impl LocalPlugins {
                     Ok(Some(output))
                 });
             match result {
-                Ok(Some(Output { card, marker, quota, status, .. })) => {
+                Ok(Some(Output { card, marker, quota, status, notice, .. })) => {
+                    self.interactions.forms.remove(&id);
+                    #[cfg(windows)]
+                    if let Some(notice) = notice {
+                        self.interactions.notices.insert(id.clone(), notice);
+                    }
+                    #[cfg(not(windows))]
+                    let _ = notice;
                     self.errors.remove(&id);
                     let Some(surfaces) = self
                         .records
@@ -1305,7 +1362,8 @@ impl LocalPlugins {
                         match surface {
                             Surface::StatusPage => match &status {
                                 Some(status) => {
-                                    self.status.insert(id.clone(), Ok(status.clone()));
+                                    self.interactions.revision += 1;
+                                    self.status.insert(id.clone(), Ok((self.interactions.revision, status.clone())));
                                 }
                                 None => {
                                     self.status.remove(&id);
@@ -1338,6 +1396,7 @@ impl LocalPlugins {
                 }
                 Ok(None) => {
                     self.errors.remove(&id);
+                    self.interactions.forms.remove(&id);
                     self.status.insert(id, Err(StatusHealth::Offline));
                 }
                 Err(e) => {
@@ -1345,6 +1404,7 @@ impl LocalPlugins {
                     self.markers.remove(&id);
                     self.quota.remove(&id);
                     self.status.remove(&id);
+                    self.interactions.forms.remove(&id);
                     self.errors.insert(id, e);
                 }
             }
@@ -1358,22 +1418,13 @@ impl LocalPlugins {
             .iter()
             .filter(|(id, r)| {
                 !self.jobs.contains_key(*id)
+                    && !self.interactions.notices.contains_key(*id)
                     && r.enabled
                     && r.package.as_ref().is_some_and(|pkg| {
-                        let owner_on = match pkg.manifest.owner.as_str() {
-                            "tasks" => tasks_on && !pkg.manifest.is_retired_lunar_preview(),
-                            "calendar" => calendar_on,
-                            "quota" => quota_on,
-                            "status" => {
-                                !r.status_page_disabled
-                                    && (r.source_kind().is_none() || r.source_grant().is_some())
-                            }
-                            _ => false,
-                        };
-                        owner_on
-                            && self.next.get(*id).is_none_or(|t| {
-                                *t <= now && pkg.manifest.capabilities.iter().any(|c| c == "timer")
-                            })
+                        r.owner_on(tasks_on, calendar_on, quota_on)
+                            && (self.interactions.has_call(id) || self.next.get(*id).is_none_or(|t| {
+                                *t <= now && pkg.manifest.has_capability("timer")
+                            }))
                     })
             })
             .map(|(id, _)| id.clone())
@@ -1387,6 +1438,7 @@ impl LocalPlugins {
             if reading_source && self.jobs.values().any(|job| job.reading_source) {
                 continue;
             }
+            let call = self.interactions.pop_call(&id);
             let mut r = self.records[&id].clone();
             let today = today.to_owned();
             let pkg = r.package.as_ref().unwrap();
@@ -1413,13 +1465,14 @@ impl LocalPlugins {
                     return Err("读取已取消".into());
                 }
                 let package = r.package.as_ref().unwrap();
-                if package.manifest.is_status_page()
+                if matches!(&call, Call::Refresh)
+                    && package.manifest.is_status_page()
                     && matches!(&source, SourceInput::Offline)
                 {
                     return Ok(Rendered::StatusOffline);
                 }
                 let output = package
-                    .render_input(&r.values, &r.storage, &today, source)
+                    .render_input(&r.values, &r.storage, &today, source, call)
                     .map_err(|e| e.to_string())?;
                 if worker_cancelled.load(Ordering::Acquire) {
                     return Err("读取已取消".into());
@@ -1521,7 +1574,7 @@ impl LocalPlugins {
             .as_ref()
             .filter(|package| package.manifest.is_status_page())?;
         let (snapshot, health) = match self.status.get(id) {
-            Some(Ok(snapshot)) if snapshot.fresh_at(chrono::Utc::now().timestamp()) => {
+            Some(Ok((_, snapshot))) if snapshot.fresh_at(chrono::Utc::now().timestamp()) => {
                 (Some(snapshot), StatusHealth::Ready)
             }
             Some(Ok(_)) => (None, StatusHealth::Stale),

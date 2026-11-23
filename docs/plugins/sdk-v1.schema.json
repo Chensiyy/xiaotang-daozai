@@ -77,10 +77,11 @@
           "wireless.receivers",
           "storage",
           "timer",
+          "action",
           "event",
+          "notice",
           "network",
           "file.read",
-          "notification",
           "appearance.pet",
           "appearance.icon"
         ]
@@ -89,6 +90,18 @@
       "uniqueItems": true
     },
     "refreshSeconds": {"type":"integer","minimum":60,"maximum":86400,"default":60},
+    "network": {
+      "type": "object",
+      "description": "实验。宿主动作允许打开的 HTTPS 域名。",
+      "properties": {
+        "hosts": {
+          "type": "array", "minItems": 1, "maxItems": 4, "uniqueItems": true,
+          "items": {"type": "string", "format": "hostname", "maxLength": 253}
+        }
+      },
+      "required": ["hosts"],
+      "additionalProperties": false
+    },
     "statusLayout": {
       "type": "object",
       "description": "状态详情页的组件顺序与样式。缺省时使用默认模板。",
@@ -101,7 +114,7 @@
             "oneOf": [
               {
                 "type": "object",
-                "properties": {"type": {"enum": ["state", "summary", "alert", "updated_at"]}},
+                "properties": {"type": {"enum": ["state", "summary", "alert", "updated_at", "actions", "fields", "list"]}},
                 "required": ["type"],
                 "additionalProperties": false
               },
@@ -131,7 +144,10 @@
             {"contains": {"properties": {"type": {"const": "progress"}}}, "minContains": 0, "maxContains": 1},
             {"contains": {"properties": {"type": {"const": "metrics"}}}, "minContains": 0, "maxContains": 1},
             {"contains": {"properties": {"type": {"const": "alert"}}}, "minContains": 0, "maxContains": 1},
-            {"contains": {"properties": {"type": {"const": "updated_at"}}}, "minContains": 0, "maxContains": 1}
+            {"contains": {"properties": {"type": {"const": "updated_at"}}}, "minContains": 0, "maxContains": 1},
+            {"contains": {"properties": {"type": {"const": "actions"}}}, "minContains": 0, "maxContains": 1},
+            {"contains": {"properties": {"type": {"const": "fields"}}}, "minContains": 0, "maxContains": 1},
+            {"contains": {"properties": {"type": {"const": "list"}}}, "minContains": 0, "maxContains": 1}
           ]
         },
         "style": {
@@ -146,6 +162,10 @@
       },
       "required": ["components"],
       "additionalProperties": false
+    },
+    "events": {
+      "description": "订阅宿主事件，声明 event 能力时必填。",
+      "const": ["focus.finished"]
     },
     "actions": {
       "description": "待宿主实现。列出可供用户点击或提交的动作名称。",
@@ -173,16 +193,6 @@
           "maxItems": 32,
           "uniqueItems": true
         },
-        "events": {
-          "type": "array",
-          "items": {
-            "enum": [
-              "focus.finished"
-            ]
-          },
-          "maxItems": 32,
-          "uniqueItems": true
-        },
         "files": {
           "type": "array",
           "items": {
@@ -190,9 +200,6 @@
           },
           "maxItems": 32,
           "uniqueItems": true
-        },
-        "notifications": {
-          "type": "boolean"
         },
         "screen.backdrop": {
           "const": true
@@ -430,8 +437,39 @@
   "additionalProperties": false,
   "allOf": [
     {
+      "if": {"required": ["network"]},
+      "then": {"properties": {"capabilities": {"contains": {"const": "action"}}}}
+    },
+    {
       "if": {"required": ["statusLayout"]},
       "then": {"properties": {"capabilities": {"contains": {"const": "status.page"}}}}
+    },
+    {
+      "if": {"properties": {"capabilities": {"contains": {"const": "event"}}}},
+      "then": {"required": ["events"]},
+      "else": {"not": {"required": ["events"]}}
+    },
+    {
+      "if": {"properties": {"capabilities": {"contains": {"enum": ["action", "event", "notice"]}}}},
+      "then": {
+        "properties": {
+          "runtime": {"const": "js"},
+          "owner": {"enum": ["tasks", "calendar", "quota", "status"]}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"capabilities": {"contains": {"const": "action"}}}},
+      "then": {"properties": {"capabilities": {"contains": {"const": "status.page"}}}},
+      "else": {
+        "properties": {
+          "statusLayout": {
+            "properties": {
+              "components": {"not": {"contains": {"properties": {"type": {"enum": ["actions", "fields"]}}}}}
+            }
+          }
+        }
+      }
     },
     {
       "if": {"properties": {"runtime": {"const": "material"}}},
@@ -570,21 +608,16 @@
       }
     },
     {
-      "if": {
-        "anyOf": [
-          {"properties": {"owner": {"const": "status"}}},
-          {"properties": {"capabilities": {"contains": {"const": "status.page"}}}}
-        ]
-      },
+      "if": {"properties": {"capabilities": {"contains": {"const": "status.page"}}}},
       "then": {
         "required": ["entry", "settings"],
         "properties": {
           "runtime": {"const": "js"},
-          "owner": {"const": "status"},
+          "owner": {"enum": ["tasks", "calendar", "quota", "status"]},
           "dataVersion": {"const": 1},
           "entry": {"pattern": "^(?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_-]+\\.js$"},
           "capabilities": {
-            "items": {"enum": ["status.page", "settings", "timer", "storage"]},
+            "items": {"enum": ["status.page", "card", "calendar.marker", "quota.source", "settings", "timer", "storage", "action", "event", "notice"]},
             "contains": {"const": "status.page"}
           },
           "permissions": {
@@ -597,6 +630,10 @@
         "if": {"properties": {"settings": {"minItems": 1}}},
         "then": {"properties": {"capabilities": {"contains": {"const": "settings"}}}}
       }
+    },
+    {
+      "if": {"properties": {"owner": {"const": "status"}}},
+      "then": {"properties": {"capabilities": {"contains": {"const": "status.page"}}}}
     },
     {
       "if": {
