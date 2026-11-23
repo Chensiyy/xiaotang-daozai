@@ -829,14 +829,19 @@ impl Package {
         logs: &mut Vec<String>,
     ) -> Result<(Output, String)> {
         let mut input = json!({"settings":values,"storage":storage,"today":today});
-        script_settings::time_input(&mut input, chrono::Utc::now(), self.manifest.timezones, &self.manifest.settings, values);
+        let now = match mock.and_then(|mock| mock.now) {
+            Some(millis) => chrono::DateTime::from_timestamp_millis(millis)
+                .ok_or_else(|| fail("模拟输入 now 超出 Unix 毫秒时间戳的范围"))?,
+            None => chrono::Utc::now(),
+        };
+        script_settings::time_input(
+            &mut input, now, self.manifest.timezones, &self.manifest.settings, values,
+        );
         if !self.data.is_empty() {
             input["data"] = serde_json::to_value(package_data::data_input(&self.data)?)?;
         }
         let require_source = self.manifest.source_kind().is_some();
-        let ready = !require_source
-            || source.ready()
-            || mock.is_some_and(|mock| mock.sources.is_some());
+        let source_ready = source.ready();
         if require_source {
             #[cfg(windows)]
             if let Some(sources) = self.manifest.network.as_ref().and_then(|n| n.sources.as_ref()) {
@@ -856,9 +861,8 @@ impl Package {
             }
         }
         let invocation = call.prepare(&mut input);
-        if let Some(mock) = mock {
-            mock.apply(&mut input);
-        }
+        let mocked_ready = mock.and_then(|mock| mock.apply(&mut input));
+        let ready = !require_source || mocked_ready.unwrap_or(source_ready);
         let raw = devtools::run_script(
             self.source.as_bytes(), &self.manifest.entry, input.to_string(), invocation, logs,
         )?;
