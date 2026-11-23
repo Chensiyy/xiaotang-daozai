@@ -18,6 +18,7 @@ pub(crate) enum StatusHealth {
     Offline,
     Stale,
     Invalid,
+    CanvasInvalid,
     Ready,
 }
 
@@ -61,6 +62,8 @@ pub(crate) struct PluginStatus {
     pub actions: Vec<StatusAction>,
     #[serde(default)]
     pub fields: Vec<StatusField>,
+    #[serde(skip)]
+    pub canvas: Option<std::sync::Arc<crate::plugin_canvas::Canvas>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
@@ -169,6 +172,7 @@ pub(crate) enum StatusComponent {
     Counter {},
     Clock {},
     Countdown {},
+    Canvas {},
 }
 
 impl StatusComponent {

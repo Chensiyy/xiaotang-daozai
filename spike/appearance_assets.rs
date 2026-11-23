@@ -195,9 +195,14 @@ fn parse_icons(source: &str) -> Result<BTreeMap<String, Icon>> {
 }
 
 fn validate_svg(svg: &str) -> Result<()> {
+    load_static_svg(svg, 8 * 1024, 512)?;
+    Ok(())
+}
+
+pub(super) fn load_static_svg(svg: &str, bytes: usize, side: u32) -> Result<eframe::egui::ColorImage> {
     const SVG_NS: &str = "http://www.w3.org/2000/svg";
-    if svg.len() > 8 * 1024 {
-        return Err(fail("每个 SVG 功能图标最多 8 KiB"));
+    if svg.len() > bytes {
+        return Err(fail("SVG 超过大小限制"));
     }
     let doc = roxmltree::Document::parse(svg)?;
     let root = doc.root_element();
@@ -211,7 +216,7 @@ fn validate_svg(svg: &str) -> Result<()> {
     if root.tag_name().name() != "svg"
         || root.tag_name().namespace() != Some(SVG_NS)
         || view_box.len() != 4
-        || !view_box.iter().all(|v| v.abs() <= 512.0)
+        || !view_box.iter().all(|v| v.abs() <= f64::from(side))
         || view_box[2] < 1.0
         || view_box[3] < 1.0
     {
@@ -248,7 +253,7 @@ fn validate_svg(svg: &str) -> Result<()> {
                     .strip_suffix("px")
                     .unwrap_or(value)
                     .parse::<f64>()
-                    .is_ok_and(|n| (1.0..=512.0).contains(&n)),
+                    .is_ok_and(|n| (1.0..=f64::from(side)).contains(&n)),
                 "viewBox" | "version" if node == root => true,
                 "stroke-linecap" => matches!(value, "butt" | "round" | "square"),
                 "stroke-linejoin" => matches!(value, "miter" | "round" | "bevel"),
@@ -264,8 +269,7 @@ fn validate_svg(svg: &str) -> Result<()> {
         }
     }
     // 用宿主实际的 SVG 解码器验证作者提供的尺寸和画布。
-    egui_extras::image::load_svg_bytes(svg.as_bytes()).map_err(|e| fail(&e))?;
-    Ok(())
+    egui_extras::image::load_svg_bytes(svg.as_bytes()).map_err(|e| fail(&e))
 }
 
 #[cfg(test)]

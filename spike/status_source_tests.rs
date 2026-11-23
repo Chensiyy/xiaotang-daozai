@@ -98,6 +98,43 @@ fn snapshot(progress: u8) -> String {
 }
 
 #[test]
+fn canvas_demo_assets_survive_install_and_market_round_trip() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("spike/examples/canvas-demo/plugin.json");
+    let bundle = fixture.0.join("canvas-demo.zip");
+    market::pack(&path, &bundle)?;
+    let mut zip = zip::ZipArchive::new(fs::File::open(bundle)?)?;
+    assert!(zip.by_name("badge.svg").is_ok());
+    let id = "example.canvas-demo";
+    let mut host = fixture.host();
+    host.install(&path)?;
+    host.enable(id, true)?;
+    drop(host);
+    let mut host = fixture.host();
+    settle(&mut host, false);
+    let (_, snapshot, health) = host.status_page(id).unwrap();
+    assert_eq!(health, StatusHealth::Ready);
+    assert_eq!(snapshot.unwrap().canvas.as_ref().unwrap().height, 172.0);
+    Ok(())
+}
+
+#[test]
+fn canvas_invalid_image_is_reported_in_status_and_devtools() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let id = "fixture.canvas";
+    let path = fixture.plugin(id, "status", &["status.page", "status.canvas"], json!({}),
+        "function refresh() {return {canvas:{height:50,nodes:[{image:'missing.svg',rect:[0,0,10,10]}]}};}",
+    )?;
+    let mut host = fixture.host();
+    host.install(&path)?;
+    host.enable(id, true)?;
+    settle(&mut host, false);
+    assert_eq!(status(&host, id), (None, StatusHealth::CanvasInvalid));
+    assert!(host.devtools.logs.snapshot().iter().any(|line| line.contains("missing.svg")));
+    Ok(())
+}
+
+#[test]
 fn structured_status_layout_is_optional_and_preserved_in_author_packages() -> Result<()> {
     use crate::plugin_status::{ProgressVariant, StatusComponent, StatusDensity, StatusSurface};
 

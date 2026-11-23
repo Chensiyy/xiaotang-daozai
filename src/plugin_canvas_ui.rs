@@ -1,0 +1,817 @@
+//! 插件画布的矢量绘制和静态几何缓存。
+
+#[path = "plugin_canvas_geometry.rs"]
+mod geometry;
+
+use crate::{
+    paint::Card,
+    plugin_canvas::{Align, Canvas, Color, Fit, Glow, Kind, Node, Paint, Shadow, Token},
+    skin_paint::{self, Palette},
+    theme::{self, W},
+};
+use eframe::{
+    egui::{self, pos2, vec2, Color32, Pos2, Rect, Vec2},
+    epaint::{Mesh, Shape, Tessellator, TextShape},
+};
+use geometry::{arc, path, rectangle, Clip, Outline, Pigment, Transform};
+use std::{
+    collections::VecDeque,
+    sync::Arc,
+    time::{Duration, Instant},
+};
+
+const FRAME_BUDGET: Duration = Duration::from_millis(4);
+const CACHE_LIMIT: usize = 8;
+
+#[derive(Clone, Copy, PartialEq)]
+pub(crate) struct CanvasTheme {
+    pub palette: Option<Palette>,
+    pub accent: Option<Color32>,
+    pub background: Color32,
+}
+
+impl CanvasTheme {
+    fn token(self, token: &Token) -> Color32 {
+        let nominal = match token {
+            Token::Accent => return self.accent.unwrap_or_else(|| self.map(theme::BLUE)),
+            Token::Text => theme::WHITE,
+            Token::Muted => theme::GRAY,
+            Token::Dim => theme::DIM,
+            Token::Card => theme::CARD,
+            Token::Track => theme::TRACK,
+            Token::Bg => return self.background,
+        };
+        self.map(nominal)
+    }
+
+    fn map(self, color: Color32) -> Color32 {
+        self.palette
+            .map_or(color, |palette| skin_paint::map_color(color, &palette))
+    }
+
+    fn color(self, color: &Color) -> Color32 {
+        match color {
+            Color::Rgba([r, g, b, a]) => Color32::from_rgba_unmultiplied(*r, *g, *b, *a),
+            Color::Token(token) => self.token(token),
+            Color::Pick { pick, .. } => self.color(&pick[0]),
+        }
+    }
+
+    fn pigment(self, paint: &Paint, transform: Transform, opacity: f32) -> Pigment {
+        let color = |c: &Color| self.color(c).gamma_multiply(opacity);
+        let stops = |stops: &[(f32, Color)]| {
+            stops
+                .iter()
+                .map(|(offset, ink)| (*offset, color(ink)))
+                .collect()
+        };
+        match paint {
+            Paint::Solid(ink) => Pigment::Solid(color(ink)),
+            Paint::Linear {
+                from,
+                to,
+                stops: colors,
+            } => {
+                let from = transform.point(from);
+                let direction = transform.point(to) - from;
+                Pigment::Linear {
+                    from,
+                    projected: direction / direction.length_sq().max(f32::EPSILON),
+                    stops: stops(colors),
+                }
+            }
+            Paint::Radial {
+                center,
+                radius,
+                stops: colors,
+            } => Pigment::Radial {
+                center: transform.point(center),
+                radius: (radius.initial() * transform.scale).max(f32::EPSILON),
+                stops: stops(colors),
+            },
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+struct View {
+    scale: f32,
+    pixels: f32,
+    size: Vec2,
+    theme: CanvasTheme,
+}
+
+#[derive(Clone)]
+struct Cache {
+    id: egui::Id,
+    view: View,
+    canvas: Arc<Canvas>,
+    scene: Option<Arc<Scene>>,
+    failures: u8,
+    previous: Option<Arc<Scene>>,
+}
+
+#[derive(Default)]
+struct Scene {
+    items: Vec<(Rect, Item)>,
+}
+
+enum Item {
+    Mesh(Arc<Mesh>),
+    Text {
+        job: egui::text::LayoutJob,
+        base: Pos2,
+        angle: f32,
+        pigment: Pigment,
+        clip: Clip,
+    },
+    Image {
+        name: String,
+        rect: Rect,
+        transform: Transform,
+        fit: Fit,
+        color: Color32,
+        clip: Clip,
+    },
+}
+
+/// 返回是否超出绘制预算。错误或超时由插件宿主登记到开发调试页面。
+pub(crate) fn draw(
+    c: &Card,
+    id: &str,
+    canvas: &Arc<Canvas>,
+    area: Rect,
+    theme: CanvasTheme,
+    mut image: impl FnMut(&str) -> Option<(egui::TextureId, Vec2)>,
+) -> bool {
+    let ctx = c.ui.ctx();
+    let pixels = ctx.pixels_per_point();
+    let view = View {
+        scale: c.s,
+        pixels,
+        size: area.size(),
+        theme,
+    };
+    let id = c.ui.make_persistent_id(("plugin-canvas", id));
+    let cache_id = egui::Id::new("plugin-canvas-scenes");
+    let mut caches = ctx
+        .data_mut(|data| std::mem::take(data.get_temp_mut_or_default::<VecDeque<Cache>>(cache_id)));
+    let old = caches
+        .iter()
+        .position(|cache| cache.id == id)
+        .and_then(|i| caches.remove(i));
+    let mut cache = match old {
+        Some(mut old)
+            if old.view == view
+                && (Arc::ptr_eq(&old.canvas, canvas) || old.canvas.as_ref() == canvas.as_ref()) =>
+        {
+            old.canvas = Arc::clone(canvas);
+            old
+        }
+        old => Cache {
+            id,
+            view,
+            canvas: Arc::clone(canvas),
+            scene: None,
+            failures: 0,
+            previous: old
+                .filter(|old| old.view == view)
+                .and_then(|old| old.previous),
+        },
+    };
+    let start = Instant::now();
+    let offset = (area.min.to_vec2() * pixels).round() / pixels;
+    let clip = area.intersect(c.painter.clip_rect());
+    let mut timed_out = cache.failures >= 2;
+    if !timed_out {
+        if cache.scene.is_none() {
+            cache.scene = Builder::new(view, start).build(canvas).map(Arc::new);
+        }
+        if let Some(scene) = &cache.scene {
+            timed_out = !scene.draw(c, offset, clip, Some(start), &mut image);
+            if !timed_out {
+                cache.previous = Some(Arc::clone(scene));
+                cache.failures = 0;
+            }
+        } else {
+            timed_out = true;
+        }
+        if timed_out {
+            cache.failures += 1;
+            if cache.failures == 1 {
+                ctx.request_repaint();
+            }
+        }
+    }
+    if timed_out {
+        if let Some(previous) = &cache.previous {
+            // 上一帧已细分的几何仍可复用；纹理跟随正在显示的包。
+            previous.draw(c, offset, clip, None, &mut image);
+        } else {
+            let local = c.to_local(clip.center());
+            c.centered_text(
+                local.x,
+                local.y,
+                "插件画面有误",
+                12.0,
+                W::Regular,
+                theme::DIM,
+                crate::paint::H::Center,
+            );
+        }
+    }
+    caches.push_front(cache);
+    caches.truncate(CACHE_LIMIT);
+    ctx.data_mut(|data| data.insert_temp(cache_id, caches));
+    timed_out
+}
+
+impl Scene {
+    fn draw(
+        &self,
+        c: &Card,
+        offset: Vec2,
+        area: Rect,
+        start: Option<Instant>,
+        mut image: impl FnMut(&str) -> Option<(egui::TextureId, Vec2)>,
+    ) -> bool {
+        let mut shapes = Vec::with_capacity(self.items.len());
+        for (local_clip, item) in &self.items {
+            let clip = local_clip.translate(offset).intersect(area);
+            if !clip.is_positive() {
+                continue;
+            }
+            if start.is_some_and(|start| start.elapsed() >= FRAME_BUDGET) {
+                return false;
+            }
+            match item {
+                Item::Mesh(mesh) => {
+                    let mut shape = Shape::Mesh(Arc::clone(mesh));
+                    if offset != Vec2::ZERO {
+                        shape.translate(offset);
+                    }
+                    shapes.push((clip, shape));
+                }
+                Item::Text {
+                    job,
+                    base,
+                    angle,
+                    pigment,
+                    clip: group_clip,
+                } => {
+                    if let Some(shape) = text_shape(
+                        c, job, *base, *angle, pigment, offset, clip, group_clip, start,
+                    ) {
+                        shapes.push(shape);
+                    }
+                }
+                Item::Image {
+                    name,
+                    rect,
+                    transform,
+                    fit,
+                    color,
+                    clip: group_clip,
+                } => {
+                    if let Some((id, size)) = image(name) {
+                        let mut mesh = image_mesh(id, size, *rect, *transform, fit, *color);
+                        if group_clip.mesh(&mut mesh, |point| point, start).is_none() {
+                            return false;
+                        }
+                        for vertex in &mut mesh.vertices {
+                            vertex.pos += offset;
+                        }
+                        shapes.push((clip, Shape::mesh(mesh)));
+                    }
+                }
+            }
+        }
+        if start.is_some_and(|start| start.elapsed() >= FRAME_BUDGET) {
+            return false;
+        }
+        let layer = c.painter.layer_id();
+        let first = skin_paint::shape_count(c.ui.ctx(), layer);
+        let mut shapes = shapes.into_iter().peekable();
+        while let Some((clip, shape)) = shapes.next() {
+            c.painter
+                .with_clip_rect(clip)
+                .extend(std::iter::once(shape).chain(std::iter::from_fn(|| {
+                    shapes.next_if(|(next, _)| *next == clip).map(|(_, s)| s)
+                })));
+        }
+        skin_paint::tone_since(c.ui.ctx(), layer, first, |color, _| color);
+        true
+    }
+}
+
+struct Builder {
+    view: View,
+    start: Instant,
+    tessellator: Tessellator,
+    scene: Scene,
+}
+
+impl Builder {
+    fn new(view: View, start: Instant) -> Self {
+        let tessellator = Tessellator::new(view.pixels, Default::default(), [1; 2], Vec::new());
+        Self {
+            view,
+            start,
+            tessellator,
+            scene: Scene::default(),
+        }
+    }
+
+    fn build(mut self, canvas: &Canvas) -> Option<Scene> {
+        let transform = Transform::new(self.view.scale);
+        let clip = Clip::new(Rect::from_min_size(Pos2::ZERO, self.view.size));
+        self.nodes(&canvas.nodes, transform, &clip, 1.0)?;
+        Some(self.scene)
+    }
+
+    fn nodes(
+        &mut self,
+        nodes: &[Node],
+        transform: Transform,
+        clip: &Clip,
+        opacity: f32,
+    ) -> Option<()> {
+        if !clip.rect.is_positive() {
+            return Some(());
+        }
+        for node in nodes {
+            if self.start.elapsed() >= FRAME_BUDGET {
+                return None;
+            }
+            self.node(
+                node,
+                transform,
+                clip,
+                opacity * node.style.opacity.initial().clamp(0.0, 1.0),
+            )?;
+        }
+        Some(())
+    }
+
+    fn node(&mut self, node: &Node, transform: Transform, clip: &Clip, opacity: f32) -> Option<()> {
+        if opacity == 0.0 {
+            return Some(());
+        }
+        let style = &node.style;
+        let theme = self.view.theme;
+        let fill = style
+            .fill
+            .as_ref()
+            .map(|paint| theme.pigment(paint, transform, opacity));
+        let stroke = style
+            .stroke
+            .as_ref()
+            .map(|paint| theme.pigment(paint, transform, opacity));
+        let width = style.width.initial().max(0.0) * transform.scale;
+        let (outlines, fill_outlines) = match &node.kind {
+            Kind::Group {
+                group,
+                clip: group_clip,
+                translate,
+                rotate,
+                scale,
+            } => {
+                let t = transform.child(translate, rotate.initial(), scale.initial().max(0.0));
+                if t.scale <= 0.0 {
+                    return Some(());
+                }
+                if t.scale > 1024.0 {
+                    return None;
+                }
+                let group_clip = group_clip.as_ref().map(|r| clip.child(r, t));
+                return self.nodes(group, t, group_clip.as_ref().unwrap_or(clip), opacity);
+            }
+            Kind::Text {
+                text,
+                at,
+                size,
+                weight,
+                align,
+                max_width,
+                lines,
+                ..
+            } => {
+                let size = (size.initial().clamp(6.0, 96.0) * transform.scale)
+                    .min(256.0 / self.view.pixels);
+                let weight = match weight {
+                    0..=499 => W::Regular,
+                    500..=649 => W::Semibold,
+                    _ => W::Bold,
+                };
+                let max_width = max_width
+                    .as_ref()
+                    .map_or(f32::INFINITY, |v| v.initial() * transform.scale);
+                let mut job = egui::text::LayoutJob::simple(
+                    crate::rtl_text::display(text).into_owned(),
+                    theme::font(size, weight),
+                    Color32::PLACEHOLDER,
+                    max_width,
+                );
+                job.wrap.max_rows = usize::from(*lines);
+                job.wrap.break_anywhere = *lines == 1;
+                job.halign = match align {
+                    Align::Left => egui::Align::LEFT,
+                    Align::Center => egui::Align::Center,
+                    Align::Right => egui::Align::RIGHT,
+                };
+                let pigment = fill.unwrap_or_else(|| {
+                    Pigment::Solid(theme.token(&Token::Text).gamma_multiply(opacity))
+                });
+                self.scene.items.push((
+                    clip.rect,
+                    Item::Text {
+                        job,
+                        base: transform.point(at),
+                        angle: transform.angle,
+                        pigment,
+                        clip: clip.clone(),
+                    },
+                ));
+                return Some(());
+            }
+            Kind::Image { image, rect, fit } => {
+                let rect = geometry::rect(rect);
+                if rect.is_positive() {
+                    self.scene.items.push((
+                        clip.rect,
+                        Item::Image {
+                            name: image.clone(),
+                            rect,
+                            transform,
+                            fit: *fit,
+                            color: Color32::WHITE.gamma_multiply(opacity),
+                            clip: clip.clone(),
+                        },
+                    ));
+                }
+                return Some(());
+            }
+            Kind::Rect { rect, r } => (vec![rectangle(rect, r, transform)], None),
+            Kind::Circle([x, y, r]) => (
+                vec![arc(
+                    transform.xy(x.initial(), y.initial()),
+                    r.initial() * transform.scale,
+                    0.0,
+                    360.0,
+                    self.view.pixels,
+                )],
+                None,
+            ),
+            Kind::Arc { c, r, start, sweep } => (
+                vec![arc(
+                    transform.point(c),
+                    r.initial() * transform.scale,
+                    start.initial() + transform.angle.to_degrees(),
+                    sweep.initial(),
+                    self.view.pixels,
+                )],
+                None,
+            ),
+            Kind::Line([x0, y0, x1, y1]) => (
+                vec![Outline::open(vec![
+                    transform.xy(x0.initial(), y0.initial()),
+                    transform.xy(x1.initial(), y1.initial()),
+                ])],
+                None,
+            ),
+            Kind::Polyline { points, area } => {
+                let line = Outline::open(points.iter().map(|p| transform.point(p)).collect());
+                let area = area.as_ref().and_then(|area| {
+                    let [first, last] = [points.first()?, points.last()?];
+                    let mut points = line.points.clone();
+                    points.push(transform.xy(last[0].initial(), area.initial()));
+                    points.push(transform.xy(first[0].initial(), area.initial()));
+                    Some(vec![Outline {
+                        points,
+                        closed: true,
+                    }])
+                });
+                (vec![line], area)
+            }
+            Kind::Path(commands) => (
+                path(commands, transform, self.view.pixels, self.start)?,
+                None,
+            ),
+        };
+        let mut mesh = Mesh::default();
+        self.tessellator.set_clip_rect(clip.rect);
+        if let Some(shadow) = &style.shadow {
+            let bounds = outlines.iter().fold(Rect::NOTHING, |b, outline| {
+                b.union(Rect::from_points(&outline.points))
+            });
+            if bounds.is_positive() {
+                let (drop, blur) = match shadow {
+                    Shadow::Sm => (2.0, 6.0),
+                    Shadow::Md => (4.0, 12.0),
+                    Shadow::Lg => (7.0, 20.0),
+                };
+                let shape = egui::epaint::RectShape::filled(
+                    bounds.translate(vec2(0.0, drop * transform.scale)),
+                    (blur * transform.scale * 0.5).round().min(255.0) as u8,
+                    Color32::from_black_alpha(95).gamma_multiply(opacity),
+                )
+                .with_blur_width(blur * transform.scale);
+                self.tessellator.tessellate_rect(&shape, &mut mesh);
+            }
+        }
+        if let Some(glow) = &style.glow {
+            let mut pigment = match glow {
+                Glow::Color(color) => Pigment::Solid(theme.color(color).gamma_multiply(opacity)),
+                Glow::Default => {
+                    stroke
+                        .as_ref()
+                        .or(fill.as_ref())
+                        .cloned()
+                        .unwrap_or(Pigment::Solid(
+                            theme.token(&Token::Accent).gamma_multiply(opacity),
+                        ))
+                }
+            };
+            pigment.multiply(0.10);
+            for step in [9.0, 6.0, 3.0] {
+                for outline in &outlines {
+                    outline.stroke(
+                        &mut self.tessellator,
+                        &mut mesh,
+                        &pigment,
+                        width + step * transform.scale,
+                        &style.cap,
+                        None,
+                        self.start,
+                    )?;
+                }
+                pigment.multiply(1.35);
+            }
+        }
+        let area_fill = fill_outlines.as_deref().unwrap_or(&outlines);
+        if let Some(fill) = &fill {
+            geometry::fill(
+                &mut self.tessellator,
+                &mut mesh,
+                area_fill,
+                fill,
+                self.start,
+            )?;
+        }
+        if let Some(stroke) = &stroke {
+            let dash = style.dash.as_ref().map(|[length, gap]| {
+                [
+                    length.initial() * transform.scale,
+                    gap.initial() * transform.scale,
+                ]
+            });
+            for outline in &outlines {
+                outline.stroke(
+                    &mut self.tessellator,
+                    &mut mesh,
+                    stroke,
+                    width,
+                    &style.cap,
+                    dash,
+                    self.start,
+                )?;
+            }
+        }
+        clip.mesh(&mut mesh, |point| point, Some(self.start))?;
+        if !mesh.is_empty() {
+            match self.scene.items.last_mut() {
+                Some((last_clip, Item::Mesh(batch))) if *last_clip == clip.rect => {
+                    Arc::make_mut(batch).append(mesh)
+                }
+                _ => self
+                    .scene
+                    .items
+                    .push((clip.rect, Item::Mesh(Arc::new(mesh)))),
+            }
+        }
+        Some(())
+    }
+}
+
+fn text_shape(
+    c: &Card,
+    job: &egui::text::LayoutJob,
+    base: Pos2,
+    angle: f32,
+    pigment: &Pigment,
+    offset: Vec2,
+    clip: Rect,
+    group_clip: &Clip,
+    start: Option<Instant>,
+) -> Option<(Rect, Shape)> {
+    let mut galley = c.ui.fonts(|fonts| fonts.layout_job(job.clone()));
+    let first_glyph = galley.rows.first()?.glyphs.first();
+    let ascent = first_glyph.map_or(0.0, |glyph| glyph.pos.y);
+    let rotation = egui::emath::Rot2::from_angle(angle);
+    let position = base - rotation * vec2(0.0, ascent);
+    let pixels = c.ui.ctx().pixels_per_point();
+    let position = ((position.to_vec2() * pixels).round() / pixels).to_pos2();
+    let mut local_clip = group_clip.clone();
+    let width = job.wrap.max_width;
+    let clip = if width.is_finite() {
+        let left = match job.halign {
+            egui::Align::Min => 0.0,
+            egui::Align::Center => -width / 2.0,
+            egui::Align::Max => -width,
+        };
+        if angle != 0.0 {
+            local_clip.horizontal(position, rotation, left, left + width);
+        }
+        let bounds = Rect::from_min_size(pos2(left, 0.0), vec2(width, galley.size().y));
+        clip.intersect(
+            bounds
+                .rotate_bb(rotation)
+                .translate(position.to_vec2() + offset),
+        )
+    } else {
+        clip
+    };
+    if !clip.is_positive() {
+        return None;
+    }
+    let color = if let Pigment::Solid(color) = pigment {
+        *color
+    } else {
+        for row in &mut Arc::make_mut(&mut galley).rows {
+            for vertex in &mut row.visuals.mesh.vertices {
+                vertex.color = pigment.color_at(position + rotation * vertex.pos.to_vec2());
+            }
+        }
+        Color32::WHITE
+    };
+    if local_clip.has_planes() {
+        for row in &mut Arc::make_mut(&mut galley).rows {
+            local_clip.mesh(
+                &mut row.visuals.mesh,
+                |point| position + rotation * point.to_vec2(),
+                start,
+            )?;
+            row.visuals.mesh_bounds = row.visuals.mesh.calc_bounds();
+        }
+    }
+    let shape = TextShape::new(position + offset, galley, color).with_angle(angle);
+    Some((clip, shape.into()))
+}
+
+fn image_mesh(
+    id: egui::TextureId,
+    size: Vec2,
+    rect: Rect,
+    transform: Transform,
+    fit: &Fit,
+    color: Color32,
+) -> Mesh {
+    let unit = Rect::from_min_max(Pos2::ZERO, pos2(1.0, 1.0));
+    let x = rect.width() / size.x;
+    let y = rect.height() / size.y;
+    let (rect, uv) = match fit {
+        Fit::Contain => (Rect::from_center_size(rect.center(), size * x.min(y)), unit),
+        Fit::Cover => (
+            rect,
+            Rect::from_center_size(unit.center(), rect.size() / (size * x.max(y))),
+        ),
+    };
+    let mut mesh = Mesh::with_texture(id);
+    mesh.add_rect_with_uv(rect, uv, color);
+    for vertex in &mut mesh.vertices {
+        vertex.pos = transform.pos(vertex.pos);
+    }
+    mesh
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::skin_paint::{CREAM, GLASS_DARK, GLASS_LIGHT};
+
+    #[test]
+    fn plugin_canvas_theme_keeps_literal_colors_and_resolves_tokens() {
+        let palette = CanvasTheme {
+            palette: Some(CREAM),
+            accent: Some(Color32::BLUE),
+            background: Color32::RED,
+        };
+        assert_eq!(palette.token(&Token::Text), Color32::from_rgb(46, 32, 22));
+        assert_eq!(palette.token(&Token::Accent), Color32::BLUE);
+        assert_eq!(palette.token(&Token::Bg), Color32::RED);
+        assert_eq!(palette.color(&Color::Rgba([255; 4])), Color32::WHITE);
+    }
+
+    #[test]
+    fn plugin_canvas_demo_renders_at_both_scales() {
+        let runtime = rquickjs::Runtime::new().unwrap();
+        let js = rquickjs::Context::full(&runtime).unwrap();
+        let output: String = js.with(|js| {
+            js.eval::<(), _>(include_str!("../spike/examples/canvas-demo/main.js"))
+                .unwrap();
+            js.eval("JSON.stringify(refresh().canvas)").unwrap()
+        });
+        let canvas = Arc::new(Canvas::parse(serde_json::from_str(&output).unwrap()).unwrap());
+        let ctx = egui::Context::default();
+        theme::load_fonts(&ctx);
+        let badge = egui_extras::image::load_svg_bytes(include_bytes!(
+            "../spike/examples/canvas-demo/badge.svg"
+        ))
+        .unwrap();
+        let texture = ctx.load_texture("插件演示图", badge, egui::TextureOptions::LINEAR);
+        let destination =
+            std::env::var_os("DAOZAI_CANVAS_SCREENSHOTS").map(std::path::PathBuf::from);
+        let mut screenshot = crate::preview_raster::Raster::new(419, 230);
+        for (name, palette) in [
+            ("classic", None),
+            ("cream", Some(CREAM)),
+            ("glass-light", Some(GLASS_LIGHT)),
+            ("glass-dark", Some(GLASS_DARK)),
+        ] {
+            let background = palette.map_or(Color32::BLACK, |palette| {
+                let [r, g, b] = palette.paper;
+                Color32::from_rgb(r, g, b)
+            });
+            let theme = CanvasTheme {
+                palette,
+                accent: None,
+                background,
+            };
+            for scale in [1.0, 2.0] {
+                let panel = Rect::from_min_size(Pos2::ZERO, vec2(419.0, 230.0) * scale);
+                let frame = |ui: &egui::Ui| {
+                    let mut card = Card::new(ui, Pos2::ZERO, panel);
+                    card.s = scale;
+                    card.fill(0.0, 0.0, 419.0, 230.0, 18.0, background);
+                    card.text(
+                        16.0,
+                        26.0,
+                        "画布演示",
+                        15.0,
+                        W::Bold,
+                        theme.token(&Token::Text),
+                        crate::paint::H::Left,
+                    );
+                    draw(
+                        &card,
+                        "canvas-demo",
+                        &canvas,
+                        card.rect(16.0, 42.0, 387.0, canvas.height),
+                        theme,
+                        |name| (name == "badge.svg").then(|| (texture.id(), texture.size_vec2())),
+                    )
+                };
+                let mut found = false;
+                for _ in 0..2 {
+                    let out = ctx.run(
+                        egui::RawInput {
+                            screen_rect: Some(panel),
+                            ..Default::default()
+                        },
+                        |ctx| {
+                            egui::CentralPanel::default().frame(egui::Frame::NONE).show(
+                                ctx,
+                                |ui| {
+                                    frame(ui);
+                                },
+                            );
+                        },
+                    );
+                    screenshot.update_textures(&out.textures_delta);
+                    let label = out.shapes.iter().find_map(|entry| match &entry.shape {
+                        Shape::Text(shape) if shape.galley.text() == "72%" => {
+                            Some((entry.clip_rect, shape))
+                        }
+                        _ => None,
+                    });
+                    if let Some((clip, label)) = label {
+                        assert!(clip.width() <= 54.0 * scale + f32::EPSILON);
+                        assert!(label.galley.size().x <= clip.width());
+                        assert!(out
+                            .shapes
+                            .iter()
+                            .any(|entry| entry.shape.texture_id() == texture.id()));
+                        found = true;
+                        if let Some(path) = destination.as_ref().filter(|_| scale == 1.0) {
+                            std::fs::create_dir_all(path).unwrap();
+                            let points = ctx.tessellate(out.shapes, out.pixels_per_point);
+                            screenshot.buf.fill([0.0; 4]);
+                            screenshot.draw(&points, out.pixels_per_point);
+                            let mut rgba = Vec::new();
+                            screenshot.to_rgba8(&mut rgba);
+                            image::RgbaImage::from_raw(419, 230, rgba)
+                                .unwrap()
+                                .save(path.join(format!("A-canvas-{name}.png")))
+                                .unwrap();
+                        }
+                    }
+                    screenshot.free_textures(&out.textures_delta);
+                    if found {
+                        break;
+                    }
+                }
+                assert!(found, "{name}、缩放 {scale}：未绘制演示画布");
+            }
+        }
+    }
+}

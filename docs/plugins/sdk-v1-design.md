@@ -31,6 +31,7 @@ function refresh({ settings, today }) {
 | 岛上常驻位 · 实验 | 声明 `island.pinned`，通过 `refresh` 返回 `pinned:{text:"今日金价",value:"850 元/克",icon:"coin"}` | 收起的岛，由用户选择并排序 |
 | 结构化状态卡和独立详情页 · 测试版 | 清单使用 `"owner":"status"` 和 `"capabilities":["status.page","timer"]`，`refresh` 返回 `status`。可用 `statusLayout` 选择组件、排序和样式。 | 在岛上翻页查看，在「设置 → 页面管理 → 状态详情」单独启停 |
 | 状态页组件与主题令牌 · 实验 | 在状态页布局中添加列表、迷你折线、多行说明和标签，可设强调色、强调程度及岛仔内置图标 | 在状态详情页查看 |
+| 自绘画布 · 实验 | 同时声明 `status.page` 和 `status.canvas`，脚本返回画布的图元与样式 | 可填满状态详情页或与标准组件混排 |
 | 实时状态组件与敏感值 · 实验 | 布局选择 `counter`、`clock`、`countdown`，由岛仔计算实时读数。金额等数据须标记 `sensitive:true`。 | 在状态详情页查看，点击暂时显示敏感值 |
 | 状态详情交互 · 实验 | 同时声明 `action` 和 `status.page`。可使用按钮、单行表单、可点的列表项，以及宿主的打开链接和复制动作 | 在状态详情输入内容或点击操作 |
 | 可编辑独立模块 · 待宿主实现 | 清单声明 module 与按钮 `actions:["save"]`。示意 `function action(i){return {page:{kind:"detail",text:i.form.text},storage:{note:i.form.text}}}` | 岛上功能栏查看、编辑，侧栏调偏好，页面管理启停 |
@@ -52,7 +53,7 @@ action 接收按钮 ID 和表单值，event 接收事件名和事件数据。两
 
 岛仔用一张能力表核对清单（[能力表](../../spike/capabilities.rs)）。每种能力写明需要的运行环境、落在哪里，以及能否和别的能力同时声明。`owner` 只决定插件设置放在哪个设置页，以及哪个模块关掉时整个插件暂停。脚本插件的归属可选 tasks、calendar、quota、status，并且至少要带上这个归属自己的输出：tasks 带 card，calendar 带 card 或 calendar.marker，quota 带 quota.source，status 带 status.page。材质、皮肤、图标、表情、快捷切换和无线设备兼容包各自独占一个包。外观资源包只声明一种能力，`permissions` 填 `{}`，`settings` 填 `[]`。
 
-外观资源包由 `plugin.json`、入口文件和 `cover.png` 组成，本地开发目录也可带说明文件。岛仔沿用集市的 ZIP 大小上限 576 KiB。各类入口的 UTF-8 JSON 格式如下。
+外观资源包由 `plugin.json`、入口文件和 `cover.png` 组成，本地开发目录也可带说明文件。集市的 ZIP 大小上限为 832 KiB。各类入口的 UTF-8 JSON 格式如下。
 
 - 皮肤包入口最多 4 KiB，例如 `{"base":"cream","colors":{"paper":"#F4F8F6","ink":"#20382F","accent":"#248161"}}`。经典 `classic` 和奶油 `cream` 开放 `paper`（底色）、`ink`（文字）和 `accent`（强调色）。毛玻璃 `glass_light`、`glass_dark` 和悬浮云 `fluid` 开放 `accent`，保留原来的透明度和纹理。至少提供一个 `#RRGGBB` 颜色。缺少的颜色沿用基础皮肤。可参考[青瓷皮肤样例](../../spike/examples/celadon-skin/plugin.json)。
 - 图标包入口最多 128 KiB，格式为 `{"icons":{"music":"<svg …>…</svg>"}}`。功能页键可用 `music`、`focus`、`health`、`shelf`、`tasks`、`mail`、`quota`、`calendar`、`weather`、`performance`、`wireless`。每个 SVG 最多 8 KiB，声明 SVG 命名空间与 `viewBox`，使用路径、基础形状和分组，可用十六进制颜色、`none` 或 `currentColor`。禁止脚本、样式表、外部资源和 `foreignObject`。
@@ -227,6 +228,7 @@ JS 清单使用 `"owner":"status"`，能力列出 `status.page`。可选的 `tim
 | `actions` | 显示 `actions` 中的按钮，需要 `action` 能力 |
 | `fields` | 显示 `fields` 中的单行文本框，需要 `action` 能力 |
 | `counter`、`clock`、`countdown` | 用对应的字段在宿主计算读数。按秒或分钟的边界重绘，脚本按原周期刷新 |
+| `canvas` | 绘制返回值中与 `status` 同级的 `canvas`，需要 `status.canvas` 能力 |
 
 `style` 可以省略。强调色 `accent` 使用六位 `#RRGGBB`，岛仔按实际底色校正到至少 3:1，省略时沿用岛仔默认状态色。间距 `density` 可选 `comfortable`（默认）或 `compact`。紧凑模式最多显示 3 项列表、2 行说明、3 个标签。背景 `surface` 可选 `card`（默认）或 `plain`。强调程度 `emphasis` 可选 `normal`（默认）或 `strong`，作用于状态标题和折线。`icon` 可将岛仔内置的 `battery`、`cup`、`clock`、`chart`、`cloud` 或 `calendar` 图标放到状态标题旁。
 
@@ -238,6 +240,50 @@ JS 清单使用 `"owner":"status"`，能力列出 `status.page`。可选的 `tim
 
 全新的插件默认停用，首次启用后详情页默认出现。可在「页面管理 → 状态详情」保存这个页面自己的开关。关闭详情页后，岛体撤下对应页面和状态卡，后台停止读取该插件的数据源，正在进行的结果作废。再次启用按当前授权重新读取。
 
+#### 自绘画布
+
+JavaScript 插件在清单中同时声明 `status.page` 和 `status.canvas`。`refresh`、`action`、`event` 都可以返回 `canvas`。返回画布时，省略布局或只配置 `{"type":"canvas"}` 会让画布占满页内内容区。与标准组件混排时，在 `statusLayout` 中添加一次 `{"type":"canvas"}` 指定画布位置，并通过同一份结果的 `status` 为标准组件提供数据。
+
+```js
+function refresh() {
+    return {
+        canvas: {
+            height: 64,
+            nodes: [
+                { rect: [0, 0, 387, 64], r: 10, fill: "$card" },
+                { text: "从这里开始画", at: [16, 38], size: 16, fill: "$text" }
+            ]
+        }
+    };
+}
+```
+
+坐标单位为逻辑像素，原点在标题行下方的内容区左上角，宽 387。画布高度 `height` 为 40 至 360。宿主随渲染缩放绘制，静止画面复用缓存。
+
+| 图元 | 字段 |
+| --- | --- |
+| 矩形 | `rect:[x,y,w,h]`，可用 `r` 指定统一圆角或按左上、右上、右下、左下给出四个圆角 |
+| 圆 | `circle:[cx,cy,r]` |
+| 弧 | `arc:{c:[cx,cy],r,start,sweep}`，角度从水平向右开始，顺时针为正 |
+| 直线 | `line:[x1,y1,x2,y2]` |
+| 折线 | `points:[[x,y],…]`，加 `area:y` 可填充曲线与水平线间的区域 |
+| 路径 | `path:"M0 0 L10 10 Q12 4 18 6 Z"`，支持 M、L、H、V、Q、C、Z 及其小写相对命令 |
+| 文字 | `text:"文字",at:[x,y],size:14`。`at` 为基线位置，可加 `weight`、`align`（left、center、right）、`max_width`、`lines`、`font` |
+| 图片 | `image:"badge.svg",rect:[x,y,w,h]`，用 `fit` 选择 cover（裁切铺满）或 contain（完整显示） |
+| 分组 | `group:[…]`，可加 `clip:[x,y,w,h]`、`translate:[x,y]`、`rotate`（度）、`scale` |
+
+`fill` 和 `stroke` 可以用 `#RRGGBB`、`#RRGGBBAA` 或跟随皮肤的 `$accent`、`$text`、`$muted`、`$dim`、`$card`、`$track`、`$bg`。文字颜色也可以用 `color`。线性渐变写作 `{linear:[[x1,y1],[x2,y2]],stops:[[0,"#FFE58A"],[1,"#FFE58A00"]]}`，径向渐变将轴换成 `radial:[[cx,cy],r]`。渐变停靠位置按从 0 到 1 的顺序排列。线型用 `width` 设置线宽、`cap` 选择 round 或 butt、`dash:[实线长,间隔长]` 设置虚线。通用效果有 `opacity`（0 至 1）、`shadow`（sm、md、lg）和 `glow`（true 或一种颜色）。可用 `id` 为图元提供稳定名称。
+
+本地安装和 ZIP 都支持用包内相对路径引用 PNG 和静态 SVG，例如 `images/badge.svg`。资源随包放置，直接在图元中填写路径即可。`/` 分隔路径层级，宿主拒绝绝对路径、含 `..` 的路径和符号链接。SVG 需要有效的 `viewBox`，使用路径、矩形、圆等静态矢量图形。
+
+画布图片每张最大 1024 × 1024，文件合计最多 512 KiB。集市封面独立校验。封面尺寸合规且画布还有剩余图片额度时，可以用 `image:"cover.png"` 引用，并计入画布图片总量。
+
+坐标须为 -2000 至 2000 的有限数字，字号为 6 至 96，文字总计最多 2000 字。画布及其分组总计最多 1500 个图元，嵌套 8 层，路径命令合计最多 4000 个。画布或其中的图片引用不合规时，页面显示「插件画面有误」，开发者工具显示原因。绘制超过 4 毫秒预算时，宿主优先沿用缓存画面，并在开发者工具记录。
+
+`canvas` 为对象时，展示结果上限为 64 KiB，私有存储另计。画布描述由岛仔绘制，脚本保持原有的刷新周期。`binds` 可保存绑定声明，静态画布按图元的字面数据绘制。宿主默认使用岛仔字体，画布隐私遵循岛仔的「截图和录屏中隐藏」设置。
+
+[画布图元样例](../../spike/examples/canvas-demo/plugin.json)展示图元、渐变、包内图片，以及画布与标准组件混排的方式。脚本的 `canvas` 字段格式见[清单格式检查表的 `$defs.canvas`](sdk-v1.schema.json)。
+
 ## 6. 数据能留多久
 
 用户可以停用插件一段时间再回来。宿主根据插件 ID 分开保存设置和私有数据，每次成功调用只替换本插件的数据。保留数据卸载后，从原清单位置重装开发包，或从原测试集市目录重装同 ID 试用包，可以找回原值。
@@ -248,7 +294,7 @@ JS 清单使用 `"owner":"status"`，能力列出 `status.page`。可选的 `tim
 
 作者在清单填写间隔，宿主负责安排工作。当前定时卡支持 60 至 86400 秒，旧样例缺省为 60 秒。首次启用或修改设置会重新计算。界面读取最近结果，每个插件同时最多一次调用，全局最多两个后台计算。停用时画面立即撤下，稍后返回的结果作废。
 
-QuickJS 每次计算限时 30 毫秒，脚本可分配的内存上限为 4 MiB。单次展示输出最多 16 KiB，私有存储另计，最多 256 KiB。普通刷新周期至少 60 秒，实时前台内容按需开放 1 秒。HTTPS 每插件最多 3 个来源，每次请求最长 10 秒，响应最多 256 KiB。拟保留 3 个固定插件卡位置和 1 个临时位置，满时让用户选择替换。
+QuickJS 每次计算限时 30 毫秒，脚本可分配的内存上限为 4 MiB。单次展示输出最多 16 KiB，包含画布时为 64 KiB，私有存储另计，最多 256 KiB。普通刷新周期至少 60 秒，实时前台内容按需开放 1 秒。HTTPS 每插件最多 3 个来源，每次请求最长 10 秒，响应最多 256 KiB。拟保留 3 个固定插件卡位置和 1 个临时位置，满时让用户选择替换。
 
 连续三次脚本执行失败后暂停并提示重试，是待实现的正式版规则。监控程序没启动时应提示打开依赖，设备离线时显示上次更新时间并降低查询频率。两种情况均属于数据来源状态，由宿主另行处理。
 
@@ -270,9 +316,9 @@ version 是插件版本，api 是需要的接口主版本，dataVersion 是存�
 
 清单 `data` 可列出包根目录的 UTF-8 JSON，单个 64 KiB、合计 256 KiB。脚本通过 `input.data[文件名]` 读取。安装、测试集市和 `--plugin-pack` 都包含已声明的数据。节假日示例自带 2026 年数据，2027 年起由作者随新版本按年更新。
 
-带 `timer` 的插件可返回 Unix 秒 `next_refresh_at`。下一次刷新取正常周期和指定时刻里较早的时间，至少间隔 60 秒。`storage` 单独限 256 KiB，其余输出限 16 KiB。写入超限时保留原有数据，在插件详情提示错误。
+带 `timer` 的插件可返回 Unix 秒 `next_refresh_at`。下一次刷新取正常周期和指定时刻里较早的时间，至少间隔 60 秒。`storage` 单独限 256 KiB，其余输出限 16 KiB，包含画布时为 64 KiB。写入超限时保留原有数据，在插件详情提示错误。
 
-宿主检查字段、ID、默认值、版本、入口和封面，并拒绝越出包目录的文件。重启时重新检查安装快照，出现无效记录提示重新安装。测试集市 ZIP 包含包根的 `plugin.json`、`cover.png` 和清单指定的 JavaScript 或快捷切换 JSON 入口。宿主核对目录中的大小与 SHA-256，直接在内存中读取包内容。正式资源包和独立模块的字段见清单格式检查表。
+宿主检查字段、ID、默认值、版本、入口和封面，并拒绝越出包目录的文件。重启时重新检查安装快照，出现无效记录提示重新安装。测试集市 ZIP 包含包根的 `plugin.json`、`cover.png`、清单指定的入口和数据文件。声明 `status.canvas` 时，`--plugin-pack` 也会打包符合要求的 PNG 和 SVG，保留包内相对路径。普通 ZIP 上限为 832 KiB，画布版 ZIP 上限为 1376 KiB，画布图片仍须遵守 512 KiB 合计上限。宿主核对目录中的大小与 SHA-256，直接在内存中读取包内容。正式资源包和独立模块的字段见清单格式检查表。
 
 材质包包含 `plugin.json`、`cover.png`、一个大小不超过 64 KiB 的 `.wgsl` 入口，以及可选的文本说明文件。默认值必须是范围内的有限数字，步长为正且不大于范围宽度。`unit` 最多 4 个字符，仅显示在滑块数值后。`precision` 为 0 至 3 的整数，省略时按 `step` 的小数位数显示。显示格式不改变参数值。控件弹簧刚度范围为 0.2 至 3，阻尼范围为 0.1 至 1。
 
@@ -323,7 +369,7 @@ function refresh({settings}) {
 
 声明 `notice` 后，三个脚本入口都可返回 `notice:{id, title, body?}`。ID 为 1 至 128 字，标题为 1 至 40 字，正文可省略，最多 120 字。每个插件同一 ID 只显示一次，60 秒内最多发出一条。提醒显示和正文遵循岛仔现有的通知开关。
 
-三个脚本入口共用每插件单次运行的限制，以及 30 ms、4 MiB 和 16 KiB 输出上限。可在本地试装[便签样例](../../spike/examples/sticky-notes/plugin.json)。
+三个脚本入口共用每插件单次运行的限制，以及 30 ms、4 MiB 和 16 KiB 的展示输出上限，包含画布时展示上限为 64 KiB。可在本地试装[便签样例](../../spike/examples/sticky-notes/plugin.json)。
 
 ## 12. 投稿怎样进入集市
 

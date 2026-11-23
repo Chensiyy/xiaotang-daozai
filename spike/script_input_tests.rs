@@ -1,6 +1,15 @@
 use super::*;
 
 #[test]
+fn canvas_output_uses_a_larger_limit_only_when_present() {
+    let output = |canvas, length| json!({"canvas":canvas, "card":"x".repeat(length)}).to_string();
+    let canvas = json!({"height": 40, "nodes": []});
+    assert!(script_settings::split_output(&output(Value::Null, 20 * 1024)).is_err());
+    assert!(script_settings::split_output(&output(canvas.clone(), 20 * 1024)).is_ok());
+    assert!(script_settings::split_output(&output(canvas, 64 * 1024)).is_err());
+}
+
+#[test]
 fn settings_accept_declared_formats_and_reject_invalid_defaults() -> Result<()> {
     let cases = [
         (json!({"type":"text"}), "北京", " "),

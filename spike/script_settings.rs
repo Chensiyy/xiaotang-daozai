@@ -179,8 +179,9 @@ pub(super) fn valid_storage(storage: &Value) -> bool {
 
 pub(super) fn split_output(raw: &str) -> Result<(Value, Value)> {
     const OUTPUT_LIMIT: usize = 16 * 1024;
-    if raw.len() > OUTPUT_LIMIT + STORAGE_LIMIT + 16 {
-        return Err(fail("插件输出或私有存储超过大小限制（16 KiB / 256 KiB）"));
+    const CANVAS_OUTPUT_LIMIT: usize = 64 * 1024;
+    if raw.len() > CANVAS_OUTPUT_LIMIT + STORAGE_LIMIT + 16 {
+        return Err(fail("插件输出或私有存储超过大小限制（画布 64 KiB / 私有存储 256 KiB）"));
     }
     let mut output: Value = serde_json::from_str(raw)?;
     let storage = output
@@ -191,8 +192,10 @@ pub(super) fn split_output(raw: &str) -> Result<(Value, Value)> {
     if !valid_storage(&storage) {
         return Err(fail("私有存储已满，上限为 256 KiB"));
     }
-    if serde_json::to_vec(&output)?.len() > OUTPUT_LIMIT {
-        return Err(fail("插件输出超过 16 KiB"));
+    let canvas = output.get("canvas").is_some_and(|value| !value.is_null());
+    let limit = if canvas { CANVAS_OUTPUT_LIMIT } else { OUTPUT_LIMIT };
+    if serde_json::to_vec(&output)?.len() > limit {
+        return Err(fail(if canvas { "插件画面有误：插件输出超过 64 KiB" } else { "插件输出超过 16 KiB" }));
     }
     Ok((output, storage))
 }

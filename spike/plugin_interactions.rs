@@ -6,6 +6,7 @@ use crate::{
     plugin_status::valid_text,
     plugin_status_ui::{self, ClickTarget, Interaction, InteractionResponse},
 };
+use eframe::egui;
 use std::collections::{BTreeSet, VecDeque};
 use url::{Host, Url};
 
@@ -254,13 +255,15 @@ impl LocalPlugins {
 
     pub(crate) fn status_height(&self, id: &str) -> f32 {
         let layout = self.status_layout(id);
+        let status = self.status_page(id).and_then(|(_, status, _)| status);
         let default_controls = layout.is_none()
+            && status.is_none_or(|status| status.canvas.is_none())
             && self
                 .records
                 .get(id)
                 .and_then(|record| record.package.as_ref())
                 .is_some_and(|package| package.manifest.has_capability("action"));
-        plugin_status_ui::status_page_height(layout)
+        plugin_status_ui::status_page_height(layout, status)
             + if default_controls {
                 plugin_status_ui::DEFAULT_FORM_HEIGHT
             } else {
@@ -279,10 +282,32 @@ impl LocalPlugins {
             return InteractionResponse::default();
         };
         let layout = self.status_layout(id);
+        let record = &self.records[id];
+        let package = record.package.as_ref().unwrap();
+        let logs = &self.devtools.logs;
+        let mut paint_canvas = |card: &Card<'_>, canvas: &Arc<Canvas>, area, theme| {
+            let ctx = card.ui.ctx();
+            let exceeded = crate::plugin_canvas_ui::draw(card, id, canvas, area, theme, |name| {
+                package.canvas_images.get(name)?.texture(ctx, name)
+            });
+            if exceeded && !record.from_market {
+                let key = egui::Id::new(("plugin-canvas-budget-log", id));
+                let report = ctx.data_mut(|data| {
+                    let reported = data.get_temp::<bool>(key).unwrap_or(false);
+                    data.insert_temp(key, true);
+                    !reported
+                });
+                if report {
+                    logs.append(id, vec!["画布绘制超过 4 毫秒，已回退到缓存帧".to_owned()]);
+                }
+            }
+        };
         let Some(controls) = status.filter(|status| {
             health == crate::plugin_status::StatusHealth::Ready && status.has_interactions()
         }) else {
-            plugin_status_ui::draw_status_page(c, id, status, health, layout, backdrop, privacy_blocked);
+            plugin_status_ui::draw_status_page(
+                c, id, status, health, layout, backdrop, privacy_blocked, Some(&mut paint_canvas),
+            );
             return InteractionResponse::default();
         };
         let status = controls.clone();
@@ -309,6 +334,7 @@ impl LocalPlugins {
             backdrop,
             privacy_blocked,
             &mut interaction,
+            Some(&mut paint_canvas),
         );
         let (response, action) = interaction.finish();
         if let Some(action) = action {
