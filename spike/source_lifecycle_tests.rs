@@ -193,3 +193,142 @@ fn disabling_an_in_flight_local_request_discards_it_and_preserves_other_cards() 
     assert_eq!(host.cards[READ], "unconfigured");
     Ok(())
 }
+
+#[test]
+fn https_manifest_combination_and_public_sample() -> Result<()> {
+    let manifest = include_str!("examples/https-repository/plugin.json");
+    let package = Package::from_entry(
+        Manifest::decode(manifest)?,
+        include_str!("examples/https-repository/main.js").into(),
+        CoverPng::decode(include_bytes!("examples/https-repository/cover.png").to_vec())?,
+    )?;
+    let input = SourceInput::Ready { text: r#"{"stargazers_count":123}"#.into() };
+    assert_eq!(
+        package.render_input(&Values::new(), &Value::Null, TODAY, input)?.card,
+        "Rust · 123 星标"
+    );
+    let original: Value = serde_json::from_str(manifest)?;
+    let mut wrong = original.clone();
+    wrong.as_object_mut().unwrap().remove("network");
+    assert!(Manifest::decode(&wrong.to_string()).is_err());
+    wrong = original.clone();
+    wrong["permissions"]["source.read"] = json!("loopback");
+    assert!(Manifest::decode(&wrong.to_string()).is_err());
+    wrong = original.clone();
+    wrong["network"]["hosts"] = json!(["example.com", "EXAMPLE.COM"]);
+    assert!(Manifest::decode(&wrong.to_string()).is_err());
+    wrong = original;
+    wrong["network"]["url"] = json!("https://elsewhere.example.com/status");
+    assert!(Manifest::decode(&wrong.to_string()).is_err());
+    Ok(())
+}
+
+#[test]
+fn gold_example_tracks_at_most_48_fresh_prices_and_shows_crossings() -> Result<()> {
+    let package = Package::from_entry(
+        Manifest::decode(include_str!("examples/gold-price/plugin.json"))?,
+        include_str!("examples/gold-price/main.js").into(),
+        CoverPng::decode(include_bytes!("examples/gold-price/cover.png").to_vec())?,
+    )?;
+    let settings = Values::from([("threshold".into(), "750".into())]);
+    let now = chrono::Utc::now();
+    let at = (now - chrono::TimeDelta::seconds(30)).to_rfc3339();
+    let mut quote = json!({
+        "xau": {"price": 751.5, "currency": "CNY", "unit": "gram"},
+        "updated_at": at, "data_state": {"status": "fresh", "as_of": at}, "fx_stale": false
+    });
+    let source = |quote: &Value| {
+        SourceInput::Multiple(BTreeMap::from([
+            ("gold".into(), SourceInput::Ready { text: quote.to_string() }),
+        ]))
+    };
+    let storage = json!({"points": (31..=78).rev().map(|age| {
+        json!({"price": 749.0, "at": now.timestamp_millis() - age * 1000})
+    }).collect::<Vec<_>>()});
+    let output = package.render_input(&settings, &storage, TODAY, source(&quote))?;
+    let status = output.status.unwrap();
+    assert_eq!(status.metrics[0].value, "751.50 元");
+    assert_eq!(status.alert.as_deref(), Some("金价达到 750 元/克"));
+    assert_eq!(output.storage["points"].as_array().unwrap().len(), 48);
+    let same_quote = package.render_input(&settings, &output.storage, TODAY, source(&quote))?;
+    assert_eq!(same_quote.storage, output.storage);
+    assert!(same_quote.status.unwrap().alert.is_none());
+    quote["data_state"]["status"] = json!("stale");
+    let stale = package.render_input(&settings, &output.storage, TODAY, source(&quote))?;
+    assert_eq!(stale.storage, output.storage);
+    assert!(stale.status.is_none());
+    Ok(())
+}
+
+#[test]
+fn adjustable_https_refresh_is_validated_persisted_and_kept_out_of_script_settings() -> Result<()> {
+    let root = Fixture::new()?;
+    let path = root.0.join("plugin.json");
+    let manifest = include_str!("examples/gold-price/plugin.json");
+    fs::write(&path, manifest)?;
+    fs::write(root.0.join("main.js"), include_str!("examples/gold-price/main.js"))?;
+    fs::write(root.0.join(COVER_FILE), include_bytes!("examples/gold-price/cover.png"))?;
+    let mut host = root.host();
+    host.install(&path)?;
+    let id = "example.gold-price";
+    assert_eq!(host.records[id].refresh_interval(), Duration::from_secs(300));
+    for (seconds, valid) in [(59, false), (60, true), (86400, true), (86401, false)] {
+        let mut values = host.records[id].values.clone();
+        values.insert(source_https::REFRESH_FIELD.into(), seconds.to_string());
+        assert_eq!(host.save(id, values).is_ok(), valid);
+    }
+    let host = root.host();
+    assert_eq!(host.records[id].refresh_interval(), Duration::from_secs(86400));
+    assert!(!host.records[id].values.contains_key(source_https::REFRESH_FIELD));
+    for invalid in [59, 86401] {
+        let mut manifest: Value = serde_json::from_str(manifest)?;
+        manifest["network"]["minRefreshSeconds"] = json!(invalid);
+        assert!(Manifest::decode(&manifest.to_string()).is_err());
+    }
+    Ok(())
+}
+
+#[test]
+fn https_credential_is_external_and_revoke_stops_reads() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let id = format!("example.https-{}", fixture.0.file_name().unwrap().to_string_lossy());
+    let path = fixture.plugin(&id, json!({"source.read":"https"}), SOURCE_CARD)?;
+    let mut manifest: Value = serde_json::from_slice(&fs::read(&path)?)?;
+    manifest["network"] = json!({
+        "hosts": ["example.com"], "url": "https://example.com/data",
+        "credential": {"label":"测试密钥", "header":"X-Test-Key", "prefix":"Bearer "}
+    });
+    fs::write(&path, serde_json::to_vec(&manifest)?)?;
+    struct Cleanup<'a>(&'a str);
+    impl Drop for Cleanup<'_> {
+        fn drop(&mut self) {
+            let _ = source_https::delete_secret(self.0);
+        }
+    }
+    let _cleanup = Cleanup(&id);
+    let mut host = fixture.host();
+    host.install(&path)?;
+    let grant = host.records[&id].network().unwrap().grant("https://example.com/data")?;
+    let secret = "nonproduction-credential-for-local-test";
+    assert!(host.set_source_grant(&id, Some(grant.clone())).is_err());
+    host.set_source_grant_with_secret(&id, Some(grant.clone()), Some(secret))?;
+    assert_eq!(host.source_grant(&id), Some(&grant));
+    assert_eq!(source_https::load_secret(&id)?.as_deref(), Some(secret));
+    assert!(!fs::read_to_string(host.path(&id))?.contains(secret));
+    drop(host);
+
+    let mut host = fixture.host();
+    assert_eq!(host.source_grant(&id), Some(&grant));
+    host.set_source_grant(&id, None)?;
+    assert!(source_https::load_secret(&id)?.is_none());
+    host.enable(&id, true)?;
+    settle(&mut host, true);
+    assert_eq!(host.cards[&id], "unconfigured");
+
+    host.set_source_grant_with_secret(&id, Some(grant), Some(secret))?;
+    host.uninstall(&id, true)?;
+    assert!(source_https::load_secret(&id)?.is_none());
+    host.install(&path)?;
+    assert!(host.source_grant(&id).is_none());
+    Ok(())
+}

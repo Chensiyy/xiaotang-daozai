@@ -14,6 +14,9 @@ mod market_metrics;
 #[cfg(windows)]
 #[path = "market_state.rs"]
 mod market_state;
+#[cfg(windows)]
+#[path = "source_https.rs"]
+mod source_https;
 #[path = "source_read.rs"]
 mod source_read;
 #[path = "local_ui.rs"]
@@ -23,7 +26,7 @@ use crate::plugin_status::{PluginStatus, StatusHealth, StatusLayout};
 use crate::quota_plugin::PluginQuota;
 use capabilities::Surface;
 use cover::{CoverPng, COVER_FILE};
-use interactions::{ActionNetwork, Call, EventName, InteractionState, NoticeHistory, ScriptNotice};
+use interactions::{Call, EventName, InteractionState, NoticeHistory, ScriptNotice};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use source_read::{SourceGrant, SourceKind};
@@ -128,6 +131,12 @@ struct Manifest {
     capabilities: Vec<String>,
     data_version: u32,
     permissions: BTreeMap<String, Value>,
+    #[cfg(windows)]
+    #[serde(default, deserialize_with = "present_value", skip_serializing_if = "Option::is_none")]
+    network: Option<source_https::Network>,
+    #[cfg(windows)]
+    #[serde(default, deserialize_with = "present_value", skip_serializing_if = "Option::is_none")]
+    attribution: Option<source_https::Attribution>,
     settings: Vec<Field>,
     #[serde(default = "default_refresh")]
     refresh_seconds: u32,
@@ -145,12 +154,6 @@ struct Manifest {
         skip_serializing_if = "Option::is_none"
     )]
     events: Option<[EventName; 1]>,
-    #[serde(
-        default,
-        deserialize_with = "present_value",
-        skip_serializing_if = "Option::is_none"
-    )]
-    network: Option<ActionNetwork>,
 }
 fn default_refresh() -> u32 {
     60
@@ -183,6 +186,12 @@ struct Record {
     material_granted: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     source_grant: Option<SourceGrant>,
+    #[cfg(windows)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_refresh_seconds: Option<u32>,
+    #[cfg(windows)]
+    #[serde(default, skip_serializing_if = "is_false")]
+    market_revoked: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     status_page_disabled: bool,
     #[serde(default, skip_serializing_if = "NoticeHistory::is_empty")]
@@ -199,7 +208,39 @@ impl Record {
     }
 
     fn source_grant(&self) -> Option<&SourceGrant> {
-        self.source_grant.as_ref().filter(|grant| Some(grant.kind()) == self.source_kind())
+        let grant = self.source_grant.as_ref()?;
+        if Some(grant.kind()) != self.source_kind() {
+            return None;
+        }
+        #[cfg(windows)]
+        if grant.kind() == SourceKind::Https && !self.network()?.accepts(grant) {
+            return None;
+        }
+        Some(grant)
+    }
+
+    #[cfg(windows)]
+    fn network(&self) -> Option<&source_https::Network> {
+        self.package.as_ref()?.manifest.network.as_ref()
+    }
+
+    fn refresh_interval(&self) -> Duration {
+        let seconds = self.package.as_ref().unwrap().manifest.refresh_seconds;
+        #[cfg(windows)]
+        let seconds = self.network().map_or(seconds, |network| {
+            network.refresh_seconds(seconds, self.source_refresh_seconds)
+        });
+        Duration::from_secs(u64::from(seconds))
+    }
+
+    fn read_source(&self, grant: &SourceGrant, cancelled: &AtomicBool) -> std::io::Result<String> {
+        #[cfg(windows)]
+        if let SourceGrant::Https { url } = grant {
+            let network = self.network().ok_or_else(|| std::io::Error::other("缺少 HTTPS 网络配置"))?;
+            let id = &self.package.as_ref().unwrap().manifest.id;
+            return network.read(id, url, cancelled);
+        }
+        grant.read(cancelled)
     }
 
     fn valid(&self, id: &str) -> bool {
@@ -270,12 +311,26 @@ struct Output {
     storage: Value,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 enum SourceInput {
     Unconfigured,
     Ready { text: String },
     Offline,
+    #[cfg(windows)]
+    #[serde(skip)]
+    Multiple(BTreeMap<String, SourceInput>),
+}
+
+impl SourceInput {
+    fn ready(&self) -> bool {
+        match self {
+            Self::Ready { .. } => true,
+            #[cfg(windows)]
+            Self::Multiple(sources) => sources.values().any(Self::ready),
+            _ => false,
+        }
+    }
 }
 
 fn bounded(path: &Path, max: u64) -> Result<String> {
@@ -325,6 +380,19 @@ fn valid_field(f: &Field, v: &str) -> bool {
     }
 }
 impl Manifest {
+    fn has_settings(&self) -> bool {
+        if !self.settings.is_empty() {
+            return true;
+        }
+        #[cfg(windows)]
+        if self.source_kind() == Some(SourceKind::Https)
+            && self.network.as_ref().is_some_and(|network| network.min_refresh_seconds.is_some())
+        {
+            return true;
+        }
+        false
+    }
+
     fn decode(contents: &str) -> Result<Self> {
         #[derive(Deserialize)]
         struct ApiHeader {
@@ -364,6 +432,8 @@ impl Manifest {
         match self.permissions.get(SOURCE_PERMISSION)?.as_str()? {
             "file" => Some(SourceKind::File),
             "loopback" => Some(SourceKind::Loopback),
+            #[cfg(windows)]
+            "https" => Some(SourceKind::Https),
             _ => None,
         }
     }
@@ -426,11 +496,6 @@ impl Manifest {
         if m.has_capability("event") != m.events.is_some() {
             return Err(fail("声明 event 时须在 events 中订阅一次 focus.finished"));
         }
-        if m.network.as_ref().is_some_and(|network| {
-            !m.has_capability("action") || !network.valid_hosts()
-        }) {
-            return Err(fail("动作链接需要 action 能力及 1 至 4 个完整域名"));
-        }
         if let Some(layout) = &m.status_layout {
             if !m.is_status_page() {
                 return Err(fail("statusLayout 只适用于声明了 status.page 的插件"));
@@ -440,6 +505,26 @@ impl Manifest {
                 matches!(component, crate::plugin_status::StatusComponent::Actions {} | crate::plugin_status::StatusComponent::Fields {})
             }) {
                 return Err(fail("状态页的按钮和表单组件需要 action 能力"));
+            }
+        }
+        #[cfg(windows)]
+        {
+            let https = m.source_kind() == Some(SourceKind::Https);
+            let action = m.capabilities.iter().any(|capability| capability == "action");
+            if let Some(network) = &m.network {
+                let defaults = m.settings.iter().map(|field| {
+                    (field.key.clone(), field.default.clone())
+                }).collect();
+                if (!https && !(action && network.only_hosts())) || !network.valid(&defaults) {
+                    return Err(fail("HTTPS 数据源或宿主打开链接需要有效的域名白名单和地址"));
+                }
+            } else if https {
+                return Err(fail("HTTPS 数据源需要声明 network"));
+            }
+            if let Some(attribution) = &m.attribution {
+                if !https || !m.network.as_ref().is_some_and(|network| attribution.valid(network)) {
+                    return Err(fail("数据来源标注须使用已声明的 HTTPS 域名和有效名称"));
+                }
             }
         }
         let material = m.is_material();
@@ -700,9 +785,24 @@ impl Package {
         let ctx = rquickjs::Context::full(&runtime)?;
         let mut input = json!({"settings":values,"storage":storage,"today":today});
         let require_source = self.manifest.source_kind().is_some();
-        let ready = !require_source || matches!(&source, SourceInput::Ready { .. });
+        let ready = !require_source || source.ready();
         if require_source {
-            input["source"] = serde_json::to_value(source)?;
+            #[cfg(windows)]
+            if let Some(sources) = self.manifest.network.as_ref().and_then(|n| n.sources.as_ref()) {
+                let sources = match source {
+                    SourceInput::Multiple(sources) => sources,
+                    _ => sources.iter().map(|source| {
+                        (source.key.clone(), SourceInput::Unconfigured)
+                    }).collect(),
+                };
+                input["sources"] = serde_json::to_value(sources)?;
+            } else {
+                input["source"] = serde_json::to_value(source)?;
+            }
+            #[cfg(not(windows))]
+            {
+                input["source"] = serde_json::to_value(source)?;
+            }
         }
         let invocation = call.prepare(&mut input);
         let input = input.to_string();
@@ -710,7 +810,7 @@ impl Package {
         runtime.set_interrupt_handler(Some(Box::new(move || Instant::now() >= end)));
         let raw = ctx.with(|c| -> rquickjs::Result<String> {
             c.eval::<(), _>(self.source.as_bytes())?;
-            c.globals().set("__input", input)?;
+            c.globals().set("__input", c.json_parse(input)?)?;
             c.eval(invocation)
         })?;
         if raw.len() > 16 * 1024 {
@@ -794,6 +894,8 @@ enum Rendered {
 struct Job {
     cancelled: Arc<AtomicBool>,
     reading_source: bool,
+    #[cfg(windows)]
+    fetch: std::sync::mpsc::Receiver<source_https::FetchState>,
     result: std::thread::JoinHandle<std::result::Result<Rendered, String>>,
 }
 pub struct LocalPlugins {
@@ -823,6 +925,8 @@ pub struct LocalPlugins {
     interactions: InteractionState,
     calendar_day: String,
     next: BTreeMap<String, Instant>,
+    #[cfg(windows)]
+    source_fetch: BTreeMap<String, source_https::FetchState>,
     errors: BTreeMap<String, String>,
     notice: String,
     pending: Option<String>,
@@ -862,6 +966,8 @@ impl LocalPlugins {
             interactions: InteractionState::default(),
             calendar_day: String::new(),
             next: BTreeMap::new(),
+            #[cfg(windows)]
+            source_fetch: BTreeMap::new(),
             errors: BTreeMap::new(),
             notice: String::new(),
             pending: None,
@@ -903,6 +1009,7 @@ impl LocalPlugins {
         #[cfg(windows)]
         {
             s.restore_market_catalog();
+            s.restore_official_revocations();
             s.sync_wireless();
         }
         s
@@ -1084,6 +1191,8 @@ impl LocalPlugins {
         self.status.remove(id);
         self.interactions.forget(id);
         self.next.remove(id);
+        #[cfg(windows)]
+        self.source_fetch.remove(id);
         self.errors.remove(id);
         self.drafts.remove(id);
     }
@@ -1109,6 +1218,10 @@ impl LocalPlugins {
             storage: Value::Null,
             material_granted: false,
             source_grant: None,
+            #[cfg(windows)]
+            source_refresh_seconds: None,
+            #[cfg(windows)]
+            market_revoked: false,
             status_page_disabled: false,
             notice_history: NoticeHistory::default(),
         };
@@ -1140,6 +1253,10 @@ impl LocalPlugins {
     }
     pub(crate) fn enable(&mut self, id: &str, on: bool) -> Result<()> {
         let mut r = self.installed(id)?;
+        #[cfg(windows)]
+        if on && r.market_revoked {
+            return Err(fail("当前插件版本已撤回，请更新后启用"));
+        }
         if r.package.as_ref().unwrap().manifest.is_material() {
             #[cfg(feature = "sdk-material")]
             if on || self.selected_material_id() == Some(id) {
@@ -1182,20 +1299,67 @@ impl LocalPlugins {
 
     #[cfg(windows)]
     fn set_source_grant(&mut self, id: &str, grant: Option<SourceGrant>) -> Result<()> {
+        self.set_source_grant_with_secret(id, grant, None)
+    }
+
+    #[cfg(windows)]
+    fn set_source_grant_with_secret(&mut self, id: &str, grant: Option<SourceGrant>, secret: Option<&str>) -> Result<()> {
         let mut record = self.installed(id)?;
         let kind = record.source_kind().ok_or_else(|| fail("此插件未声明数据源"))?;
         if grant.as_ref().is_some_and(|grant| grant.kind() != kind) {
             return Err(fail("数据源类型与插件申请不一致"));
         }
+        let credential = record.network().and_then(|network| network.credential.as_ref());
+        let previous_secret = if let Some(grant) = grant.as_ref().filter(|grant| grant.kind() == SourceKind::Https) {
+            if !record.network().is_some_and(|network| network.accepts(grant)) {
+                return Err(fail("授权范围与插件的 HTTPS 数据源声明不一致"));
+            }
+            if let Some(config) = credential {
+                let secret = secret.ok_or_else(|| fail("请输入数据源密钥"))?;
+                config.header_value(secret)?;
+                self.forget_view(id);
+                let previous = source_https::load_secret(id)?;
+                source_https::save_secret(id, secret)?;
+                Some(previous)
+            } else {
+                None
+            }
+        } else {
+            if credential.is_some() && grant.is_none() {
+                self.forget_view(id);
+                source_https::delete_secret(id)?;
+            }
+            None
+        };
         if record.source_grant != grant {
             record.source_grant = grant;
-            self.put(id, record)?;
+            if let Err(error) = self.put(id, record) {
+                match previous_secret {
+                    Some(Some(previous)) => source_https::save_secret(id, &previous)?,
+                    Some(None) => source_https::delete_secret(id)?,
+                    None => {}
+                }
+                return Err(error);
+            }
             self.forget_view(id);
         }
         Ok(())
     }
     fn save(&mut self, id: &str, v: Values) -> Result<()> {
         let mut r = self.installed(id)?;
+        #[cfg(windows)]
+        let v = {
+            let mut values = v;
+            if let Some(seconds) = values.remove(source_https::REFRESH_FIELD) {
+                let min = r.network().and_then(|network| network.min_refresh_seconds)
+                    .ok_or_else(|| fail("此插件未开放刷新间隔设置"))?;
+                let seconds = seconds.parse::<u32>().ok()
+                    .filter(|value| (min..=source_https::MAX_REFRESH_SECONDS).contains(value))
+                    .ok_or_else(|| fail("刷新间隔超出允许范围"))?;
+                r.source_refresh_seconds = Some(seconds);
+            }
+            values
+        };
         if !r
             .package
             .as_ref()
@@ -1214,6 +1378,11 @@ impl LocalPlugins {
     }
     fn uninstall(&mut self, id: &str, keep: bool) -> Result<()> {
         let mut r = self.installed(id)?;
+        #[cfg(windows)]
+        if r.network().is_some_and(|network| network.credential.is_some()) {
+            self.forget_view(id);
+            source_https::delete_secret(id)?;
+        }
         #[cfg(feature = "sdk-material")]
         if self.selected_material.as_deref() == Some(id) {
             self.activate_material(None, false)?;
@@ -1272,6 +1441,8 @@ impl LocalPlugins {
         self.next.retain(|id, _| !belongs(id));
         self.status.retain(|id, _| !belongs(id));
         self.interactions.retain(|id| !belongs(id));
+        #[cfg(windows)]
+        self.source_fetch.retain(|id, _| !belongs(id));
         for (id, job) in &self.jobs {
             if belongs(id) {
                 job.cancelled.store(true, Ordering::Release);
@@ -1321,6 +1492,13 @@ impl LocalPlugins {
             let job = self.jobs.remove(&id).unwrap();
             if job.cancelled.load(Ordering::Acquire) {
                 continue;
+            }
+            #[cfg(windows)]
+            if let Ok(fetch) = job.fetch.try_recv() {
+                if let Some(next) = fetch.next_due() {
+                    self.next.insert(id.clone(), next);
+                }
+                self.source_fetch.insert(id.clone(), fetch);
             }
             let result = job
                 .result
@@ -1441,11 +1619,8 @@ impl LocalPlugins {
             let call = self.interactions.pop_call(&id);
             let mut r = self.records[&id].clone();
             let today = today.to_owned();
-            let pkg = r.package.as_ref().unwrap();
-            self.next.insert(
-                id.clone(),
-                now + Duration::from_secs(pkg.manifest.refresh_seconds.into()),
-            );
+            let interval = r.refresh_interval();
+            self.next.insert(id.clone(), now + interval);
             static SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
             let seq = SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             let stage = self
@@ -1453,9 +1628,28 @@ impl LocalPlugins {
                 .with_extension(format!("{}-{seq}.pending", std::process::id()));
             let cancelled = Arc::new(AtomicBool::new(false));
             let worker_cancelled = Arc::clone(&cancelled);
+            #[cfg(windows)]
+            let (send_fetch, fetch_report) = std::sync::mpsc::channel();
+            #[cfg(windows)]
+            let mut fetch = self.source_fetch.get(&id).cloned().unwrap_or_default();
             let result = std::thread::Builder::new().name("daozai-plugin-read".into()).spawn(move || {
                 let source = match r.source_grant() {
-                    Some(grant) => match grant.read(&worker_cancelled) {
+                    #[cfg(windows)]
+                    Some(SourceGrant::HttpsSources { .. }) => {
+                        let package = r.package.as_ref().unwrap();
+                        let source = r.network().unwrap().read_sources(
+                            &package.manifest.id, &r.values, &worker_cancelled, &mut fetch, now, interval,
+                        );
+                        let _ = send_fetch.send(fetch);
+                        source
+                    }
+                    #[cfg(windows)]
+                    Some(grant @ SourceGrant::Https { .. }) => {
+                        let source = fetch.read("", now, interval, || r.read_source(grant, &worker_cancelled));
+                        let _ = send_fetch.send(fetch);
+                        source
+                    }
+                    Some(grant) => match r.read_source(grant, &worker_cancelled) {
                         Ok(text) => SourceInput::Ready { text },
                         Err(_) => SourceInput::Offline,
                     },
@@ -1471,11 +1665,19 @@ impl LocalPlugins {
                 {
                     return Ok(Rendered::StatusOffline);
                 }
+                #[cfg(windows)]
+                let status_offline = package.manifest.is_status_page()
+                    && matches!(&source, SourceInput::Multiple(_))
+                    && !source.ready();
                 let output = package
                     .render_input(&r.values, &r.storage, &today, source, call)
                     .map_err(|e| e.to_string())?;
                 if worker_cancelled.load(Ordering::Acquire) {
                     return Err("读取已取消".into());
+                }
+                #[cfg(windows)]
+                if status_offline {
+                    return Ok(Rendered::StatusOffline);
                 }
                 let staged = if r.storage != output.storage {
                     r.storage = output.storage.clone();
@@ -1489,7 +1691,13 @@ impl LocalPlugins {
             });
             match result {
                 Ok(result) => {
-                    self.jobs.insert(id, Job { cancelled, reading_source, result });
+                    self.jobs.insert(id, Job {
+                        cancelled,
+                        reading_source,
+                        #[cfg(windows)]
+                        fetch: fetch_report,
+                        result,
+                    });
                 }
                 Err(_) => {
                     self.status.remove(&id);
@@ -1562,6 +1770,16 @@ impl LocalPlugins {
             .manifest
             .status_layout
             .as_ref()
+    }
+
+    #[cfg(windows)]
+    pub(crate) fn source_attribution(
+        &self,
+        id: &str,
+    ) -> Option<(&str, Option<&str>, Option<&chrono::DateTime<chrono::Local>>)> {
+        let attribution = self.records.get(id)?.package.as_ref()?.manifest.attribution.as_ref()?;
+        let last_success = self.source_fetch.get(id).and_then(|fetch| fetch.last_success.as_ref());
+        Some((&attribution.label, attribution.url.as_deref(), last_success))
     }
 
     pub(crate) fn status_page(&self, id: &str) -> Option<(&str, Option<&PluginStatus>, StatusHealth)> {

@@ -384,3 +384,102 @@ fn market_rejects_invalid_archives_and_catalogs() -> Result<()> {
     assert!(compare_versions("1.4294967296.0", "1.2.0").is_none());
     Ok(())
 }
+
+#[test]
+fn market_revocation_disables_installed_version_and_offers_newer_package() -> Result<()> {
+    use super::super::market_state::MarketStatus;
+
+    let fixture = Fixture::new()?;
+    let id = "example.payday";
+    let catalog_path = fixture.0.join("catalog.json");
+    let first = fixture.0.join("first.zip");
+    pack(&fixture.project("1.0.1")?, &first)?;
+    submit(&first, &catalog_path)?;
+
+    let storage = fixture.0.join("installed");
+    let mut host = LocalPlugins::open(storage.clone());
+    host.set_market_catalog(&catalog_path)?;
+    host.market_action(false, id)?;
+    wait_for_catalog_action(&mut host);
+    host.enable(id, true)?;
+    let mut index: Value = serde_json::from_slice(&fs::read(&catalog_path)?)?;
+    index["plugins"][0]["revoked"] = json!(["invalid-version"]);
+    fs::write(&catalog_path, serde_json::to_vec(&index)?)?;
+    assert!(host.refresh_market_catalog().is_err());
+    assert!(host.records[id].enabled);
+    index["plugins"][0]["revoked"] = json!(["1.0.1"]);
+    fs::write(&catalog_path, serde_json::to_vec(&index)?)?;
+    host.refresh_market_catalog()?;
+    assert!(!host.records[id].enabled);
+    assert!(host.records[id].market_revoked);
+    assert!(host.enable(id, true).is_err());
+    assert!(host.market_action(false, id).is_err());
+    let catalog = Catalog::open(&catalog_path)?;
+    assert!(catalog.load(&catalog.entries[0]).is_err());
+    let mut clean = LocalPlugins::open(fixture.0.join("clean"));
+    clean.set_market_catalog(&catalog_path)?;
+    assert!(clean.market_action(false, id).is_err());
+    drop(host);
+
+    let mut host = LocalPlugins::open(storage);
+    assert!(host.records[id].market_revoked);
+    let next = fixture.0.join("next.zip");
+    pack(&fixture.project("1.0.2")?, &next)?;
+    submit(&next, &catalog_path)?;
+    let catalog = Catalog::open(&catalog_path)?;
+    assert!(catalog.entries[0].revokes("1.0.1"));
+    host.refresh_market_catalog()?;
+    assert_eq!(host.market_status(&catalog, &catalog.entries[0]), MarketStatus::Update);
+    host.market_action(false, id)?;
+    wait_for_catalog_action(&mut host);
+    assert!(!host.records[id].market_revoked);
+    assert!(!host.records[id].enabled);
+    host.enable(id, true)?;
+    Ok(())
+}
+
+fn wait_for_catalog_action(host: &mut LocalPlugins) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(6);
+    while host.market_busy() {
+        assert!(std::time::Instant::now() < deadline, "等待集市操作超时");
+        host.poll_market();
+        std::thread::sleep(Duration::from_millis(2));
+    }
+}
+
+#[test]
+fn update_removes_https_grant_when_host_is_removed() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let mut manifest: Value =
+        serde_json::from_str(include_str!("examples/https-repository/plugin.json"))?;
+    let path = fixture.0.join("plugin.json");
+    fs::write(fixture.0.join("main.js"), include_str!("examples/https-repository/main.js"))?;
+    fs::write(fixture.0.join(COVER_FILE), include_bytes!("examples/https-repository/cover.png"))?;
+    fs::write(&path, serde_json::to_vec(&manifest)?)?;
+    let catalog = fixture.0.join("catalog.json");
+    let first = fixture.0.join("first.zip");
+    pack(&path, &first)?;
+    submit(&first, &catalog)?;
+    let mut host = LocalPlugins::open(fixture.0.join("installed"));
+    let id = "example.https-repository";
+    host.set_market_catalog(&catalog)?;
+    host.market_action(false, id)?;
+    wait_for_catalog_action(&mut host);
+
+    let grant = host.records[id].network().unwrap().grant("https://api.github.com/repos/rust-lang/rust")?;
+    host.set_source_grant(id, Some(grant.clone()))?;
+    assert_eq!(host.source_grant(id), Some(&grant));
+    manifest["version"] = json!("1.0.1");
+    manifest["network"] = json!({"hosts": ["example.org"]});
+    fs::write(&path, serde_json::to_vec(&manifest)?)?;
+    let next = fixture.0.join("next.zip");
+    pack(&path, &next)?;
+    submit(&next, &catalog)?;
+    host.refresh_market_catalog()?;
+    host.market_action(false, id)?;
+    wait_for_catalog_action(&mut host);
+    assert_eq!(host.records[id].package.as_ref().unwrap().manifest.version, "1.0.1");
+    assert!(host.source_grant(id).is_none());
+    assert!(host.records[id].source_grant.is_none());
+    Ok(())
+}

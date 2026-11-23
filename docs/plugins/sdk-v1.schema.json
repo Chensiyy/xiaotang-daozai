@@ -92,14 +92,52 @@
     "refreshSeconds": {"type":"integer","minimum":60,"maximum":86400,"default":60},
     "network": {
       "type": "object",
-      "description": "实验。宿主动作允许打开的 HTTPS 域名。",
       "properties": {
         "hosts": {
           "type": "array", "minItems": 1, "maxItems": 4, "uniqueItems": true,
-          "items": {"type": "string", "format": "hostname", "maxLength": 253}
+          "items": {
+            "type": "string", "maxLength": 253,
+            "pattern": "^(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\\.)+[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$"
+          }
+        },
+        "url": {"type": "string", "maxLength": 2048, "pattern": "^[Hh][Tt][Tt][Pp][Ss]://"},
+        "sources": {
+          "description": "实验。每个来源的 key 须唯一。URL 占位符只能出现在路径和查询串。",
+          "type": "array", "minItems": 1, "maxItems": 3,
+          "items": {
+            "type": "object",
+            "properties": {
+              "key": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,39}$"},
+              "url": {"type": "string", "maxLength": 2048, "pattern": "^[Hh][Tt][Tt][Pp][Ss]://"}
+            },
+            "required": ["key", "url"],
+            "additionalProperties": false
+          }
+        },
+        "minRefreshSeconds": {"type": "integer", "minimum": 60, "maximum": 86400},
+        "credential": {
+          "type": "object",
+          "properties": {
+            "label": {"type": "string", "minLength": 1, "maxLength": 80},
+            "header": {"type": "string", "maxLength": 64, "pattern": "^[A-Za-z0-9!#$%&'*+.^_\u0060|~-]+$"},
+            "prefix": {"type": "string", "maxLength": 80, "pattern": "^[ -~]*$"}
+          },
+          "required": ["label", "header"],
+          "additionalProperties": false
         }
       },
       "required": ["hosts"],
+      "not": {"required": ["url", "sources"]},
+      "additionalProperties": false
+    },
+    "attribution": {
+      "description": "实验。HTTPS 数据来源标注，链接域名须在 network.hosts 内。",
+      "type": "object",
+      "properties": {
+        "label": {"type": "string", "minLength": 1, "maxLength": 80},
+        "url": {"type": "string", "maxLength": 2048, "pattern": "^[Hh][Tt][Tt][Pp][Ss]://"}
+      },
+      "required": ["label"],
       "additionalProperties": false
     },
     "statusLayout": {
@@ -188,8 +226,8 @@
       "type": "object",
       "properties": {
         "source.read": {
-          "enum": ["file", "loopback"],
-          "description": "Windows 测试版 JS 插件的单一只读来源，由用户在安装后选择文件或授权完整回环 HTTP 地址。"
+          "enum": ["file", "loopback", "https"],
+          "description": "Windows 试用版 JS 插件的单一只读来源，由用户在安装后授权本地文件、本机 HTTP 或白名单内的 HTTPS 地址。"
         },
         "hosts": {
           "type": "array",
@@ -445,8 +483,29 @@
   "additionalProperties": false,
   "allOf": [
     {
-      "if": {"required": ["network"]},
-      "then": {"properties": {"capabilities": {"contains": {"const": "action"}}}}
+      "if": {
+        "properties": {"permissions": {
+          "required": ["source.read"],
+          "properties": {"source.read": {"const": "https"}}
+        }}
+      },
+      "then": {
+        "required": ["network"],
+        "properties": {"runtime": {"const": "js"}, "permissions": {"maxProperties": 1}}
+      },
+      "else": {
+        "not": {"required": ["attribution"]},
+        "if": {"required": ["network"]},
+        "then": {
+          "properties": {
+            "capabilities": {"contains": {"const": "action"}},
+            "network": {"not": {"anyOf": [
+              {"required": ["url"]}, {"required": ["sources"]},
+              {"required": ["credential"]}, {"required": ["minRefreshSeconds"]}
+            ]}}
+          }
+        }
+      }
     },
     {
       "if": {"required": ["statusLayout"]},
@@ -629,7 +688,7 @@
             "contains": {"const": "status.page"}
           },
           "permissions": {
-            "properties": {"source.read": {"enum": ["file", "loopback"]}},
+            "properties": {"source.read": {"enum": ["file", "loopback", "https"]}},
             "additionalProperties": false
           },
           "settings": {"items": {"properties": {"type": {"enum": ["text", "date"]}}}}

@@ -18,12 +18,18 @@ const URL_ERROR: &str = "请输入 http://127.0.0.1、http://[::1] 或 http://lo
 pub(super) enum SourceKind {
     File,
     Loopback,
+    #[cfg(windows)]
+    Https,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) enum SourceGrant {
     File(PathBuf),
     Loopback(String),
+    #[cfg(windows)]
+    Https { url: String },
+    #[cfg(windows)]
+    HttpsSources { hosts: Vec<String>, sources: Vec<super::source_https::NetworkSource> },
 }
 
 impl SourceGrant {
@@ -31,6 +37,8 @@ impl SourceGrant {
         match self {
             Self::File(_) => SourceKind::File,
             Self::Loopback(_) => SourceKind::Loopback,
+            #[cfg(windows)]
+            Self::Https { .. } | Self::HttpsSources { .. } => SourceKind::Https,
         }
     }
 
@@ -39,6 +47,8 @@ impl SourceGrant {
         match self {
             Self::File(path) => read_file(path, cancelled),
             Self::Loopback(address) => read_http(address, cancelled),
+            #[cfg(windows)]
+            Self::Https { .. } | Self::HttpsSources { .. } => Err(io::Error::other("HTTPS 数据源缺少网络配置")),
         }
     }
 }
@@ -105,18 +115,18 @@ fn read_http(raw: &str, cancelled: &AtomicBool) -> io::Result<String> {
     if !(200..300).contains(&response.status()) {
         return Err(io::Error::other("本机数据源没有直接返回数据"));
     }
-    read_text(response.into_reader(), cancelled)
+    read_text(response.into_reader(), cancelled, MAX_BYTES)
 }
 
-fn check_cancelled(cancelled: &AtomicBool) -> io::Result<()> {
+pub(super) fn check_cancelled(cancelled: &AtomicBool) -> io::Result<()> {
     if cancelled.load(Ordering::Acquire) {
         return Err(io::Error::new(io::ErrorKind::Interrupted, "读取已取消"));
     }
     Ok(())
 }
 
-fn read_text(reader: impl Read, cancelled: &AtomicBool) -> io::Result<String> {
-    let mut reader = reader.take(MAX_BYTES + 1);
+pub(super) fn read_text(reader: impl Read, cancelled: &AtomicBool, limit: u64) -> io::Result<String> {
+    let mut reader = reader.take(limit + 1);
     let mut bytes = Vec::new();
     let mut buf = [0; 4096];
     loop {
@@ -127,8 +137,8 @@ fn read_text(reader: impl Read, cancelled: &AtomicBool) -> io::Result<String> {
         }
         bytes.extend_from_slice(&buf[..count]);
     }
-    if bytes.len() as u64 > MAX_BYTES {
-        return Err(io::Error::other("数据源超过 128 KiB"));
+    if bytes.len() as u64 > limit {
+        return Err(io::Error::other(format!("数据源超过 {} KiB", limit / 1024)));
     }
     let mut text =
         String::from_utf8(bytes).map_err(|_| io::Error::other("数据源必须使用 UTF-8"))?;
@@ -227,7 +237,7 @@ fn read_file(path: &Path, cancelled: &AtomicBool) -> io::Result<String> {
     {
         return Err(invalid());
     }
-    read_text(file, cancelled)
+    read_text(file, cancelled, MAX_BYTES)
 }
 
 #[cfg(not(windows))]
@@ -264,11 +274,11 @@ mod tests {
             assert!(grant_url(addr).is_err(), "{addr}");
         }
         let cancelled = AtomicBool::new(false);
-        assert!(read_text(io::repeat(b'x'), &cancelled).is_err());
-        assert!(read_text(&[0xff][..], &cancelled).is_err());
+        assert!(read_text(io::repeat(b'x'), &cancelled, MAX_BYTES).is_err());
+        assert!(read_text(&[0xff][..], &cancelled, MAX_BYTES).is_err());
         cancelled.store(true, Ordering::Release);
         assert_eq!(
-            read_text(&b"ignored"[..], &cancelled).unwrap_err().kind(),
+            read_text(&b"ignored"[..], &cancelled, MAX_BYTES).unwrap_err().kind(),
             io::ErrorKind::Interrupted
         );
     }

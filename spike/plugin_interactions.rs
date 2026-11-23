@@ -9,31 +9,6 @@ use crate::{
 use std::collections::{BTreeSet, VecDeque};
 use url::{Host, Url};
 
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct ActionNetwork {
-    hosts: Vec<String>,
-}
-
-impl ActionNetwork {
-    pub(super) fn valid_hosts(&self) -> bool {
-        (1..=4).contains(&self.hosts.len())
-            && self.hosts.iter().enumerate().all(|(index, host)| {
-                host.len() <= 253
-                    && host.contains('.')
-                    && !host.to_ascii_lowercase().ends_with(".localhost")
-                    && host.split('.').all(|label| {
-                        (1..=63).contains(&label.len())
-                            && label.starts_with(|ch: char| ch.is_ascii_alphanumeric())
-                            && label.ends_with(|ch: char| ch.is_ascii_alphanumeric())
-                            && label.bytes().all(|ch| ch.is_ascii_alphanumeric() || ch == b'-')
-                    })
-                    && matches!(Host::parse(host), Ok(Host::Domain(domain)) if domain.eq_ignore_ascii_case(host))
-                    && !self.hosts[..index].iter().any(|other| other.eq_ignore_ascii_case(host))
-            })
-    }
-}
-
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) enum EventName {
     #[serde(rename = "focus.finished")]
@@ -73,14 +48,14 @@ pub(super) enum Call {
 impl Call {
     pub(super) fn prepare(self, input: &mut Value) -> &'static str {
         match self {
-            Self::Refresh => "JSON.stringify(refresh(JSON.parse(__input)))",
+            Self::Refresh => "JSON.stringify(refresh(__input))",
             Self::Action { id, form } => {
                 input["action"] = json!({ "id": id, "form": form });
-                "JSON.stringify(action(JSON.parse(__input)))"
+                "JSON.stringify(action(__input))"
             }
             Self::Event(event) => {
                 input["event"] = json!(event);
-                "JSON.stringify(event(JSON.parse(__input)))"
+                "JSON.stringify(event(__input))"
             }
         }
     }
@@ -175,7 +150,11 @@ impl Manifest {
     }
 
     fn open_action_url(&self, raw: &str) -> Option<Url> {
+        // 打开链接沿用联网取数的域名白名单；只声明 hosts 的清单也可以用。
+        #[cfg(windows)]
         let network = self.network.as_ref()?;
+        #[cfg(not(windows))]
+        return None;
         if raw.len() > 2048
             || raw.chars().any(|ch| ch.is_control() || ch == '\\')
             || !raw.get(..8)?.eq_ignore_ascii_case("https://")

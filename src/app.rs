@@ -2159,9 +2159,15 @@ impl App {
         #[cfg(feature="sdk-js")]
         {
             if let Some(index)=self.page.checked_sub(PAGE_NAMES.len()) {
-                return self.status_pages.get(index).map_or(
+                let page=self.status_pages.get(index);
+                let height=page.map_or(
                     crate::plugin_status_ui::STATUS_PAGE_H, |(id,_)|self.plugins.status_height(id),
                 );
+                #[cfg(windows)]
+                if page.is_some_and(|(id,_)|self.plugins.source_attribution(id).is_some()) {
+                    return height+crate::plugin_status_ui::ATTRIBUTION_HEIGHT;
+                }
+                return height;
             }
             if self.page==TODO_PAGE && self.plugins.has_card(){return PH+46.0;}
         }
@@ -3955,6 +3961,11 @@ impl App {
             let privacy_blocked=!self.open
                 || crate::plugin_status_ui::sensitive_values_blocked(self.settings.exclude_from_capture,env);
             let interaction=self.plugins.draw_status_controls(c,id,backdrop,privacy_blocked);
+            #[cfg(windows)]
+            if let Some((label,url,time))=self.plugins.source_attribution(id) {
+                let top=self.plugins.status_height(id);
+                crate::plugin_status_ui::draw_attribution(c,id,top,label,url,time);
+            }
             if c.live {
                 self.plugin_form_focused=interaction.focused;
                 if interaction.gained_focus {cmds.push(Cmd::Focus);}

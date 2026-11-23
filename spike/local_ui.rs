@@ -32,6 +32,7 @@ type CoverCache = std::collections::VecDeque<(egui::Id, Option<egui::TextureHand
 struct SourceDialog {
     plugin: String,
     url: String,
+    secret: String,
     error: String,
 }
 
@@ -746,7 +747,7 @@ impl LocalPlugins {
         let (id, body) = cards.nth(self.card_index).unwrap();
         c.fill(42., 130., 335., 40., 9., theme::CARD);
         let manifest = &self.records[id].package.as_ref().unwrap().manifest;
-        let has_settings = !manifest.settings.is_empty();
+        let has_settings = manifest.has_settings();
         c.text(
             52.,
             145.,
@@ -1064,6 +1065,10 @@ impl LocalPlugins {
         let material = manifest.is_material();
         let owner_key = manifest.owner.clone();
         let retired = manifest.is_retired_lunar_preview();
+        #[cfg(windows)]
+        let revoked = r.market_revoked;
+        #[cfg(not(windows))]
+        let revoked = false;
         let module_on = match owner_key.as_str() {
             "calendar" => calendar_on,
             "quota" => quota_on,
@@ -1171,19 +1176,23 @@ impl LocalPlugins {
                         };
                         ui.add(egui::Label::new(title).truncate())
                             .on_hover_text(format!("{name}\n{author} · v{version}"));
-                        ui.label(
+                        let version_color = if revoked { warn_color(ui) } else { muted_color(ui) };
+                        let version_label = ui.label(
                             egui::RichText::new(format!("v{version}"))
                                 .size(11.0)
-                                .color(muted_color(ui)),
+                                .color(version_color),
                         );
+                        if revoked {
+                            version_label.on_hover_text("此版本已撤回");
+                        }
                         #[cfg(windows)]
                         market_browse_ui::show_badge(ui, official_mark, preview_sample);
                     });
-                    if retired {
+                    if retired && !revoked {
                         settings_hint(ui, "已撤回 · 等待更新");
-                    } else if owner_key == "pages" && !on {
+                    } else if !revoked && owner_key == "pages" && !on {
                         settings_hint(ui, "启用后可在页面管理设置");
-                    } else {
+                    } else if !revoked {
                         #[cfg(windows)]
                         let navigate = if has_source {
                             ui.horizontal(|ui| {
@@ -1199,6 +1208,20 @@ impl LocalPlugins {
                         };
                         #[cfg(not(windows))]
                         let navigate = path_button(ui, &path, paused, &tip);
+                        #[cfg(windows)]
+                        if let Some((label, url, time)) = self.source_attribution(id) {
+                            ui.horizontal_wrapped(|ui| {
+                                let label = format!("数据来源 {label}");
+                                if let Some(url) = url {
+                                    ui.hyperlink_to(label, url);
+                                } else {
+                                    settings_hint(ui, &label);
+                                }
+                                if let Some(time) = time {
+                                    settings_hint(ui, &format!("最近取数 {}", time.format("%m-%d %H:%M")));
+                                }
+                            });
+                        }
                         if navigate {
                             if material {
                                 *jump = Some(crate::extras::SETTINGS_TAB_APPEARANCE);
@@ -1245,7 +1268,7 @@ impl LocalPlugins {
                 if ui.add(egui::Button::new("卸载…").frame(false)).clicked() {
                     self.pending = Some(id.to_owned());
                 }
-                if plugin_switch(ui, id, on, if on { "停用插件" } else { "启用插件" }) {
+                if !revoked && plugin_switch(ui, id, on, if on { "停用插件" } else { "启用插件" }) {
                     if material {
                         #[cfg(all(windows, feature = "sdk-material"))]
                         if self.request_material(ui, (!selected).then_some(id)) && !selected {
@@ -1283,13 +1306,14 @@ impl LocalPlugins {
     #[cfg(windows)]
     fn open_source_dialog(&self, ui: &egui::Ui, id: &str) {
         let url = match self.source_grant(id) {
-            Some(SourceGrant::Loopback(url)) => url.clone(),
-            _ => String::new(),
+            Some(SourceGrant::Loopback(url) | SourceGrant::Https { url }) => url.clone(),
+            _ => self.records[id].network().and_then(|network| network.url.clone()).unwrap_or_default(),
         };
         ui.data_mut(|data| {
             data.insert_temp(egui::Id::new(SOURCE_DIALOG), SourceDialog {
                 plugin: id.to_owned(),
                 url,
+                secret: String::new(),
                 error: String::new(),
             });
         });
@@ -1307,6 +1331,7 @@ impl LocalPlugins {
         };
         let name = &self.records[id].package.as_ref().unwrap().manifest.name;
         let grant = self.source_grant(id);
+        let network = self.records[id].network().cloned();
         let ctx = ui.ctx().clone();
         let mut pick = false;
         let mut approve = false;
@@ -1324,7 +1349,8 @@ impl LocalPlugins {
                     ui.label("已授权读取");
                     let target = match grant {
                         SourceGrant::File(path) => path.to_string_lossy(),
-                        SourceGrant::Loopback(url) => url.as_str().into(),
+                        SourceGrant::Loopback(url) | SourceGrant::Https { url } => url.as_str().into(),
+                        SourceGrant::HttpsSources { hosts, .. } => hosts.join("、").into(),
                     };
                     ui.add(egui::Label::new(target.as_ref()).truncate()).on_hover_text(target.as_ref());
                 }
@@ -1340,6 +1366,23 @@ impl LocalPlugins {
                         approve = ui.add_enabled(!dialog.url.trim().is_empty(),
                             egui::Button::new("授权读取此地址")).clicked();
                         settings_hint(ui, "仅向填写的本机地址发送 GET 请求。");
+                    }
+                    SourceKind::Https => {
+                        let network = network.as_ref().unwrap();
+                        let multiple = network.sources.is_some();
+                        if !multiple {
+                            ui.add(egui::TextEdit::singleline(&mut dialog.url)
+                                .char_limit(2048).desired_width(385.0).hint_text("https://"));
+                        }
+                        settings_hint(ui, &format!("允许的域名 · {}", network.hosts.join("、")));
+                        if let Some(credential) = &network.credential {
+                            ui.label(&credential.label);
+                            ui.add(egui::TextEdit::singleline(&mut dialog.secret)
+                                .password(true).char_limit(2048).desired_width(385.0));
+                        }
+                        approve = ui.add_enabled((multiple || !dialog.url.trim().is_empty())
+                            && (network.credential.is_none() || !dialog.secret.is_empty()),
+                            egui::Button::new(if multiple { "授权读取这些来源" } else { "授权读取此地址" })).clicked();
                     }
                 }
                 if !dialog.error.is_empty() {
@@ -1359,17 +1402,28 @@ impl LocalPlugins {
                 Err(error) => Some(Err(error.to_string())),
             }
         } else if approve {
-            Some(source_read::grant_url(&dialog.url).map(Some))
+            Some(match &network {
+                Some(network) => network.grant(&dialog.url).map(Some).map_err(|err| err.to_string()),
+                None => source_read::grant_url(&dialog.url).map(Some),
+            })
         } else if revoke {
             Some(Ok(None))
         } else {
             None
         };
         if let Some(changed) = changed {
-            dialog.error = changed.and_then(|grant| self.set_source_grant(id, grant).map_err(|err| err.to_string()))
-                .err().unwrap_or_default();
-            if revoke && dialog.error.is_empty() {
-                dialog.url.clear();
+            dialog.error = changed.and_then(|grant| {
+                if approve && kind == SourceKind::Https {
+                    self.set_source_grant_with_secret(id, grant, Some(&dialog.secret))
+                } else {
+                    self.set_source_grant(id, grant)
+                }.map_err(|err| err.to_string())
+            }).err().unwrap_or_default();
+            if dialog.error.is_empty() {
+                dialog.secret.clear();
+                if revoke {
+                    dialog.url = network.and_then(|network| network.url).unwrap_or_default();
+                }
             }
             ctx.request_repaint_of(egui::ViewportId::ROOT);
         }
@@ -1858,7 +1912,7 @@ impl LocalPlugins {
                 r.enabled
                     && (owner != "status" || !r.status_page_disabled)
                     && r.package.as_ref().is_some_and(|p| {
-                        p.manifest.owner == owner && !p.manifest.settings.is_empty()
+                        p.manifest.owner == owner && p.manifest.has_settings()
                     })
             })
             .map(|(id, _)| id.clone())
@@ -1898,6 +1952,18 @@ impl LocalPlugins {
                                         .or_insert_with(|| f.default.clone()),
                                 )
                             });
+                        }
+                        #[cfg(windows)]
+                        if let Some(min) = r.network().and_then(|network| network.min_refresh_seconds) {
+                            let draft = fields.entry(source_https::REFRESH_FIELD.into())
+                                .or_insert_with(|| r.refresh_interval().as_secs().to_string());
+                            let mut seconds = draft.parse::<u32>().unwrap_or(min);
+                            settings_control_row(ui, "刷新间隔", 68., |ui| {
+                                ui.add(egui::DragValue::new(&mut seconds)
+                                    .range(min..=source_https::MAX_REFRESH_SECONDS)
+                                    .suffix(" 秒"))
+                            });
+                            *draft = seconds.to_string();
                         }
                         if ui.button("保存设置").clicked() {
                             let values = fields.clone();
