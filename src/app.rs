@@ -143,6 +143,8 @@ pub struct Env {
     pub idle_seconds: Option<f64>,
     /// 当前会话是否处于锁屏（Win + L、自动锁屏、唤醒后的登录界面）。
     pub screen_locked: bool,
+    /// 正在生成岛仔演示录屏。
+    pub recording: bool,
     /// 因「全屏时隐藏」而隐藏岛体，沿用外壳对设置和所在屏幕的判断。
     pub fullscreen_hidden: bool,
     /// 前台浏览器的顶部是否与岛重叠；岛仔自身窗口或暂不可读时为 None。
@@ -2363,7 +2365,17 @@ impl App {
                 let mail_list=self.page==5 && !self.mail.accounts.is_empty() && self.mail.open_uid.is_none() && self.mail_list_bounds().contains(cursor);
                 let music_volume=self.page==0 && (Rect::from_min_max(Pos2::new(354.0,106.0),Pos2::new(380.0,130.0)).contains(cursor)
                     || self.music_volume_open && self.music_volume_bounds().contains(cursor));
-                if mail_reading || mail_list || music_volume {self.wheel_delta=0.0;}
+                #[cfg(feature="sdk-js")]
+                let status_scroll=self.page.checked_sub(PAGE_NAMES.len())
+                    .and_then(|index|self.status_pages.get(index))
+                    .and_then(|(id,_)|{
+                        let (_,status,health)=self.plugins.status_page(id)?;
+                        if health!=crate::plugin_status::StatusHealth::Ready {return None;}
+                        crate::plugin_status_ui::status_scroll_area(status?,self.plugins.status_layout(id)?)
+                    }).is_some_and(|area|area.contains(cursor));
+                #[cfg(not(feature="sdk-js"))]
+                let status_scroll=false;
+                if mail_reading || mail_list || music_volume || status_scroll {self.wheel_delta=0.0;}
                 else {
                     // 累积高精度滚轮的小幅输入；停顿或反向时丢弃上一段余量。
                     if self.t-self.wheel_at>0.18 || self.wheel_delta*scroll<0.0 {self.wheel_delta=0.0;}
@@ -2731,6 +2743,11 @@ impl App {
         let repaint_after=std::time::Duration::from_secs_f64(if transitioning{1.0/60.0}else if ambient{1.0/30.0}else if pet_visible{if self.pet.state==PetState::Sleeping{0.1}else{0.05}}else{1.0});
         cmds.append(&mut self.pending);
         let next_hit=if side {self.side_hit_rect(win,self.progress(),self.page_height.pos).translate(offset)} else {orient(self.hit_rect(cx,top,self.progress()))};
+        #[cfg(feature="sdk-js")]
+        if page_before!=self.page || !self.open || self.page<PAGE_NAMES.len()
+            || crate::plugin_status_ui::sensitive_values_blocked(self.settings.exclude_from_capture,env) {
+            crate::plugin_status_ui::clear_sensitive_reveal(&ctx);
+        }
         if page_before!=self.page && self.open {
             let previous=self.page_scroll_area.map_or(hit,|area|hit.union(area));
             // 滚轮续翻的空白带按最终页边界计算，点击区域则跟随当前画面。
@@ -3932,7 +3949,12 @@ impl App {
     fn render_page(&mut self, page: usize, c: &Card, header: &Card, env: &Env, cmds: &mut Vec<Cmd>) {
         #[cfg(feature="sdk-js")]
         if let Some((id,_))=page.checked_sub(PAGE_NAMES.len()).and_then(|index|self.status_pages.get(index)) {
-            let interaction=self.plugins.draw_status_controls(c,id);
+            let backdrop=crate::plugin_status_ui::StatusBackdrop{
+                palette:self.island_palette(),island:self.island_overlay_fill(),
+            };
+            let privacy_blocked=!self.open
+                || crate::plugin_status_ui::sensitive_values_blocked(self.settings.exclude_from_capture,env);
+            let interaction=self.plugins.draw_status_controls(c,id,backdrop,privacy_blocked);
             if c.live {
                 self.plugin_form_focused=interaction.focused;
                 if interaction.gained_focus {cmds.push(Cmd::Focus);}

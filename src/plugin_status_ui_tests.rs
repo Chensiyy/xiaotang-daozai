@@ -298,3 +298,55 @@ fn plugin_status_pages_render_from_authorized_data_and_keep_the_native_carousel(
         .status_page(companion)
         .is_some_and(|(_, _, health)| health == StatusHealth::Ready));
 }
+
+#[test]
+fn plugin_status_long_card_scrolls_without_changing_island_page() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let mut h = H::new();
+    let profile = crate::model::config_dir();
+    let id = "example.long-status";
+    let source_path = profile.join("long-status.json");
+    fs::create_dir_all(&profile).unwrap();
+    fs::write(
+        &source_path,
+        json!({
+            "state":"running", "label":"打印任务",
+            "note":(1..=14).map(|i| format!("说明第 {i} 项")).collect::<Vec<_>>().join("\n"),
+            "items":(1..=8).map(|i| json!({"label":format!("队列第 {i} 项")})).collect::<Vec<_>>(),
+            "tags":["队列底部"]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    install_with_source(
+        &mut h,
+        &profile,
+        id,
+        "打印任务",
+        &source_path,
+        Some(json!({
+            "components":[{"type":"state"},{"type":"text"},{"type":"list"},{"type":"badge"}]
+        })),
+    );
+    h.app.plugins = crate::sdk_spike::local::LocalPlugins::open(profile.join("local-plugins"));
+    h.app.plugins.enable(id, true).unwrap();
+    settled(&mut h, id, StatusHealth::Ready);
+    h.app.show_status_page(id);
+    let cursor = H::local(225.0, 95.0);
+    h.hover(cursor, 0.8);
+    let page = h.app.page();
+    let bottom_visible = |h: &H| {
+        h.shapes.iter().any(|shape| {
+            matches!(
+                &shape.shape,
+                egui::Shape::Text(text) if text.galley.text() == "队列底部"
+                    && shape.clip_rect.contains_rect(text.visual_bounding_rect())
+            )
+        })
+    };
+    assert!(!bottom_visible(&h));
+    h.wheel(-350.0);
+    h.hover(cursor, 0.5);
+    assert_eq!(h.app.page(), page);
+    assert!(bottom_visible(&h), "滚动后应显示卡片底部的标签");
+}

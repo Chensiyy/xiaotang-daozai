@@ -289,13 +289,21 @@ impl LocalPlugins {
             }
     }
 
-    pub(crate) fn draw_status_controls(&mut self, c: &Card, id: &str) -> InteractionResponse {
+    pub(crate) fn draw_status_controls(
+        &mut self,
+        c: &Card,
+        id: &str,
+        backdrop: plugin_status_ui::StatusBackdrop,
+        privacy_blocked: bool,
+    ) -> InteractionResponse {
         let Some((_, status, health)) = self.status_page(id) else {
             return InteractionResponse::default();
         };
         let layout = self.status_layout(id);
-        let Some(controls) = status.filter(|status| status.has_interactions()) else {
-            plugin_status_ui::draw_status_page(c, status, health, layout);
+        let Some(controls) = status.filter(|status| {
+            health == crate::plugin_status::StatusHealth::Ready && status.has_interactions()
+        }) else {
+            plugin_status_ui::draw_status_page(c, id, status, health, layout, backdrop, privacy_blocked);
             return InteractionResponse::default();
         };
         let status = controls.clone();
@@ -316,8 +324,11 @@ impl LocalPlugins {
         let mut interaction = Interaction::new(id, revision, form, enabled);
         plugin_status_ui::draw_interactive_status_page(
             c,
+            id,
             &status,
             layout.as_ref(),
+            backdrop,
+            privacy_blocked,
             &mut interaction,
         );
         let (response, action) = interaction.finish();

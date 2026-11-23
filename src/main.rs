@@ -522,6 +522,7 @@ impl Shell {
                 #[cfg(not(windows))] {None}
             },
             screen_locked,
+            recording: false,
             fullscreen_hidden: {
                 #[cfg(windows)] {self.hidden}
                 #[cfg(not(windows))] {false}

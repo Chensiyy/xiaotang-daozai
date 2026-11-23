@@ -1,0 +1,20 @@
+{
+  "id": "example.world-clock",
+  "name": "世界时钟",
+  "author": "岛仔",
+  "version": "1.0.0",
+  "api": 1,
+  "runtime": "js",
+  "entry": "main.js",
+  "cover": "cover.png",
+  "owner": "status",
+  "capabilities": ["status.page", "timer"],
+  "refreshSeconds": 3600,
+  "dataVersion": 1,
+  "permissions": {},
+  "settings": [],
+  "statusLayout": {
+    "components": [{"type":"state"},{"type":"clock"},{"type":"clock"},{"type":"clock"},{"type":"clock"}],
+    "style": {"icon":"clock"}
+  }
+}
