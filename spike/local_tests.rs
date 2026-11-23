@@ -32,6 +32,87 @@ fn write_shortcut_package(dir: &Path, id: &str, version: &str, colors: Value) ->
 }
 
 #[test]
+fn one_plugin_fills_a_tasks_card_and_a_calendar_marker_under_separate_switches() -> Result<()> {
+    const DAY: &str = "2026-11-23";
+    const NEXT: &str = "2026-11-24";
+    let root = std::env::temp_dir().join(format!(
+        "daozai-surfaces-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos()
+    ));
+    let dir = root.join("package");
+    fs::create_dir_all(&dir)?;
+    fs::write(dir.join(COVER_FILE), include_bytes!("examples/payday/cover.png"))?;
+    fs::write(
+        dir.join("main.js"),
+        "function refresh(i){return {card:'发薪 '+i.today, marker:i.today==='2026-11-23'?'发薪日':''}}",
+    )?;
+    let manifest = json!({
+        "id": "example.payday-marker", "name": "发薪日", "author": "示例", "version": "1.0.0",
+        "api": 1, "runtime": "js", "entry": "main.js", "cover": COVER_FILE, "owner": "tasks",
+        "capabilities": ["card", "calendar.marker", "timer"], "dataVersion": 1,
+        "permissions": {}, "settings": [],
+    });
+    let path = dir.join("plugin.json");
+    fs::write(&path, serde_json::to_vec(&manifest)?)?;
+    for (field, value) in [
+        ("capabilities", json!(["calendar.marker"])),
+        ("capabilities", json!(["card", "card"])),
+        ("capabilities", json!(["card", "network"])),
+        ("owner", json!("appearance")),
+    ] {
+        let mut invalid = manifest.clone();
+        invalid[field] = value;
+        assert!(Manifest::decode(&invalid.to_string()).is_err(), "{field} {}", invalid[field]);
+    }
+
+    let id = "example.payday-marker";
+    let mut host = LocalPlugins::open(root.join("installed"));
+    host.install(&path)?;
+    host.enable(id, true)?;
+    assert!(host.calendar_annotation_enabled());
+    settle(&mut host, DAY);
+    assert_eq!(host.cards.get(id).map(String::as_str), Some("发薪 2026-11-23"));
+    assert_eq!(host.calendar_annotation(DAY), Some("发薪日"));
+
+    // 关日程只撤下日历标注，待办卡片照常更新。
+    host.tick(true, false, DAY);
+    assert_eq!(host.calendar_annotation(DAY), None);
+    assert!(host.has_card());
+    host.next.clear();
+    let end = Instant::now() + Duration::from_secs(5);
+    loop {
+        host.tick(true, false, DAY);
+        if host.jobs.is_empty() && !host.next.is_empty() {
+            break;
+        }
+        assert!(Instant::now() < end);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert!(host.markers.is_empty() && host.has_card());
+
+    // 再开日程，不用等定时刷新就补回标注。
+    settle(&mut host, DAY);
+    assert_eq!(host.calendar_annotation(DAY), Some("发薪日"));
+
+    // 换日后旧标注作废，新的一天没有标注时也不残留。
+    host.tick(true, true, NEXT);
+    assert_eq!(host.calendar_annotation(NEXT), None);
+    settle(&mut host, NEXT);
+    assert_eq!(host.calendar_annotation(NEXT), None);
+    assert_eq!(host.cards.get(id).map(String::as_str), Some("发薪 2026-11-24"));
+
+    // 关掉所属的待办模块，整个插件暂停，两处输出都撤下。
+    host.tick(false, true, NEXT);
+    assert!(!host.has_card());
+    assert!(host.next.get(id).is_none() && host.jobs.is_empty());
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
 fn page_shortcuts_are_data_only_and_follow_the_installed_switch() -> Result<()> {
     let root = std::env::temp_dir().join(format!(
         "daozai-shortcuts-{}-{}",

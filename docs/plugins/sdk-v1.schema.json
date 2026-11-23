@@ -65,6 +65,7 @@
         "enum": [
           "settings",
           "card",
+          "calendar.marker",
           "module",
           "calendar.source",
           "lyrics.source",
@@ -430,7 +431,7 @@
   "allOf": [
     {
       "if": {"required": ["statusLayout"]},
-      "then": {"properties": {"owner": {"const": "status"}}}
+      "then": {"properties": {"capabilities": {"contains": {"const": "status.page"}}}}
     },
     {
       "if": {"properties": {"runtime": {"const": "material"}}},

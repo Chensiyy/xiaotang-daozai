@@ -25,7 +25,8 @@ function refresh({ settings, today }) {
 | 材质数字参数 · 已实现 | 清单声明 `type: "number"`、`min`、`max`、`step` 和字符串形式的 `default`，可选 `unit` 和 `precision`。着色器按清单顺序用 `param(index)` 取值，最多 32 项 | 「设置 → 外观 → 材质」，拖动滑块实时应用 |
 | 脚本插件的开关、分段、数字 · 待宿主实现 | 清单字段示意 `{key:"minutes",type:"number",min:5,max:180,default:45,label:"提醒间隔"}`。开关用 switch，选项用 segment 和 choices。函数读取 settings.minutes | 唯一归属设置页 |
 | 文字卡、私有存储 · 已实现 | 上例返回 card 和 storage。首次的 storage 为 null，之后可用 `storage?.lastDays` 读回天数 | `owner: "tasks"` 显示在待办页 |
-| 日期标注 · 已实现 | `owner: "calendar"` 复用文字卡和周期刷新，`card` 可以返回“日期说明 · 短标签” | 展开「日程 → 日历」查看电脑当天日期下方的标注 |
+| 日期标注 · 已实现 | 声明 `calendar.marker`，`refresh` 返回 `marker`，空字表示当天不标注。旧版 `owner: "calendar"` 加 `card` 的写法继续有效，`card` 即标注 | 展开「日程 → 日历」查看电脑当天日期下方的标注 |
+| 一个插件多处输出 · 测试版 | 在 capabilities 里同时列出几种输出，例如 `["card","calendar.marker","timer"]`，一次返回 `{card, marker}`。同时有多种输出时，某项返回空值表示这次不显示 | 每处输出只跟着自己所在模块的开关，关日程只撤日历标注；关掉插件归属的模块则整个插件暂停 |
 | 周期刷新 · 已实现 | 两个样例在清单声明 `"refreshSeconds":60` 和 timer 能力。到期由岛仔调用 refresh | 卡片按期更新 |
 | 常驻、固定、临时卡 · 待宿主实现 | `function refresh(i){return {cards:[{id:"job",mode:"temporary",text:i.settings.title,ttlMs:5000}]}}` | 常驻栏、临时位置，用户自行选择固定 |
 | 结构化状态卡和独立详情页 · 测试版 | 清单使用 `"owner":"status"` 和 `"capabilities":["status.page","timer"]`，`refresh` 返回 `status`。可用 `statusLayout` 选择组件、排序和样式。 | 在岛上翻页查看，在「设置 → 页面管理 → 状态详情」单独启停 |
@@ -42,6 +43,8 @@ function refresh({ settings, today }) {
 拟议的 action 接收按钮 ID、表单值，event 接收事件名及内容，二者和 refresh 都返回一次调用的展示结果和要保存的数据。表中标为待实现的字段用于讨论。宿主需要支持对应的清单字段和输入输出后，作者才可以试装这些示例。
 
 ## 3. 用户去哪里用，去哪里调
+
+岛仔用一张能力表核对清单（[能力表](../../spike/capabilities.rs)）。每种能力写明需要的运行环境、落在哪里，以及能否和别的能力同时声明。`owner` 只决定插件设置放在哪个设置页，以及哪个模块关掉时整个插件暂停。脚本插件的归属可选 tasks、calendar、quota、status，并且至少要带上这个归属自己的输出：tasks 带 card，calendar 带 card 或 calendar.marker，quota 带 quota.source，status 带 status.page。材质、快捷切换和无线设备兼容包各自独占一个包，只能另加 settings。
 
 用户习惯去原功能完成的事，可以往原设置页加一项。皮肤进入外观选择器，歌词来源进入音乐设置。只需要看一眼的内容可以做卡片，少量参数仍放在所属页。
 

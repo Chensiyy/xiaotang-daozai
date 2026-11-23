@@ -1,4 +1,6 @@
 //! 本地开发包的安装、状态及卡片执行。每次操作原子保存一个插件的快照。
+#[path = "capabilities.rs"]
+mod capabilities;
 #[path = "cover.rs"]
 mod cover;
 #[cfg(windows)]
@@ -17,6 +19,7 @@ mod ui;
 use super::{fail, Result};
 use crate::plugin_status::{PluginStatus, StatusHealth, StatusLayout};
 use crate::quota_plugin::PluginQuota;
+use capabilities::Surface;
 use cover::{CoverPng, COVER_FILE};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -239,6 +242,8 @@ struct Output {
     #[serde(default)]
     card: String,
     #[serde(default)]
+    marker: String,
+    #[serde(default)]
     quota: Option<PluginQuota>,
     #[serde(default)]
     status: Option<PluginStatus>,
@@ -344,12 +349,26 @@ impl Manifest {
         }
     }
 
+    /// 这个插件的输出落在哪些位置，由能力表从能力和归属算出。
+    fn surfaces(&self) -> Vec<Surface> {
+        capabilities::check(&self.runtime, &self.owner, &self.capabilities).unwrap_or_default()
+    }
+
+    fn has_surface(&self, surface: Surface) -> bool {
+        self.surfaces().contains(&surface)
+    }
+
     fn is_quota_source(&self) -> bool {
-        self.owner == "quota"
+        self.has_surface(Surface::Quota)
     }
 
     fn is_status_page(&self) -> bool {
-        self.owner == "status"
+        self.has_surface(Surface::StatusPage)
+    }
+
+    /// 旧版日程归属的插件用 card 返回日历标注。
+    fn legacy_calendar_card(&self) -> bool {
+        self.owner == "calendar" && self.capabilities.iter().any(|c| c == "card")
     }
 
     fn source_limit(&self) -> u64 {
@@ -384,16 +403,16 @@ impl Manifest {
         {
             return Err(fail("请核对插件 ID、作者、版本和 API 版本"));
         }
+        capabilities::check(&m.runtime, &m.owner, &m.capabilities).map_err(|e| fail(&e))?;
         if let Some(layout) = &m.status_layout {
             if !m.is_status_page() {
-                return Err(fail("statusLayout 只适用于 status 归属的状态页插件"));
+                return Err(fail("statusLayout 只适用于声明了 status.page 的插件"));
             }
             layout.validate().map_err(fail)?;
         }
         let material = m.is_material();
         if m.is_wireless() {
             if !cfg!(windows)
-                || m.owner != "wireless"
                 || m.entry != "wireless-receivers.json"
                 || m.capabilities.as_slice() != ["wireless.receivers"]
                 || m.refresh_seconds != default_refresh()
@@ -403,11 +422,10 @@ impl Manifest {
             {
                 return Err(fail("请核对无线设备兼容包的清单"));
             }
-        } else if m.id == WIRELESS_PLUGIN_ID {
+        } else if m.id == WIRELESS_PLUGIN_ID || m.capabilities.iter().any(|c| c == "wireless.receivers") {
             return Err(fail("此插件 ID 专用于无线设备兼容包"));
         } else if m.runtime == "assets" {
             if !m.is_page_shortcuts()
-                || m.owner != "pages"
                 || m.entry != PAGE_SHORTCUT_ENTRY
                 || m.refresh_seconds != default_refresh()
                 || !m.permissions.is_empty()
@@ -417,22 +435,11 @@ impl Manifest {
                 return Err(fail("快捷切换插件仅接受页面管理归属、单一导航能力和无权限的资源入口"));
             }
         } else if material {
-            if m.owner != "appearance"
-                || m.permissions.len() != 1
+            if m.permissions.len() != 1
                 || m.permissions
                     .get(BACKDROP_PERMISSION)
                     .and_then(Value::as_bool)
                     != Some(true)
-                || m.capabilities
-                    .iter()
-                    .filter(|c| c.as_str() == "appearance.material")
-                    .count()
-                    != 1
-                || m.capabilities.len() > 2
-                || !m
-                    .capabilities
-                    .iter()
-                    .all(|c| matches!(c.as_str(), "appearance.material" | "settings"))
                 || !m.material.as_ref().is_some_and(|material| {
                     (0.2..=3.0).contains(&material.spring.stiffness)
                         && (0.1..=1.0).contains(&material.spring.damping)
@@ -445,39 +452,10 @@ impl Manifest {
                     "请核对材质归属、屏幕底片权限、能力、弹簧参数和投影强度",
                 ));
             }
-        } else if m.is_quota_source() || m.is_status_page() {
-            let required = if m.is_quota_source() {
-                "quota.source"
-            } else {
-                "status.page"
-            };
-            if m.runtime != "js"
-                || m.material.is_some()
-                || (!m.permissions.is_empty() && m.source_kind().is_none())
-                || m.capabilities.iter().filter(|cap| cap.as_str() == required).count() != 1
-                || !m.capabilities.iter().all(|cap| {
-                    cap.as_str() == required || matches!(cap.as_str(), "settings" | "timer" | "storage")
-                })
-            {
-                return Err(fail(if m.is_quota_source() {
-                    "AI 额度插件需使用 quota 归属、JS 入口与 quota.source 能力"
-                } else {
-                    "状态页插件需使用 status 归属、JS 入口与 status.page 能力"
-                }));
-            }
-        } else if m.runtime != "js"
-            || !matches!(m.owner.as_str(), "tasks" | "calendar")
-            || m.material.is_some()
+        } else if m.material.is_some()
             || (!m.permissions.is_empty() && m.source_kind().is_none())
-            || !m.capabilities.iter().any(|c| c == "card")
-            || !m
-                .capabilities
-                .iter()
-                .all(|c| matches!(c.as_str(), "card" | "settings" | "timer" | "storage"))
         {
-            return Err(fail(
-                "请核对插件运行环境、设置归属和能力声明",
-            ));
+            return Err(fail("脚本插件只能申请 source.read 一项权限，且不能带材质参数"));
         }
         let mut keys = std::collections::BTreeSet::new();
         if m.settings.len() > 32
@@ -705,32 +683,52 @@ impl Package {
             return Err(fail("插件输出超过 16 KiB"));
         }
         let mut output: Output = serde_json::from_str(&raw)?;
-        if self.manifest.is_status_page() {
-            if !output.card.is_empty()
-                || output.quota.is_some()
-                || output.status.as_ref().is_some_and(|status| !status.valid())
-            {
+        let surfaces = self.manifest.surfaces();
+        let has = |surface| surfaces.contains(&surface);
+        if self.manifest.legacy_calendar_card() {
+            if !output.marker.is_empty() {
+                return Err(fail("日程归属的插件请继续用 card 返回日历标注"));
+            }
+            output.marker = std::mem::take(&mut output.card);
+            if surfaces.len() == 1 && output.marker.trim().is_empty() {
+                return Err(fail("卡片文字需要 1 至 160 字"));
+            }
+        }
+        if let Some(status) = &output.status {
+            if !has(Surface::StatusPage) {
+                return Err(fail("此插件未声明状态页能力"));
+            }
+            if !status.valid() {
                 return Err(fail("状态页需要返回格式有效的 status 或 null"));
             }
-            if !ready {
-                output.status = None;
-            }
-        } else if output.status.is_some() {
-            return Err(fail("此插件未声明状态页能力"));
         }
-        if self.manifest.is_quota_source() {
-            if !output.card.is_empty() || output.quota.as_ref().is_some_and(|quota| !quota.valid()) {
+        if let Some(quota) = &output.quota {
+            if !has(Surface::Quota) {
+                return Err(fail("此插件未声明额度来源能力"));
+            }
+            if !quota.valid() {
                 return Err(fail("额度来源需要返回格式有效的 quota 或 null"));
             }
-            if !ready {
-                output.quota = None;
+        }
+        if !ready {
+            output.status = None;
+            output.quota = None;
+        }
+        if has(Surface::TasksCard) {
+            // 只有卡片一种输出时必须有字；同时有其他输出时，空字表示这次不显示卡片。
+            let blank = output.card.trim().is_empty();
+            if output.card.chars().count() > 160 || (blank && surfaces.len() == 1) {
+                return Err(fail("卡片文字需要 1 至 160 字"));
             }
-        } else if output.quota.is_some() {
-            return Err(fail("此插件未声明额度来源能力"));
-        } else if !self.manifest.is_status_page()
-            && (output.card.trim().is_empty() || output.card.chars().count() > 160)
-        {
-            return Err(fail("卡片文字需要 1 至 160 字"));
+        } else if !output.card.is_empty() {
+            return Err(fail("此插件未声明卡片能力"));
+        }
+        if has(Surface::CalendarMarker) {
+            if output.marker.chars().count() > 160 {
+                return Err(fail("日历标注最多 160 字"));
+            }
+        } else if !output.marker.is_empty() {
+            return Err(fail("此插件未声明日历标注能力"));
         }
         if !output.storage.is_null() && !self.manifest.capabilities.iter().any(|s| s == "storage") {
             return Err(fail("未声明私有存储"));
@@ -774,6 +772,9 @@ pub struct LocalPlugins {
     records: BTreeMap<String, Record>,
     active_page_shortcuts: Option<String>,
     cards: BTreeMap<String, String>,
+    markers: BTreeMap<String, String>,
+    /// 上一轮开着的输出位置。模块重新打开时，让其他归属的插件立刻补算这个位置的内容。
+    live: Vec<Surface>,
     quota: BTreeMap<String, PluginQuota>,
     status: BTreeMap<String, std::result::Result<PluginStatus, StatusHealth>>,
     calendar_day: String,
@@ -810,6 +811,8 @@ impl LocalPlugins {
             records: BTreeMap::new(),
             active_page_shortcuts: None,
             cards: BTreeMap::new(),
+            markers: BTreeMap::new(),
+            live: Vec::new(),
             quota: BTreeMap::new(),
             status: BTreeMap::new(),
             calendar_day: String::new(),
@@ -1031,6 +1034,7 @@ impl LocalPlugins {
             job.cancelled.store(true, Ordering::Release);
         }
         self.cards.remove(id);
+        self.markers.remove(id);
         self.quota.remove(id);
         self.status.remove(id);
         self.next.remove(id);
@@ -1210,12 +1214,12 @@ impl LocalPlugins {
                 .and_then(|record| record.package.as_ref())
                 .is_some_and(|package| package.manifest.owner == owner)
         };
-        self.cards.retain(|id, _| !belongs(id));
-        if owner == "quota" {
-            self.quota.clear();
-        }
-        if owner == "status" {
-            self.status.clear();
+        match owner {
+            "tasks" => self.cards.clear(),
+            "calendar" => self.markers.clear(),
+            "quota" => self.quota.clear(),
+            "status" => self.status.clear(),
+            _ => {}
         }
         self.next.retain(|id, _| !belongs(id));
         for (id, job) in &self.jobs {
@@ -1233,17 +1237,29 @@ impl LocalPlugins {
     pub(crate) fn tick_features(&mut self, tasks_on: bool, calendar_on: bool, quota_on: bool, today: &str) {
         #[cfg(windows)]
         self.poll_market();
-        if !tasks_on {
-            self.pause_owner("tasks");
-        }
-        if !calendar_on || self.calendar_day != today {
-            self.pause_owner("calendar");
-            if calendar_on {
-                self.calendar_day = today.to_owned();
+        let new_day = calendar_on && self.calendar_day != today;
+        for (owner, surface, on) in [
+            ("tasks", Surface::TasksCard, tasks_on),
+            ("calendar", Surface::CalendarMarker, calendar_on),
+            ("quota", Surface::Quota, quota_on),
+        ] {
+            let was_on = self.live.contains(&surface);
+            if !on {
+                self.pause_owner(owner);
+                self.live.retain(|live| *live != surface);
+            } else if !was_on || (surface == Surface::CalendarMarker && new_day) {
+                if was_on {
+                    // 换日：昨天的标注作废，日程归属的插件也重新计算。
+                    self.pause_owner(owner);
+                }
+                self.recompute_surface(owner, surface);
+                if !was_on {
+                    self.live.push(surface);
+                }
             }
         }
-        if !quota_on {
-            self.pause_owner("quota");
+        if calendar_on {
+            self.calendar_day = today.to_owned();
         }
         let finished: Vec<_> = self
             .jobs
@@ -1272,19 +1288,52 @@ impl LocalPlugins {
                     Ok(Some(output))
                 });
             match result {
-                Ok(Some(Output { card, quota, status, .. })) => {
+                Ok(Some(Output { card, marker, quota, status, .. })) => {
                     self.errors.remove(&id);
-                    if let Some(status) = status {
-                        self.status.insert(id, Ok(status));
+                    let Some(surfaces) = self
+                        .records
+                        .get(&id)
+                        .and_then(|record| record.package.as_ref())
+                        .map(|package| package.manifest.surfaces())
+                    else {
                         continue;
-                    }
-                    self.status.remove(&id);
-                    if let Some(quota) = quota {
-                        self.quota.insert(id, quota);
-                    } else if card.is_empty() {
-                        self.quota.remove(&id);
-                    } else {
-                        self.cards.insert(id, card);
+                    };
+                    let live = self.live.clone();
+                    for surface in surfaces {
+                        // 模块关着时这一位置的结果直接丢掉，重新打开时会补算。
+                        let shown = surface == Surface::StatusPage || live.contains(&surface);
+                        match surface {
+                            Surface::StatusPage => match &status {
+                                Some(status) => {
+                                    self.status.insert(id.clone(), Ok(status.clone()));
+                                }
+                                None => {
+                                    self.status.remove(&id);
+                                }
+                            },
+                            Surface::Quota => match &quota {
+                                Some(quota) if shown => {
+                                    self.quota.insert(id.clone(), quota.clone());
+                                }
+                                _ => {
+                                    self.quota.remove(&id);
+                                }
+                            },
+                            Surface::TasksCard => {
+                                if shown && !card.trim().is_empty() {
+                                    self.cards.insert(id.clone(), card.clone());
+                                } else {
+                                    self.cards.remove(&id);
+                                }
+                            }
+                            Surface::CalendarMarker => {
+                                if shown && !marker.trim().is_empty() {
+                                    self.markers.insert(id.clone(), marker.clone());
+                                } else {
+                                    self.markers.remove(&id);
+                                }
+                            }
+                        }
                     }
                 }
                 Ok(None) => {
@@ -1293,6 +1342,7 @@ impl LocalPlugins {
                 }
                 Err(e) => {
                     self.cards.remove(&id);
+                    self.markers.remove(&id);
                     self.quota.remove(&id);
                     self.status.remove(&id);
                     self.errors.insert(id, e);
@@ -1396,6 +1446,26 @@ impl LocalPlugins {
         }
     }
 
+    /// 某个模块重新打开或换日时，让带有这个输出位置、但归属在别处的插件马上重算。
+    fn recompute_surface(&mut self, owner: &str, surface: Surface) {
+        let ids: Vec<_> = self
+            .records
+            .iter()
+            .filter(|(_, record)| {
+                record.package.as_ref().is_some_and(|package| {
+                    package.manifest.owner != owner && package.manifest.has_surface(surface)
+                })
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in ids {
+            if let Some(job) = self.jobs.get(&id) {
+                job.cancelled.store(true, Ordering::Release);
+            }
+            self.next.remove(&id);
+        }
+    }
+
     pub(crate) fn quota_sources(&self) -> impl Iterator<Item = (&str, &str, &PluginQuota)> {
         self.quota.iter().filter_map(|(id, quota)| {
             let record = self.records.get(id).filter(|record| record.enabled)?;
@@ -1465,12 +1535,7 @@ impl LocalPlugins {
         Some((package.manifest.name.as_str(), snapshot, health))
     }
     pub fn has_card(&self) -> bool {
-        self.cards.keys().any(|id| {
-            self.records[id]
-                .package
-                .as_ref()
-                .is_some_and(|package| package.manifest.owner == "tasks")
-        })
+        !self.cards.is_empty()
     }
 
     pub fn calendar_annotation_enabled(&self) -> bool {
@@ -1479,7 +1544,7 @@ impl LocalPlugins {
                 && record
                     .package
                     .as_ref()
-                    .is_some_and(|package| package.manifest.owner == "calendar")
+                    .is_some_and(|package| package.manifest.has_surface(Surface::CalendarMarker))
         })
     }
 
@@ -1487,10 +1552,7 @@ impl LocalPlugins {
         if self.calendar_day != today {
             return None;
         }
-        self.cards.iter().find_map(|(id, text)| {
-            let package = self.records[id].package.as_ref()?;
-            (package.manifest.owner == "calendar").then_some(text.as_str())
-        })
+        self.markers.values().next().map(String::as_str)
     }
 }
 

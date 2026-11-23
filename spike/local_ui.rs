@@ -737,9 +737,7 @@ impl LocalPlugins {
     }
 
     pub fn card(&mut self, c: &Card) -> bool {
-        let mut cards = self.cards.iter().filter(|(id, _)| {
-            self.records[*id].package.as_ref().unwrap().manifest.owner == "tasks"
-        });
+        let mut cards = self.cards.iter();
         let count = cards.clone().count();
         if count == 0 {
             return false;
