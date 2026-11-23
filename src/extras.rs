@@ -1580,7 +1580,7 @@ pub(crate) const SETTINGS_TAB_APPEARANCE: usize = 13;
 pub(crate) const SETTINGS_TAB_POSITION: usize = 14;
 pub(crate) const SETTINGS_TAB_PAGES: usize = 10;
 pub(crate) const SETTINGS_TAB_WIRELESS: usize = 16;
-#[cfg(feature="sdk-js")]
+#[cfg_attr(not(feature="sdk-js"),allow(dead_code))]
 pub(crate) const SETTINGS_TAB_PLUGINS: usize = 17;
 /// 侧栏：一项就是一页，不再有页内子标签。专注与健康（2、3）、待办与置物（4、5）各合成一页；
 /// 插件和关于固定在左下角，上方一条细线和功能页分开。
