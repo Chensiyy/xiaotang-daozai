@@ -1137,6 +1137,23 @@ impl eframe::App for Shell {
                     daozai::resources::PLUGIN_FRAME_US.load(std::sync::atomic::Ordering::Relaxed) as f64/1000.0,
                     native_cost.as_secs_f64()*1000.0,settings_cost.as_secs_f64()*1000.0));
         }
+        // 切换动画中帧间隔偏长时，分开记下上一帧逻辑和逻辑之外（绘制、读回、提交、等待）各占多少。
+        thread_local!{static PREVIOUS_FRAME:std::cell::Cell<Option<(Instant,Duration)>>=const{std::cell::Cell::new(None)};}
+        // 动画帧会请求很快的下一帧；闲置和定时刷新不计。
+        let animating=out.repaint_after<=Duration::from_millis(34);
+        if let Some((start,logic))=PREVIOUS_FRAME.get().filter(|_|animating) {
+            let interval=frame_start.duration_since(start);
+            if interval>=Duration::from_millis(25) {
+                let (page,open)=self.app.debug_state();
+                daozai::resources::append_log(&daozai::model::config_dir().join("diagnostics"),"frames",
+                    &format!("间隔 {:.0} ms｜页面 {}｜展开 {}｜上帧逻辑 {:.1}｜逻辑之外 {:.1}｜本帧岛体 {:.1}（插件 {:.1}）｜窗口 {:.1}",
+                        interval.as_secs_f64()*1000.0,page,open,logic.as_secs_f64()*1000.0,
+                        interval.saturating_sub(logic).as_secs_f64()*1000.0,draw_cost.as_secs_f64()*1000.0,
+                        daozai::resources::PLUGIN_FRAME_US.load(std::sync::atomic::Ordering::Relaxed) as f64/1000.0,
+                        native_cost.as_secs_f64()*1000.0));
+            }
+        }
+        PREVIOUS_FRAME.set(Some((frame_start,elapsed)));
     }
 }
 
