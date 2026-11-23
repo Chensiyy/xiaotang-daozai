@@ -89,6 +89,31 @@
       "uniqueItems": true
     },
     "refreshSeconds": {"type":"integer","minimum":60,"maximum":86400,"default":60},
+    "network": {
+      "type": "object",
+      "properties": {
+        "hosts": {
+          "type": "array", "minItems": 1, "maxItems": 4, "uniqueItems": true,
+          "items": {
+            "type": "string", "maxLength": 253,
+            "pattern": "^(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\\.)+[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$"
+          }
+        },
+        "url": {"type": "string", "maxLength": 2048, "pattern": "^[Hh][Tt][Tt][Pp][Ss]://"},
+        "credential": {
+          "type": "object",
+          "properties": {
+            "label": {"type": "string", "minLength": 1, "maxLength": 80},
+            "header": {"type": "string", "maxLength": 64, "pattern": "^[A-Za-z0-9!#$%&'*+.^_\u0060|~-]+$"},
+            "prefix": {"type": "string", "maxLength": 80, "pattern": "^[ -~]*$"}
+          },
+          "required": ["label", "header"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["hosts"],
+      "additionalProperties": false
+    },
     "statusLayout": {
       "type": "object",
       "description": "状态详情页的组件顺序与样式。缺省时使用默认模板。",
@@ -160,8 +185,8 @@
       "type": "object",
       "properties": {
         "source.read": {
-          "enum": ["file", "loopback"],
-          "description": "Windows 测试版 JS 插件的单一只读来源，由用户在安装后选择文件或授权完整回环 HTTP 地址。"
+          "enum": ["file", "loopback", "https"],
+          "description": "Windows 试用版 JS 插件的单一只读来源，由用户在安装后授权本地文件、本机 HTTP 或白名单内的 HTTPS 地址。"
         },
         "hosts": {
           "type": "array",
@@ -430,6 +455,19 @@
   "additionalProperties": false,
   "allOf": [
     {
+      "if": {
+        "properties": {"permissions": {
+          "required": ["source.read"],
+          "properties": {"source.read": {"const": "https"}}
+        }}
+      },
+      "then": {
+        "required": ["network"],
+        "properties": {"runtime": {"const": "js"}, "permissions": {"maxProperties": 1}}
+      },
+      "else": {"not": {"required": ["network"]}}
+    },
+    {
       "if": {"required": ["statusLayout"]},
       "then": {"properties": {"capabilities": {"contains": {"const": "status.page"}}}}
     },
@@ -588,7 +626,7 @@
             "contains": {"const": "status.page"}
           },
           "permissions": {
-            "properties": {"source.read": {"enum": ["file", "loopback"]}},
+            "properties": {"source.read": {"enum": ["file", "loopback", "https"]}},
             "additionalProperties": false
           },
           "settings": {"items": {"properties": {"type": {"enum": ["text", "date"]}}}}

@@ -863,6 +863,10 @@ impl LocalPlugins {
                 settings_hint(ui, "已安装更高版本");
                 return false;
             }
+            MarketStatus::Revoked => {
+                ui.colored_label(warn_color(ui), "版本已撤回");
+                return false;
+            }
         };
         let mut response = ui.add_enabled(!self.market_busy() && has_cover, market_button(ui, label));
         if state == MarketStatus::Update {

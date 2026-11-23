@@ -12,6 +12,9 @@ mod market_metrics;
 #[cfg(windows)]
 #[path = "market_state.rs"]
 mod market_state;
+#[cfg(windows)]
+#[path = "source_https.rs"]
+mod source_https;
 #[path = "source_read.rs"]
 mod source_read;
 #[path = "local_ui.rs"]
@@ -125,6 +128,9 @@ struct Manifest {
     capabilities: Vec<String>,
     data_version: u32,
     permissions: BTreeMap<String, Value>,
+    #[cfg(windows)]
+    #[serde(default, deserialize_with = "present_value", skip_serializing_if = "Option::is_none")]
+    network: Option<source_https::Network>,
     settings: Vec<Field>,
     #[serde(default = "default_refresh")]
     refresh_seconds: u32,
@@ -168,6 +174,9 @@ struct Record {
     material_granted: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     source_grant: Option<SourceGrant>,
+    #[cfg(windows)]
+    #[serde(default, skip_serializing_if = "is_false")]
+    market_revoked: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     status_page_disabled: bool,
 }
@@ -182,7 +191,30 @@ impl Record {
     }
 
     fn source_grant(&self) -> Option<&SourceGrant> {
-        self.source_grant.as_ref().filter(|grant| Some(grant.kind()) == self.source_kind())
+        let grant = self.source_grant.as_ref()?;
+        if Some(grant.kind()) != self.source_kind() {
+            return None;
+        }
+        #[cfg(windows)]
+        if let SourceGrant::Https { url } = grant {
+            self.network()?.address(url).ok()?;
+        }
+        Some(grant)
+    }
+
+    #[cfg(windows)]
+    fn network(&self) -> Option<&source_https::Network> {
+        self.package.as_ref()?.manifest.network.as_ref()
+    }
+
+    fn read_source(&self, grant: &SourceGrant, cancelled: &AtomicBool) -> std::io::Result<String> {
+        #[cfg(windows)]
+        if let SourceGrant::Https { url } = grant {
+            let network = self.network().ok_or_else(|| std::io::Error::other("缺少 HTTPS 网络配置"))?;
+            let id = &self.package.as_ref().unwrap().manifest.id;
+            return network.read(id, url, cancelled);
+        }
+        grant.read(cancelled)
     }
 
     fn valid(&self, id: &str) -> bool {
@@ -345,6 +377,8 @@ impl Manifest {
         match self.permissions.get(SOURCE_PERMISSION)?.as_str()? {
             "file" => Some(SourceKind::File),
             "loopback" => Some(SourceKind::Loopback),
+            #[cfg(windows)]
+            "https" => Some(SourceKind::Https),
             _ => None,
         }
     }
@@ -409,6 +443,14 @@ impl Manifest {
                 return Err(fail("statusLayout 只适用于声明了 status.page 的插件"));
             }
             layout.validate().map_err(fail)?;
+        }
+        #[cfg(windows)]
+        match (m.source_kind(), &m.network) {
+            (Some(SourceKind::Https), Some(network)) if network.valid() => {}
+            (Some(SourceKind::Https), _) | (_, Some(_)) => {
+                return Err(fail("只有 HTTPS 数据源可声明 network，且须提供有效的域名白名单"));
+            }
+            _ => {}
         }
         let material = m.is_material();
         if m.is_wireless() {
@@ -858,6 +900,7 @@ impl LocalPlugins {
         #[cfg(windows)]
         {
             s.restore_market_catalog();
+            s.restore_official_revocations();
             s.sync_wireless();
         }
         s
@@ -1063,6 +1106,8 @@ impl LocalPlugins {
             storage: Value::Null,
             material_granted: false,
             source_grant: None,
+            #[cfg(windows)]
+            market_revoked: false,
             status_page_disabled: false,
         };
         if let Some(old) = self.records.get(&id) {
@@ -1092,6 +1137,10 @@ impl LocalPlugins {
     }
     pub(crate) fn enable(&mut self, id: &str, on: bool) -> Result<()> {
         let mut r = self.installed(id)?;
+        #[cfg(windows)]
+        if on && r.market_revoked {
+            return Err(fail("当前插件版本已撤回，请更新后启用"));
+        }
         if r.package.as_ref().unwrap().manifest.is_material() {
             #[cfg(feature = "sdk-material")]
             if on || self.selected_material_id() == Some(id) {
@@ -1134,14 +1183,46 @@ impl LocalPlugins {
 
     #[cfg(windows)]
     fn set_source_grant(&mut self, id: &str, grant: Option<SourceGrant>) -> Result<()> {
+        self.set_source_grant_with_secret(id, grant, None)
+    }
+
+    #[cfg(windows)]
+    fn set_source_grant_with_secret(&mut self, id: &str, grant: Option<SourceGrant>, secret: Option<&str>) -> Result<()> {
         let mut record = self.installed(id)?;
         let kind = record.source_kind().ok_or_else(|| fail("此插件未声明数据源"))?;
         if grant.as_ref().is_some_and(|grant| grant.kind() != kind) {
             return Err(fail("数据源类型与插件申请不一致"));
         }
+        let credential = record.network().and_then(|network| network.credential.as_ref());
+        let previous_secret = if let Some(SourceGrant::Https { url }) = &grant {
+            record.network().unwrap().address(url)?;
+            if let Some(config) = credential {
+                let secret = secret.ok_or_else(|| fail("请输入数据源密钥"))?;
+                config.header_value(secret)?;
+                self.forget_view(id);
+                let previous = source_https::load_secret(id)?;
+                source_https::save_secret(id, secret)?;
+                Some(previous)
+            } else {
+                None
+            }
+        } else {
+            if credential.is_some() && grant.is_none() {
+                self.forget_view(id);
+                source_https::delete_secret(id)?;
+            }
+            None
+        };
         if record.source_grant != grant {
             record.source_grant = grant;
-            self.put(id, record)?;
+            if let Err(error) = self.put(id, record) {
+                match previous_secret {
+                    Some(Some(previous)) => source_https::save_secret(id, &previous)?,
+                    Some(None) => source_https::delete_secret(id)?,
+                    None => {}
+                }
+                return Err(error);
+            }
             self.forget_view(id);
         }
         Ok(())
@@ -1166,6 +1247,11 @@ impl LocalPlugins {
     }
     fn uninstall(&mut self, id: &str, keep: bool) -> Result<()> {
         let mut r = self.installed(id)?;
+        #[cfg(windows)]
+        if r.network().is_some_and(|network| network.credential.is_some()) {
+            self.forget_view(id);
+            source_https::delete_secret(id)?;
+        }
         #[cfg(feature = "sdk-material")]
         if self.selected_material.as_deref() == Some(id) {
             self.activate_material(None, false)?;
@@ -1403,7 +1489,7 @@ impl LocalPlugins {
             let worker_cancelled = Arc::clone(&cancelled);
             let result = std::thread::Builder::new().name("daozai-plugin-read".into()).spawn(move || {
                 let source = match r.source_grant() {
-                    Some(grant) => match grant.read(&worker_cancelled) {
+                    Some(grant) => match r.read_source(grant, &worker_cancelled) {
                         Ok(text) => SourceInput::Ready { text },
                         Err(_) => SourceInput::Offline,
                     },

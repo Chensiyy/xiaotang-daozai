@@ -32,6 +32,7 @@ type CoverCache = std::collections::VecDeque<(egui::Id, Option<egui::TextureHand
 struct SourceDialog {
     plugin: String,
     url: String,
+    secret: String,
     error: String,
 }
 
@@ -1064,6 +1065,10 @@ impl LocalPlugins {
         let material = manifest.is_material();
         let owner_key = manifest.owner.clone();
         let retired = manifest.is_retired_lunar_preview();
+        #[cfg(windows)]
+        let revoked = r.market_revoked;
+        #[cfg(not(windows))]
+        let revoked = false;
         let module_on = match owner_key.as_str() {
             "calendar" => calendar_on,
             "quota" => quota_on,
@@ -1179,7 +1184,9 @@ impl LocalPlugins {
                         #[cfg(windows)]
                         market_browse_ui::show_badge(ui, official_mark, preview_sample);
                     });
-                    if retired {
+                    if revoked {
+                        ui.colored_label(warn_color(ui), "此版本已撤回");
+                    } else if retired {
                         settings_hint(ui, "已撤回 · 等待更新");
                     } else if owner_key == "pages" && !on {
                         settings_hint(ui, "启用后可在页面管理设置");
@@ -1245,7 +1252,7 @@ impl LocalPlugins {
                 if ui.add(egui::Button::new("卸载…").frame(false)).clicked() {
                     self.pending = Some(id.to_owned());
                 }
-                if plugin_switch(ui, id, on, if on { "停用插件" } else { "启用插件" }) {
+                if !revoked && plugin_switch(ui, id, on, if on { "停用插件" } else { "启用插件" }) {
                     if material {
                         #[cfg(all(windows, feature = "sdk-material"))]
                         if self.request_material(ui, (!selected).then_some(id)) && !selected {
@@ -1283,13 +1290,14 @@ impl LocalPlugins {
     #[cfg(windows)]
     fn open_source_dialog(&self, ui: &egui::Ui, id: &str) {
         let url = match self.source_grant(id) {
-            Some(SourceGrant::Loopback(url)) => url.clone(),
-            _ => String::new(),
+            Some(SourceGrant::Loopback(url) | SourceGrant::Https { url }) => url.clone(),
+            _ => self.records[id].network().and_then(|network| network.url.clone()).unwrap_or_default(),
         };
         ui.data_mut(|data| {
             data.insert_temp(egui::Id::new(SOURCE_DIALOG), SourceDialog {
                 plugin: id.to_owned(),
                 url,
+                secret: String::new(),
                 error: String::new(),
             });
         });
@@ -1307,6 +1315,7 @@ impl LocalPlugins {
         };
         let name = &self.records[id].package.as_ref().unwrap().manifest.name;
         let grant = self.source_grant(id);
+        let network = self.records[id].network().cloned();
         let ctx = ui.ctx().clone();
         let mut pick = false;
         let mut approve = false;
@@ -1324,7 +1333,7 @@ impl LocalPlugins {
                     ui.label("已授权读取");
                     let target = match grant {
                         SourceGrant::File(path) => path.to_string_lossy(),
-                        SourceGrant::Loopback(url) => url.as_str().into(),
+                        SourceGrant::Loopback(url) | SourceGrant::Https { url } => url.as_str().into(),
                     };
                     ui.add(egui::Label::new(target.as_ref()).truncate()).on_hover_text(target.as_ref());
                 }
@@ -1340,6 +1349,20 @@ impl LocalPlugins {
                         approve = ui.add_enabled(!dialog.url.trim().is_empty(),
                             egui::Button::new("授权读取此地址")).clicked();
                         settings_hint(ui, "仅向填写的本机地址发送 GET 请求。");
+                    }
+                    SourceKind::Https => {
+                        let network = network.as_ref().unwrap();
+                        ui.add(egui::TextEdit::singleline(&mut dialog.url)
+                            .char_limit(2048).desired_width(385.0).hint_text("https://"));
+                        settings_hint(ui, &format!("允许的域名 · {}", network.hosts.join("、")));
+                        if let Some(credential) = &network.credential {
+                            ui.label(&credential.label);
+                            ui.add(egui::TextEdit::singleline(&mut dialog.secret)
+                                .password(true).char_limit(2048).desired_width(385.0));
+                        }
+                        approve = ui.add_enabled(!dialog.url.trim().is_empty()
+                            && (network.credential.is_none() || !dialog.secret.is_empty()),
+                            egui::Button::new("授权读取此地址")).clicked();
                     }
                 }
                 if !dialog.error.is_empty() {
@@ -1359,17 +1382,28 @@ impl LocalPlugins {
                 Err(error) => Some(Err(error.to_string())),
             }
         } else if approve {
-            Some(source_read::grant_url(&dialog.url).map(Some))
+            Some(match &network {
+                Some(network) => network.grant(&dialog.url).map(Some).map_err(|err| err.to_string()),
+                None => source_read::grant_url(&dialog.url).map(Some),
+            })
         } else if revoke {
             Some(Ok(None))
         } else {
             None
         };
         if let Some(changed) = changed {
-            dialog.error = changed.and_then(|grant| self.set_source_grant(id, grant).map_err(|err| err.to_string()))
-                .err().unwrap_or_default();
-            if revoke && dialog.error.is_empty() {
-                dialog.url.clear();
+            dialog.error = changed.and_then(|grant| {
+                if approve && kind == SourceKind::Https {
+                    self.set_source_grant_with_secret(id, grant, Some(&dialog.secret))
+                } else {
+                    self.set_source_grant(id, grant)
+                }.map_err(|err| err.to_string())
+            }).err().unwrap_or_default();
+            if dialog.error.is_empty() {
+                dialog.secret.clear();
+                if revoke {
+                    dialog.url = network.and_then(|network| network.url).unwrap_or_default();
+                }
             }
             ctx.request_repaint_of(egui::ViewportId::ROOT);
         }

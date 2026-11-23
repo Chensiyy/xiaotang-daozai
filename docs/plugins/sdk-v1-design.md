@@ -35,7 +35,7 @@ function refresh({ settings, today }) {
 | 歌词来源 · 待宿主实现 | `function refresh(i){return {lyrics:{trackId:i.track.id,lines:i.source.lines}}}`。换歌后宿主只接收当前曲目的结果 | 原音乐页 |
 | AI 额度来源 · 测试版 | 清单使用 `"owner":"quota"` 和 `"capabilities":["quota.source","timer"]`，`refresh` 返回 `quota`。 | 原 AI 额度面板中按插件名称显示来源页签 |
 | 专注事件和提醒 · 待宿主实现 | 在清单的 permissions 中声明 `{"events":["focus.finished"],"notifications":true}`，能力列出 event、notification 和 storage。示意 `function event(i){return {notice:"专注已完成",storage:{count:(i.storage?.count ?? 0)+1}}}` | 专注设置选择是否自动记录，岛上显示提醒 |
-| 本地只读数据源 · Windows 测试版 | 清单声明 `"permissions":{"source.read":"file"}` 或 `"permissions":{"source.read":"loopback"}`。宿主将已授权数据传给 `refresh` 的 `source` 输入。 | 「设置 → 插件 → 已安装 → 授权数据源」 |
+| 只读数据源 · Windows 测试版 | 清单通过 `permissions.source.read` 声明 `file`、`loopback` 或 `https`。宿主将已授权数据传给 `refresh` 的 `source` 输入。 | 「设置 → 插件 → 已安装 → 授权数据源」 |
 | 皮肤、表情、图标 · 待宿主实现 | 无代码包清单片段 `{"runtime":"assets","capabilities":["appearance.skin"],"assets":["theme.json"]}`。表情与图标分别声明 appearance.pet、appearance.icon | 原外观选择器，可切回内置素材 |
 | 底部快捷切换 · 已实现 | 声明 `runtime: "assets"`、`owner: "pages"` 和 `navigation.shortcuts`，在 `shortcuts.json` 配置选中配色 | 展开岛仔，点击底部图标直达已启用页面。设置归属「页面管理」 |
 | GPU 材质 · 已实现 | 清单用 `runtime: "material"`、`owner: "appearance"`、`appearance.material` 能力和 `screen.backdrop` 权限。WGSL 入口实现 `material()`，沿用[材质接口](gpu-material.md) | 「设置 → 外观 → 材质」，同一时间选用一个材质，需开启 Direct3D 12 兼容渲染 |
@@ -84,13 +84,34 @@ function refresh({ settings, today }) {
 
 JS 卡片可用空权限，或申请一个本地只读数据源。材质插件首次启用时单独确认 `screen.backdrop` 权限，岛背后的像素只在本机用于材质绘制，着色器可采样底片纹理，像素不保存、不上传。
 
-### 本地只读数据源
+### 只读数据源
 
-一款待办、日程、额度来源或状态详情插件可申请一种数据源。安装和启用不自动授权。在「设置 → 插件 → 已安装」为该插件选择一个普通本地文件，或输入完整的本机 HTTP 地址并确认授权。授权可随时撤销，卸载会清除授权。
+一款待办、日程、额度来源或状态详情插件可申请一种数据源。在「设置 → 插件 → 已安装」为插件选择一个普通本地文件，或确认完整的本机 HTTP 或 HTTPS 地址。授权可随时撤销，卸载会清除授权。
 
 - `file` 读取系统选择器选中的一个 UTF-8 文件，拒绝网络盘、目录和重解析路径。数据文件可以在原路径更新。
 - `loopback` 对用户确认的完整地址做 GET，例如 `http://127.0.0.1:8080/status`。支持 `127.0.0.1`、`[::1]` 和 `localhost`，直接连接回环地址，设置 2 秒请求预算，拒绝重定向、URL 账号密码和非回环地址。
-- 两种来源的读取上限均为 128 KiB。脚本只收到状态和文本，路径、地址及文件和网络操作留在宿主。建议只选择打算交给这个插件处理的数据。
+- `file` 和 `loopback` 的读取上限均为 128 KiB。
+- `https` 对用户确认的地址做 GET。清单须在 `network.hosts` 列出 1 至 4 个完整域名，逐个精确匹配，支持选填 `url` 预填地址。宿主使用 443 端口和公网解析结果，禁用代理和重定向，10 秒超时，正文最多 256 KiB，必须为 UTF-8。
+- 脚本收到状态和响应文本。路径、地址、密钥及文件和网络操作留在宿主。
+
+需要密钥的清单可声明 `credential`。宿主将用户输入的密钥保存在 Windows 凭据管理器，按所配置的请求头和前缀发送。撤销授权或卸载会删除密钥，更新后地址移出白名单或凭据配置改变时需要重新授权。
+
+```json
+{
+  "permissions": {"source.read": "https"},
+  "network": {
+    "hosts": ["api.example.com"],
+    "url": "https://api.example.com/v1/status",
+    "credential": {
+      "label": "服务访问令牌",
+      "header": "Authorization",
+      "prefix": "Bearer "
+    }
+  }
+}
+```
+
+[HTTPS 仓库动态样例](../../spike/examples/https-repository)可直接试装。
 
 `refresh` 的 `source` 输入有三种状态。未授权为 `{status:"unconfigured"}`，无法读取为 `{status:"offline"}`，读取成功为 `{status:"ready",text:"…"}`。未申请此权限的旧插件输入无变化。校验和打包时用 `unconfigured` 检查入口，插件需处理空数据。加上 `timer` 可按 `refreshSeconds` 刷新，最短 60 秒。
 
@@ -235,6 +256,8 @@ function refresh({settings}) {
 当前用本机目录试用作者打包、提交，和用户安装、更新。作者校验开发包、生成 ZIP，再提交到 `catalog.json` 所在目录。每个插件 ID 在目录索引中列一个最新版本。已经提交的版本 ZIP 保持原文件，发布新版要递增三段式版本号。
 
 索引为 UTF-8 JSON，顶层 `format: 1`、`plugins` 数组。每项包含 `id`、`name`、`author`、`version`、`size`（字节数）和 `sha256`（小写十六进制）。ZIP 文件名为 `plugin-<id>-<version>.zip`，和索引放在同一目录。作者命令负责填充元数据和校验值。
+
+条目可选填 `revoked:["1.0.1"]` 标记撤回版本。宿主同步目录时会停用已安装的撤回版本，在「已安装」提示撤回，并阻止从该目录安装版本。有更高的可用版本时可更新，更新后可重新启用。
 
 用户在「设置 → 插件 → 已安装 → 开发者工具」导入目录，集市切到「本地测试」。安装后在「已安装」管理。升级从同一目录领取同 ID、版本更高的包。更新验证通过后才替换安装快照，保留原启用选择、已保存的设置和私有数据。新增字段使用新版默认值。校验、试跑或兼容检查失败时保留旧包。
 

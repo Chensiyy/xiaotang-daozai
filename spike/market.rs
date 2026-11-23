@@ -61,6 +61,8 @@ pub(super) struct Entry {
     pub(super) owner: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) presentation: Option<Presentation>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub(super) revoked: BTreeSet<String>,
 }
 
 impl Entry {
@@ -75,6 +77,10 @@ impl Entry {
     /// 目录写明的设置归属。早期条目没有这一项，界面不猜测。
     pub(super) fn owner(&self) -> Option<&str> {
         self.owner.as_deref()
+    }
+
+    pub(super) fn revokes(&self, version: &str) -> bool {
+        self.revoked.contains(version)
     }
 
     fn zip_name(&self) -> String {
@@ -188,6 +194,7 @@ impl Catalog {
         for entry in &file.plugins {
             if !valid_id(&entry.id)
                 || version(&entry.version).is_none()
+                || entry.revoked.iter().any(|item| version(item).is_none())
                 || entry.name.trim().is_empty()
                 || entry.name.chars().count() > 80
                 || entry.author.trim().is_empty()
@@ -215,6 +222,9 @@ impl Catalog {
     }
 
     pub(super) fn load(&self, entry: &Entry) -> Result<Package> {
+        if entry.revokes(&entry.version) {
+            return Err(fail("此插件版本已撤回"));
+        }
         let raw = match &self.official_index {
             Some(index) => download_catalog_asset(index, &entry.zip_name(), ZIP_LIMIT)?,
             None => read_catalog_zip(&entry.path_in(&self.path))?,
@@ -714,6 +724,7 @@ pub(super) fn submit(input: &Path, path: &Path) -> Result<()> {
         sha256: sha256(&raw),
         owner: Some(manifest.owner),
         presentation: None,
+        revoked: BTreeSet::new(),
     };
     let path = target_path(path)?;
     let lock = OpenOptions::new()
@@ -735,7 +746,11 @@ pub(super) fn submit(input: &Path, path: &Path) -> Result<()> {
         if compare_versions(&entry.version, &old.version) != Some(Ordering::Greater) {
             return Err(fail("提交版本必须高于测试集市已有版本"));
         }
+        if old.revokes(&entry.version) {
+            return Err(fail("此插件版本已撤回"));
+        }
         entry.presentation = old.presentation.take();
+        entry.revoked = std::mem::take(&mut old.revoked);
         *old = entry;
     } else {
         plugins.push(entry);

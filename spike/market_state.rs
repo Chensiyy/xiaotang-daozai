@@ -11,6 +11,7 @@ pub(super) enum MarketStatus {
     Installed,
     OtherSource,
     Unavailable,
+    Revoked,
 }
 
 pub(super) struct MarketJob {
@@ -43,6 +44,9 @@ impl LocalPlugins {
             .saved_market_path()
             .and_then(|path| market::Catalog::open(&path).ok())
             .map(Arc::new);
+        if let Some(catalog) = self.market_catalog.clone() {
+            self.apply_market_revocations(&catalog);
+        }
         let mut favorites: BTreeMap<String, String> =
             bounded(&self.dir.join(FAVORITES_FILE), FAVORITES_LIMIT)
                 .ok()
@@ -52,6 +56,45 @@ impl LocalPlugins {
             valid_id(id) && !name.trim().is_empty() && name.chars().count() <= 80
         });
         self.market_favorites = favorites;
+    }
+
+    pub(super) fn restore_official_revocations(&mut self) {
+        #[cfg(not(test))]
+        if self.records.values().any(|record| record.official_market && record.package.is_some()) {
+            if let Ok(index) = market::official_index_url() {
+                let path = market::official_cache_path(&self.dir, &index);
+                if let Ok(catalog) = market::Catalog::restore_official(path, index) {
+                    self.apply_market_revocations(&catalog);
+                    self.official_market.catalog = Some(Arc::new(catalog));
+                }
+            }
+        }
+    }
+
+    fn apply_market_revocations(&mut self, catalog: &market::Catalog) {
+        for entry in &catalog.entries {
+            let Some(mut record) = self.records.get(&entry.id).filter(|record| {
+                record.from_market
+                    && record.origin == catalog.path
+                    && record.official_market == catalog.is_official()
+                    && !record.market_revoked
+                    && record.package.as_ref().is_some_and(|package| entry.revokes(&package.manifest.version))
+            }).cloned() else {
+                continue;
+            };
+            record.enabled = false;
+            record.market_revoked = true;
+            self.forget_view(&entry.id);
+            if let Err(error) = self.put(&entry.id, record) {
+                let record = self.records.get_mut(&entry.id).unwrap();
+                record.enabled = false;
+                record.market_revoked = true;
+                self.cancel_market(&entry.id);
+                self.refresh_page_shortcuts();
+                self.sync_wireless();
+                self.notice = format!("插件已停用，无法保存撤回状态：{error}");
+            }
+        }
     }
 
     pub(super) fn favorites(&self) -> &BTreeMap<String, String> {
@@ -122,6 +165,7 @@ impl LocalPlugins {
             &self.dir.join("market-catalog.json"),
             &serde_json::to_vec(&catalog.path)?,
         )?;
+        self.apply_market_revocations(&catalog);
         self.market_catalog = Some(Arc::new(catalog));
         Ok(())
     }
@@ -136,7 +180,9 @@ impl LocalPlugins {
             .map(|catalog| catalog.path.clone())
             .or_else(|| self.saved_market_path())
             .ok_or_else(|| fail("请先选择测试集市目录"))?;
-        self.market_catalog = Some(Arc::new(market::Catalog::open(&path)?));
+        let catalog = market::Catalog::open(&path)?;
+        self.apply_market_revocations(&catalog);
+        self.market_catalog = Some(Arc::new(catalog));
         Ok(())
     }
 
@@ -179,6 +225,9 @@ impl LocalPlugins {
             official.sync_job = Some(std::thread::spawn(move || {
                 market::Catalog::sync_official(path, index).map_err(|error| error.to_string())
             }));
+        }
+        if let Some(catalog) = official.catalog.clone() {
+            self.apply_market_revocations(&catalog);
         }
         self.sync_market_favorites();
     }
@@ -253,6 +302,9 @@ impl LocalPlugins {
         catalog: &market::Catalog,
         entry: &market::Entry,
     ) -> MarketStatus {
+        if entry.revokes(&entry.version) {
+            return MarketStatus::Revoked;
+        }
         let Some(record) = self.records.get(&entry.id) else {
             return MarketStatus::Install;
         };
@@ -312,6 +364,7 @@ impl LocalPlugins {
                 return Err(fail("集市没有更高版本"));
             }
             MarketStatus::OtherSource => return Err(fail("请从原来源管理这个插件")),
+            MarketStatus::Revoked => return Err(fail("此插件版本已撤回")),
         };
         let record = if let Some(record) = self.records.get(id) {
             record.clone()
@@ -330,6 +383,7 @@ impl LocalPlugins {
                 storage: Value::Null,
                 material_granted: false,
                 source_grant: None,
+                market_revoked: false,
                 status_page_disabled: false,
             }
         };
@@ -378,11 +432,30 @@ impl LocalPlugins {
             return;
         }
         let result = result.and_then(|mut record| {
+            let version = &record.package.as_ref().unwrap().manifest.version;
+            if self.market_catalog(record.official_market).is_some_and(|catalog| {
+                catalog.path == record.origin && catalog.entries.iter().any(|entry| {
+                    entry.id == job.id && entry.revokes(version)
+                })
+            }) {
+                return Err("此插件版本已撤回".into());
+            }
+            record.market_revoked = false;
             // 校验期间，旧插件可能完成一次后台刷新，保留该次已保存的数据。
             if let Some(current) = self.records.get(&job.id) {
                 record.storage = current.storage.clone();
                 record.enabled = current.enabled;
                 record.source_grant = current.source_grant().cloned();
+                let old_credential = current.network().and_then(|network| network.credential.as_ref());
+                let new_credential = record.network().and_then(|network| network.credential.as_ref());
+                if record.source_grant().is_none() || old_credential != new_credential {
+                    let had_secret = old_credential.is_some();
+                    self.forget_view(&job.id);
+                    if had_secret {
+                        source_https::delete_secret(&job.id).map_err(|error| error.to_string())?;
+                    }
+                    record.source_grant = None;
+                }
             }
             self.put(&job.id, record)
                 .map_err(|error| error.to_string())?;
@@ -434,6 +507,9 @@ impl LocalPlugins {
             }
         }
         if synced {
+            if let Some(catalog) = official.catalog.clone() {
+                self.apply_market_revocations(&catalog);
+            }
             self.sync_market_favorites();
         }
     }

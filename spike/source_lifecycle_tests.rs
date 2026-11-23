@@ -193,3 +193,77 @@ fn disabling_an_in_flight_local_request_discards_it_and_preserves_other_cards() 
     assert_eq!(host.cards[READ], "unconfigured");
     Ok(())
 }
+
+#[test]
+fn https_manifest_combination_and_public_sample() -> Result<()> {
+    let manifest = include_str!("examples/https-repository/plugin.json");
+    let package = Package::from_entry(
+        Manifest::decode(manifest)?,
+        include_str!("examples/https-repository/main.js").into(),
+        CoverPng::decode(include_bytes!("examples/https-repository/cover.png").to_vec())?,
+    )?;
+    let input = SourceInput::Ready { text: r#"{"stargazers_count":123}"#.into() };
+    assert_eq!(
+        package.render_input(&Values::new(), &Value::Null, TODAY, input)?.card,
+        "Rust · 123 星标"
+    );
+    let original: Value = serde_json::from_str(manifest)?;
+    let mut wrong = original.clone();
+    wrong.as_object_mut().unwrap().remove("network");
+    assert!(Manifest::decode(&wrong.to_string()).is_err());
+    wrong = original.clone();
+    wrong["permissions"]["source.read"] = json!("loopback");
+    assert!(Manifest::decode(&wrong.to_string()).is_err());
+    wrong = original.clone();
+    wrong["network"]["hosts"] = json!(["example.com", "EXAMPLE.COM"]);
+    assert!(Manifest::decode(&wrong.to_string()).is_err());
+    wrong = original;
+    wrong["network"]["url"] = json!("https://elsewhere.example.com/status");
+    assert!(Manifest::decode(&wrong.to_string()).is_err());
+    Ok(())
+}
+
+#[test]
+fn https_credential_is_external_and_revoke_stops_reads() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let id = format!("example.https-{}", fixture.0.file_name().unwrap().to_string_lossy());
+    let path = fixture.plugin(&id, json!({"source.read":"https"}), SOURCE_CARD)?;
+    let mut manifest: Value = serde_json::from_slice(&fs::read(&path)?)?;
+    manifest["network"] = json!({
+        "hosts": ["example.com"], "url": "https://example.com/data",
+        "credential": {"label":"测试密钥", "header":"X-Test-Key", "prefix":"Bearer "}
+    });
+    fs::write(&path, serde_json::to_vec(&manifest)?)?;
+    struct Cleanup<'a>(&'a str);
+    impl Drop for Cleanup<'_> {
+        fn drop(&mut self) {
+            let _ = source_https::delete_secret(self.0);
+        }
+    }
+    let _cleanup = Cleanup(&id);
+    let mut host = fixture.host();
+    host.install(&path)?;
+    let grant = host.records[&id].network().unwrap().grant("https://example.com/data")?;
+    let secret = "nonproduction-credential-for-local-test";
+    assert!(host.set_source_grant(&id, Some(grant.clone())).is_err());
+    host.set_source_grant_with_secret(&id, Some(grant.clone()), Some(secret))?;
+    assert_eq!(host.source_grant(&id), Some(&grant));
+    assert_eq!(source_https::load_secret(&id)?.as_deref(), Some(secret));
+    assert!(!fs::read_to_string(host.path(&id))?.contains(secret));
+    drop(host);
+
+    let mut host = fixture.host();
+    assert_eq!(host.source_grant(&id), Some(&grant));
+    host.set_source_grant(&id, None)?;
+    assert!(source_https::load_secret(&id)?.is_none());
+    host.enable(&id, true)?;
+    settle(&mut host, true);
+    assert_eq!(host.cards[&id], "unconfigured");
+
+    host.set_source_grant_with_secret(&id, Some(grant), Some(secret))?;
+    host.uninstall(&id, true)?;
+    assert!(source_https::load_secret(&id)?.is_none());
+    host.install(&path)?;
+    assert!(host.source_grant(&id).is_none());
+    Ok(())
+}
