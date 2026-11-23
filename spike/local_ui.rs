@@ -1176,21 +1176,23 @@ impl LocalPlugins {
                         };
                         ui.add(egui::Label::new(title).truncate())
                             .on_hover_text(format!("{name}\n{author} · v{version}"));
-                        ui.label(
+                        let version_color = if revoked { warn_color(ui) } else { muted_color(ui) };
+                        let version_label = ui.label(
                             egui::RichText::new(format!("v{version}"))
                                 .size(11.0)
-                                .color(muted_color(ui)),
+                                .color(version_color),
                         );
+                        if revoked {
+                            version_label.on_hover_text("此版本已撤回");
+                        }
                         #[cfg(windows)]
                         market_browse_ui::show_badge(ui, official_mark, preview_sample);
                     });
-                    if revoked {
-                        ui.colored_label(warn_color(ui), "此版本已撤回");
-                    } else if retired {
+                    if retired && !revoked {
                         settings_hint(ui, "已撤回 · 等待更新");
-                    } else if owner_key == "pages" && !on {
+                    } else if !revoked && owner_key == "pages" && !on {
                         settings_hint(ui, "启用后可在页面管理设置");
-                    } else {
+                    } else if !revoked {
                         #[cfg(windows)]
                         let navigate = if has_source {
                             ui.horizontal(|ui| {
