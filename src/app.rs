@@ -2070,7 +2070,9 @@ impl App {
             self.music_volume_open=false;
         }
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) && self.is_editing() {
-            self.cancel_edit();
+            if self.calendar.draft.as_mut().is_none_or(|draft|draft.picker.take().is_none()) {
+                self.cancel_edit();
+            }
         }
         if (!self.is_editing() || self.todo_choosing) && page_hover && self.open && self.reveal > 0.95 {
             let (scroll, left, right, esc) = ctx.input(|i| (i.raw_scroll_delta.y, i.key_pressed(egui::Key::ArrowLeft), i.key_pressed(egui::Key::ArrowRight), i.key_pressed(egui::Key::Escape)));

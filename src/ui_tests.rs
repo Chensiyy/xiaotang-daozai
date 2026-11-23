@@ -924,6 +924,121 @@ fn local_calendar_editor_makes_storage_scope_visible_with_connected_accounts() {
 }
 
 #[test]
+fn local_calendar_date_picker_updates_the_chosen_field_and_supports_all_day() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut h = H::new();
+    h.app.open_calendar(None);
+    h.app.open_calendar_editor(None);
+    let draft = h.app.calendar.draft.as_mut().unwrap();
+    draft.start_date = "2028-01-31".into();
+    draft.end_date = "2028-03-03".into();
+    let visible = |h: &H, label| h.shapes.iter().any(|shape| {
+        matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == label)
+    });
+
+    h.hover(H::local(300.0, 40.0), 1.0);
+    h.click(H::local(192.0, 82.0));
+    h.frame(vec![]);
+    assert!(visible(&h, "开始日期"));
+    h.click(H::local(177.0, 49.0));
+    h.click(H::local(112.0, 176.0)); // 闰年的 2 月 29 日
+    h.frame(vec![]);
+    let draft = h.app.calendar.draft.as_ref().unwrap();
+    assert_eq!(draft.start_date, "2028-02-29");
+    assert_eq!(draft.end_date, "2028-03-03");
+    assert!(visible(&h, "保存到本机"));
+
+    h.click(H::local(332.0, 82.0));
+    h.click(H::local(269.0, 114.0));
+    h.frame(vec![]);
+    assert!(h.app.calendar.draft.as_ref().unwrap().all_day);
+    assert!(!visible(&h, "结束时间"));
+    assert!(visible(&h, "保存到本机"));
+    h.click(H::local(192.0, 114.0));
+    h.frame(vec![]);
+    assert!(visible(&h, "结束日期"));
+    h.click(H::local(56.0, 49.0));
+    h.click(H::local(112.0, 176.0));
+    h.frame(vec![]);
+    let draft = h.app.calendar.draft.as_ref().unwrap();
+    assert_eq!(draft.end_date, "2028-02-29");
+    assert!(visible(&h, "包含结束当天"));
+}
+
+#[test]
+fn local_calendar_time_picker_confirms_independently_and_keeps_manual_entry() {
+    let _g = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let mut h = H::new();
+    h.app.open_calendar(None);
+    h.app.open_calendar_editor(None);
+    let draft = h.app.calendar.draft.as_mut().unwrap();
+    draft.title = "项目评审".into();
+    draft.start_date = "2028-02-29".into();
+    draft.end_date = "2028-02-29".into();
+    draft.start_time = "09:13".into();
+    draft.end_time = "00:00".into();
+    let visible = |h: &H, label| h.shapes.iter().any(|shape| {
+        matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == label)
+    });
+
+    h.hover(H::local(300.0, 40.0), 1.0);
+    h.click(H::local(269.0, 82.0));
+    h.frame(vec![]);
+    assert!(visible(&h, "开始时间"));
+    assert!(visible(&h, "小时") && visible(&h, "分钟"));
+    h.click(H::local(163.0, 163.0)); // 11 时
+    h.hover(H::local(247.0, 121.0), 0.2);
+    h.wheel(-40.0); // 14 分
+    assert_eq!(h.app.calendar.draft.as_ref().unwrap().start_time, "09:13");
+    h.click(H::local(334.0, 198.0));
+    h.frame(vec![]);
+    assert_eq!(h.app.calendar.draft.as_ref().unwrap().start_time, "11:14");
+    assert!(visible(&h, "保存到本机"));
+
+    h.click(H::local(269.0, 114.0));
+    h.frame(vec![]);
+    assert!(visible(&h, "结束时间"));
+    h.click(H::local(163.0, 142.0));
+    h.click(H::local(256.0, 198.0));
+    h.frame(vec![]);
+    assert!(visible(&h, "保存到本机"));
+    assert_eq!(h.app.calendar.draft.as_ref().unwrap().end_time, "00:00");
+
+    h.click(H::local(269.0, 114.0));
+    h.click(H::local(247.0, 142.0));
+    h.frame(vec![egui::Event::Key {
+        key: egui::Key::Escape, physical_key: None, pressed: true,
+        repeat: false, modifiers: Default::default(),
+    }]);
+    assert_eq!(h.app.calendar.draft.as_ref().unwrap().end_time, "00:00");
+    assert!(visible(&h, "项目评审"));
+
+    h.click(H::local(269.0, 114.0));
+    h.click(H::local(163.0, 100.0)); // 00 时向上回到 23 时
+    h.hover(H::local(247.0, 121.0), 0.2);
+    h.wheel(40.0); // 00 分向上回到 59 分
+    h.click(H::local(334.0, 198.0));
+    h.frame(vec![]);
+    let draft = h.app.calendar.draft.as_ref().unwrap();
+    assert_eq!((&*draft.start_time, &*draft.end_time), ("11:14", "23:59"));
+
+    h.click(H::local(233.0, 114.0));
+    h.frame(vec![
+        egui::Event::Key {
+            key: egui::Key::A, physical_key: None, pressed: true, repeat: false,
+            modifiers: egui::Modifiers { ctrl: true, command: true, ..Default::default() },
+        },
+        egui::Event::Text("15:26".into()),
+    ]);
+    assert_eq!(h.app.calendar.draft.as_ref().unwrap().end_time, "15:26");
+    h.click(H::local(334.0, 199.0));
+    h.frame(vec![]);
+    let entries = crate::local_calendar::load().unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].event.end.unwrap() - entries[0].event.start, 252 * 60);
+}
+
+#[test]
 fn local_calendar_can_create_edit_reload_and_remind_without_accounts() {
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();
     h.app.open_calendar(None);h.app.open_calendar_editor(None);
@@ -5923,7 +6038,7 @@ fn calendar_layout_gallery() {
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     let dest=std::path::PathBuf::from(std::env::var_os("DAOZAI_CALENDAR_PREVIEW_DIR").expect("需指定预览目录"));
     std::fs::create_dir_all(&dest).unwrap();
-    let modes=["agenda","agenda-list","dingtalk","wecom","empty","loading","failed","disconnected","local-editor","local","local-all-day","mixed"];
+    let modes=["agenda","agenda-list","dingtalk","wecom","empty","loading","failed","disconnected","local-editor","local-editor-date","local-editor-time","local","local-all-day","mixed"];
     let modes=if std::env::var_os("DAOZAI_LUNAR_CALENDAR_PREVIEW").is_some() {
         &["lunar","lunar-term","lunar-term-cream"][..]
     } else {
@@ -5937,7 +6052,7 @@ fn calendar_layout_gallery() {
         h.app.open_calendar(None);
         if mode=="lunar-term-cream"{h.app.settings.skin=crate::model::Skin::Cream;}
         let provider=match mode{"dingtalk"=>crate::calendar::Provider::DingTalk,"wecom"=>crate::calendar::Provider::WeCom,_=>crate::calendar::Provider::Feishu};
-        if !["disconnected","local-editor","local","local-all-day","lunar","lunar-term","lunar-term-cream"].contains(&mode){h.app.calendar.config=Some(crate::calendar::Config{provider,username:"demo".into(),href:None,server:None});h.app.calendar.connected=true;}
+        if !mode.starts_with("local-editor") && !["disconnected","local","local-all-day","lunar","lunar-term","lunar-term-cream"].contains(&mode){h.app.calendar.config=Some(crate::calendar::Config{provider,username:"demo".into(),href:None,server:None});h.app.calendar.connected=true;}
         h.app.calendar.view.loaded=Some(crate::calendar::month_start(day));
         if ["agenda","agenda-list","dingtalk","wecom","mixed"].contains(&mode) {
             for (i,(hour,minute,title)) in [(14,30,"产品方案评审"),(16,0,"下一阶段的设计方案与开发排期对齐"),(17,0,"项目进度同步")].into_iter().enumerate(){
@@ -5960,7 +6075,8 @@ fn calendar_layout_gallery() {
             let start=day.and_hms_opt(9,0,0).unwrap().and_local_timezone(chrono::Local).earliest().unwrap().timestamp();
             h.app.calendar.view.events.push(crate::mail::Meeting{all_day:false,title:"早上的会议".into(),start,end:Some(start+3600),at:String::new(),uid:"past".into()});
         }
-        if mode=="local-editor"{h.app.open_calendar_editor(None);}
+        if mode.starts_with("local-editor"){h.app.open_calendar_editor(None);}
+        if mode=="local-editor-time" {h.app.calendar.draft.as_mut().unwrap().start_time="09:13".into();}
         if mode=="agenda-list" {
             h.app.calendar.agenda=true;
             h.app.settings.skin=crate::model::Skin::Cream;
@@ -5970,7 +6086,19 @@ fn calendar_layout_gallery() {
         let mut raster=crate::preview_raster::Raster::new(1280,600);
         for f in 0..90 {
             let t=f as f64/60.0;
-            let raw=egui::RawInput{screen_rect:Some(Rect::from_min_size(Pos2::ZERO,egui::vec2(WIN_W,WIN_H))),time:Some(t),viewports:std::iter::once((egui::ViewportId::ROOT,egui::ViewportInfo{native_pixels_per_point:Some(2.0),..Default::default()})).collect(),..Default::default()};
+            let click = match (mode, f) {
+                ("local-editor-date", 67..=69) => Some(H::local(192.0, 82.0)),
+                ("local-editor-time", 67..=69) => Some(H::local(269.0, 82.0)),
+                _ => None,
+            };
+            let events = click.map_or_else(Vec::new, |pos| match f {
+                67 => vec![egui::Event::PointerMoved(pos)],
+                _ => vec![egui::Event::PointerButton {
+                    pos, button: egui::PointerButton::Primary, pressed: f == 68,
+                    modifiers: Default::default(),
+                }],
+            });
+            let raw=egui::RawInput{screen_rect:Some(Rect::from_min_size(Pos2::ZERO,egui::vec2(WIN_W,WIN_H))),time:Some(t),events,viewports:std::iter::once((egui::ViewportId::ROOT,egui::ViewportInfo{native_pixels_per_point:Some(2.0),..Default::default()})).collect(),..Default::default()};
             let day_label=match day_number {21=>"11月21日 周六",22=>"11月22日 周日",_=>"11月2日 周一"};
             let env=Env{t,today:day.to_string(),date:day_label.into(),clock:"14:15:00".into(),battery:Some(76),charging:true,cursor:Some(H::local(300.0,40.0)),..Default::default()};
             let out=h.ctx.run(raw,|ctx|{egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx,|ui|{let win=ui.max_rect();h.app.frame(ui,win,&env);});});
@@ -5986,6 +6114,16 @@ fn calendar_layout_gallery() {
                 }
                 if mode=="local-all-day" {
                     assert!(out.shapes.iter().any(|shape|matches!(&shape.shape,egui::Shape::Text(t) if t.galley.text()=="散步与读书")),"只有全天日程时也必须显示普通日程行");
+                }
+                let picker_labels: &[&str] = match mode {
+                    "local-editor-date" => &["开始日期"],
+                    "local-editor-time" => &["开始时间", "小时", "分钟", "09", "13"],
+                    _ => &[],
+                };
+                for &label in picker_labels {
+                    assert!(out.shapes.iter().any(|shape| matches!(&shape.shape, egui::Shape::Text(text)
+                        if text.galley.text() == label && shape.clip_rect.contains_rect(text.visual_bounding_rect()))),
+                        "预览应完整显示 {label}");
                 }
                 raster.buf.fill([0.035,0.055,0.09,1.0]);raster.draw(&h.ctx.tessellate(out.shapes,out.pixels_per_point),out.pixels_per_point);
                 let mut rgba=Vec::new();raster.to_rgba8(&mut rgba);let image=image::RgbaImage::from_raw(1280,600,rgba).unwrap();
