@@ -1,6 +1,6 @@
 //! 状态页扩展组件和宿主图标。
 
-use super::{metric_row_height, state_color, Accent, TEXT_RIGHT};
+use super::{metric_row_height, state_color, Accent, SensitiveValues, MASKED_VALUE, TEXT_RIGHT};
 use crate::{
     paint::{self, Card, H},
     plugin_status::{PluginStatus, StatusDensity, StatusEmphasis, StatusIcon, MAX_ITEMS},
@@ -46,11 +46,13 @@ pub(super) fn draw_icon(c: &Card, icon: StatusIcon, x: f32, y: f32) {
         StatusIcon::Battery => paint::battery(c, x, y, None, false, 0.72),
         StatusIcon::Cup => paint::coffee(c, x, y, theme::WHITE),
         StatusIcon::Clock => paint::stopwatch(&c.scaled(x, y, 0.60), x, y, 8.0, 0.5, theme::WHITE),
-        StatusIcon::Chart => {
+        StatusIcon::Cloud => crate::weather_ui::icon(c, x, y, 14.0, crate::weather::Kind::Cloud),
+        StatusIcon::Chart | StatusIcon::Calendar => {
             let rect = c.rect(x - 7.0, y - 7.0, 14.0, 14.0);
-            let image = egui::Image::new(egui::include_image!(
-                "../assets/settings-icons/system/performance.svg"
-            ));
+            let image = egui::Image::new(match icon {
+                StatusIcon::Chart => egui::include_image!("../assets/settings-icons/system/performance.svg"),
+                _ => egui::include_image!("../assets/settings-icons/calendar-days.svg"),
+            });
             if let Ok(egui::load::TexturePoll::Ready { texture }) = image
                 .fit_to_exact_size(rect.size())
                 .load_for_size(c.ui.ctx(), rect.size())
@@ -62,26 +64,34 @@ pub(super) fn draw_icon(c: &Card, icon: StatusIcon, x: f32, y: f32) {
     }
 }
 
-pub(super) fn draw_list(c: &Card, status: &PluginStatus, density: StatusDensity, x: f32, y: f32) {
+pub(super) fn draw_list(
+    c: &Card,
+    status: &PluginStatus,
+    density: StatusDensity,
+    x: f32,
+    y: f32,
+    privacy: &SensitiveValues,
+) {
     let row_height = metric_row_height(density);
     let count = list_rows(density, status.items.len());
     for (index, item) in status.items.iter().take(count).enumerate() {
         let center_y = y + (index as f32 + 0.5) * row_height;
-        if let Some(state) = item.state {
+        let label_x = x + 12.0;
+        let revealed = privacy.revealed(
+            c, item.sensitive, ("item", index, &item.label, &item.detail),
+            [x, center_y - row_height / 2.0, TEXT_RIGHT - x, row_height],
+        );
+        if let Some(state) = item.state.filter(|_| revealed) {
             c.circle(x + 3.0, center_y, 2.5, state_color(state));
         }
-        let label_x = x + 12.0;
-        let detail = item.detail.as_deref().map_or_else(String::new, |detail| {
-            c.fit(
-                detail,
-                size::SMALL,
-                W::Regular,
-                (TEXT_RIGHT - label_x) * 0.55,
-            )
-        });
+        let detail = item.detail.as_deref().filter(|_| revealed).map_or_else(
+            String::new,
+            |detail| c.fit(detail, size::SMALL, W::Regular, (TEXT_RIGHT - label_x) * 0.55),
+        );
         let detail_width = c.text_w(&detail, size::SMALL, W::Regular);
         let label_width = TEXT_RIGHT - label_x - detail_width - 8.0;
-        let label = c.fit(&item.label, size::SMALL, W::Semibold, label_width);
+        let raw = if revealed { &item.label } else { MASKED_VALUE };
+        let label = c.fit(raw, size::SMALL, W::Semibold, label_width);
         c.centered_text(
             label_x,
             center_y,
@@ -282,6 +292,8 @@ mod tests {
                 {"label":"列表第四条","state":"succeeded"}
             ],
             "series":[-f64::MAX, 0.0, f64::MAX],
+            "series_label":"近期读数",
+            "clock":{"label":"北京","utc_offset_minutes":480,"format":"HH:mm:ss"},
             "note":"冷却风扇运行正常\n准备打印下一件",
             "tags":["精细打印","模拟","深度观测","标签四"]
         }))
@@ -309,7 +321,7 @@ mod tests {
                         egui::Visuals::light()
                     });
                     let layout: StatusLayout = serde_json::from_value(json!({
-                        "components":[{"type":"state"},{"type":"list"},{"type":"chart"},{"type":"progress","variant":"bar"},{"type":"text"},{"type":"badge"}],
+                        "components":[{"type":"state"},{"type":"list"},{"type":"chart"},{"type":"clock"},{"type":"text"},{"type":"badge"}],
                         "style":{"density":density,"emphasis":"strong","icon":"clock","accent":"#F0F0F0"}
                     })).unwrap();
                     let background = backdrop.card_color(layout.style.surface);
@@ -346,6 +358,7 @@ mod tests {
                                     StatusHealth::Ready,
                                     Some(&layout),
                                     backdrop,
+                                    false,
                                 );
                                 let to = skin_paint::shape_count(ctx, layer);
                                 if let Some(palette) = palette {
@@ -386,7 +399,8 @@ mod tests {
                         "冷却风扇运行正常",
                         "准备打印下一件",
                         "精细打印",
-                        "95",
+                        "近期读数",
+                        "北京",
                     ] {
                         assert!(texts.contains(&label), "{label}: {density}, {scale}");
                     }

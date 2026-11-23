@@ -2,7 +2,13 @@
 
 use serde::{Deserialize, Serialize};
 
+#[path = "plugin_status_realtime.rs"]
+mod realtime;
+pub(crate) use realtime::{StatusClock, StatusCountdown, StatusCounter};
+
 pub(super) const MAX_ITEMS: usize = 8;
+const MAX_REALTIME: usize = 4;
+const MAX_COMPONENTS: usize = 10;
 const MAX_TIMESTAMP: i64 = 253_402_300_799;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -38,9 +44,16 @@ pub(crate) struct PluginStatus {
     #[serde(default)]
     pub items: Vec<StatusItem>,
     pub series: Option<Vec<f64>>,
+    pub series_label: Option<String>,
     pub note: Option<String>,
     #[serde(default)]
     pub tags: Vec<String>,
+    #[serde(default, deserialize_with = "realtime::one_or_many")]
+    pub counter: Vec<StatusCounter>,
+    #[serde(default, deserialize_with = "realtime::one_or_many")]
+    pub clock: Vec<StatusClock>,
+    #[serde(default, deserialize_with = "realtime::one_or_many")]
+    pub countdown: Vec<StatusCountdown>,
     pub alert: Option<String>,
     pub observed_at: Option<i64>,
     pub expires_at: Option<i64>,
@@ -51,6 +64,8 @@ pub(crate) struct PluginStatus {
 pub(crate) struct StatusMetric {
     pub label: String,
     pub value: String,
+    #[serde(default)]
+    pub sensitive: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
@@ -59,6 +74,9 @@ pub(crate) struct StatusItem {
     pub label: String,
     pub detail: Option<String>,
     pub state: Option<StatusState>,
+    pub action: Option<String>,
+    #[serde(default)]
+    pub sensitive: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -71,14 +89,17 @@ pub(crate) struct StatusLayout {
 
 impl StatusLayout {
     pub(crate) fn validate(&self) -> Result<(), &'static str> {
-        if !(1..=8).contains(&self.components.len()) {
-            return Err("状态页布局需要 1 至 8 个组件");
+        if !(1..=MAX_COMPONENTS).contains(&self.components.len()) {
+            return Err("状态页布局需要 1 至 10 个组件");
         }
         for (index, component) in self.components.iter().enumerate() {
-            if self.components[..index].iter().any(|previous| {
-                std::mem::discriminant(previous) == std::mem::discriminant(component)
-            }) {
-                return Err("状态页布局中每种组件只能出现一次");
+            let limit = if component.is_realtime() { MAX_REALTIME } else { 1 };
+            if self.occurrence(index) >= limit {
+                return Err(if limit == 1 {
+                    "状态页布局中同一普通组件只能出现一次"
+                } else {
+                    "状态页布局中同一实时组件最多出现 4 次"
+                });
             }
             if matches!(component, StatusComponent::Metrics { columns } if !(1..=2).contains(columns))
             {
@@ -89,6 +110,14 @@ impl StatusLayout {
             return Err("状态页强调色需为 #RRGGBB 格式");
         }
         Ok(())
+    }
+
+    pub(super) fn occurrence(&self, index: usize) -> usize {
+        let kind = std::mem::discriminant(&self.components[index]);
+        self.components[..index]
+            .iter()
+            .filter(|component| std::mem::discriminant(*component) == kind)
+            .count()
     }
 }
 
@@ -111,6 +140,15 @@ pub(crate) enum StatusComponent {
     Chart {},
     Text {},
     Badge {},
+    Counter {},
+    Clock {},
+    Countdown {},
+}
+
+impl StatusComponent {
+    fn is_realtime(self) -> bool {
+        matches!(self, Self::Counter {} | Self::Clock {} | Self::Countdown {})
+    }
 }
 
 fn default_metric_columns() -> u8 {
@@ -196,6 +234,8 @@ pub(crate) enum StatusIcon {
     Cup,
     Clock,
     Chart,
+    Cloud,
+    Calendar,
 }
 
 impl PluginStatus {
@@ -224,10 +264,20 @@ impl PluginStatus {
                         .detail
                         .as_deref()
                         .is_none_or(|text| valid_text(text, 80))
+                    && item.action.as_deref().is_none_or(|id| valid_text(id, 64))
             })
             && self.series.as_ref().is_none_or(|series| {
                 (2..=48).contains(&series.len()) && series.iter().all(|value| value.is_finite())
             })
+            && self.series_label.as_deref().is_none_or(|label| {
+                self.series.is_some() && valid_text(label, 12)
+            })
+            && self.counter.len() <= MAX_REALTIME
+            && self.counter.iter().all(StatusCounter::valid)
+            && self.clock.len() <= MAX_REALTIME
+            && self.clock.iter().all(StatusClock::valid)
+            && self.countdown.len() <= MAX_REALTIME
+            && self.countdown.iter().all(StatusCountdown::valid)
             && self.note.as_deref().is_none_or(valid_note)
             && self.tags.len() <= 4
             && self.tags.iter().all(|tag| valid_text(tag, 8))
@@ -363,7 +413,7 @@ mod tests {
     }
 
     #[test]
-    fn plugin_status_layout_allows_eight_unique_components_and_known_tokens() {
+    fn plugin_status_layout_accepts_the_old_format_and_rejects_duplicates() {
         let mut definition = json!({
             "components": [
                 {"type":"state"}, {"type":"summary"}, {"type":"progress"}, {"type":"metrics"},
@@ -381,7 +431,7 @@ mod tests {
         assert!(serde_json::from_value::<StatusLayout>(definition.clone())
             .unwrap()
             .validate()
-            .is_err());
+            .is_ok());
         definition["components"][0] = json!({"type":"text"});
         definition["components"].as_array_mut().unwrap().pop();
         assert!(serde_json::from_value::<StatusLayout>(definition.clone())
@@ -398,5 +448,74 @@ mod tests {
             definition["style"] = style;
             assert!(serde_json::from_value::<StatusLayout>(definition.clone()).is_err());
         }
+    }
+
+    #[test]
+    fn plugin_status_validates_realtime_parameters_and_list_actions() {
+        let input = json!({
+            "state":"running","label":"实时",
+            "counter":{"start_value":10.0,"per_second":0.5,"start_at":100,"until":110,
+                       "decimals":2,"prefix":"¥","sensitive":true},
+            "clock":[{"label":"东京","utc_offset_minutes":540,"format":"HH:mm:ss"}],
+            "countdown":{"label":"倒数","target_at":100,"format":"d天 HH:mm","done_label":"到了"},
+            "items":[{"label":"便签","action":"delete-1","sensitive":true}],
+            "series":[1, 2],"series_label":"走势"
+        });
+        let status: PluginStatus = serde_json::from_value(input.clone()).unwrap();
+        assert!(status.valid());
+        assert!(status.counter[0].sensitive);
+        assert!(status.items[0].sensitive);
+        assert_eq!(status.items[0].action.as_deref(), Some("delete-1"));
+        assert_eq!(status.counter[0].value_at(105), "¥12.50");
+        assert_eq!(status.counter[0].value_at(112), "¥15.00");
+        assert_eq!(status.counter[0].repaint_at(110), None);
+        assert_eq!(status.clock[0].value_at(86_399), "08:59:59");
+        assert_eq!(status.countdown[0].value_at(99), "0天 00:01");
+        assert_eq!(status.countdown[0].repaint_at(99), Some(100));
+        assert_eq!(status.countdown[0].value_at(100), "到了");
+        assert_eq!(status.countdown[0].value_at(101), "到了");
+        assert_eq!(status.countdown[0].repaint_at(101), None);
+
+        for (key, value) in [
+            ("counter", json!(vec![input["counter"].clone(); 5])),
+            ("counter", json!({"start_value":0, "per_second":1, "start_at":2, "until":1, "decimals":0})),
+            ("counter", json!({"start_value":0, "per_second":1, "start_at":2, "decimals":5})),
+            ("clock", json!({"label":"城市","utc_offset_minutes":841,"format":"HH:mm"})),
+            ("countdown", json!({"label":"倒数","target_at":-1,"format":"HH:mm:ss"})),
+            ("series_label", json!("测".repeat(13))),
+            ("items", json!([{"label":"便签","action":"删除\n便签"}])),
+        ] {
+            let mut invalid = input.clone();
+            invalid[key] = value;
+            let status: PluginStatus = serde_json::from_value(invalid).unwrap();
+            assert!(!status.valid(), "{key}");
+        }
+        let mut status: PluginStatus = serde_json::from_value(input).unwrap();
+        status.counter[0].start_value = f64::INFINITY;
+        assert!(!status.valid());
+    }
+
+    #[test]
+    fn plugin_status_layout_counts_real_time_occurrences_in_the_total() {
+        let mut components = vec![json!({"type":"counter"}); 4];
+        components.extend([
+            json!({"type":"clock"}),
+            json!({"type":"clock"}),
+            json!({"type":"countdown"}),
+            json!({"type":"summary"}),
+            json!({"type":"state"}),
+            json!({"type":"text"}),
+        ]);
+        let validate = |components: &[serde_json::Value]| {
+            serde_json::from_value::<StatusLayout>(json!({"components":components}))
+                .unwrap()
+                .validate()
+        };
+        assert!(validate(&components).is_ok());
+        components.push(json!({"type":"list"}));
+        assert!(validate(&components).is_err());
+        components.pop();
+        components[4] = json!({"type":"counter"});
+        assert!(validate(&components).is_err());
     }
 }

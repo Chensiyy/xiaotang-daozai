@@ -96,12 +96,12 @@
         "components": {
           "type": "array",
           "minItems": 1,
-          "maxItems": 8,
+          "maxItems": 10,
           "items": {
             "oneOf": [
               {
                 "type": "object",
-                "properties": {"type": {"enum": ["state", "summary", "alert", "updated_at", "list", "chart", "text", "badge"]}},
+                "properties": {"type": {"enum": ["state", "summary", "alert", "updated_at", "list", "chart", "text", "badge", "counter", "clock", "countdown"]}},
                 "required": ["type"],
                 "additionalProperties": false
               },
@@ -135,7 +135,10 @@
             {"contains": {"properties": {"type": {"const": "text"}}}, "minContains": 0, "maxContains": 1},
             {"contains": {"properties": {"type": {"const": "badge"}}}, "minContains": 0, "maxContains": 1},
             {"contains": {"properties": {"type": {"const": "alert"}}}, "minContains": 0, "maxContains": 1},
-            {"contains": {"properties": {"type": {"const": "updated_at"}}}, "minContains": 0, "maxContains": 1}
+            {"contains": {"properties": {"type": {"const": "updated_at"}}}, "minContains": 0, "maxContains": 1},
+            {"contains": {"properties": {"type": {"const": "counter"}}}, "minContains": 0, "maxContains": 4},
+            {"contains": {"properties": {"type": {"const": "clock"}}}, "minContains": 0, "maxContains": 4},
+            {"contains": {"properties": {"type": {"const": "countdown"}}}, "minContains": 0, "maxContains": 4}
           ]
         },
         "style": {
@@ -145,7 +148,7 @@
             "density": {"enum": ["comfortable", "compact"], "default": "comfortable"},
             "surface": {"enum": ["card", "plain"], "default": "card"},
             "emphasis": {"enum": ["normal", "strong"], "default": "normal"},
-            "icon": {"enum": ["battery", "cup", "clock", "chart"]}
+            "icon": {"enum": ["battery", "cup", "clock", "chart", "cloud", "calendar"]}
           },
           "additionalProperties": false
         }

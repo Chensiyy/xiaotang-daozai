@@ -451,3 +451,31 @@ fn printer_status_example_installs_and_returns_all_new_components() -> Result<()
     assert_eq!(host.status_layout(id).unwrap().components.len(), 8);
     Ok(())
 }
+
+#[test]
+fn realtime_examples_install_and_return_bounded_host_values() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let mut host = fixture.host();
+    let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("spike/examples");
+    for (folder, id) in [
+        ("live-pay", "example.live-pay"),
+        ("world-clock", "example.world-clock"),
+    ] {
+        let path = examples.join(folder).join("plugin.json");
+        market::pack(&path, &fixture.0.join(format!("{folder}.zip")))?;
+        host.install(&path)?;
+        host.enable(id, true)?;
+    }
+    settle(&mut host, false);
+
+    let (_, snapshot, health) = host.status_page("example.live-pay").unwrap();
+    assert_eq!(health, StatusHealth::Ready);
+    let salary = snapshot.unwrap();
+    assert!(salary.counter[0].sensitive);
+    assert_eq!(salary.countdown.len(), 1);
+
+    let (_, snapshot, health) = host.status_page("example.world-clock").unwrap();
+    assert_eq!(health, StatusHealth::Ready);
+    assert_eq!(snapshot.unwrap().clock.len(), 4);
+    Ok(())
+}

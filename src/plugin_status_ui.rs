@@ -2,6 +2,16 @@
 
 #[path = "plugin_status_components.rs"]
 mod components;
+#[path = "plugin_status_private.rs"]
+mod private;
+
+pub(crate) use private::{clear_sensitive_reveal, sensitive_values_blocked, MASKED_VALUE};
+use private::SensitiveValues;
+
+#[cfg(test)]
+#[path = "plugin_status_realtime_ui_tests.rs"]
+mod realtime_ui_tests;
+
 use components::{
     badge_count, draw_badges, draw_chart, draw_icon, draw_list, draw_note, list_rows, note_lines,
     BADGE_ROW_HEIGHT, NOTE_LINE_HEIGHT,
@@ -17,7 +27,10 @@ use crate::{
     theme::{self, size, W},
 };
 use eframe::egui::{self, Color32};
-use std::f32::consts::{FRAC_PI_2, TAU};
+use std::{
+    f32::consts::{FRAC_PI_2, TAU},
+    time::Duration,
+};
 
 pub(crate) const STATUS_PAGE_H: f32 = 236.0;
 
@@ -132,19 +145,21 @@ pub(crate) fn draw_status_page(
     health: StatusHealth,
     layout: Option<&StatusLayout>,
     backdrop: StatusBackdrop,
+    privacy_blocked: bool,
 ) {
     let Some(status) = status.filter(|_| health == StatusHealth::Ready) else {
         draw_unavailable(c, health);
         return;
     };
+    let privacy = SensitiveValues::new(id, privacy_blocked);
     if let Some(layout) = layout {
-        draw_layout(c, id, status, layout, backdrop);
+        draw_layout(c, id, status, layout, backdrop, &privacy);
     } else {
-        draw_default(c, status);
+        draw_default(c, status, &privacy);
     }
 }
 
-fn draw_default(c: &Card, status: &PluginStatus) {
+fn draw_default(c: &Card, status: &PluginStatus, privacy: &SensitiveValues) {
     let color = state_color(status.state);
     c.fill(LEFT, 42.0, WIDTH, 78.0, 9.0, theme::CARD);
     let head_x = if let Some(progress) = status.progress_pct {
@@ -199,7 +214,12 @@ fn draw_default(c: &Card, status: &PluginStatus) {
     for (i, metric) in status.metrics.iter().enumerate() {
         let x = 51.0 + (i % 2) as f32 * 165.0;
         let y = 133.0 + (i / 2) as f32 * 18.0;
-        let value = c.fit(&metric.value, size::BODY, W::Semibold, 87.0);
+        let revealed = privacy.revealed(
+            c, metric.sensitive, ("metric", i, &metric.label, &metric.value),
+            [x, y - 9.0, 151.0, 18.0],
+        );
+        let raw = if revealed { &metric.value } else { MASKED_VALUE };
+        let value = c.fit(raw, size::BODY, W::Semibold, 87.0);
         let label_width = 151.0 - c.text_w(&value, size::BODY, W::Semibold) - 8.0;
         let label = c.fit(&metric.label, size::SMALL, W::Regular, label_width);
         c.centered_text(x, y, &label, size::SMALL, W::Regular, theme::GRAY, H::Left);
@@ -303,34 +323,47 @@ fn component_height(
             };
             count.div_ceil(columns) as f32 * BADGE_ROW_HEIGHT
         }
+        StatusComponent::Counter {} | StatusComponent::Clock {} | StatusComponent::Countdown {} => {
+            metric_row_height(density)
+        }
     }
 }
 
 fn components_with_data<'a>(
     layout: &'a StatusLayout,
     status: Option<&'a PluginStatus>,
-) -> impl Iterator<Item = StatusComponent> + 'a {
-    layout.components.iter().copied().filter(move |component| {
-        status.is_none_or(|status| match component {
-            StatusComponent::State {} => true,
-            StatusComponent::Summary {} => status.summary.is_some(),
-            StatusComponent::Progress { .. } => status.progress_pct.is_some(),
-            StatusComponent::Metrics { .. } => !status.metrics.is_empty(),
-            StatusComponent::Alert {} => status.alert.is_some(),
-            StatusComponent::UpdatedAt {} => status.observed_at.is_some(),
-            StatusComponent::List {} => !status.items.is_empty(),
-            StatusComponent::Chart {} => status.series.is_some(),
-            StatusComponent::Text {} => status.note.is_some(),
-            StatusComponent::Badge {} => !status.tags.is_empty(),
+) -> impl Iterator<Item = (StatusComponent, usize)> + 'a {
+    layout
+        .components
+        .iter()
+        .copied()
+        .enumerate()
+        .filter_map(move |(index, component)| {
+            let occurrence = layout.occurrence(index);
+            let visible = status.is_none_or(|status| match component {
+                StatusComponent::State {} => true,
+                StatusComponent::Summary {} => status.summary.is_some(),
+                StatusComponent::Progress { .. } => status.progress_pct.is_some(),
+                StatusComponent::Metrics { .. } => !status.metrics.is_empty(),
+                StatusComponent::Alert {} => status.alert.is_some(),
+                StatusComponent::UpdatedAt {} => status.observed_at.is_some(),
+                StatusComponent::List {} => !status.items.is_empty(),
+                StatusComponent::Chart {} => status.series.is_some(),
+                StatusComponent::Text {} => status.note.is_some(),
+                StatusComponent::Badge {} => !status.tags.is_empty(),
+                StatusComponent::Counter {} => occurrence < status.counter.len(),
+                StatusComponent::Clock {} => occurrence < status.clock.len(),
+                StatusComponent::Countdown {} => occurrence < status.countdown.len(),
+            });
+            visible.then_some((component, occurrence))
         })
-    })
 }
 
 fn layout_card_height(layout: &StatusLayout, status: Option<&PluginStatus>) -> f32 {
     let density = layout.style.density;
     let (padding, gap) = spacing(density);
     let height: f32 = components_with_data(layout, status)
-        .map(|component| component_height(component, density, status) + gap)
+        .map(|(component, _)| component_height(component, density, status) + gap)
         .sum();
     if height > 0.0 {
         height - gap + padding * 2.0
@@ -345,6 +378,7 @@ fn draw_layout(
     status: &PluginStatus,
     layout: &StatusLayout,
     backdrop: StatusBackdrop,
+    privacy: &SensitiveValues,
 ) {
     let height = layout_card_height(layout, Some(status));
     if height == 0.0 {
@@ -372,7 +406,7 @@ fn draw_layout(
         },
     );
     if height <= MAX_CARD_HEIGHT {
-        draw_components(c, status, layout, accent);
+        draw_components(c, status, layout, accent, privacy);
         return;
     }
 
@@ -401,15 +435,23 @@ fn draw_layout(
             let mut inner = Card::new(ui, origin, ui.clip_rect());
             inner.s = c.s;
             inner.live = c.live;
-            draw_components(&inner, status, layout, accent);
+            draw_components(&inner, status, layout, accent, privacy);
         });
 }
 
-fn draw_components(c: &Card, status: &PluginStatus, layout: &StatusLayout, accent: Accent) {
+fn draw_components(
+    c: &Card,
+    status: &PluginStatus,
+    layout: &StatusLayout,
+    accent: Accent,
+    privacy: &SensitiveValues,
+) {
     let density = layout.style.density;
     let (padding, gap) = spacing(density);
     let mut y = CONTENT_TOP + padding;
-    for component in components_with_data(layout, Some(status)) {
+    let clock = chrono::Utc::now();
+    let now = clock.timestamp();
+    for (component, index) in components_with_data(layout, Some(status)) {
         let height = component_height(component, density, Some(status));
         let center_y = y + height / 2.0;
         let x = LEFT + 14.0;
@@ -435,7 +477,7 @@ fn draw_components(c: &Card, status: &PluginStatus, layout: &StatusLayout, accen
                 }
             }
             StatusComponent::Metrics { columns } => {
-                draw_metrics(c, status, usize::from(columns), density, x, y);
+                draw_metrics(c, status, usize::from(columns), density, x, y, privacy);
             }
             StatusComponent::Alert {} => {
                 if let Some(alert) = status.alert.as_deref() {
@@ -474,10 +516,20 @@ fn draw_components(c: &Card, status: &PluginStatus, layout: &StatusLayout, accen
                     );
                 }
             }
-            StatusComponent::List {} => draw_list(c, status, density, x, y),
+            StatusComponent::List {} => draw_list(c, status, density, x, y, privacy),
             StatusComponent::Chart {} => {
                 if let Some(series) = &status.series {
-                    draw_chart(c, series, layout.style.emphasis, accent, x, y, height);
+                    let label_height = if let Some(label) = status.series_label.as_deref() {
+                        let label = c.fit(label, size::TINY, W::Regular, TEXT_RIGHT - x);
+                        c.centered_text(
+                            x, y + NOTE_LINE_HEIGHT / 2.0, &label, size::TINY,
+                            W::Regular, theme::GRAY, H::Left,
+                        );
+                        NOTE_LINE_HEIGHT
+                    } else {
+                        0.0
+                    };
+                    draw_chart(c, series, layout.style.emphasis, accent, x, y + label_height, height - label_height);
                 }
             }
             StatusComponent::Text {} => {
@@ -486,8 +538,55 @@ fn draw_components(c: &Card, status: &PluginStatus, layout: &StatusLayout, accen
                 }
             }
             StatusComponent::Badge {} => draw_badges(c, status, density, accent, x, y),
+            StatusComponent::Counter {} => {
+                let value = &status.counter[index];
+                let revealed = privacy.revealed(
+                    c, value.sensitive, ("counter", index, value.start_value.to_bits(), status.observed_at),
+                    [x, y, TEXT_RIGHT - x, height],
+                );
+                let text = if revealed { value.value_at(now) } else { MASKED_VALUE.into() };
+                draw_realtime(c, x, center_y, None, &text);
+                if revealed {
+                    repaint_realtime(c, [x, y, TEXT_RIGHT - x, height], clock, value.repaint_at(now));
+                }
+            }
+            StatusComponent::Clock {} => {
+                let value = &status.clock[index];
+                draw_realtime(c, x, center_y, Some(&value.label), &value.value_at(now));
+                repaint_realtime(c, [x, y, TEXT_RIGHT - x, height], clock, Some(value.repaint_at(now)));
+            }
+            StatusComponent::Countdown {} => {
+                let value = &status.countdown[index];
+                draw_realtime(c, x, center_y, Some(&value.label), &value.value_at(now));
+                repaint_realtime(c, [x, y, TEXT_RIGHT - x, height], clock, value.repaint_at(now));
+            }
         }
         y += height + gap;
+    }
+}
+
+fn draw_realtime(c: &Card, x: f32, y: f32, label: Option<&str>, value: &str) {
+    let width = TEXT_RIGHT - x;
+    let value = c.fit(value, size::BODY, W::Semibold, if label.is_some() { width * 0.6 } else { width });
+    if let Some(label) = label {
+        let label = c.fit(label, size::SMALL, W::Regular, width - c.text_w(&value, size::BODY, W::Semibold) - 8.0);
+        c.centered_text(x, y, &label, size::SMALL, W::Regular, theme::GRAY, H::Left);
+    }
+    c.centered_text(TEXT_RIGHT, y, &value, size::BODY, W::Semibold, theme::WHITE, H::Right);
+}
+
+fn repaint_realtime(
+    c: &Card,
+    [x, y, width, height]: [f32; 4],
+    now: chrono::DateTime<chrono::Utc>,
+    at: Option<i64>,
+) {
+    if c.live && c.rect(x, y, width, height).intersects(c.painter.clip_rect()) {
+        if let Some(at) = at {
+            let seconds = Duration::from_secs((at - now.timestamp()) as u64);
+            let fraction = Duration::from_nanos(u64::from(now.timestamp_subsec_nanos()));
+            c.ui.ctx().request_repaint_after(seconds.saturating_sub(fraction));
+        }
     }
 }
 
@@ -540,6 +639,7 @@ fn draw_metrics(
     density: StatusDensity,
     x: f32,
     y: f32,
+    privacy: &SensitiveValues,
 ) {
     let gap = 12.0;
     let width = (TEXT_RIGHT - x - gap * (columns - 1) as f32) / columns as f32;
@@ -547,7 +647,12 @@ fn draw_metrics(
     for (index, metric) in status.metrics.iter().enumerate() {
         let left = x + (index % columns) as f32 * (width + gap);
         let center_y = y + (index / columns) as f32 * row_height + row_height / 2.0;
-        let value = c.fit(&metric.value, size::BODY, W::Semibold, width * 0.55);
+        let revealed = privacy.revealed(
+            c, metric.sensitive, ("metric", index, &metric.label, &metric.value),
+            [left, center_y - row_height / 2.0, width, row_height],
+        );
+        let raw = if revealed { &metric.value } else { MASKED_VALUE };
+        let value = c.fit(raw, size::BODY, W::Semibold, width * 0.55);
         let label_width = width - c.text_w(&value, size::BODY, W::Semibold) - 8.0;
         let label = c.fit(&metric.label, size::SMALL, W::Regular, label_width);
         c.centered_text(
