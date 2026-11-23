@@ -82,11 +82,12 @@ fn queue_note(host: &mut LocalPlugins, current: u64, note: &str) -> bool {
 #[test]
 fn invalid_manifest_combinations_and_interaction_fields_are_rejected() -> Result<()> {
     let manifest = Manifest::decode(MANIFEST)?;
-    assert!(manifest
-        .status_layout
-        .unwrap()
-        .components
-        .contains(&StatusComponent::Actions {}));
+    let layout = manifest.status_layout.unwrap();
+    assert!(layout.components.contains(&StatusComponent::Actions {}));
+    assert_eq!(
+        layout.style.density,
+        crate::plugin_status::StatusDensity::Comfortable
+    );
     let base: Value = serde_json::from_str(MANIFEST)?;
     for (field, value) in [
         (
