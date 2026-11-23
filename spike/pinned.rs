@@ -439,6 +439,35 @@ mod tests {
     }
 
     #[test]
+    fn pinned_counter_and_countdown_follow_second_boundaries() -> Result<()> {
+        let now = chrono::DateTime::from_timestamp_millis(100_250).unwrap();
+        let counter =
+            json!({"start_value":100,"per_second":2,"start_at":100,"until":102,"decimals":0});
+        let pinned: Pinned =
+            serde_json::from_value(json!({"text":"工资","value":{"counter":counter}}))?;
+        assert_eq!(pinned.display(now).0.value.as_deref(), Some("100"));
+        assert_eq!(pinned.display(now).1, Some(Duration::from_millis(750)));
+        let done = now + chrono::TimeDelta::seconds(2);
+        assert_eq!(pinned.display(done).0.value.as_deref(), Some("104"));
+        assert!(pinned.display(done).1.is_none());
+        let mut counter = counter;
+        counter["sensitive"] = json!(true);
+        let hidden: Pinned =
+            serde_json::from_value(json!({"text":"工资","value":{"counter":counter}}))?;
+        assert_eq!(hidden.display(now).0.value.as_deref(), Some(MASKED_VALUE));
+        assert!(hidden.display(now).1.is_none());
+        let countdown: Pinned =
+            serde_json::from_value(json!({"text":"下班","value":{"countdown":{
+                "label":"距离下班","target_at":102,"format":"HH:mm:ss","done_label":"已下班"
+            }}}))?;
+        assert_eq!(countdown.display(now).0.value.as_deref(), Some("00:00:02"));
+        assert_eq!(countdown.display(now).1, Some(Duration::from_millis(750)));
+        assert_eq!(countdown.display(done).0.value.as_deref(), Some("已下班"));
+        assert!(countdown.display(done).1.is_none());
+        Ok(())
+    }
+
+    #[test]
     fn pinned_preference_is_bounded_and_requires_explicit_replacement() -> Result<()> {
         let fixture = Fixture::new()?;
         let dir = fixture.0.join("records");
@@ -460,6 +489,14 @@ mod tests {
             ["pinned.four", "pinned.one", "pinned.three"]
         );
         plugins.uninstall("pinned.four", false)?;
+        assert_eq!(plugins.pinned.order, ["pinned.one", "pinned.three"]);
+        plugins.pinned.output.insert(
+            "pinned.one".into(),
+            serde_json::from_value(json!({"text":"第一个插件"}))?,
+        );
+        assert!(plugins.pinned_display(false).is_some());
+        plugins.enable("pinned.one", false)?;
+        assert!(plugins.pinned_display(false).is_none());
         assert_eq!(plugins.pinned.order, ["pinned.one", "pinned.three"]);
         Ok(())
     }
@@ -560,8 +597,24 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         assert!(shown, "收起的岛显示常驻内容");
+        app.notice = Some(crate::extras::Alert {
+            source: crate::extras::AlertSource::Internal,
+            title: "测试弹窗".into(),
+            body: String::new(),
+            page: TODO_PAGE,
+            at: 1.0,
+            duration: 4.0,
+            bluetooth: None,
+            meeting: None,
+            unread: None,
+        });
+        assert!(!has_pinned(frame(&mut app, 1.1)), "通知弹窗优先显示");
+        assert!(app.notice.is_some());
+        app.notice = None;
+        let restored = (1..90).any(|index| has_pinned(frame(&mut app, 1.1 + index as f64 / 60.0)));
+        assert!(restored, "弹窗退场后恢复常驻");
         app.settings.visible_pages[TODO_PAGE] = false;
-        assert!(!has_pinned(frame(&mut app, 2.0)));
+        assert!(!has_pinned(frame(&mut app, 3.0)));
         Ok(())
     }
 }

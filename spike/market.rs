@@ -567,18 +567,20 @@ pub(super) fn test_project(path: &Path, mock_path: Option<&Path>) -> Result<Stri
         }
         return Ok(heading);
     }
-    let mock = mock_path
+    let mut mock = mock_path
         .map(|path| serde_json::from_str::<devtools::MockInput>(&bounded(path, 2 * 1024 * 1024)?)
             .map_err(|error| fail(&format!("模拟输入 {} 无效：{error}", path.display()))))
         .transpose()?
         .unwrap_or_default();
     let values = package.settings_values(mock.settings.as_ref().unwrap_or(&Values::new()));
-    let today = match mock.now {
+    let clock = match mock.now {
         Some(now) => chrono::DateTime::from_timestamp_millis(now)
             .ok_or_else(|| fail("模拟输入 now 超出 Unix 毫秒时间戳的范围"))?
             .with_timezone(&chrono::Local),
         None => chrono::Local::now(),
-    }.date_naive().to_string();
+    };
+    mock.now = Some(clock.timestamp_millis());
+    let today = clock.date_naive().to_string();
     let mut lines = Vec::new();
     let started = Instant::now();
     let run = package.render_input_with(

@@ -223,7 +223,7 @@ version 是插件版本，api 是需要的接口主版本，dataVersion 是存�
 
 在「设置 → 插件 → 开发者工具」打开「监视文件变化」。保存本地安装的插件清单、入口或包内数据文件后，岛仔会自动重载并保留私有数据。脚本可调用 `console.log(...values)`，每次最多 20 行、每行 200 字。开发者工具保留最近 100 行，日志只在本次运行期间可见。
 
-运行 `daozai.exe --plugin-test plugin.json` 可试跑 JavaScript 插件的 `refresh`，查看返回值、运行耗时、报错位置及能力自检。追加 `--input mock.json` 传入可选的 `settings`、`storage`、`now`（Unix 毫秒）和 `sources`，试跑使用模拟来源。
+运行 `daozai.exe --plugin-test plugin.json` 可试跑 JavaScript 插件的 `refresh`，查看返回值、运行耗时、报错位置及能力自检。追加 `--input mock.json` 传入可选的 `settings`、`storage`、`now`（Unix 毫秒）和 `sources`。只读 `input.source` 的插件可用 `{"sources":{"default":{"status":"ready","text":"模拟响应"}}}` 试跑。
 
 先保留业务算法和测试，再把输入、展示结果和存储写成函数。喝水提醒原有设置限制为 5 至 180 分钟。宿主支持数字控件后，可在清单声明范围，函数读取用户输入并返回展示内容。下面的函数签名和返回值与当前卡片一致，数字控件待宿主实现。
 

@@ -47,24 +47,28 @@ struct WatchedPackage {
 impl WatchedPackage {
     fn new(record: &Record, package: &Package) -> Self {
         let base = record.origin.parent().unwrap_or_else(|| Path::new("."));
-        let mut files = vec![record.origin.clone(), base.join(&package.manifest.entry)];
-        // 只监视已校验清单声明的包内数据文件。
-        if let Ok(Value::Object(manifest)) = serde_json::to_value(&package.manifest) {
-            if let Some(data) = manifest.get("data").and_then(Value::as_array) {
-                files.extend(
-                    data.iter()
-                        .filter_map(Value::as_str)
-                        .filter(|name| valid_data_name(name))
-                        .map(|name| base.join(name)),
-                );
-            }
-        }
+        let manifest = serde_json::to_value(&package.manifest).unwrap_or(Value::Null);
+        let files = Self::files(base, &record.origin, &package.manifest.entry, &manifest);
         let stamps = Self::read_stamps(&files);
         Self {
             files,
             stamps,
             changed: None,
         }
+    }
+
+    fn files(base: &Path, origin: &Path, entry: &str, manifest: &Value) -> Vec<PathBuf> {
+        let mut files = vec![origin.to_owned(), base.join(entry)];
+        // 只监视已校验清单声明的包内数据文件。
+        if let Some(data) = manifest["data"].as_array() {
+            files.extend(
+                data.iter()
+                    .filter_map(Value::as_str)
+                    .filter(|name| valid_data_name(name))
+                    .map(|name| base.join(name)),
+            );
+        }
+        files
     }
 
     fn read_stamps(files: &[PathBuf]) -> Vec<Option<(SystemTime, u64)>> {
@@ -192,6 +196,7 @@ impl LocalPlugins {
         record.package = Some(package);
         self.put(id, record)?;
         self.forget_view(id);
+        self.restore_pins();
         Ok(())
     }
 }
@@ -207,14 +212,32 @@ pub(super) struct MockInput {
 }
 
 impl MockInput {
-    pub(super) fn apply(&self, input: &mut Value) {
+    pub(super) fn apply(&self, input: &mut Value) -> Option<bool> {
         if let Some(now) = self.now {
             input["now"] = json!(now);
         }
-        if let Some(sources) = &self.sources {
-            input["sources"] = json!(sources);
+        let sources = self.sources.as_ref()?;
+        input["sources"] = json!(sources);
+        if input.get("source").is_some() {
+            // 单来源插件仍从 source 取值。命名来源使用 sources。
+            let source = sources.get("default").or_else(|| {
+                if sources.len() == 1 {
+                    sources.values().next()
+                } else {
+                    None
+                }
+            });
+            if let Some(source) = source {
+                input["source"] = source.clone();
+            }
+            return Some(source_ready(&input["source"]));
         }
+        Some(sources.values().any(source_ready))
     }
+}
+
+fn source_ready(source: &Value) -> bool {
+    source["status"].as_str() == Some("ready") && source["text"].is_string()
 }
 
 pub(super) fn run_script(

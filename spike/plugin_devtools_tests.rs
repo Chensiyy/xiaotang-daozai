@@ -107,6 +107,60 @@ fn data_monitor_accepts_unicode_root_names_and_rejects_reserved_paths() {
 }
 
 #[test]
+fn declared_data_and_manifest_changes_are_debounced_together() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let origin = fixture.0.join("plugin.json");
+    let data = fixture.0.join("2026 法定节假日.json");
+    let unused = fixture.0.join("notes.json");
+    fs::write(&data, "{}")?;
+    let files = WatchedPackage::files(
+        &fixture.0,
+        &origin,
+        "main.js",
+        &json!({"data": ["2026 法定节假日.json"]}),
+    );
+    assert!(files.contains(&data) && !files.contains(&unused));
+    let mut watch = WatchedPackage {
+        stamps: WatchedPackage::read_stamps(&files),
+        files,
+        changed: None,
+    };
+    let start = Instant::now();
+    fs::write(unused, "{}")?;
+    assert!(!watch.poll(start));
+    fs::write(data, "{\"days\":[]}")?;
+    assert!(!watch.poll(start + POLL));
+    assert_eq!(watch.changed, Some(start + POLL));
+    fs::write(origin, "{\"changed\":true}")?;
+    assert!(!watch.poll(start + POLL * 2));
+    assert!(watch.poll(start + POLL * 3));
+    assert!(!watch.poll(start + POLL * 4));
+    Ok(())
+}
+
+#[test]
+fn local_reload_releases_a_removed_pinned_capability() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let path = fixture.0.join("plugin.json");
+    let mut manifest: Value = serde_json::from_slice(&fs::read(&path)?)?;
+    manifest["capabilities"] = json!(["card", "settings", "island.pinned"]);
+    fs::write(&path, manifest.to_string())?;
+    let dir = fixture.0.join("installed");
+    let mut plugins = LocalPlugins::open(dir.clone());
+    plugins.install(&path)?;
+    plugins.set_pinned(ID, true)?;
+    plugins.set_watch_files(true);
+    manifest["capabilities"] = json!(["card", "settings"]);
+    fs::write(&path, manifest.to_string())?;
+    let start = Instant::now();
+    plugins.poll_local_reloads(start + POLL);
+    plugins.poll_local_reloads(start + POLL * 2);
+    assert!(plugins.pinned.order.is_empty());
+    assert!(LocalPlugins::open(dir).pinned.order.is_empty());
+    Ok(())
+}
+
+#[test]
 fn limits_script_logs_and_locates_syntax_and_runtime_errors() -> Result<()> {
     let mut logs = Vec::new();
     let source = "function refresh() { for (let j = 0; j < 25; ++j) console.log('测'.repeat(220), j); return {}; }";
@@ -190,5 +244,32 @@ function refresh(i) {
         capability_report(&json!({"runtime":"js","capabilities":["status.page"]}))
             .contains("status.page · 实验")
     );
+    Ok(())
+}
+
+#[test]
+fn plugin_test_supplies_mock_data_to_legacy_single_source_plugins() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let path = fixture.0.join("plugin.json");
+    let mock = fixture.0.join("mock.json");
+    let mut manifest: Value = serde_json::from_slice(&fs::read(&path)?)?;
+    manifest["permissions"] = json!({"source.read":"file"});
+    fs::write(&path, manifest.to_string())?;
+    fs::write(
+        fixture.0.join("main.js"),
+        "function refresh(i) { return {card:[i.source.status, i.source.text, typeof i.now].join('/')}; }",
+    )?;
+    fs::write(
+        &mock,
+        json!({"sources": {"default": {"status":"ready","text":"离线"}}}).to_string(),
+    )?;
+    let report = market::test_project(&path, Some(&mock))?;
+    assert!(report.contains("ready/离线/number"), "{report}");
+    fs::write(
+        &mock,
+        json!({"sources": {"default": {"status":"offline"}}}).to_string(),
+    )?;
+    let report = market::test_project(&path, Some(&mock))?;
+    assert!(report.contains("offline//number"), "{report}");
     Ok(())
 }

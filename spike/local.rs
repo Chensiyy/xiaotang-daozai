@@ -683,14 +683,12 @@ impl Package {
     ) -> Result<(Output, String)> {
         let mut input = json!({"settings":values,"storage":storage,"today":today});
         let require_source = self.manifest.source_kind().is_some();
-        let ready = !require_source || matches!(&source, SourceInput::Ready { .. })
-            || mock.is_some_and(|mock| mock.sources.is_some());
+        let source_ready = matches!(&source, SourceInput::Ready { .. });
         if require_source {
             input["source"] = serde_json::to_value(source)?;
         }
-        if let Some(mock) = mock {
-            mock.apply(&mut input);
-        }
+        let mocked_ready = mock.and_then(|mock| mock.apply(&mut input));
+        let ready = !require_source || mocked_ready.unwrap_or(source_ready);
         let raw = devtools::run_script(
             self.source.as_bytes(), &self.manifest.entry, input.to_string(),
             "JSON.stringify(refresh(JSON.parse(__input)))", logs,
