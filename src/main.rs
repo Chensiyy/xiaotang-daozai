@@ -557,6 +557,7 @@ impl eframe::App for Shell {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let update_start=Instant::now();
         #[cfg(all(windows, feature = "sdk-js", feature = "sdk-material"))]
         self.reconcile_material(ctx, _frame.wgpu_render_state());
         #[cfg(windows)]
@@ -1138,7 +1139,11 @@ impl eframe::App for Shell {
                     native_cost.as_secs_f64()*1000.0,settings_cost.as_secs_f64()*1000.0));
         }
         // 切换动画中帧间隔偏长时，分开记下上一帧逻辑和逻辑之外（绘制、读回、提交、等待）各占多少。
-        thread_local!{static PREVIOUS_FRAME:std::cell::Cell<Option<(Instant,Duration)>>=const{std::cell::Cell::new(None)};}
+        thread_local!{
+            static PREVIOUS_FRAME:std::cell::Cell<Option<(Instant,Duration)>>=const{std::cell::Cell::new(None)};
+            static PREVIOUS_PARTS:std::cell::Cell<[Duration;4]>=const{std::cell::Cell::new([Duration::ZERO;4])};
+        }
+        let parts=PREVIOUS_PARTS.replace([pre_cost,settings_cost,elapsed.saturating_sub(pre_cost+draw_cost+native_cost+settings_cost),update_start.elapsed().saturating_sub(elapsed)]);
         // 动画帧会请求很快的下一帧；闲置和定时刷新不计。
         let animating=out.repaint_after<=Duration::from_millis(34);
         if let Some((start,logic))=PREVIOUS_FRAME.get().filter(|_|animating) {
@@ -1146,8 +1151,9 @@ impl eframe::App for Shell {
             if interval>=Duration::from_millis(25) {
                 let (page,open)=self.app.debug_state();
                 daozai::resources::append_log(&daozai::model::config_dir().join("diagnostics"),"frames",
-                    &format!("间隔 {:.0} ms｜页面 {}｜展开 {}｜上帧逻辑 {:.1}｜逻辑之外 {:.1}｜本帧岛体 {:.1}（插件 {:.1}）｜窗口 {:.1}",
+                    &format!("间隔 {:.0} ms｜页面 {}｜展开 {}｜上帧逻辑 {:.1}（前置 {:.1}、设置窗口 {:.1}、其余 {:.1}、材质与提醒 {:.1}）｜逻辑之外 {:.1}｜本帧岛体 {:.1}（插件 {:.1}）｜窗口 {:.1}",
                         interval.as_secs_f64()*1000.0,page,open,logic.as_secs_f64()*1000.0,
+                        parts[0].as_secs_f64()*1000.0,parts[1].as_secs_f64()*1000.0,parts[2].as_secs_f64()*1000.0,parts[3].as_secs_f64()*1000.0,
                         interval.saturating_sub(logic).as_secs_f64()*1000.0,draw_cost.as_secs_f64()*1000.0,
                         daozai::resources::PLUGIN_FRAME_US.load(std::sync::atomic::Ordering::Relaxed) as f64/1000.0,
                         native_cost.as_secs_f64()*1000.0));
