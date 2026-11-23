@@ -73,6 +73,18 @@ impl StatusCounter {
         )
     }
 
+    pub(crate) fn reveal_identity(&self) -> impl std::hash::Hash + '_ {
+        (
+            self.start_value.to_bits(),
+            self.per_second.to_bits(),
+            self.start_at,
+            self.until,
+            self.decimals,
+            &self.prefix,
+            &self.suffix,
+        )
+    }
+
     pub(crate) fn repaint_at(&self, now: i64) -> Option<i64> {
         (self.per_second != 0.0 && self.until.is_none_or(|until| now < until)).then_some(now + 1)
     }

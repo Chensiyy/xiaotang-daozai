@@ -541,7 +541,7 @@ fn draw_components(
             StatusComponent::Counter {} => {
                 let value = &status.counter[index];
                 let revealed = privacy.revealed(
-                    c, value.sensitive, ("counter", index, value.start_value.to_bits(), status.observed_at),
+                    c, value.sensitive, ("counter", index, value.reveal_identity()),
                     [x, y, TEXT_RIGHT - x, height],
                 );
                 let text = if revealed { value.value_at(now) } else { MASKED_VALUE.into() };

@@ -2711,7 +2711,7 @@ impl App {
         let next_hit=if side {self.side_hit_rect(win,self.progress(),self.page_height.pos).translate(offset)} else {orient(self.hit_rect(cx,top,self.progress()))};
         #[cfg(feature="sdk-js")]
         if page_before!=self.page || !self.open || self.page<PAGE_NAMES.len()
-            || crate::plugin_status_ui::sensitive_values_blocked(self.settings.exclude_from_capture,env) {
+            || self.status_values_blocked(env) {
             crate::plugin_status_ui::clear_sensitive_reveal(&ctx);
         }
         if page_before!=self.page && self.open {
@@ -3912,6 +3912,14 @@ impl App {
         }
     }
 
+    #[cfg(feature="sdk-js")]
+    fn status_values_blocked(&self, env: &Env) -> bool {
+        #[cfg(all(windows,feature="sdk-material"))]
+        if self.material_capture_forced {return true;}
+        let exclude=self.settings.exclude_from_capture || self.capture_exclusion_request==Some(true);
+        crate::plugin_status_ui::sensitive_values_blocked(exclude,env)
+    }
+
     fn render_page(&mut self, page: usize, c: &Card, header: &Card, env: &Env, cmds: &mut Vec<Cmd>) {
         #[cfg(feature="sdk-js")]
         if let Some((id,_))=page.checked_sub(PAGE_NAMES.len()).and_then(|index|self.status_pages.get(index)) {
@@ -3920,7 +3928,7 @@ impl App {
                     palette:self.island_palette(),island:self.island_overlay_fill(),
                 };
                 let privacy_blocked=!self.open
-                    || crate::plugin_status_ui::sensitive_values_blocked(self.settings.exclude_from_capture,env);
+                    || self.status_values_blocked(env);
                 crate::plugin_status_ui::draw_status_page(c,id,status,health,self.plugins.status_layout(id),backdrop,privacy_blocked);
             }
             return;

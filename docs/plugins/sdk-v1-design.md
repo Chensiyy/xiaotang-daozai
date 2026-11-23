@@ -29,7 +29,8 @@ function refresh({ settings, today }) {
 | 一个插件多处输出 · 测试版 | 在 capabilities 里同时列出几种输出，例如 `["card","calendar.marker","timer"]`，一次返回 `{card, marker}`。同时有多种输出时，某项返回空值表示这次不显示 | 每处输出只跟着自己所在模块的开关，关日程只撤日历标注；关掉插件归属的模块则整个插件暂停 |
 | 周期刷新 · 已实现 | 两个样例在清单声明 `"refreshSeconds":60` 和 timer 能力。到期由岛仔调用 refresh | 卡片按期更新 |
 | 常驻、固定、临时卡 · 待宿主实现 | `function refresh(i){return {cards:[{id:"job",mode:"temporary",text:i.settings.title,ttlMs:5000}]}}` | 常驻栏、临时位置，用户自行选择固定 |
-| 结构化状态卡和独立详情页 · 测试版 | 清单使用 `"owner":"status"` 和 `"capabilities":["status.page","timer"]`，`refresh` 返回 `status`。可用 `statusLayout` 选择组件、排序和样式，可加入列表、迷你折线、多行说明和标签。 | 在岛上翻页查看，在「设置 → 页面管理 → 状态详情」单独启停 |
+| 结构化状态卡和独立详情页 · 测试版 | 清单使用 `"owner":"status"` 和 `"capabilities":["status.page","timer"]`，`refresh` 返回 `status`。可用 `statusLayout` 选择组件、排序和样式。 | 在岛上翻页查看，在「设置 → 页面管理 → 状态详情」单独启停 |
+| 状态页组件与主题令牌 · 实验 | 在状态页布局中添加列表、迷你折线、多行说明和标签，可设强调色、强调程度及岛仔内置图标 | 在状态详情页查看 |
 | 实时状态组件与敏感值 · 实验 | 布局选择 `counter`、`clock`、`countdown`，由岛仔计算实时读数。金额等数据须标记 `sensitive:true`。 | 在状态详情页查看，点击暂时显示敏感值 |
 | 可编辑独立模块、列表、表单 · 待宿主实现 | 清单声明 module 与按钮 `actions:["save"]`。示意 `function action(i){return {page:{kind:"detail",text:i.form.text},storage:{note:i.form.text}}}` | 岛上功能栏查看、编辑，侧栏调偏好，页面管理启停 |
 | 日程来源 · 待宿主实现 | `function refresh(i){return {calendar:[{id:"anniversary",title:i.settings.title,date:i.settings.target}]}}` | 日程里的来源，按来源和条目 ID 更新 |
@@ -184,7 +185,7 @@ JS 清单使用 `"owner":"status"`，能力列出 `status.page`。可选的 `tim
 
 [打印机状态样例](../../spike/examples/printer-status/plugin.json) 通过模拟脚本演示列表、折线、说明、标签和主题令牌。[实时工资](../../spike/examples/live-pay/plugin.json) 和 [世界时钟](../../spike/examples/world-clock/plugin.json) 分别演示敏感实时金额、倒计时和四个时钟。
 
-敏感值默认打码，点击后显示 30 秒，再次点击可立即盖上。锁屏、岛仔演示录制及开启「截图和录屏中隐藏岛仔」时始终打码。使用第三方录屏前可开启此设置。
+敏感值默认打码，点击后显示 30 秒，再次点击可立即盖上。敏感计数参数更新后重新打码。锁屏、岛仔演示录制及开启「截图和录屏中隐藏岛仔」时始终打码。使用第三方录屏前可开启此设置。
 
 返回 `{status:null}` 时显示等待状态。取数失败会撤下旧读数，在本页显示数据源暂不可用。来源正常返回 `state:"offline"` 时，按插件提供的设备离线状态展示。宿主按插件 ID 分开刷新和撤下状态。
 
