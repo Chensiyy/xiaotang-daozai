@@ -31,10 +31,13 @@ function refresh({ settings, storage, sources, now = Date.now() }) {
   }
   const history = latest?.at === observed ? points : [...points.slice(-47), { at: observed, price }];
   return {
+    notice: alert ? { id: "gold-" + observed, title: "国际现货金价", body: alert } : undefined,
     status: {
       state: "succeeded",
       label: "国际现货金价",
       metrics: [{ label: "人民币每克", value: price.toFixed(2) + " 元" }],
+      series: history.length >= 2 ? history.map(point => point.price) : undefined,
+      series_label: history.length >= 2 ? "人民币每克" : undefined,
       alert,
       observed_at: Math.floor(observed / 1000),
       expires_at: Math.floor((observed + 15 * 60_000) / 1000)
