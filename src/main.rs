@@ -593,6 +593,10 @@ impl eframe::App for Shell {
         #[cfg(windows)]
         if let Some(start)=_frame.interactive_frame_start {
             self.frame_at=start;
+        } else if self.was_interactive_transition && self.app.render_compat_running {
+            // 兼容渲染的切换动画：上一帧刚请求读回，这一帧要把画面交给分层窗口。
+            // 再按帧间隔睡一次会错过下一次屏幕刷新，动画掉到 30 帧；节奏由交互截图的截止时间和垂直同步控制。
+            self.frame_at=Instant::now();
         } else {
             // 用帧间隔限制刷新，绕过部分 Intel 驱动在垂直同步中的忙等待。
             let delay=Duration::from_secs_f64(1.0/60.0).saturating_sub(self.frame_at.elapsed());
