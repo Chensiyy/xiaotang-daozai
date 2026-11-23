@@ -843,6 +843,7 @@ impl eframe::App for Shell {
             while let Some(ev)=self.quota.try_recv(self.app.quota_config()){self.app.quota_event(ev);}
         }
         let mut out = None;
+        let pre_cost=frame_start.elapsed();
         #[cfg(all(windows, feature = "sdk-material"))]
         if !env.material_active {
             if let Some(material) = &mut self.material { material.suspend(); }
@@ -862,6 +863,9 @@ impl eframe::App for Shell {
                 out = Some(draw());
             });
         let Some(out) = out else { return };
+        let draw_cost=frame_start.elapsed()-pre_cost;
+        #[allow(unused_mut)]
+        let mut native_cost=Duration::ZERO;
         #[cfg(all(windows, feature = "sdk-material"))]
         let mut out = out;
         #[cfg(windows)]
@@ -931,7 +935,9 @@ impl eframe::App for Shell {
             let glass=if self.hidden {None}else{out.glass.as_deref()};
             #[cfg(all(windows, feature = "sdk-material"))]
             let glass=glass.filter(|_| self.material.is_none());
+            let native_start=Instant::now();
             native.update(region, hit, if self.hidden{None}else{out.notice_hit.map(r)},if self.hidden{None}else{out.file_drop_zone.map(r)},glass,out.blur,ctx.pixels_per_point(), out.editing && !self.hidden, !self.hidden && out.expanded,if self.hidden {None}else{out.resident_clip.as_deref()});
+            native_cost=native_start.elapsed();
             if !self.hidden && self.app.settings.avoids_top_bar() && self.app.settings.top_bar_on_top && self.app.settings.dock==daozai::model::Dock::Top {
                 if let Some(display)=daozai::display_layout::selected(&self.app.displays,&self.app.settings.display_id) {
                     native.keep_above_top_bar(display.bounds);
@@ -1107,7 +1113,9 @@ impl eframe::App for Shell {
 
         #[cfg(windows)] let autostart = self.autostart;
         #[cfg(not(windows))] let autostart = false;
+        let settings_start=Instant::now();
         self.app.settings_ui(ctx, autostart);
+        let settings_cost=settings_start.elapsed();
         #[cfg(windows)]
         if Self::sync_capture_exclusion(&mut self.app, self.native.as_mut()) {
             ctx.request_repaint();
@@ -1124,7 +1132,10 @@ impl eframe::App for Shell {
         if elapsed>=Duration::from_millis(60) {
             let (page,open)=self.app.debug_state();
             daozai::resources::append_log(&daozai::model::config_dir().join("diagnostics"),"frames",
-                &format!("帧 {:.0} ms｜页面 {}｜展开 {}",elapsed.as_secs_f64()*1000.0,page,open));
+                &format!("帧 {:.0} ms｜页面 {}｜展开 {}｜前置 {:.0}｜岛体 {:.0}（插件 {:.1}）｜窗口 {:.0}｜设置 {:.0}",
+                    elapsed.as_secs_f64()*1000.0,page,open,pre_cost.as_secs_f64()*1000.0,draw_cost.as_secs_f64()*1000.0,
+                    daozai::resources::PLUGIN_FRAME_US.load(std::sync::atomic::Ordering::Relaxed) as f64/1000.0,
+                    native_cost.as_secs_f64()*1000.0,settings_cost.as_secs_f64()*1000.0));
         }
     }
 }

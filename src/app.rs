@@ -4125,6 +4125,7 @@ impl App {
         let todo_on=self.module_on(TODO_PAGE);
         #[cfg(feature="sdk-js")]
         {
+            let plugin_start=std::time::Instant::now();
             let calendar_on=self.module_on(CALENDAR_PAGE);
             let quota_on=self.quota_active();
             self.plugins.tick_features(todo_on,calendar_on,quota_on,&env.today);
@@ -4136,6 +4137,7 @@ impl App {
                 self.receive_plugin_notice(notice);
             }
             self.sync_status_pages();
+            crate::resources::PLUGIN_FRAME_US.store(plugin_start.elapsed().as_micros() as usize,std::sync::atomic::Ordering::Relaxed);
         }
         let due: Vec<_> = self.todos.items.iter().enumerate().filter(|(_, item)| todo_on && item.reminder_due(&now)).map(|(i,item)| (i,item.text.clone())).collect();
         for (i,text) in due { self.todos.items[i].mark_reminded(&now); self.todos.save(); self.alert("待办到时间了", text, 4, true); }
