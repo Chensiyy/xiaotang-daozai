@@ -1163,7 +1163,7 @@ impl eframe::App for Shell {
         let animating=out.repaint_after<=Duration::from_millis(34);
         if let Some((start,logic))=PREVIOUS_FRAME.get().filter(|_|animating) {
             let interval=frame_start.duration_since(start);
-            if interval>=Duration::from_millis(25) {
+            if interval>=Duration::from_millis(25) || std::env::var_os("DAOZAI_FRAME_TRACE").is_some() {
                 let (page,open)=self.app.debug_state();
                 daozai::resources::append_log(&daozai::model::config_dir().join("diagnostics"),"frames",
                     &format!("间隔 {:.0} ms｜页面 {}｜展开 {}｜上帧逻辑 {:.1}（前置 {:.1}、设置窗口 {:.1}、其余 {:.1}、材质与提醒 {:.1}）｜逻辑之外 {:.1}｜本帧岛体 {:.1}（插件 {:.1}）｜窗口 {:.1}｜本帧前置：{}",
