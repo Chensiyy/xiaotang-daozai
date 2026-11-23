@@ -1553,7 +1553,7 @@ fn number_stepper<N:egui::emath::Numeric>(ui:&mut egui::Ui,value:&mut N,min:N,ma
 const TIME_RANGE_HOURS_W:f32=(26.0+6.0+48.0+6.0+26.0)*2.0+8.0+13.0+8.0;
 const TIME_RANGE_CLOCK_W:f32=(26.0+6.0+56.0+6.0+26.0)*2.0+8.0+13.0+8.0;
 /// 时刻加减器（一天中的分钟数，15 分钟一档，跨午夜循环），中间可直接输入 12:30。
-fn time_stepper(ui:&mut egui::Ui,value:&mut u32,id:&str)->bool{
+pub(crate) fn time_stepper(ui:&mut egui::Ui,value:&mut u32,id:&str)->bool{
     let ctx=&ui.ctx().clone();
     let mut changed=false;
     ui.push_id(id,|ui|{

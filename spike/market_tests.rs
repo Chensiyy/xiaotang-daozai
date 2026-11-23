@@ -1,4 +1,19 @@
 use super::*;
+
+#[test]
+fn market_package_preserves_declared_data() -> Result<()> {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("spike/examples/holidays/plugin.json");
+    let zip = std::env::temp_dir().join(format!("daozai-package-data-{}.zip", std::process::id()));
+    let result = (|| -> Result<()> {
+        pack(&manifest, &zip)?;
+        let package = decode_zip(&fs::read(&zip)?)?;
+        assert!(package.data.contains_key("holidays-2026.json"));
+        assert_eq!(package.render(&Values::new(), &Value::Null, "2026-06-19")?.marker, "端午节放假");
+        Ok(())
+    })();
+    let _ = fs::remove_file(zip);
+    result
+}
 use super::super::{LocalPlugins, WIRELESS_PLUGIN_ID};
 use serde_json::json;
 

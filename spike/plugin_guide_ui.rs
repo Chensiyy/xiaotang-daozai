@@ -222,6 +222,7 @@ pub(super) fn drawer_close(ui: &mut egui::Ui) -> bool {
 
 fn sdk_capabilities(ui: &mut egui::Ui) {
     let capabilities = [
+        ("设置与输入（实验）", "开关、选项、数字、时刻、星期和列表设置，支持时区、包内 JSON 和指定时间刷新"),
         ("卡片与标注", "待办信息卡、日历日期标注，支持定时刷新"),
         #[cfg(windows)]
         ("授权取数", "只读用户选定的文件、本机 HTTP 或白名单内的 HTTPS 数据"),

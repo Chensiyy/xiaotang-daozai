@@ -22,7 +22,7 @@ use url::Url;
 use zip::{write::SimpleFileOptions, CompressionMethod, ZipArchive, ZipWriter};
 
 const MANIFEST_LIMIT: u64 = 32 * 1024;
-const ZIP_LIMIT: u64 = 576 * 1024;
+const ZIP_LIMIT: u64 = 832 * 1024;
 const CATALOG_LIMIT: u64 = 64 * 1024;
 const AVATAR_LIMIT: u64 = 64 * 1024;
 const CATALOG_FORMAT: u32 = 1;
@@ -476,22 +476,29 @@ fn supported(manifest: &Manifest) -> Result<()> {
 
 fn decode_zip(raw: &[u8]) -> Result<Package> {
     if raw.len() as u64 > ZIP_LIMIT {
-        return Err(fail("插件 ZIP 超过 576 KiB"));
+        return Err(fail("插件 ZIP 超过 832 KiB"));
     }
     let mut zip = ZipArchive::new(Cursor::new(raw))
         .map_err(|error| fail(&format!("插件 ZIP 格式无效：{error}")))?;
-    if zip.len() > 3
-        || zip.has_duplicate_names()
+    if zip.has_duplicate_names()
         || zip.offset() != 0
         || zip.has_overlapping_entries()?
     {
-        return Err(fail("插件 ZIP 只能包含清单、入口和封面三个根目录文件"));
+        return Err(fail("插件 ZIP 包含重复或无效文件"));
     }
     let manifest = Manifest::decode(&zip_text(&mut zip, "plugin.json", MANIFEST_LIMIT)?)?;
     supported(&manifest)?;
+    if zip.len() != 3 + manifest.data.len() {
+        return Err(fail("插件 ZIP 只能包含清单、入口、封面和声明的数据文件"));
+    }
     let source = zip_text(&mut zip, &manifest.entry, manifest.source_limit())?;
     let cover = CoverPng::decode(zip_bytes(&mut zip, COVER_FILE, COVER_LIMIT)?)?;
-    Package::from_entry(manifest, source, cover)
+    let data = super::package_data::read_data(&manifest.data, |name| {
+        zip_text(&mut zip, name, super::package_data::DATA_FILE_LIMIT)
+    })?;
+    let mut package = Package::from_entry(manifest, source, cover)?;
+    package.data = data;
+    Ok(package)
 }
 
 fn zip_text(zip: &mut ZipArchive<Cursor<&[u8]>>, name: &str, limit: u64) -> Result<String> {
@@ -703,6 +710,10 @@ pub(super) fn pack(manifest_path: &Path, output: &Path) -> Result<()> {
     zip.start_file(COVER_FILE, options)?;
     let cover = package.cover.as_ref().ok_or_else(|| fail("缺少插件封面"))?;
     zip.write_all(cover.bytes())?;
+    for (name, text) in &package.data {
+        zip.start_file(name, options)?;
+        zip.write_all(text.as_bytes())?;
+    }
     let raw = zip.finish()?.into_inner();
     decode_zip(&raw)?;
     write_new(output, &raw)

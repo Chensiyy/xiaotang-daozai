@@ -275,187 +275,18 @@
     },
     "settings": {
       "type": "array",
-      "items": {
-        "oneOf": [
-          {
-            "type": "object",
-            "properties": {
-              "key": {
-                "type": "string",
-                "pattern": "^[a-z][a-z0-9_-]{0,39}$"
-              },
-              "label": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 80
-              },
-              "type": {
-                "const": "switch"
-              },
-              "default": {
-                "type": "boolean"
-              }
-            },
-            "required": [
-              "key",
-              "label",
-              "type",
-              "default"
-            ],
-            "additionalProperties": false
-          },
-          {
-            "type": "object",
-            "properties": {
-              "key": {
-                "type": "string",
-                "pattern": "^[a-z][a-z0-9_-]{0,39}$"
-              },
-              "label": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 80
-              },
-              "type": {
-                "const": "segment"
-              },
-              "default": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 80
-              },
-              "choices": {
-                "type": "array",
-                "items": {
-                  "type": "string",
-                  "minLength": 1,
-                  "maxLength": 80
-                },
-                "maxItems": 12,
-                "uniqueItems": true,
-                "minItems": 2
-              }
-            },
-            "required": [
-              "key",
-              "label",
-              "type",
-              "default",
-              "choices"
-            ],
-            "additionalProperties": false
-          },
-          {
-            "type": "object",
-            "properties": {
-              "key": {
-                "type": "string",
-                "pattern": "^[a-z][a-z0-9_-]{0,39}$"
-              },
-              "label": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 80
-              },
-              "type": {
-                "const": "number"
-              },
-              "default": {
-                "type": ["number", "string"]
-              },
-              "min": {
-                "type": "number"
-              },
-              "max": {
-                "type": "number"
-              },
-              "step": {
-                "type": "number",
-                "exclusiveMinimum": 0
-              },
-              "unit": {
-                "type": "string",
-                "maxLength": 4,
-                "description": "材质滑块数值后的单位，只用于显示。"
-              },
-              "precision": {
-                "type": "integer",
-                "minimum": 0,
-                "maximum": 3,
-                "description": "材质滑块显示的小数位数。未声明时沿用 step 的小数位数。"
-              }
-            },
-            "required": [
-              "key",
-              "label",
-              "type",
-              "default",
-              "min",
-              "max"
-            ],
-            "additionalProperties": false
-          },
-          {
-            "type": "object",
-            "properties": {
-              "key": {
-                "type": "string",
-                "pattern": "^[a-z][a-z0-9_-]{0,39}$"
-              },
-              "label": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 80
-              },
-              "type": {
-                "const": "date"
-              },
-              "default": {
-                "type": "string",
-                "format": "date"
-              }
-            },
-            "required": [
-              "key",
-              "label",
-              "type",
-              "default"
-            ],
-            "additionalProperties": false
-          },
-          {
-            "type": "object",
-            "properties": {
-              "key": {
-                "type": "string",
-                "pattern": "^[a-z][a-z0-9_-]{0,39}$"
-              },
-              "label": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 80
-              },
-              "type": {
-                "const": "text"
-              },
-              "default": {
-                "type": "string",
-                "minLength": 1,
-                "maxLength": 80
-              }
-            },
-            "required": [
-              "key",
-              "label",
-              "type",
-              "default"
-            ],
-            "additionalProperties": false
-          }
-        ]
-      },
-      "maxItems": 32,
-      "uniqueItems": true
+      "items": {"$ref": "#/$defs/setting"},
+      "maxItems": 32
+    },
+    "data": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {"type": "string", "pattern": "^[^./\\\\:*?\"<>|][^/\\\\:*?\"<>|]*\\.json$"},
+      "description": "实验。包根目录的 UTF-8 JSON 文件，单个最多 64 KiB，合计最多 256 KiB。"
+    },
+    "timezones": {
+      "type": "boolean",
+      "description": "实验。为设置中的 IANA 时区名提供当前偏移和夏令时状态。"
     },
     "assets": {
       "type": "array",
@@ -481,6 +312,59 @@
     "permissions"
   ],
   "additionalProperties": false,
+  "$defs": {
+    "setting": {
+      "type": "object",
+      "required": ["key", "label", "type", "default"],
+      "additionalProperties": false,
+      "properties": {
+        "key": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,39}$"},
+        "label": {"type": "string", "minLength": 1, "maxLength": 80},
+        "type": {"enum": ["text", "date", "switch", "choice", "number", "time", "weekdays", "list"]},
+        "default": {"type": "string"},
+        "min": {"type": "number"},
+        "max": {"type": "number"},
+        "step": {"type": "number", "exclusiveMinimum": 0},
+        "unit": {"type": "string", "maxLength": 4},
+        "precision": {"type": "integer", "minimum": 0, "maximum": 3},
+        "choices": {
+          "type": "array", "minItems": 2, "maxItems": 6, "uniqueItems": true,
+          "items": {
+            "type": "object", "required": ["value", "label"], "additionalProperties": false,
+            "properties": {
+              "value": {"type": "string", "minLength": 1, "maxLength": 80},
+              "label": {"type": "string", "minLength": 1, "maxLength": 80}
+            }
+          }
+        },
+        "item": {
+          "type": "array", "minItems": 1, "maxItems": 3,
+          "items": {
+            "$ref": "#/$defs/setting",
+            "properties": {"type": {"enum": ["text", "choice", "number", "date", "time"]}}
+          }
+        },
+        "maxItems": {"type": "integer", "minimum": 1, "maximum": 8}
+      },
+      "allOf": [
+        {"if": {"properties": {"type": {"const": "text"}}}, "then": {"properties": {"default": {"minLength": 1, "maxLength": 80}}}},
+        {"if": {"properties": {"type": {"const": "date"}}}, "then": {"properties": {"default": {"format": "date"}}}},
+        {"if": {"properties": {"type": {"const": "switch"}}}, "then": {"properties": {"default": {"enum": ["true", "false"]}}}},
+        {"if": {"properties": {"type": {"const": "time"}}}, "then": {"properties": {"default": {"pattern": "^(?:[01][0-9]|2[0-3]):[0-5][0-9]$"}}}},
+        {"if": {"properties": {"type": {"const": "weekdays"}}}, "then": {"properties": {"default": {"pattern": "^(?:[1-7](?:,[1-7]){0,6})?$"}}}},
+        {
+          "if": {"properties": {"type": {"const": "number"}}},
+          "then": {
+            "required": ["min", "max", "step"],
+            "properties": {"default": {"pattern": "^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$"}}
+          },
+          "else": {"not": {"anyOf": [{"required": ["min"]}, {"required": ["max"]}, {"required": ["step"]}, {"required": ["unit"]}, {"required": ["precision"]}]}}
+        },
+        {"if": {"properties": {"type": {"const": "choice"}}}, "then": {"required": ["choices"]}, "else": {"not": {"required": ["choices"]}}},
+        {"if": {"properties": {"type": {"const": "list"}}}, "then": {"required": ["item", "maxItems"]}, "else": {"not": {"anyOf": [{"required": ["item"]}, {"required": ["maxItems"]}]}}}
+      ]
+    }
+  },
   "allOf": [
     {
       "if": {
@@ -506,6 +390,10 @@
           }
         }
       }
+    },
+    {
+      "if": {"anyOf": [{"required": ["data"]}, {"required": ["timezones"]}]},
+      "then": {"properties": {"runtime": {"const": "js"}}}
     },
     {
       "if": {"required": ["statusLayout"]},
@@ -572,16 +460,7 @@
         "not": {"required": ["material"]},
         "properties": {
           "capabilities": {"not": {"contains": {"const": "appearance.material"}}},
-          "permissions": {"not": {"required": ["screen.backdrop"]}},
-          "settings": {
-            "items": {
-              "if": {"properties": {"type": {"const": "number"}}},
-              "then": {
-                "properties": {"default": {"type": "number"}},
-                "not": {"anyOf": [{"required": ["unit"]}, {"required": ["precision"]}]}
-              }
-            }
-          }
+          "permissions": {"not": {"required": ["screen.backdrop"]}}
         }
       }
     },
@@ -690,8 +569,7 @@
           "permissions": {
             "properties": {"source.read": {"enum": ["file", "loopback", "https"]}},
             "additionalProperties": false
-          },
-          "settings": {"items": {"properties": {"type": {"enum": ["text", "date"]}}}}
+          }
         },
         "not": {"anyOf": [{"required": ["assets"]}, {"required": ["actions"]}]},
         "if": {"properties": {"settings": {"minItems": 1}}},

@@ -18,25 +18,7 @@ pub(super) struct CoverPng(Arc<[u8]>);
 
 impl CoverPng {
     pub(super) fn read(path: &Path) -> Result<Self> {
-        let error = || fail("cover.png 必须是插件根目录里的普通文件");
-        if !fs::symlink_metadata(path).map_err(|_| error())?.is_file()
-            || path.canonicalize()?.parent() != path.parent()
-        {
-            return Err(error());
-        }
-
-        let mut options = fs::OpenOptions::new();
-        options.read(true);
-        #[cfg(windows)]
-        {
-            use std::os::windows::fs::OpenOptionsExt;
-            use windows::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
-            options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT.0);
-        }
-        let file = options.open(path)?;
-        if !is_plain_file(&file)? {
-            return Err(error());
-        }
+        let file = open_plain_file(path, "cover.png 必须是插件根目录里的普通文件")?;
         let mut bytes = Vec::new();
         file.take(COVER_LIMIT + 1).read_to_end(&mut bytes)?;
         Self::decode(bytes)
@@ -89,6 +71,30 @@ impl<'de> Deserialize<'de> for CoverPng {
         let bytes = STANDARD.decode(encoded).map_err(Error::custom)?;
         Self::decode(bytes).map_err(Error::custom)
     }
+}
+
+pub(super) fn open_plain_file(path: &Path, message: &str) -> Result<fs::File> {
+    if !fs::symlink_metadata(path)
+        .map_err(|_| fail(message))?
+        .is_file()
+        || path.canonicalize()?.parent() != path.parent()
+    {
+        return Err(fail(message));
+    }
+
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT.0);
+    }
+    let file = options.open(path)?;
+    if !is_plain_file(&file)? {
+        return Err(fail(message));
+    }
+    Ok(file)
 }
 
 #[cfg(windows)]
