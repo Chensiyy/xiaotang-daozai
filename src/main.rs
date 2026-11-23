@@ -1169,12 +1169,13 @@ impl eframe::App for Shell {
             if interval>=Duration::from_millis(25) || std::env::var_os("DAOZAI_FRAME_TRACE").is_some() {
                 let (page,open)=self.app.debug_state();
                 daozai::resources::append_log(&daozai::model::config_dir().join("diagnostics"),"frames",
-                    &format!("间隔 {:.0} ms｜页面 {}｜展开 {}｜上帧逻辑 {:.1}（前置 {:.1}、设置窗口 {:.1}、其余 {:.1}、材质与提醒 {:.1}）｜逻辑之外 {:.1}｜本帧岛体 {:.1}（插件 {:.1}）｜窗口 {:.1}｜本帧前置：{}",
+                    &format!("间隔 {:.0} ms｜页面 {}｜展开 {}｜上帧逻辑 {:.1}（前置 {:.1}、设置窗口 {:.1}、其余 {:.1}、材质与提醒 {:.1}）｜逻辑之外 {:.1}｜本帧岛体 {:.1}（插件 {:.1}）｜窗口 {:.1}｜本帧前置：{}｜过渡 {} 交互起点 {} 兼容 {}",
                         interval.as_secs_f64()*1000.0,page,open,logic.as_secs_f64()*1000.0,
                         parts[0].as_secs_f64()*1000.0,parts[1].as_secs_f64()*1000.0,parts[2].as_secs_f64()*1000.0,parts[3].as_secs_f64()*1000.0,
                         interval.saturating_sub(logic).as_secs_f64()*1000.0,draw_cost.as_secs_f64()*1000.0,
                         daozai::resources::PLUGIN_FRAME_US.load(std::sync::atomic::Ordering::Relaxed) as f64/1000.0,
-                        native_cost.as_secs_f64()*1000.0,pre_parts));
+                        native_cost.as_secs_f64()*1000.0,pre_parts,out.interactive_transition,
+                        _frame.interactive_frame_start.is_some(),self.app.render_compat_running));
             }
         }
         PREVIOUS_FRAME.set(Some((frame_start,elapsed)));
