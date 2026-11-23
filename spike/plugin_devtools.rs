@@ -189,12 +189,37 @@ impl LocalPlugins {
         if package.manifest.id != id || previous.runtime != package.manifest.runtime {
             return Err(fail("已安装插件的 ID 和运行环境须保持一致"));
         }
+        #[cfg(windows)]
+        let previous_network = previous.network.clone();
         if previous.source_kind() != package.manifest.source_kind() {
             record.source_grant = None;
         }
         record.values = package.settings_values(&record.values);
         record.package = Some(package);
-        self.put(id, record)?;
+        #[cfg(windows)]
+        let previous_secret = {
+            let scope_changed = match (previous_network.as_ref(), record.network()) {
+                (Some(before), Some(after)) => !before.same_authorization(after),
+                (None, None) => false,
+                _ => true,
+            };
+            let mut secret = None;
+            if scope_changed || record.source_grant().is_none() {
+                record.source_grant = None;
+                if previous_network.is_some_and(|network| network.credential.is_some()) {
+                    secret = source_https::load_secret(id)?;
+                    source_https::delete_secret(id)?;
+                }
+            }
+            secret
+        };
+        if let Err(error) = self.put(id, record) {
+            #[cfg(windows)]
+            if let Some(secret) = previous_secret {
+                source_https::save_secret(id, &secret)?;
+            }
+            return Err(error);
+        }
         self.forget_view(id);
         self.restore_pins();
         Ok(())

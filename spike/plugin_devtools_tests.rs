@@ -139,6 +139,116 @@ fn declared_data_and_manifest_changes_are_debounced_together() -> Result<()> {
 }
 
 #[test]
+fn installed_data_changes_refresh_the_plugin_and_keep_its_state() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let origin = fixture.0.join("plugin.json");
+    let name = "2026 法定节假日.json";
+    let data = fixture.0.join(name);
+    let mut manifest: Value = serde_json::from_slice(&fs::read(&origin)?)?;
+    manifest["data"] = json!([name]);
+    fs::write(&origin, manifest.to_string())?;
+    fs::write(&data, json!({"day": "初版"}).to_string())?;
+    fs::write(
+        fixture.0.join("main.js"),
+        r#"function refresh(i) {
+            return {card: [i.settings.title, i.storage.count, i.data["2026 法定节假日.json"].day].join("/"), storage: i.storage};
+        }"#,
+    )?;
+    let dir = fixture.0.join("installed");
+    let mut host = LocalPlugins::open(dir.clone());
+    host.install(&origin)?;
+    let mut record = host.installed(ID)?;
+    record.storage = json!({"count": 5});
+    record.values.insert("title".into(), "自定义".into());
+    host.put(ID, record)?;
+    host.enable(ID, true)?;
+    let settle = |host: &mut LocalPlugins| {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            host.tick_features(true, false, false, "2026-11-23");
+            if host.jobs.is_empty() {
+                break;
+            }
+            assert!(Instant::now() < deadline, "等待插件刷新超时");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    };
+    settle(&mut host);
+    assert_eq!(host.cards[ID], "自定义/5/初版");
+
+    host.set_watch_files(true);
+    let start = Instant::now();
+    fs::write(&data, json!({"day": "中间保存"}).to_string())?;
+    host.poll_local_reloads(start + POLL);
+    assert_eq!(host.cards[ID], "自定义/5/初版");
+    fs::write(&data, json!({"day": "最后一次保存"}).to_string())?;
+    host.poll_local_reloads(start + POLL * 2);
+    assert_eq!(host.cards[ID], "自定义/5/初版");
+    host.poll_local_reloads(start + POLL * 3);
+    settle(&mut host);
+    assert_eq!(host.cards[ID], "自定义/5/最后一次保存");
+
+    let host = LocalPlugins::open(dir);
+    let record = host.installed(ID)?;
+    assert_eq!(record.values["title"], "自定义");
+    assert_eq!(record.storage, json!({"count": 5}));
+    assert!(record.enabled);
+    let card = record.package.unwrap().render(&record.values, &record.storage, "2026-11-23")?;
+    assert_eq!(card.card, "自定义/5/最后一次保存");
+    Ok(())
+}
+
+#[test]
+fn changing_https_scope_on_reload_revokes_the_existing_credential() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let id = format!("test.https-{}", fixture.0.file_name().unwrap().to_string_lossy());
+    let origin = fixture.0.join("plugin.json");
+    let mut manifest: Value = serde_json::from_slice(&fs::read(&origin)?)?;
+    manifest["id"] = json!(id);
+    manifest["permissions"] = json!({"source.read": "https"});
+    manifest["network"] = json!({
+        "hosts": ["example.com"],
+        "url": "https://example.com/data",
+        "credential": {"label": "测试密钥", "header": "X-Test-Key", "prefix": "Bearer "}
+    });
+    fs::write(&origin, manifest.to_string())?;
+    struct Cleanup<'a>(&'a str);
+    impl Drop for Cleanup<'_> {
+        fn drop(&mut self) {
+            let _ = source_https::delete_secret(self.0);
+        }
+    }
+    let _cleanup = Cleanup(&id);
+    let dir = fixture.0.join("installed");
+    let mut host = LocalPlugins::open(dir.clone());
+    host.install(&origin)?;
+    let grant = host.records[&id].network().unwrap().grant("https://example.com/data")?;
+    let secret = "synthetic-secret-for-hot-reload";
+    host.set_source_grant_with_secret(&id, Some(grant.clone()), Some(secret))?;
+    assert!(!fs::read_to_string(host.path(&id))?.contains(secret));
+
+    host.set_watch_files(true);
+    let start = Instant::now();
+    fs::write(fixture.0.join("main.js"), "function refresh() { return {card: '更新脚本'}; }")?;
+    host.poll_local_reloads(start + POLL);
+    host.poll_local_reloads(start + POLL * 2);
+    assert_eq!(host.source_grant(&id), Some(&grant));
+    assert_eq!(source_https::load_secret(&id)?.as_deref(), Some(secret));
+
+    manifest["network"]["credential"]["header"] = json!("X-Changed-Test-Key");
+    fs::write(&origin, manifest.to_string())?;
+    host.poll_local_reloads(start + POLL * 3);
+    host.poll_local_reloads(start + POLL * 4);
+    assert!(host.records[&id].source_grant.is_none());
+    assert!(source_https::load_secret(&id)?.is_none());
+    assert!(!fs::read_to_string(host.path(&id))?.contains(secret));
+    assert!(host.devtools.logs.snapshot().iter().all(|line| !line.contains(secret)));
+    assert!(host.jobs.is_empty());
+    assert!(LocalPlugins::open(dir).source_grant(&id).is_none());
+    Ok(())
+}
+
+#[test]
 fn local_reload_releases_a_removed_pinned_capability() -> Result<()> {
     let fixture = Fixture::new()?;
     let path = fixture.0.join("plugin.json");
@@ -244,6 +354,33 @@ function refresh(i) {
         capability_report(&json!({"runtime":"js","capabilities":["status.page"]}))
             .contains("status.page · 实验")
     );
+    Ok(())
+}
+
+#[test]
+fn plugin_test_uses_mock_time_for_zone_offsets() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let manifest = fixture.0.join("plugin.json");
+    let mock = fixture.0.join("mock.json");
+    let mut raw: Value = serde_json::from_slice(&fs::read(&manifest)?)?;
+    raw["timezones"] = json!(true);
+    fs::write(&manifest, raw.to_string())?;
+    fs::write(
+        fixture.0.join("main.js"),
+        "function refresh(i) { const z = i.zones[i.settings.title]; return {card: z.offset_minutes + '/' + z.dst}; }",
+    )?;
+    for (instant, expected) in [
+        ("2026-01-10T12:00:00Z", "-300/false"),
+        ("2026-07-10T12:00:00Z", "-240/true"),
+    ] {
+        let time = instant.parse::<chrono::DateTime<chrono::Utc>>()?;
+        fs::write(&mock, json!({
+            "settings": {"title":"America/New_York"},
+            "now": time.timestamp_millis()
+        }).to_string())?;
+        let report = market::test_project(&manifest, Some(&mock))?;
+        assert!(report.contains(expected), "{report}");
+    }
     Ok(())
 }
 

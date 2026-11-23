@@ -78,15 +78,23 @@ pub(super) fn draw_list(
     for (index, item) in status.items.iter().take(count).enumerate() {
         let top = y + index as f32 * row_height;
         let center_y = top + row_height / 2.0;
-        // 可点的项由交互层画出悬停底色和「复制」按钮，返回剩下给文字的宽度。
-        let right = interaction.as_deref_mut().map_or(TEXT_RIGHT, |interaction| {
-            x + interaction.list_target(c, item, index, x, top, TEXT_RIGHT - x, row_height) - 4.0
-        });
-        let label_x = x + 12.0;
-        let revealed = privacy.revealed(
-            c, item.sensitive, ("item", index, &item.label, &item.detail),
-            [x, center_y - row_height / 2.0, TEXT_RIGHT - x, row_height],
+        let has_actions = interaction.is_some()
+            && (item.action.is_some() || item.open.is_some() || item.copy.is_some());
+        let identity = (
+            "item", index, &item.label, &item.detail, &item.action, &item.open, &item.copy,
         );
+        let bounds = [x, top, TEXT_RIGHT - x, row_height];
+        let (revealed, actions_allowed) = if has_actions {
+            privacy.revealed_for_actions(c, item.sensitive, identity, bounds)
+        } else {
+            (privacy.revealed(c, item.sensitive, identity, bounds), false)
+        };
+        let right = if let Some(interaction) = interaction.as_deref_mut().filter(|_| actions_allowed) {
+            x + interaction.list_target(c, item, index, x, top, TEXT_RIGHT - x, row_height) - 4.0
+        } else {
+            TEXT_RIGHT
+        };
+        let label_x = x + 12.0;
         if let Some(state) = item.state.filter(|_| revealed) {
             c.circle(x + 3.0, center_y, 2.5, state_color(state));
         }

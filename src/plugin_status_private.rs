@@ -39,10 +39,31 @@ impl SensitiveValues {
         c: &Card,
         sensitive: bool,
         identity: impl Hash,
-        [x, y, width, height]: [f32; 4],
+        rect: [f32; 4],
     ) -> bool {
+        self.reveal(c, sensitive, identity, rect, true).0
+    }
+
+    pub(super) fn revealed_for_actions(
+        &self,
+        c: &Card,
+        sensitive: bool,
+        identity: impl Hash,
+        rect: [f32; 4],
+    ) -> (bool, bool) {
+        self.reveal(c, sensitive, identity, rect, false)
+    }
+
+    fn reveal(
+        &self,
+        c: &Card,
+        sensitive: bool,
+        identity: impl Hash,
+        [x, y, width, height]: [f32; 4],
+        allow_rehide: bool,
+    ) -> (bool, bool) {
         if !sensitive {
-            return true;
+            return (true, true);
         }
         if self.blocked
             || !c.live
@@ -50,30 +71,36 @@ impl SensitiveValues {
                 .rect(x, y, width, height)
                 .intersects(c.painter.clip_rect())
         {
-            return false;
+            return (false, false);
         }
         let id = self.plugin.with(identity);
         let now = c.ui.input(|input| input.time);
         let ctx = c.ui.ctx();
-        let response = c
-            .hit(x, y, width, height, id)
-            .on_hover_cursor(CursorIcon::PointingHand);
         let current = ctx.data(|data| data.get_temp::<Reveal>(reveal_key()));
         let until =
             current.and_then(|(value, until)| (value == id && now < until).then_some(until));
+        if let Some(until) = until {
+            ctx.request_repaint_after(Duration::from_secs_f64(until - now));
+            // 已展开的动作行把点击交给正文与行尾按钮。
+            if !allow_rehide {
+                return (true, true);
+            }
+        }
+        let response = c
+            .hit(x, y, width, height, id)
+            .on_hover_cursor(CursorIcon::PointingHand);
         if response.clicked() {
             if until.is_some() {
                 clear_sensitive_reveal(ctx);
-                return false;
+                return (false, false);
             }
             ctx.data_mut(|data| data.insert_temp(reveal_key(), (id, now + REVEAL_SECONDS)));
             ctx.request_repaint_after(Duration::from_secs_f64(REVEAL_SECONDS));
-            return true;
+            if !allow_rehide {
+                ctx.request_repaint();
+            }
+            return (true, false);
         }
-        if let Some(until) = until {
-            ctx.request_repaint_after(Duration::from_secs_f64(until - now));
-            return true;
-        }
-        false
+        (until.is_some(), until.is_some())
     }
 }

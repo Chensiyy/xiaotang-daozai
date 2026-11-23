@@ -143,6 +143,60 @@ fn plugin_status_sensitive_counter_is_hidden_after_its_rate_changes() {
 }
 
 #[test]
+fn plugin_status_sensitive_list_requires_reveal_before_actions() {
+    let fixture = Fixture::new(
+        json!({
+            "state":"running","label":"便签",
+            "items":[{"label":"私密便签","action":"delete-1","copy":"私密正文","sensitive":true}]
+        }),
+        json!({"components":[{"type":"list"}]}),
+    );
+    let canvas = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(419.0, MAX_PAGE_HEIGHT));
+    let frame = |time, events, blocked| {
+        let mut clicked = None;
+        let output = fixture.ctx.run(
+            egui::RawInput { screen_rect: Some(canvas), time: Some(time), events, ..Default::default() },
+            |ctx| {
+                egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
+                    let card = Card::new(ui, egui::Pos2::ZERO, canvas);
+                    let mut form = std::collections::BTreeMap::new();
+                    let mut interaction = Interaction::new("test.status", 1, &mut form, true);
+                    draw_interactive_status_page(
+                        &card, "test.status", &fixture.status, Some(&fixture.layout),
+                        StatusBackdrop { palette: None, island: Color32::BLACK }, blocked, &mut interaction,
+                    );
+                    clicked = interaction.finish().1;
+                });
+            },
+        );
+        (output, clicked)
+    };
+    let click = |time, pos, blocked| {
+        let event = |pressed| egui::Event::PointerButton {
+            pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE,
+        };
+        assert!(frame(time, vec![egui::Event::PointerMoved(pos), event(true)], blocked).1.is_none());
+        frame(time + 0.05, vec![event(false)], blocked)
+    };
+
+    let inactive = frame(0.0, vec![], false).0;
+    assert!(painted(&inactive, MASKED_VALUE));
+    assert!(!painted(&inactive, "复制"));
+    let copy = egui::pos2(340.0, 58.0);
+    let (shown, first_click) = click(0.1, copy, false);
+    assert!(painted(&shown, "私密便签") && first_click.is_none());
+    assert!(painted(&frame(0.2, vec![], false).0, "复制"));
+    assert!(matches!(click(0.3, copy, false).1, Some(ClickTarget::CopyItem(0))));
+    let body = egui::pos2(95.0, 58.0);
+    assert!(matches!(click(0.4, body, false).1, Some(ClickTarget::Item(0))));
+
+    let (blocked, clicked) = click(0.5, copy, true);
+    assert!(painted(&blocked, MASKED_VALUE) && clicked.is_none());
+    assert!(!painted(&blocked, "复制"));
+    assert!(painted(&frame(31.0, vec![], false).0, MASKED_VALUE));
+}
+
+#[test]
 fn plugin_status_real_time_requests_repaint_only_for_visible_values() {
     let fixture = Fixture::new(
         json!({
