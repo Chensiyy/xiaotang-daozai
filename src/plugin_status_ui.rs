@@ -1,13 +1,13 @@
 //! 用岛仔画布绘制状态详情。
 #[path = "plugin_status_controls.rs"]
 mod controls;
-pub(crate) use controls::{DEFAULT_FORM_HEIGHT, Interaction, InteractionResponse};
+pub(crate) use controls::{ClickTarget, DEFAULT_FORM_HEIGHT, Interaction, InteractionResponse};
 
 use crate::{
     paint::{self, Card, H},
     plugin_status::{
         PluginStatus, ProgressVariant, StatusComponent, StatusDensity, StatusHealth, StatusLayout,
-        StatusState, StatusSurface,
+        StatusState, StatusSurface, MAX_ITEMS,
     },
     theme::{self, size, W},
 };
@@ -23,6 +23,7 @@ const CONTENT_TOP: f32 = 42.0;
 const PAGE_BOTTOM_SPACE: f32 = 16.0;
 const MIN_LAYOUT_HEIGHT: f32 = 156.0;
 const MAX_METRICS: usize = 6;
+const LIST_ROW_HEIGHT: f32 = 22.0;
 
 pub(crate) fn status_page_height(layout: Option<&StatusLayout>) -> f32 {
     let Some(layout) = layout else {
@@ -31,7 +32,7 @@ pub(crate) fn status_page_height(layout: Option<&StatusLayout>) -> f32 {
     let density = layout.style.density;
     let (padding, _) = spacing(density);
     // 给可出现的组件留足空间，读数缺失或断源时保留页面高度。
-    let height = stack_height(layout.components.iter().copied(), density, MAX_METRICS);
+    let height = stack_height(layout.components.iter().copied(), density, MAX_METRICS, MAX_ITEMS);
     (CONTENT_TOP + padding * 2.0 + height + PAGE_BOTTOM_SPACE).max(MIN_LAYOUT_HEIGHT)
 }
 
@@ -186,7 +187,7 @@ fn metric_row_height(density: StatusDensity) -> f32 {
     }
 }
 
-fn component_height(component: StatusComponent, density: StatusDensity, metrics: usize) -> f32 {
+fn component_height(component: StatusComponent, density: StatusDensity, metrics: usize, items: usize) -> f32 {
     match component {
         StatusComponent::State {} => 18.0,
         StatusComponent::Summary {} => 26.0,
@@ -203,6 +204,7 @@ fn component_height(component: StatusComponent, density: StatusDensity, metrics:
         StatusComponent::UpdatedAt {} => 14.0,
         StatusComponent::Actions {} => controls::ACTION_HEIGHT,
         StatusComponent::Fields {} => controls::fields_height(controls::MAX_FIELDS),
+        StatusComponent::List {} => LIST_ROW_HEIGHT * items as f32,
     }
 }
 
@@ -210,10 +212,11 @@ fn stack_height(
     components: impl Iterator<Item = StatusComponent>,
     density: StatusDensity,
     metrics: usize,
+    items: usize,
 ) -> f32 {
     let (_, gap) = spacing(density);
     let height: f32 = components
-        .map(|component| component_height(component, density, metrics) + gap)
+        .map(|component| component_height(component, density, metrics, items) + gap)
         .sum();
     (height - gap).max(0.0)
 }
@@ -242,8 +245,9 @@ fn draw_layout(
             StatusComponent::UpdatedAt {} => status.observed_at.is_some(),
             StatusComponent::Actions {} => !status.actions.is_empty(),
             StatusComponent::Fields {} => !status.fields.is_empty(),
+            StatusComponent::List {} => !status.items.is_empty(),
         });
-    let height = stack_height(components.clone(), density, status.metrics.len());
+    let height = stack_height(components.clone(), density, status.metrics.len(), status.items.len());
     if height == 0.0 {
         draw_message(c, "当前没有可显示的数据", None, theme::DIM);
         return;
@@ -261,7 +265,7 @@ fn draw_layout(
     }
     let mut y = CONTENT_TOP + padding;
     for component in components {
-        let height = component_height(component, density, status.metrics.len());
+        let height = component_height(component, density, status.metrics.len(), status.items.len());
         let center_y = y + height / 2.0;
         let x = LEFT + 14.0;
         match component {
@@ -335,8 +339,43 @@ fn draw_layout(
                     interaction.fields(c, status, x, y, TEXT_RIGHT - x);
                 }
             }
+            StatusComponent::List {} => {
+                draw_list(c, status, x, y, TEXT_RIGHT - x, interaction.as_deref_mut());
+            }
         }
         y += height + gap;
+    }
+}
+
+fn draw_list(
+    c: &Card,
+    status: &PluginStatus,
+    x: f32,
+    y: f32,
+    width: f32,
+    mut interaction: Option<&mut Interaction<'_>>,
+) {
+    for (index, item) in status.items.iter().enumerate() {
+        let top = y + index as f32 * LIST_ROW_HEIGHT;
+        let width = interaction.as_deref_mut().map_or(width, |interaction| {
+            interaction.list_target(c, item, index, x, top, width, LIST_ROW_HEIGHT)
+        });
+        let center = top + LIST_ROW_HEIGHT / 2.0;
+        let mut left = x + 4.0;
+        if let Some(state) = item.state {
+            c.circle(left + 2.5, center, 2.5, state_color(state));
+            left += 11.0;
+        }
+        let right = x + width - 4.0;
+        let max_label = (right - left) * if item.detail.is_some() { 0.55 } else { 1.0 };
+        let label = c.fit(&item.label, size::SMALL, W::Regular, max_label);
+        let label_width = c.text_w(&label, size::SMALL, W::Regular);
+        c.centered_text(left, center, &label, size::SMALL, W::Regular, theme::WHITE, H::Left);
+        if let Some(detail) = &item.detail {
+            let detail_x = left + label_width + 6.0;
+            let detail = c.fit(detail, size::TINY, W::Regular, right - detail_x);
+            c.centered_text(detail_x, center, &detail, size::TINY, W::Regular, theme::GRAY, H::Left);
+        }
     }
 }
 

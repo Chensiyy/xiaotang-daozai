@@ -4,7 +4,7 @@ use eframe::egui;
 
 use crate::{
     paint::{self, Card, H},
-    plugin_status::PluginStatus,
+    plugin_status::{PluginStatus, StatusItem},
     theme::{self, size, W},
 };
 
@@ -23,12 +23,19 @@ pub(crate) struct InteractionResponse {
     pub(crate) gained_focus: bool,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum ClickTarget {
+    Button(usize),
+    Item(usize),
+    CopyItem(usize),
+}
+
 pub(crate) struct Interaction<'a> {
     plugin: &'a str,
     revision: u64,
     form: &'a mut BTreeMap<String, String>,
     enabled: bool,
-    clicked: Option<String>,
+    clicked: Option<ClickTarget>,
     response: InteractionResponse,
 }
 
@@ -49,7 +56,7 @@ impl<'a> Interaction<'a> {
         }
     }
 
-    pub(crate) fn finish(self) -> (InteractionResponse, Option<String>) {
+    pub(crate) fn finish(self) -> (InteractionResponse, Option<ClickTarget>) {
         (self.response, self.clicked)
     }
 
@@ -58,7 +65,7 @@ impl<'a> Interaction<'a> {
         let width = ((width + gap) / status.actions.len().max(1) as f32 - gap).min(98.0);
         for (index, action) in status.actions.iter().enumerate() {
             let x = x + index as f32 * (width + gap);
-            let card = if self.enabled {
+            let card = if self.enabled || action.open.is_some() || action.copy.is_some() {
                 c.clone()
             } else {
                 c.ghost().faded(0.65)
@@ -88,9 +95,63 @@ impl<'a> Interaction<'a> {
                 H::Center,
             );
             if button.clicked() {
-                self.clicked = Some(action.id.clone());
+                self.clicked = Some(ClickTarget::Button(index));
             }
         }
+    }
+
+    pub(super) fn list_target(
+        &mut self,
+        c: &Card,
+        item: &StatusItem,
+        index: usize,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+    ) -> f32 {
+        let mut body_width = width;
+        let key = (self.plugin, self.revision, index);
+        if item.copy.is_some() && item.action.is_some() {
+            let copy_width = 44.0;
+            body_width -= copy_width + 6.0;
+            let copy_x = x + width - copy_width;
+            let (button, body) = paint::capsule(
+                c,
+                copy_x,
+                y + 1.0,
+                copy_width,
+                height - 2.0,
+                &format!("plugin-list-copy:{key:?}"),
+                theme::BTN,
+                theme::BTN_HOVER,
+            );
+            body.centered_text(
+                copy_x + copy_width / 2.0,
+                y + height / 2.0,
+                "复制",
+                size::TINY,
+                W::Semibold,
+                theme::WHITE,
+                H::Center,
+            );
+            if button.clicked() {
+                self.clicked = Some(ClickTarget::CopyItem(index));
+            }
+        }
+        if item.open.is_some()
+            || (item.copy.is_some() && item.action.is_none())
+            || (self.enabled && item.action.is_some())
+        {
+            let hit = c.hit(x, y, body_width, height, ("plugin-list-item", key));
+            if hit.hovered() && c.live {
+                c.fill(x, y, body_width, height, 6.0, theme::BTN);
+            }
+            if hit.clicked() {
+                self.clicked = Some(ClickTarget::Item(index));
+            }
+        }
+        body_width
     }
 
     pub(super) fn fields(&mut self, c: &Card, status: &PluginStatus, x: f32, y: f32, width: f32) {

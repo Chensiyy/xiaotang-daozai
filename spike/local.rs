@@ -23,7 +23,7 @@ use crate::plugin_status::{PluginStatus, StatusHealth, StatusLayout};
 use crate::quota_plugin::PluginQuota;
 use capabilities::Surface;
 use cover::{CoverPng, COVER_FILE};
-use interactions::{Call, EventName, InteractionState, NoticeHistory, ScriptNotice};
+use interactions::{ActionNetwork, Call, EventName, InteractionState, NoticeHistory, ScriptNotice};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use source_read::{SourceGrant, SourceKind};
@@ -145,6 +145,12 @@ struct Manifest {
         skip_serializing_if = "Option::is_none"
     )]
     events: Option<[EventName; 1]>,
+    #[serde(
+        default,
+        deserialize_with = "present_value",
+        skip_serializing_if = "Option::is_none"
+    )]
+    network: Option<ActionNetwork>,
 }
 fn default_refresh() -> u32 {
     60
@@ -419,6 +425,11 @@ impl Manifest {
         capabilities::check(&m.runtime, &m.owner, &m.capabilities).map_err(|e| fail(&e))?;
         if m.has_capability("event") != m.events.is_some() {
             return Err(fail("声明 event 时须在 events 中订阅一次 focus.finished"));
+        }
+        if m.network.as_ref().is_some_and(|network| {
+            !m.has_capability("action") || !network.valid_hosts()
+        }) {
+            return Err(fail("动作链接需要 action 能力及 1 至 4 个完整域名"));
         }
         if let Some(layout) = &m.status_layout {
             if !m.is_status_page() {
@@ -721,14 +732,13 @@ impl Package {
             if !has(Surface::StatusPage) {
                 return Err(fail("此插件未声明状态页能力"));
             }
-            if !self.manifest.has_capability("action")
-                && (!status.actions.is_empty() || !status.fields.is_empty())
-            {
-                return Err(fail("此插件未声明按钮和表单能力"));
+            if !self.manifest.has_capability("action") && status.has_interactions() {
+                return Err(fail("此插件未声明状态页交互能力"));
             }
             if !status.valid() {
                 return Err(fail("状态页需要返回格式有效的 status 或 null"));
             }
+            self.manifest.check_action_links(status)?;
         }
         if let Some(quota) = &output.quota {
             if !has(Surface::Quota) {

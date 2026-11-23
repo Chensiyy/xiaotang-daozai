@@ -3,6 +3,7 @@
 use serde::{Deserialize, Serialize};
 
 const MAX_TIMESTAMP: i64 = 253_402_300_799;
+pub(super) const MAX_ITEMS: usize = 8;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum StatusHealth {
@@ -41,6 +42,8 @@ pub(crate) struct PluginStatus {
     pub actions: Vec<StatusAction>,
     #[serde(default)]
     pub fields: Vec<StatusField>,
+    #[serde(default)]
+    pub items: Vec<StatusItem>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
@@ -55,6 +58,19 @@ pub(crate) struct StatusMetric {
 pub(crate) struct StatusAction {
     pub id: String,
     pub label: String,
+    pub open: Option<String>,
+    pub copy: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct StatusItem {
+    pub label: String,
+    pub detail: Option<String>,
+    pub state: Option<StatusState>,
+    pub action: Option<String>,
+    pub open: Option<String>,
+    pub copy: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -114,6 +130,7 @@ pub(crate) enum StatusComponent {
     UpdatedAt {},
     Actions {},
     Fields {},
+    List {},
 }
 
 fn default_metric_columns() -> u8 {
@@ -197,7 +214,15 @@ impl PluginStatus {
             && self.actions.iter().enumerate().all(|(index, action)| {
                 valid_control_id(&action.id)
                     && valid_text(&action.label, 6)
+                    && valid_host_action(action.open.as_deref(), action.copy.as_deref())
                     && self.actions[..index].iter().all(|other| other.id != action.id)
+            })
+            && self.items.len() <= MAX_ITEMS
+            && self.items.iter().all(|item| {
+                valid_text(&item.label, 28)
+                    && item.detail.as_deref().is_none_or(|text| valid_text(text, 80))
+                    && item.action.as_deref().is_none_or(valid_control_id)
+                    && valid_host_action(item.open.as_deref(), item.copy.as_deref())
             })
             && self.fields.len() <= 3
             && self.fields.iter().enumerate().all(|(index, field)| {
@@ -215,8 +240,28 @@ impl PluginStatus {
                 .is_none_or(|(at, expires)| at <= expires)
     }
 
+    pub(crate) fn has_interactions(&self) -> bool {
+        !self.actions.is_empty()
+            || !self.fields.is_empty()
+            || self.items.iter().any(|item| {
+                item.action.is_some() || item.open.is_some() || item.copy.is_some()
+            })
+    }
+
     pub(crate) fn fresh_at(&self, now: i64) -> bool {
         self.expires_at.is_none_or(|expires| now < expires)
+    }
+}
+
+fn valid_host_action(open: Option<&str>, copy: Option<&str>) -> bool {
+    match (open, copy) {
+        (Some(_), Some(_)) => false,
+        (Some(open), None) => !open.is_empty() && open.len() <= 2048,
+        (None, Some(text)) => {
+            text.chars().count() <= 2000
+                && text.chars().all(|ch| matches!(ch, '\r' | '\n' | '\t') || !ch.is_control())
+        }
+        (None, None) => true,
     }
 }
 

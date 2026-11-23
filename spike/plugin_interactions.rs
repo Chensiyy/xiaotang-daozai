@@ -4,9 +4,35 @@ use super::*;
 use crate::{
     paint::Card,
     plugin_status::valid_text,
-    plugin_status_ui::{self, Interaction, InteractionResponse},
+    plugin_status_ui::{self, ClickTarget, Interaction, InteractionResponse},
 };
 use std::collections::{BTreeSet, VecDeque};
+use url::{Host, Url};
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ActionNetwork {
+    hosts: Vec<String>,
+}
+
+impl ActionNetwork {
+    pub(super) fn valid_hosts(&self) -> bool {
+        (1..=4).contains(&self.hosts.len())
+            && self.hosts.iter().enumerate().all(|(index, host)| {
+                host.len() <= 253
+                    && host.contains('.')
+                    && !host.to_ascii_lowercase().ends_with(".localhost")
+                    && host.split('.').all(|label| {
+                        (1..=63).contains(&label.len())
+                            && label.starts_with(|ch: char| ch.is_ascii_alphanumeric())
+                            && label.ends_with(|ch: char| ch.is_ascii_alphanumeric())
+                            && label.bytes().all(|ch| ch.is_ascii_alphanumeric() || ch == b'-')
+                    })
+                    && matches!(Host::parse(host), Ok(Host::Domain(domain)) if domain.eq_ignore_ascii_case(host))
+                    && !self.hosts[..index].iter().any(|other| other.eq_ignore_ascii_case(host))
+            })
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) enum EventName {
@@ -147,6 +173,40 @@ impl Manifest {
             .iter()
             .any(|capability| capability == name)
     }
+
+    fn open_action_url(&self, raw: &str) -> Option<Url> {
+        let network = self.network.as_ref()?;
+        if raw.len() > 2048
+            || raw.chars().any(|ch| ch.is_control() || ch == '\\')
+            || !raw.get(..8)?.eq_ignore_ascii_case("https://")
+            || raw[8..].split(['/', '?', '#']).next().is_none_or(|authority| {
+                authority.is_empty() || authority.contains('@')
+            })
+        {
+            return None;
+        }
+        let url = Url::parse(raw).ok()?;
+        let Host::Domain(host) = url.host()? else {
+            return None;
+        };
+        (url.scheme() == "https"
+            && url.username().is_empty()
+            && url.password().is_none()
+            && url.port_or_known_default() == Some(443)
+            && network.hosts.iter().any(|allowed| allowed.eq_ignore_ascii_case(host)))
+        .then_some(url)
+    }
+
+    pub(super) fn check_action_links(&self, status: &PluginStatus) -> Result<()> {
+        let links = status.actions.iter().filter_map(|action| action.open.as_deref())
+            .chain(status.items.iter().filter_map(|item| item.open.as_deref()));
+        for link in links {
+            if self.open_action_url(link).is_none() {
+                return Err(fail("动作链接须为清单 network.hosts 中的 HTTPS 地址"));
+            }
+        }
+        Ok(())
+    }
 }
 
 impl Record {
@@ -234,9 +294,7 @@ impl LocalPlugins {
             return InteractionResponse::default();
         };
         let layout = self.status_layout(id);
-        let Some(controls) =
-            status.filter(|status| !status.actions.is_empty() || !status.fields.is_empty())
-        else {
+        let Some(controls) = status.filter(|status| status.has_interactions()) else {
             plugin_status_ui::draw_status_page(c, status, health, layout);
             return InteractionResponse::default();
         };
@@ -264,7 +322,7 @@ impl LocalPlugins {
         );
         let (response, action) = interaction.finish();
         if let Some(action) = action {
-            self.submit_action(id, revision, action);
+            self.submit_action(c.ui.ctx(), id, revision, action);
         }
         response
     }
@@ -273,16 +331,53 @@ impl LocalPlugins {
         !self.jobs.contains_key(id) && !self.interactions.has_call(id)
     }
 
-    fn submit_action(&mut self, id: &str, revision: u64, action: String) -> bool {
+    fn submit_action(
+        &mut self,
+        ctx: &eframe::egui::Context,
+        id: &str,
+        revision: u64,
+        target: ClickTarget,
+    ) -> bool {
         let Some((_, Some(status), StatusHealth::Ready)) = self.status_page(id) else {
             return false;
         };
-        if !self.action_available(id)
-            || !matches!(self.status.get(id), Some(Ok((current, _))) if *current == revision)
-            || !status.actions.iter().any(|button| button.id == action)
-        {
+        if !matches!(self.status.get(id), Some(Ok((current, _))) if *current == revision) {
             return false;
         }
+        let (action, open, copy) = match target {
+            ClickTarget::Button(index) => {
+                let Some(button) = status.actions.get(index) else {
+                    return false;
+                };
+                (Some(button.id.as_str()), button.open.as_deref(), button.copy.as_deref())
+            }
+            ClickTarget::Item(index) => {
+                let Some(item) = status.items.get(index) else {
+                    return false;
+                };
+                let action = item.action.as_deref();
+                (action, item.open.as_deref(), item.copy.as_deref().filter(|_| action.is_none()))
+            }
+            ClickTarget::CopyItem(index) => {
+                (None, None, status.items.get(index).filter(|item| item.action.is_some()).and_then(|item| item.copy.as_deref()))
+            }
+        };
+        if let Some(raw) = open {
+            let manifest = &self.records[id].package.as_ref().unwrap().manifest;
+            let Some(url) = manifest.open_action_url(raw) else {
+                return false;
+            };
+            ctx.open_url(eframe::egui::OpenUrl::new_tab(url));
+            return true;
+        }
+        if let Some(text) = copy {
+            ctx.copy_text(text.to_owned());
+            return true;
+        }
+        let Some(action) = action.filter(|_| self.action_available(id)) else {
+            return false;
+        };
+        let action = action.to_owned();
         let values = self.interactions.forms.get(id);
         let form = status
             .fields

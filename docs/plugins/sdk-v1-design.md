@@ -30,13 +30,13 @@ function refresh({ settings, today }) {
 | 周期刷新 · 已实现 | 两个样例在清单声明 `"refreshSeconds":60` 和 timer 能力。到期由岛仔调用 refresh | 卡片按期更新 |
 | 常驻、固定、临时卡 · 待宿主实现 | `function refresh(i){return {cards:[{id:"job",mode:"temporary",text:i.settings.title,ttlMs:5000}]}}` | 常驻栏、临时位置，用户自行选择固定 |
 | 结构化状态卡和独立详情页 · 测试版 | 清单使用 `"owner":"status"` 和 `"capabilities":["status.page","timer"]`，`refresh` 返回 `status`。可用 `statusLayout` 选择组件、排序和样式。 | 在岛上翻页查看，在「设置 → 页面管理 → 状态详情」单独启停 |
-| 状态详情按钮与表单 · 测试版 | 同时声明 action 和 status.page，状态结果提供 actions 和 fields，点击调用 action(input) | 在状态详情输入内容和点击操作按钮 |
+| 状态详情交互 · 实验 | 同时声明 `action` 和 `status.page`。可使用按钮、单行表单、可点的列表项，以及宿主的打开链接和复制动作 | 在状态详情输入内容或点击操作 |
 | 可编辑独立模块 · 待宿主实现 | 清单声明 module 与按钮 `actions:["save"]`。示意 `function action(i){return {page:{kind:"detail",text:i.form.text},storage:{note:i.form.text}}}` | 岛上功能栏查看、编辑，侧栏调偏好，页面管理启停 |
 | 日程来源 · 待宿主实现 | `function refresh(i){return {calendar:[{id:"anniversary",title:i.settings.title,date:i.settings.target}]}}` | 日程里的来源，按来源和条目 ID 更新 |
 | 歌词来源 · 待宿主实现 | `function refresh(i){return {lyrics:{trackId:i.track.id,lines:i.source.lines}}}`。换歌后宿主只接收当前曲目的结果 | 原音乐页 |
 | AI 额度来源 · 测试版 | 清单使用 `"owner":"quota"` 和 `"capabilities":["quota.source","timer"]`，`refresh` 返回 `quota`。 | 原 AI 额度面板中按插件名称显示来源页签 |
-| 专注事件 · 测试版 | 声明 event，清单顶层写 "events":["focus.finished"]。专注计时完成时调用 event(input) | 启用插件后完成一轮专注 |
-| 一次性提醒 · Windows 测试版 | 声明 notice，脚本返回 notice 对象 | 岛上的通知与未读，遵循系统内的通知和正文显示开关 |
+| 专注事件 · 实验 | 声明 event，清单顶层写 "events":["focus.finished"]。专注计时完成时调用 event(input) | 启用插件后完成一轮专注 |
+| 一次性提醒 · Windows 实验 | 声明 notice，脚本返回 notice 对象 | 岛上的通知与未读，遵循系统内的通知和正文显示开关 |
 | 本地只读数据源 · Windows 测试版 | 清单声明 `"permissions":{"source.read":"file"}` 或 `"permissions":{"source.read":"loopback"}`。宿主将已授权数据传给 `refresh` 的 `source` 输入。 | 「设置 → 插件 → 已安装 → 授权数据源」 |
 | 皮肤、表情、图标 · 待宿主实现 | 无代码包清单片段 `{"runtime":"assets","capabilities":["appearance.skin"],"assets":["theme.json"]}`。表情与图标分别声明 appearance.pet、appearance.icon | 原外观选择器，可切回内置素材 |
 | 底部快捷切换 · 已实现 | 声明 `runtime: "assets"`、`owner: "pages"` 和 `navigation.shortcuts`，在 `shortcuts.json` 配置选中配色 | 展开岛仔，点击底部图标直达已启用页面。设置归属「页面管理」 |
@@ -170,6 +170,7 @@ JS 清单使用 `"owner":"status"`，能力列出 `status.page`。可选的 `tim
 | `updated_at` | 显示 `observed_at` |
 | actions | 显示 status.actions 中的按钮，需要 action 能力 |
 | fields | 显示 status.fields 中的单行文本框，需要 action 能力 |
+| `list` | 显示 `status.items`，每项的动作需要 `action` 能力 |
 
 `style` 可以省略。主色 `accent` 使用六位 `#RRGGBB`，省略时沿用岛仔默认状态色。间距 `density` 可选 `comfortable`（默认）或 `compact`。背景 `surface` 可选 `card`（默认）或 `plain`。
 
@@ -236,13 +237,15 @@ function refresh({settings}) {
 
 在清单中同时声明 `action` 和 `status.page`。`status.actions` 最多 3 个按钮，每个按钮填写 `{id, label}`，标签 1 至 6 字。`status.fields` 最多 3 个单行输入框，每个填写 `{key, label, value?, max}`，标签 1 至 28 字，`max` 为 1 至 200 的整数，`value` 是可选初始值。每组的 ID 或键须唯一，由小写英文字母开头，最多 40 个字符，可用小写英文字母、数字、下划线和连字符。自定义布局用 `actions`、`fields` 选择控件位置，默认布局将控件放在读数下方。
 
-点击时，岛仔在后台调用 `action({settings, storage, today, source?, action:{id, form}})`。`form` 是字段键到文字的映射，未填的字段为 `""`。按钮只在生成它的状态结果仍有效时接受点击。状态刷新、停用插件、修改设置或关闭所属模块都会使对应的旧结果失效。
+列表最多 8 项，每项可写 `{label, detail?, state?, action?, open?, copy?}`。`action` 是脚本动作 ID。按钮与列表项都可加 `open` 或 `copy`，二者只能选一个。`open` 打开清单 `network.hosts` 声明的 HTTPS 域名下的链接。`copy` 将最多 2000 字写入剪贴板。当行既有脚本动作又有复制内容时，点正文由脚本处理，点行尾「复制」由宿主处理。
+
+点击脚本动作时，岛仔在后台调用 `action({settings, storage, today, source?, action:{id, form}})`。`form` 是字段键到文字的映射，未填的字段为 `""`。按钮和列表项只在生成它们的状态结果仍有效时接受点击。状态刷新、停用插件、修改设置或关闭所属模块都会使对应的旧结果失效。
 
 清单声明 `event` 并列出 `"events":["focus.finished"]`。每次专注计时结束只投递一次。同一个插件已有调用时，事件按顺序等候。插件停用或所属模块关闭期间的事件不补发。全局函数 `event(input)` 收到与 `refresh` 相同的通用字段及 `event:{name, id, at, minutes}`，`at` 为 Unix 秒，`minutes` 为本轮配置的专注分钟数。
 
 声明 `notice` 后，三个脚本入口都可返回 `notice:{id, title, body?}`。ID 为 1 至 128 字，标题为 1 至 40 字，正文可省略，最多 120 字。每个插件同一 ID 只显示一次，60 秒内最多发出一条。提醒显示和正文遵循岛仔现有的通知开关。
 
-三个脚本入口共用每插件单次运行的限制，以及 30 ms、4 MiB 和 16 KiB 输出上限。可在本地试装[喝水记录样例](../../spike/examples/water-log/plugin.json)。
+三个脚本入口共用每插件单次运行的限制，以及 30 ms、4 MiB 和 16 KiB 输出上限。可在本地试装[便签样例](../../spike/examples/sticky-notes/plugin.json)。
 
 ## 12. 投稿怎样进入集市
 
