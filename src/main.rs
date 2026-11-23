@@ -888,7 +888,11 @@ impl eframe::App for Shell {
         #[cfg(all(windows, feature = "sdk-material"))]
         let mut out = out;
         #[cfg(windows)]
-        let interactive_transition = !self.hidden && out.interactive_transition;
+        // 页面自己驱动的动画（天气日出日落、性能详情、翻页后的页面缓动）靠 egui 立即重绘推进，
+        // 不在岛体的过渡清单里；兼容渲染下也按交互帧逐帧交付，否则读回和等待交替，只剩 30 帧。
+        let page_animating = self.app.render_compat_running && out.expanded && ctx.requested_repaint_last_pass();
+        #[cfg(windows)]
+        let interactive_transition = !self.hidden && (out.interactive_transition || page_animating);
         #[cfg(windows)]
         let last_transition_frame = std::mem::replace(&mut self.was_interactive_transition,interactive_transition);
 
