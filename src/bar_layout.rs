@@ -17,7 +17,8 @@ pub(crate) const PET: usize = 9;
 pub(crate) const WEATHER_WIDTH: f32 = 38.0;
 pub(crate) const PERFORMANCE: usize = 10;
 pub(crate) const BLUETOOTH:usize=11;
-const WIDTHS: [f32; 12] = [44.0,20.0,27.0,27.0,27.0,WEATHER_WIDTH,14.0,crate::focus_bar::WIDTH,20.0,32.0,0.0,0.0];
+pub(crate) const PINNED:usize=12;
+const WIDTHS: [f32; 13] = [44.0,20.0,27.0,27.0,27.0,WEATHER_WIDTH,14.0,crate::focus_bar::WIDTH,20.0,32.0,0.0,0.0,0.0];
 
 pub(crate) const DEFAULT_ORDER: [usize;8]=[BATTERY,PET,CLOCK,WEATHER,QUOTA,MUSIC,FOCUS,PERFORMANCE];
 pub(crate) fn valid_order(order:&[usize])->bool {
@@ -83,8 +84,11 @@ impl Layout {
         self.x[PERFORMANCE]=Some(self.width/2.0-16.0-width/2.0);
     }
     pub fn append_bluetooth(&mut self,width:f32){
+        self.append_slot(BLUETOOTH,width);
+    }
+    pub(crate) fn append_slot(&mut self,slot:usize,width:f32){
         let extra=width+12.0;for x in self.x.iter_mut().flatten(){*x-=extra/2.0;}
-        self.width+=extra;self.widths[BLUETOOTH]=width;self.x[BLUETOOTH]=Some(self.width/2.0-16.0-width/2.0);
+        self.width+=extra;self.widths[slot]=width;self.x[slot]=Some(self.width/2.0-16.0-width/2.0);
     }
     pub fn quota_slots(&self)->impl Iterator<Item=usize> { (0..self.quotas).map(quota_slot) }
     /// 把某个槽加宽 extra：其余槽对称让位并记入总宽。点数文字、时段时钟、天气温度共用。

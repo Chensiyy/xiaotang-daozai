@@ -9201,8 +9201,10 @@ fn side_dock_stacks_ai_quota_and_opens_the_account(){
     let total=h.app.side_bar_len()-14.0;
     let mut y=top+(h.app.h.pos-total)/2.0;
     for item in h.app.side_items() {
-        let height=match item {crate::side_dock::SideItem::Quota(i,hh) if h.app.quota.config.accounts[i].id==wb=>{y+=hh/2.0;break;},crate::side_dock::SideItem::Quota(_,hh)=>hh,crate::side_dock::SideItem::Clock=>32.0,crate::side_dock::SideItem::Weather=>40.0,crate::side_dock::SideItem::Wireless=>37.0,crate::side_dock::SideItem::Battery=>20.0,crate::side_dock::SideItem::Performance(hh)|crate::side_dock::SideItem::Date(hh)=>hh,crate::side_dock::SideItem::Music=>18.0,crate::side_dock::SideItem::Focus|crate::side_dock::SideItem::Bell=>22.0};
-        y+=height;
+        if let crate::side_dock::SideItem::Quota(i,hh)=item {
+            if h.app.quota.config.accounts[i].id==wb {y+=hh/2.0;break;}
+        }
+        y+=item.height(h.app.settings.clock_seconds);
     }
     let click=Pos2::new(18.0,y);
     side_frame(&mut h,Some(click));

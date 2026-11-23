@@ -15,6 +15,8 @@ pub(super) enum Surface {
     Quota,
     /// 页面管理里的独立状态页，读 `status`。
     StatusPage,
+    /// 收起时由宿主轮播的短内容，读 `pinned`。
+    IslandPinned,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -38,6 +40,7 @@ pub(super) const CAPABILITIES: &[Capability] = &[
     Capability { name: "calendar.marker", runtime: "js", role: Role::Output(Surface::CalendarMarker) },
     Capability { name: "quota.source", runtime: "js", role: Role::Output(Surface::Quota) },
     Capability { name: "status.page", runtime: "js", role: Role::Output(Surface::StatusPage) },
+    Capability { name: "island.pinned", runtime: "js", role: Role::Output(Surface::IslandPinned) },
     Capability { name: "settings", runtime: "*", role: Role::Helper },
     Capability { name: "timer", runtime: "js", role: Role::Helper },
     Capability { name: "storage", runtime: "js", role: Role::Helper },

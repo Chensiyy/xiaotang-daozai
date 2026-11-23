@@ -2,6 +2,10 @@
 
 use serde::{Deserialize, Serialize};
 
+#[path = "plugin_status_realtime.rs"]
+mod realtime;
+pub(crate) use realtime::{StatusCountdown, StatusCounter};
+
 const MAX_TIMESTAMP: i64 = 253_402_300_799;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -71,6 +71,7 @@
           "lyrics.source",
           "quota.source",
           "status.page",
+          "island.pinned",
           "appearance.skin",
           "appearance.material",
           "navigation.shortcuts",
@@ -584,7 +585,7 @@
           "dataVersion": {"const": 1},
           "entry": {"pattern": "^(?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_-]+\\.js$"},
           "capabilities": {
-            "items": {"enum": ["status.page", "settings", "timer", "storage"]},
+            "items": {"enum": ["status.page", "island.pinned", "settings", "timer", "storage"]},
             "contains": {"const": "status.page"}
           },
           "permissions": {
