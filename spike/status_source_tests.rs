@@ -469,12 +469,12 @@ fn realtime_examples_install_and_return_bounded_host_values() -> Result<()> {
     host.set_pinned("example.live-pay", true)?;
     settle(&mut host, false);
 
+    let (pin, _) = host.pinned_display(false).expect("工资样例应提供常驻倒计时");
     let (_, snapshot, health) = host.status_page("example.live-pay").unwrap();
     assert_eq!(health, StatusHealth::Ready);
     let salary = snapshot.unwrap();
     assert!(salary.counter[0].sensitive);
     assert_eq!(salary.countdown.len(), 1);
-    let (pin, _) = host.pinned_display(false).expect("工资样例应提供常驻倒计时");
     assert_eq!(pin.text, salary.countdown[0].label);
     assert!(pin.value.is_some_and(|text| !text.contains('¥')));
 
