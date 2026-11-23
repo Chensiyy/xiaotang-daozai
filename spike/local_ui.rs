@@ -581,7 +581,7 @@ fn owner_label(owner: &str) -> Option<&'static str> {
         .map(|(_, label)| *label)
 }
 
-/// 已安装分组的小标题，例如「外观 · 材质同时只用一个」。
+/// 已安装分组的小标题，例如「外观 · 每类外观同时选用一个」。
 fn group_header(ui: &mut egui::Ui, title: &str, note: &str) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 8.0;
@@ -969,7 +969,7 @@ impl LocalPlugins {
                 continue;
             }
             let title = owner_label(&group_owner).unwrap_or(group_owner.as_str());
-            let note = if group_owner == "appearance" { "材质同时只用一个" } else { "" };
+            let note = if group_owner == "appearance" { "每类外观同时选用一个" } else { "" };
             group_header(ui, title, note);
             plugin_list(ui, |ui| {
                 for (index, id) in group.iter().enumerate() {
@@ -1062,13 +1062,14 @@ impl LocalPlugins {
         let package = r.package.as_ref().unwrap();
         let manifest = &package.manifest;
         let material = manifest.is_material();
+        let appearance = manifest.appearance_kind();
         let owner_key = manifest.owner.clone();
         let retired = manifest.is_retired_lunar_preview();
         let module_on = match owner_key.as_str() {
             "calendar" => calendar_on,
             "quota" => quota_on,
             "status" => !r.status_page_disabled,
-            "pages" | "wireless" => true,
+            "pages" | "wireless" | "appearance" => true,
             _ => tasks_on,
         };
         let has_settings = !manifest.settings.is_empty();
@@ -1113,6 +1114,8 @@ impl LocalPlugins {
         let place = owner_label(owner_key).unwrap_or(owner_key);
         let (path, tip) = if material {
             ("设置 › 外观 › 材质 ›".to_owned(), "前往外观设置".to_owned())
+        } else if let Some(kind) = appearance {
+            (format!("设置 › 外观 › {} ›", kind.label()), "前往外观设置".to_owned())
         } else if owner_key == "status" {
             (
                 format!("页面管理 › {place} ›"),
@@ -1131,6 +1134,7 @@ impl LocalPlugins {
             "quota" => crate::app::PAGE_SETTINGS_TABS[crate::app::QUOTA_PAGE],
             "pages" | "status" => crate::extras::SETTINGS_TAB_PAGES,
             "wireless" => crate::extras::SETTINGS_TAB_WIRELESS,
+            "appearance" => crate::extras::SETTINGS_TAB_APPEARANCE,
             _ => crate::app::PAGE_SETTINGS_TABS[crate::app::TODO_PAGE],
         };
 
@@ -1183,6 +1187,8 @@ impl LocalPlugins {
                         settings_hint(ui, "已撤回 · 等待更新");
                     } else if owner_key == "pages" && !on {
                         settings_hint(ui, "启用后可在页面管理设置");
+                    } else if appearance.is_some() && !on {
+                        settings_hint(ui, "启用后可在外观设置中选用");
                     } else {
                         #[cfg(windows)]
                         let navigate = if has_source {

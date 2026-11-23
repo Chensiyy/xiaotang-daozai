@@ -46,6 +46,9 @@ pub(super) const CAPABILITIES: &[Capability] = &[
         runtime: "material",
         role: Role::Exclusive { owner: "appearance" },
     },
+    Capability { name: "appearance.skin", runtime: "assets", role: Role::Exclusive { owner: "appearance" } },
+    Capability { name: "appearance.icon", runtime: "assets", role: Role::Exclusive { owner: "appearance" } },
+    Capability { name: "appearance.pet", runtime: "assets", role: Role::Exclusive { owner: "appearance" } },
     Capability {
         name: "navigation.shortcuts",
         runtime: "assets",

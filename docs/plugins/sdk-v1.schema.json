@@ -481,48 +481,47 @@
       }
     },
     {
+      "required": ["entry"]
+    },
+    {
       "if": {
         "properties": {
-          "runtime": {
-            "const": "assets"
-          },
-          "capabilities": {
-            "not": {"contains": {"enum": ["navigation.shortcuts", "wireless.receivers"]}}
-          }
+          "capabilities": {"contains": {"enum": ["appearance.skin", "appearance.pet", "appearance.icon"]}}
         }
       },
       "then": {
-        "required": [
-          "assets"
-        ],
+        "required": ["settings"],
         "properties": {
-          "assets": {
-            "minItems": 1
-          },
-          "capabilities": {
-            "items": {
-              "enum": [
-                "appearance.skin",
-                "appearance.pet",
-                "appearance.icon"
-              ]
-            }
-          },
-          "permissions": {
-            "maxProperties": 0
-          }
+          "runtime": {"const": "assets"},
+          "owner": {"const": "appearance"},
+          "capabilities": {"minItems": 1, "maxItems": 1},
+          "dataVersion": {"const": 1},
+          "refreshSeconds": {"const": 60},
+          "permissions": {"maxProperties": 0},
+          "settings": {"maxItems": 0}
         },
-        "not": {
-          "required": [
-            "entry"
-          ]
-        }
-      },
-      "else": {
-        "required": [
-          "entry"
+        "not": {"anyOf": [{"required": ["assets"]}, {"required": ["actions"]}]},
+        "allOf": [
+          {
+            "if": {"properties": {"capabilities": {"const": ["appearance.skin"]}}},
+            "then": {"properties": {"entry": {"const": "theme.json"}}}
+          },
+          {
+            "if": {"properties": {"capabilities": {"const": ["appearance.icon"]}}},
+            "then": {"properties": {"entry": {"const": "icons.json"}}}
+          },
+          {
+            "if": {"properties": {"capabilities": {"const": ["appearance.pet"]}}},
+            "then": {"properties": {"entry": {"const": "expressions.json"}}}
+          }
         ]
       }
+    },
+    {
+      "if": {"properties": {"runtime": {"const": "assets"}}},
+      "then": {"properties": {"capabilities": {"contains": {
+        "enum": ["appearance.skin", "appearance.pet", "appearance.icon", "navigation.shortcuts", "wireless.receivers"]
+      }}}}
     },
     {
       "if": {

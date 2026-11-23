@@ -2148,6 +2148,8 @@ impl App {
     // ---------------------------------------------------------------
     pub fn frame(&mut self, ui: &mut egui::Ui, win: Rect, env: &Env) -> FrameOut {
         let ctx = ui.ctx().clone();
+        #[cfg(feature="sdk-js")]
+        self.pet.expressions.set_sheets(self.plugins.appearance_pet());
         #[cfg(all(windows, feature = "sdk-material"))]
         {
             self.material_appearance = if env.material_active { env.material_appearance } else { Default::default() };
@@ -2167,8 +2169,8 @@ impl App {
         self.dt = dt;
         if let Some(at_top)=env.browser_at_top {self.browser_at_top=at_top;}
         self.screen=env.screen;
-        if self.settings.skin.is_glass() {
-            let target=if self.settings.skin==model::Skin::GlassLight {glass::light_tint(env.backdrop,env.glass_blur)}else{glass::glass_tint(env.backdrop,env.glass_blur)};
+        if self.effective_skin().is_glass() {
+            let target=if self.effective_skin()==model::Skin::GlassLight {glass::light_tint(env.backdrop,env.glass_blur)}else{glass::glass_tint(env.backdrop,env.glass_blur)};
             self.glass_tint=if self.glass_tint<=0.0 {target}else{anim::approach(self.glass_tint,target,3.0,dt)};
         }
         let browser_minimal=self.settings.browser_minimal && self.browser_at_top;
@@ -2419,13 +2421,13 @@ impl App {
         let radius = if minimal_pill { BAR_H_MIN / 2.0 } else if pill { (w.min(h) * 0.5).min(lerp(thickness * 0.5, 26.0, pc)) } else { lerp(12.5, RAD * k.min(1.0), pc) };
         let flare_h = lerp(8.0, FLARE_H, pc);
         let thick = glass::thickness(PH);
-        let glass_skin = self.settings.skin.is_glass() && !self.glassy();
+        let glass_skin = self.effective_skin().is_glass() && !self.glassy();
         let layer = painter.layer_id();
         let palette = self.island_palette();
         // 换色时跳过的图形范围（岛体底色、阴影、吉祥物）。
         let mut keep_colors:Vec<(usize,usize)>=Vec::new();
         // 毛玻璃：真实模糊下保留柔和投影增加层次；无模糊时阴影再减淡一些，保持轻盈。
-        let skin_shadow = if !self.settings.skin.is_glass() {1.0} else if env.glass_blur {0.75} else {0.7};
+        let skin_shadow = if !self.effective_skin().is_glass() {1.0} else if env.glass_blur {0.75} else {0.7};
         #[cfg(all(windows, feature = "sdk-material"))]
         let skin_shadow = self.material_appearance.shadow.unwrap_or(skin_shadow);
         let shadow_k = glass::shadow_alpha(0.0, thick) / 0.12 * skin_shadow;
@@ -2438,7 +2440,7 @@ impl App {
             painter.rect_filled(r,r.width()/2.0,paint::alpha(self.island_overlay_fill(),appear));
             if glass_skin {painter.rect_stroke(r,r.width()/2.0,egui::Stroke::new(1.0_f32,paint::alpha(self.glass_rim(),appear)),egui::StrokeKind::Inside);}
         }
-        if !self.glassy() && self.settings.skin==model::Skin::Fluid {
+        if !self.glassy() && self.effective_skin()==model::Skin::Fluid {
             self.fluid_origin=body.min;
             let art=self.music_artwork.as_ref().map(|(_,texture)|texture.id());
             if art!=self.fluid_art || self.media.title!=self.fluid_title {
@@ -2688,7 +2690,7 @@ impl App {
             || self.hud_alpha > 0.003 && self.hud_alpha < 0.997
             || !self.notice_width.settled(1.0);
         let pet_visible=self.pet_a>0.01 && !self.open && !minimal_pill;
-        let ambient=!self.glassy() && self.settings.skin==model::Skin::Fluid && self.fluid.animating() || self.pomo.running && (self.open && self.page==1 || !self.open && !minimal_pill && self.notice.is_none() && bar::animations_enabled())
+        let ambient=!self.glassy() && self.effective_skin()==model::Skin::Fluid && self.fluid.animating() || self.pomo.running && (self.open && self.page==1 || !self.open && !minimal_pill && self.notice.is_none() && bar::animations_enabled())
             || self.media.playing && (self.open && self.page==0 || !self.open && !minimal_pill && self.notice.is_none() && self.media.is_music())
             || self.notice.as_ref().is_some_and(|notice|notice.meeting.is_some())
             || self.wireless_animating();
@@ -3023,14 +3025,23 @@ impl App {
         self.skin_palette()
     }
 
+    /// 岛体绘制使用的内置皮肤，插件选中时由它提供基础外观。
+    pub fn effective_skin(&self)->model::Skin {
+        #[cfg(feature="sdk-js")]
+        if let Some(skin)=self.plugins.active_skin() {return skin.base;}
+        self.settings.skin
+    }
+
     /// 基础皮肤的换色调色板，也用于独立设置窗口的预览。
     pub(crate) fn skin_palette(&self)->Option<crate::skin_paint::Palette> {
+        #[cfg(feature="sdk-js")]
+        if let Some(skin)=self.plugins.active_skin() {return Some(skin.palette);}
         match self.settings.skin {model::Skin::Cream=>Some(crate::skin_paint::CREAM),model::Skin::GlassLight=>Some(crate::skin_paint::GLASS_LIGHT),model::Skin::GlassDark=>Some(crate::skin_paint::GLASS_DARK),model::Skin::Classic|model::Skin::Fluid=>None}
     }
 
     /// 设置页预览用的岛体底色：没有真实模糊，毛玻璃按较实的玻璃表现。
     pub(crate) fn preview_fill(&self)->Color32 {
-        match self.settings.skin {
+        match self.effective_skin() {
             model::Skin::GlassDark=>{let (r,g,b)=glass::GROUND_DARK;Color32::from_rgba_unmultiplied(r,g,b,215)}
             model::Skin::GlassLight=>{let [r,g,b]=glass::LIGHT_GROUND.map(|v|(v*255.0).round() as u8);Color32::from_rgba_unmultiplied(r,g,b,225)}
             _=>self.glass_fill(),
@@ -3039,8 +3050,13 @@ impl App {
 
     /// 岛体底色：经典为纯黑；奶油为暖白；毛玻璃按当前着色量叠加深色或浅色玻璃。
     fn glass_fill(&self)->Color32 {
+        #[cfg(feature="sdk-js")]
+        if let Some(skin)=self.plugins.active_skin().filter(|skin|matches!(skin.base,model::Skin::Classic|model::Skin::Cream)) {
+            let [r,g,b]=skin.palette.paper;
+            return Color32::from_rgb(r,g,b);
+        }
         let alpha=(self.glass_tint.clamp(0.0,1.0)*255.0).round() as u8;
-        match self.settings.skin {
+        match self.effective_skin() {
             model::Skin::GlassDark=>{let (r,g,b)=glass::GROUND_DARK;Color32::from_rgba_unmultiplied(r,g,b,alpha)}
             model::Skin::GlassLight=>{let [r,g,b]=glass::LIGHT_GROUND.map(|v|(v*255.0).round() as u8);Color32::from_rgba_unmultiplied(r,g,b,alpha)}
             model::Skin::Cream=>{let [r,g,b]=crate::skin_paint::CREAM.paper;Color32::from_rgb(r,g,b)}
@@ -3051,13 +3067,13 @@ impl App {
 
     /// 毛玻璃边缘高光：浅色玻璃更亮，像苹果的玻璃边缘。
     fn glass_rim(&self)->Color32 {
-        let strength=if self.settings.skin==model::Skin::GlassLight {0.55} else {glass::rim_alpha()*0.7};
+        let strength=if self.effective_skin()==model::Skin::GlassLight {0.55} else {glass::rim_alpha()*0.7};
         Color32::from_white_alpha((255.0*strength).round() as u8)
     }
 
     /// 绘制岛体（或通知胶囊）的本体：经典皮肤为纯黑；毛玻璃为着色底 + 顶部柔光 + 边缘高光。
     fn paint_body(&self,painter:&egui::Painter,rect:Rect,flare:f32,flare_h:f32,radius:f32,feather:f32){
-        let skin=self.settings.skin;
+        let skin=self.effective_skin();
         if skin==model::Skin::Fluid {
             let pill=self.settings.island_shape==model::IslandShape::Pill;
             let (map,frame)=shape::EdgeMap::of(rect,if pill {model::Dock::Top}else{self.dock()});

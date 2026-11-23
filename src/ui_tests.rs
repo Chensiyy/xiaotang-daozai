@@ -19,6 +19,35 @@ use std::sync::Mutex;
 
 pub(crate) static ENV_LOCK: Mutex<()> = Mutex::new(());
 
+#[cfg(feature = "sdk-js")]
+#[test]
+fn appearance_skin_plugin_preserves_the_builtin_skin_shape_and_dock() {
+    use crate::{model::{Dock, IslandShape, Skin}, sdk_spike::local::appearance_assets::Kind};
+    use egui::Color32;
+
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|err| err.into_inner());
+    let mut h = H::new();
+    h.app.settings.skin = Skin::Cream;
+    h.app.settings.island_shape = IslandShape::Pill;
+    h.app.settings.dock = Dock::Bottom;
+    let path = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/spike/examples/celadon-skin/plugin.json"));
+    let id = "example.celadon-skin";
+    h.app.plugins.install(path).unwrap();
+    h.app.plugins.enable(id, true).unwrap();
+    h.app.plugins.select_appearance(Kind::Skin, Some(id)).unwrap();
+    assert_eq!(h.app.preview_fill(), Color32::from_rgb(238, 245, 236));
+    h.app.settings.island_shape = IslandShape::Notch;
+    h.frame(Vec::new());
+    assert_eq!(h.app.skin_palette().unwrap().ink, [35, 60, 45]);
+
+    h.app.plugins.enable(id, false).unwrap();
+    h.frame(Vec::new());
+    assert_eq!(h.app.settings.skin, Skin::Cream);
+    assert_eq!(h.app.preview_fill(), Color32::from_rgb(255, 243, 228));
+    assert_eq!(h.app.settings.island_shape, IslandShape::Notch);
+    assert_eq!(h.app.settings.dock, Dock::Bottom);
+}
+
 #[cfg(all(windows, feature = "sdk-material"))]
 #[test]
 fn material_foreground_and_shadow_return_to_the_base_skin_when_disabled() {

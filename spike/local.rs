@@ -1,4 +1,6 @@
 //! 本地开发包的安装、状态及卡片执行。每次操作原子保存一个插件的快照。
+#[path = "appearance_assets.rs"]
+pub(crate) mod appearance_assets;
 #[path = "capabilities.rs"]
 mod capabilities;
 #[path = "cover.rs"]
@@ -149,6 +151,8 @@ struct Package {
     cover: Option<CoverPng>,
     #[serde(skip)]
     page_shortcut_colors: OnceLock<BTreeMap<String, [u8; 3]>>,
+    #[serde(skip)]
+    appearance: OnceLock<appearance_assets::Pack>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 struct Record {
@@ -195,6 +199,7 @@ impl Record {
                 && !package.source.trim().is_empty()
                 && package.source.len() as u64 <= manifest.source_limit()
                 && package.validate_page_shortcut_colors().is_ok()
+                && package.validate_appearance().is_ok()
                 && manifest.settings.iter().all(|field| {
                     self.values
                         .get(&field.key)
@@ -338,6 +343,10 @@ impl Manifest {
         self.runtime == "assets" && self.capabilities.as_slice() == ["navigation.shortcuts"]
     }
 
+    fn appearance_kind(&self) -> Option<appearance_assets::Kind> {
+        appearance_assets::Kind::of(self)
+    }
+
     fn source_kind(&self) -> Option<SourceKind> {
         if !cfg!(windows) || self.runtime != "js" || self.permissions.len() != 1 {
             return None;
@@ -376,6 +385,8 @@ impl Manifest {
             MATERIAL_SOURCE_LIMIT
         } else if self.is_page_shortcuts() {
             PAGE_SHORTCUT_SOURCE_LIMIT
+        } else if let Some(kind) = self.appearance_kind() {
+            kind.limit()
         } else {
             SCRIPT_SOURCE_LIMIT
         }
@@ -424,6 +435,16 @@ impl Manifest {
             }
         } else if m.id == WIRELESS_PLUGIN_ID || m.capabilities.iter().any(|c| c == "wireless.receivers") {
             return Err(fail("此插件 ID 专用于无线设备兼容包"));
+        } else if let Some(kind) = m.appearance_kind() {
+            if m.capabilities.as_slice() != [kind.capability()]
+                || m.entry != kind.entry()
+                || m.refresh_seconds != default_refresh()
+                || !m.permissions.is_empty()
+                || !m.settings.is_empty()
+                || m.material.is_some()
+            {
+                return Err(fail("外观资源包只接受一项资源能力和无权限的指定入口"));
+            }
         } else if m.runtime == "assets" {
             if !m.is_page_shortcuts()
                 || m.entry != PAGE_SHORTCUT_ENTRY
@@ -505,7 +526,8 @@ impl Manifest {
     }
 }
 
-fn validate_material_files(dir: &Path, manifest: &Path, shader: &Path) -> Result<()> {
+fn validate_code_free_files(dir: &Path, manifest: &Path, entry: &Path, material: bool) -> Result<()> {
+    let (package_type, entry_type) = if material { ("材质包", "WGSL") } else { ("外观资源包", "JSON") };
     let mut folders = vec![dir.to_path_buf()];
     while let Some(folder) = folders.pop() {
         for item in fs::read_dir(folder)? {
@@ -513,7 +535,7 @@ fn validate_material_files(dir: &Path, manifest: &Path, shader: &Path) -> Result
             let path = item.path();
             let kind = item.file_type()?;
             if kind.is_symlink() || path.canonicalize()? != path {
-                return Err(fail("材质包内不能包含链接或重定向路径"));
+                return Err(fail(&format!("{package_type}内不能包含链接或重定向路径")));
             }
             if kind.is_dir() {
                 folders.push(path);
@@ -535,14 +557,14 @@ fn validate_material_files(dir: &Path, manifest: &Path, shader: &Path) -> Result
                         )
                     });
             if !kind.is_file()
-                || (path != shader
+                || (path != entry
                     && path != manifest
                     && path != dir.join(COVER_FILE)
                     && !description)
             {
-                return Err(fail(
-                    "材质包只能包含 plugin.json、一个 WGSL 入口、cover.png 和说明文件",
-                ));
+                return Err(fail(&format!(
+                    "{package_type}只能包含 plugin.json、一个 {entry_type} 入口、cover.png 和说明文件",
+                )));
             }
         }
     }
@@ -571,11 +593,15 @@ impl Package {
         if !resolved.starts_with(&base) || !resolved.is_file() {
             return Err(fail("入口越出插件目录"));
         }
-        if manifest.is_material() {
+        if manifest.is_material() || manifest.appearance_kind().is_some() {
             if path.file_name().and_then(|name| name.to_str()) != Some("plugin.json") {
-                return Err(fail("材质清单必须命名为 plugin.json"));
+                return Err(fail(if manifest.is_material() {
+                    "材质清单必须命名为 plugin.json"
+                } else {
+                    "外观资源包清单必须命名为 plugin.json"
+                }));
             }
-            validate_material_files(&base, &base.join("plugin.json"), &resolved)?;
+            validate_code_free_files(&base, &base.join("plugin.json"), &resolved, manifest.is_material())?;
         }
         let source = bounded(&resolved, manifest.source_limit())?;
         Self::from_entry(manifest, source, cover)
@@ -590,13 +616,22 @@ impl Package {
             manifest,
             cover: Some(cover),
             page_shortcut_colors: OnceLock::new(),
+            appearance: OnceLock::new(),
         };
         package.validate_page_shortcut_colors()?;
+        package.validate_appearance()?;
         #[cfg(windows)]
         if package.manifest.is_wireless() {
             package.wireless_table()?;
         }
         Ok(package)
+    }
+
+    fn validate_appearance(&self) -> Result<()> {
+        if let Some(kind) = self.manifest.appearance_kind().filter(|_| self.appearance.get().is_none()) {
+            let _ = self.appearance.set(appearance_assets::Pack::decode(kind, &self.source)?);
+        }
+        Ok(())
     }
 
     fn validate_page_shortcut_colors(&self) -> Result<()> {
@@ -770,6 +805,7 @@ pub struct LocalPlugins {
     invalid: std::collections::BTreeSet<String>,
     dir: PathBuf,
     records: BTreeMap<String, Record>,
+    appearance: appearance_assets::Selection,
     active_page_shortcuts: Option<String>,
     cards: BTreeMap<String, String>,
     markers: BTreeMap<String, String>,
@@ -807,6 +843,7 @@ impl LocalPlugins {
             invalid: Default::default(),
             #[cfg(feature = "sdk-material")]
             selected_material: Self::read_material_id(&dir),
+            appearance: appearance_assets::Selection::read(&dir),
             dir,
             records: BTreeMap::new(),
             active_page_shortcuts: None,
@@ -855,6 +892,7 @@ impl LocalPlugins {
             s.notice = e.to_string()
         }
         s.refresh_page_shortcuts();
+        s.retain_available_appearance();
         #[cfg(windows)]
         {
             s.restore_market_catalog();
@@ -890,6 +928,9 @@ impl LocalPlugins {
             && self.active_page_shortcuts.as_deref().is_some_and(|active| active != id)
         {
             return Err(fail("只能启用一个快捷切换插件，请先停用当前使用的插件"));
+        }
+        if !r.enabled || r.package.is_none() {
+            self.forget_appearance(id)?;
         }
         crate::model::atomic_write(&self.path(id), &serde_json::to_vec(&r)?)?;
         self.records.insert(id.into(), r);
@@ -1178,6 +1219,7 @@ impl LocalPlugins {
             r.status_page_disabled = false;
             self.put(id, r)?
         } else {
+            self.forget_appearance(id)?;
             fs::remove_file(self.path(id))?;
             self.records.remove(id);
             if r.is_page_shortcuts() {
