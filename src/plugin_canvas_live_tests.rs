@@ -74,6 +74,22 @@ fn frame(
 }
 
 #[test]
+fn plugin_canvas_text_inside_clickable_group_keeps_rendering() {
+    let canvas = Arc::new(Canvas::parse(json!({
+        "height": 85,
+        "nodes": [{
+            "group": [{"text":"打开详情","at":[8,20],"size":12}],
+            "hit":{"action":"show"}
+        }]
+    })).unwrap());
+    let ctx = egui::Context::default();
+    theme::load_fonts(&ctx);
+    let (out, _) = frame(&ctx, &canvas, 0.0, 1, Vec::new(), true);
+    assert!(out.shapes.iter().any(|shape| matches!(&shape.shape,
+        egui::Shape::Text(text) if text.galley.text() == "打开详情")));
+}
+
+#[test]
 fn plugin_canvas_live_demo_shows_rolling_digits_and_scrolls_inside_the_group() {
     let runtime = rquickjs::Runtime::new().unwrap();
     let js = rquickjs::Context::full(&runtime).unwrap();

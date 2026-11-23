@@ -444,10 +444,11 @@ pub(super) fn bounds(c: &Card<'_>, node: &Node, transform: Transform) -> Rect {
             lines,
             ..
         } => {
+            let pixels_per_point = c.ui.ctx().pixels_per_point();
             let galley = c.ui.fonts(|fonts| {
                 fonts.layout_job(super::text_job(
                     text,
-                    (size.initial() * transform.scale).min(256.0 / c.ui.ctx().pixels_per_point()),
+                    (size.initial() * transform.scale).min(256.0 / pixels_per_point),
                     *weight,
                     align,
                     max_width.as_ref().map(|w| w.initial() * transform.scale),
