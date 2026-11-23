@@ -2,10 +2,16 @@
 
 #[path = "plugin_canvas_geometry.rs"]
 mod geometry;
+#[path = "plugin_canvas_hit.rs"]
+mod hit;
+#[path = "plugin_canvas_motion.rs"]
+mod motion;
+
+pub(crate) use motion::{draw_live, LiveOptions, LiveResult};
 
 use crate::{
     paint::Card,
-    plugin_canvas::{Align, Canvas, Color, Fit, Glow, Kind, Node, Paint, Shadow, Token},
+    plugin_canvas::{Align, Canvas, Color, Fit, Glow, Kind, Node, Paint, Shadow, Style, Token},
     skin_paint::{self, Palette},
     theme::{self, W},
 };
@@ -15,7 +21,7 @@ use eframe::{
 };
 use geometry::{arc, path, rectangle, Clip, Outline, Pigment, Transform};
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -109,6 +115,17 @@ struct Cache {
     scene: Option<Arc<Scene>>,
     failures: u8,
     previous: Option<Arc<Scene>>,
+    geometry: HashMap<egui::Id, CachedMesh>,
+}
+
+#[derive(Clone)]
+struct CachedMesh {
+    kind: Kind,
+    style: Style,
+    transform: Transform,
+    clip: Clip,
+    opacity: f32,
+    mesh: Arc<Mesh>,
 }
 
 #[derive(Default)]
@@ -135,8 +152,32 @@ enum Item {
     },
 }
 
-/// 返回是否超出绘制预算。错误或超时由插件宿主登记到开发调试页面。
+/// 非交互画布用于常驻条，点击仍由常驻位处理。
 pub(crate) fn draw(
+    c: &Card,
+    id: &str,
+    canvas: &Arc<Canvas>,
+    area: Rect,
+    theme: CanvasTheme,
+    image: impl FnMut(&str) -> Option<(egui::TextureId, Vec2)>,
+) -> bool {
+    let options = LiveOptions {
+        now: chrono::Utc::now(),
+        revision: 0,
+        allow_action: false,
+        interactive: false,
+    };
+    let result = draw_live(c, id, canvas, area, theme, options, image);
+    if let Some(delay) = result.repaint_after {
+        let dt = c.ui.input(|input| input.predicted_dt).max(0.0);
+        c.ui.ctx()
+            .request_repaint_after(delay + Duration::from_secs_f32(dt));
+    }
+    result.timed_out
+}
+
+/// 返回是否超出绘制预算。错误或超时由插件宿主登记到开发调试页面。
+fn draw_static(
     c: &Card,
     id: &str,
     canvas: &Arc<Canvas>,
@@ -168,16 +209,21 @@ pub(crate) fn draw(
             old.canvas = Arc::clone(canvas);
             old
         }
-        old => Cache {
-            id,
-            view,
-            canvas: Arc::clone(canvas),
-            scene: None,
-            failures: 0,
-            previous: old
-                .filter(|old| old.view == view)
-                .and_then(|old| old.previous),
-        },
+        old => {
+            let (previous, geometry) = old.filter(|old| old.view == view).map_or_else(
+                || (None, HashMap::new()),
+                |old| (old.previous, old.geometry),
+            );
+            Cache {
+                id,
+                view,
+                canvas: Arc::clone(canvas),
+                scene: None,
+                failures: 0,
+                previous,
+                geometry,
+            }
+        }
     };
     let start = Instant::now();
     let offset = (area.min.to_vec2() * pixels).round() / pixels;
@@ -185,7 +231,10 @@ pub(crate) fn draw(
     let mut timed_out = cache.failures >= 2;
     if !timed_out {
         if cache.scene.is_none() {
-            cache.scene = Builder::new(view, start).build(canvas).map(Arc::new);
+            let previous = std::mem::take(&mut cache.geometry);
+            let (scene, geometry) = Builder::new(view, start, previous).build(canvas);
+            cache.scene = scene.map(Arc::new);
+            cache.geometry = geometry;
         }
         if let Some(scene) = &cache.scene {
             timed_out = !scene.draw(c, offset, clip, Some(start), &mut image);
@@ -309,24 +358,39 @@ struct Builder {
     start: Instant,
     tessellator: Tessellator,
     scene: Scene,
+    previous: HashMap<egui::Id, CachedMesh>,
+    geometry: HashMap<egui::Id, CachedMesh>,
 }
 
 impl Builder {
-    fn new(view: View, start: Instant) -> Self {
+    fn new(view: View, start: Instant, previous: HashMap<egui::Id, CachedMesh>) -> Self {
         let tessellator = Tessellator::new(view.pixels, Default::default(), [1; 2], Vec::new());
         Self {
             view,
             start,
             tessellator,
             scene: Scene::default(),
+            previous,
+            geometry: HashMap::new(),
         }
     }
 
-    fn build(mut self, canvas: &Canvas) -> Option<Scene> {
+    fn build(mut self, canvas: &Canvas) -> (Option<Scene>, HashMap<egui::Id, CachedMesh>) {
         let transform = Transform::new(self.view.scale);
         let clip = Clip::new(Rect::from_min_size(Pos2::ZERO, self.view.size));
-        self.nodes(&canvas.nodes, transform, &clip, 1.0)?;
-        Some(self.scene)
+        let complete = self
+            .nodes(
+                &canvas.nodes,
+                transform,
+                &clip,
+                1.0,
+                egui::Id::new("canvas-root-geometry"),
+            )
+            .is_some();
+        if !complete {
+            self.geometry.extend(self.previous);
+        }
+        (complete.then_some(self.scene), self.geometry)
     }
 
     fn nodes(
@@ -335,11 +399,12 @@ impl Builder {
         transform: Transform,
         clip: &Clip,
         opacity: f32,
+        parent: egui::Id,
     ) -> Option<()> {
         if !clip.rect.is_positive() {
             return Some(());
         }
-        for node in nodes {
+        for (index, node) in nodes.iter().enumerate() {
             if self.start.elapsed() >= FRAME_BUDGET {
                 return None;
             }
@@ -348,13 +413,32 @@ impl Builder {
                 transform,
                 clip,
                 opacity * node.style.opacity.initial().clamp(0.0, 1.0),
+                parent.with(index),
             )?;
         }
         Some(())
     }
 
-    fn node(&mut self, node: &Node, transform: Transform, clip: &Clip, opacity: f32) -> Option<()> {
+    fn node(
+        &mut self,
+        node: &Node,
+        transform: Transform,
+        clip: &Clip,
+        opacity: f32,
+        key: egui::Id,
+    ) -> Option<()> {
         if opacity == 0.0 {
+            return Some(());
+        }
+        if let Some(previous) = self.previous.remove(&key).filter(|previous| {
+            previous.kind == node.kind
+                && previous.style == node.style
+                && previous.transform == transform
+                && previous.clip == *clip
+                && previous.opacity == opacity
+        }) {
+            self.mesh(clip.rect, Arc::clone(&previous.mesh));
+            self.geometry.insert(key, previous);
             return Some(());
         }
         let style = &node.style;
@@ -384,7 +468,7 @@ impl Builder {
                     return None;
                 }
                 let group_clip = group_clip.as_ref().map(|r| clip.child(r, t));
-                return self.nodes(group, t, group_clip.as_ref().unwrap_or(clip), opacity);
+                return self.nodes(group, t, group_clip.as_ref().unwrap_or(clip), opacity, key);
             }
             Kind::Text {
                 text,
@@ -398,27 +482,8 @@ impl Builder {
             } => {
                 let size = (size.initial().clamp(6.0, 96.0) * transform.scale)
                     .min(256.0 / self.view.pixels);
-                let weight = match weight {
-                    0..=499 => W::Regular,
-                    500..=649 => W::Semibold,
-                    _ => W::Bold,
-                };
-                let max_width = max_width
-                    .as_ref()
-                    .map_or(f32::INFINITY, |v| v.initial() * transform.scale);
-                let mut job = egui::text::LayoutJob::simple(
-                    crate::rtl_text::display(text).into_owned(),
-                    theme::font(size, weight),
-                    Color32::PLACEHOLDER,
-                    max_width,
-                );
-                job.wrap.max_rows = usize::from(*lines);
-                job.wrap.break_anywhere = *lines == 1;
-                job.halign = match align {
-                    Align::Left => egui::Align::LEFT,
-                    Align::Center => egui::Align::Center,
-                    Align::Right => egui::Align::RIGHT,
-                };
+                let max_width = max_width.as_ref().map(|v| v.initial() * transform.scale);
+                let job = text_job(text, size, *weight, align, max_width, *lines);
                 let pigment = fill.unwrap_or_else(|| {
                     Pigment::Solid(theme.token(&Token::Text).gamma_multiply(opacity))
                 });
@@ -578,19 +643,61 @@ impl Builder {
             }
         }
         clip.mesh(&mut mesh, |point| point, Some(self.start))?;
-        if !mesh.is_empty() {
-            match self.scene.items.last_mut() {
-                Some((last_clip, Item::Mesh(batch))) if *last_clip == clip.rect => {
-                    Arc::make_mut(batch).append(mesh)
-                }
-                _ => self
-                    .scene
-                    .items
-                    .push((clip.rect, Item::Mesh(Arc::new(mesh)))),
-            }
-        }
+        let mesh = Arc::new(mesh);
+        self.mesh(clip.rect, Arc::clone(&mesh));
+        self.geometry.insert(
+            key,
+            CachedMesh {
+                kind: node.kind.clone(),
+                style: node.style.clone(),
+                transform,
+                clip: clip.clone(),
+                opacity,
+                mesh,
+            },
+        );
         Some(())
     }
+
+    fn mesh(&mut self, clip: Rect, mesh: Arc<Mesh>) {
+        if !mesh.is_empty() {
+            match self.scene.items.last_mut() {
+                Some((last_clip, Item::Mesh(batch))) if *last_clip == clip => {
+                    Arc::make_mut(batch).append_ref(&mesh)
+                }
+                _ => self.scene.items.push((clip, Item::Mesh(mesh))),
+            }
+        }
+    }
+}
+
+fn text_job(
+    text: &str,
+    size: f32,
+    weight: u16,
+    align: &Align,
+    max_width: Option<f32>,
+    lines: u8,
+) -> egui::text::LayoutJob {
+    let weight = match weight {
+        0..=499 => W::Regular,
+        500..=649 => W::Semibold,
+        _ => W::Bold,
+    };
+    let mut job = egui::text::LayoutJob::simple(
+        crate::rtl_text::display(text).into_owned(),
+        theme::font(size.max(0.1), weight),
+        Color32::PLACEHOLDER,
+        max_width.unwrap_or(f32::INFINITY),
+    );
+    job.wrap.max_rows = usize::from(lines);
+    job.wrap.break_anywhere = lines == 1;
+    job.halign = match align {
+        Align::Left => egui::Align::LEFT,
+        Align::Center => egui::Align::Center,
+        Align::Right => egui::Align::RIGHT,
+    };
+    job
 }
 
 fn text_shape(

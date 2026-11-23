@@ -1,8 +1,11 @@
 //! 画布中保存的实时值、动画与交互声明。
 
 use super::{Color, Num};
+use crate::plugin_status::CountdownFormat;
 use chrono_tz::Tz;
 use serde::Deserialize;
+
+mod evaluate;
 
 const MAX_TIMESTAMP: i64 = 253_402_300_799;
 
@@ -62,14 +65,6 @@ pub(crate) struct Counter {
 pub(crate) struct Countdown {
     pub target_at: i64,
     pub format: CountdownFormat,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
-pub(crate) enum CountdownFormat {
-    #[serde(rename = "d天 HH:mm")]
-    DayMinute,
-    #[serde(rename = "HH:mm:ss")]
-    Second,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]

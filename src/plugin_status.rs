@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 #[path = "plugin_status_realtime.rs"]
 mod realtime;
-pub(crate) use realtime::{StatusClock, StatusCountdown, StatusCounter};
+pub(crate) use realtime::{CountdownFormat, StatusClock, StatusCountdown, StatusCounter};
 
 pub(super) const MAX_ITEMS: usize = 8;
 const MAX_REALTIME: usize = 4;

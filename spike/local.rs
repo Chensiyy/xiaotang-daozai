@@ -925,6 +925,8 @@ impl Package {
             let canvas = Canvas::parse(canvas).map_err(|error| invalid(&error))?;
             canvas.validate_images(|name| self.canvas_images.contains_key(name))
                 .map_err(|error| invalid(&error))?;
+            self.manifest.check_canvas_actions(&canvas.nodes)
+                .map_err(|error| invalid(&error.to_string()))?;
             if output.status.is_none() {
                 output.status = Some(serde_json::from_value(json!({
                     "state": "idle", "label": self.manifest.name

@@ -829,6 +829,8 @@ pub struct App {
     page_from: usize,
     #[cfg(feature="sdk-js")]
     status_pages: Vec<(String, String)>,
+    #[cfg(feature="sdk-js")]
+    plugin_canvas_frame: Option<(usize, crate::plugin_status_ui::InteractionResponse)>,
     page_from_offset: f32,
     page_from_elapsed: f32,
     page_scroll_area: Option<Rect>,
@@ -1063,6 +1065,8 @@ impl App {
             page_from: initial_page,
             #[cfg(feature="sdk-js")]
             status_pages: Vec::new(),
+            #[cfg(feature="sdk-js")]
+            plugin_canvas_frame: None,
             page_from_offset: 0.0,
             page_from_elapsed: PAGE_TURN_DURATION,
             page_scroll_area: None,
@@ -2401,7 +2405,9 @@ impl App {
                 let music_volume=self.page==0 && (Rect::from_min_max(Pos2::new(354.0,106.0),Pos2::new(380.0,130.0)).contains(cursor)
                     || self.music_volume_open && self.music_volume_bounds().contains(cursor));
                 #[cfg(feature="sdk-js")]
-                let status_scroll=self.page.checked_sub(PAGE_NAMES.len())
+                let status_scroll=self.plugin_canvas_frame.as_ref().is_some_and(|(page, frame)| {
+                    *page==self.page && frame.canvas_scroll.is_some_and(|area|area.contains(env.cursor.unwrap()))
+                }) || self.page.checked_sub(PAGE_NAMES.len())
                     .and_then(|index|self.status_pages.get(index))
                     .and_then(|(id,_)|{
                         let (_,status,health)=self.plugins.status_page(id)?;
@@ -2642,7 +2648,7 @@ impl App {
         let previous_scroll=self.content_scroll.take();
         let mut page_transition=false;
         #[cfg(feature="sdk-js")]
-        {self.plugin_form_focused=false;}
+        {self.plugin_form_focused=false;self.plugin_canvas_frame=None;}
         if plugin_notice_detail {
             #[cfg(windows)]
             if self.open && reveal > 0.6 {
@@ -2773,9 +2779,17 @@ impl App {
             || self.media.playing && (self.open && self.page==0 || !self.open && !minimal_pill && self.notice.is_none() && self.media.is_music())
             || self.notice.as_ref().is_some_and(|notice|notice.meeting.is_some())
             || self.wireless_animating();
-        let animating=transitioning || ambient || pet_visible && self.pet.state!=PetState::Sleeping;
+        #[cfg(feature="sdk-js")]
+        let (canvas_animating, canvas_scroll, canvas_repaint) = self.plugin_canvas_frame.as_ref().map_or(
+            (false,None,None),
+            |(_, frame)| (frame.canvas_animating,frame.canvas_scroll,frame.canvas_repaint),
+        );
+        #[cfg(not(feature="sdk-js"))]
+        let (canvas_animating, canvas_scroll, canvas_repaint) = (false,None,None);
+        let animating=transitioning || ambient || canvas_animating || pet_visible && self.pet.state!=PetState::Sleeping;
         // 交互形变保持 60 帧，媒体 30 帧；小表情 20 帧，睡眠 10 帧，静态界面每秒核对提醒。
-        let repaint_after=std::time::Duration::from_secs_f64(if transitioning{1.0/60.0}else if ambient{1.0/30.0}else if pet_visible{if self.pet.state==PetState::Sleeping{0.1}else{0.05}}else{1.0});
+        let repaint_after=std::time::Duration::from_secs_f64(if transitioning{1.0/60.0}else if ambient{1.0/30.0}else if pet_visible{if self.pet.state==PetState::Sleeping{0.1}else{0.05}}else{1.0})
+            .min(canvas_repaint.unwrap_or(std::time::Duration::MAX));
         cmds.append(&mut self.pending);
         let next_hit=if side {self.side_hit_rect(win,self.progress(),self.page_height.pos).translate(offset)} else {orient(self.hit_rect(cx,top,self.progress()))};
         #[cfg(feature="sdk-js")]
@@ -2814,7 +2828,7 @@ impl App {
             material_layer,
             resident_clip,
             hit: rel(next_hit),
-            page_scroll_area:self.page_scroll_area.map(rel),
+            page_scroll_area:self.page_scroll_area.or(canvas_scroll).map(rel),
             click_through: minimal_strip && !self.open && self.position_drag.is_none(),
             notice_hit:notice_shape.into_iter().chain(notice_details).chain(messenger_rect).chain(self.shelf_menu_rect).reduce(|a,b|a.union(b)).map(rel),
             file_drop_zone:self.settings.visible_pages[3].then(||rel(if side {self.island_rect(win,PW,self.expanded_height()).translate(offset)} else {orient(Rect::from_min_size(Pos2::new(cx-PW/2.0,top),Vec2::new(PW,96.0)))})),
@@ -2823,7 +2837,7 @@ impl App {
             animating,
             page_transition,
             water_view_transition,
-            interactive_transition,
+            interactive_transition:interactive_transition || canvas_animating,
             repaint_after,
             cmds,
         }
@@ -4022,7 +4036,9 @@ impl App {
             };
             let privacy_blocked=!self.open
                 || self.status_values_blocked(env);
-            let interaction=self.plugins.draw_status_controls(c,id,backdrop,privacy_blocked);
+            let visible=self.open && !env.fullscreen_hidden && !env.screen_locked;
+            let page_card=if visible {c.clone()} else {c.ghost()};
+            let interaction=self.plugins.draw_status_controls(&page_card,id,backdrop,privacy_blocked);
             #[cfg(windows)]
             if let Some((label,url,time))=self.plugins.source_attribution(id) {
                 let top=self.plugins.status_height(id);
@@ -4031,6 +4047,7 @@ impl App {
             if c.live {
                 self.plugin_form_focused=interaction.focused;
                 if interaction.gained_focus {cmds.push(Cmd::Focus);}
+                self.plugin_canvas_frame=Some((page,interaction));
             }
             return;
         }

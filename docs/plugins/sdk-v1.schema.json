@@ -324,7 +324,72 @@
       "properties": {
         "height": {"type": "number", "minimum": 40, "maximum": 360},
         "nodes": {"type": "array", "maxItems": 1500, "items": {"$ref": "#/$defs/canvasNode"}},
-        "binds": {"type": "object", "additionalProperties": {"type": "object"}}
+        "binds": {"type": "object", "additionalProperties": {"$ref": "#/$defs/canvasBinding"}}
+      }
+    },
+    "canvasTimestamp": {"type": "integer", "minimum": 0, "maximum": 253402300799},
+    "canvasBinding": {
+      "type": "object",
+      "oneOf": [
+        {"required": ["counter"], "maxProperties": 1},
+        {"required": ["countdown"], "maxProperties": 1},
+        {"required": ["progress"], "maxProperties": 1},
+        {"required": ["clock_angle"], "maxProperties": 1},
+        {"required": ["now"], "propertyNames": {"enum": ["now", "zone"]}},
+        {"required": ["daylight"], "maxProperties": 1}
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "counter": {
+          "type": "object",
+          "required": ["start_value", "per_second", "start_at", "decimals"],
+          "additionalProperties": false,
+          "properties": {
+            "start_value": {"type": "number"},
+            "per_second": {"type": "number"},
+            "start_at": {"$ref": "#/$defs/canvasTimestamp"},
+            "until": {"$ref": "#/$defs/canvasTimestamp"},
+            "decimals": {"type": "integer", "minimum": 0, "maximum": 4}
+          }
+        },
+        "countdown": {
+          "type": "object",
+          "required": ["target_at", "format"],
+          "additionalProperties": false,
+          "properties": {
+            "target_at": {"$ref": "#/$defs/canvasTimestamp"},
+            "format": {"enum": ["HH:mm:ss", "d天 HH:mm"]}
+          }
+        },
+        "progress": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"$ref": "#/$defs/canvasTimestamp"}},
+        "clock_angle": {
+          "type": "object",
+          "required": ["zone", "hand"],
+          "additionalProperties": false,
+          "properties": {
+            "zone": {"type": "string", "minLength": 1},
+            "hand": {"enum": ["hour", "minute"]}
+          }
+        },
+        "now": {"enum": ["HH:mm", "HH:mm:ss"]},
+        "zone": {"type": "string", "minLength": 1},
+        "daylight": {
+          "type": "object",
+          "required": ["zone", "hours"],
+          "additionalProperties": false,
+          "properties": {
+            "zone": {"type": "string", "minLength": 1},
+            "hours": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "prefixItems": [
+                {"type": "integer", "minimum": 0, "maximum": 23},
+                {"type": "integer", "minimum": 0, "maximum": 24}
+              ]
+            }
+          }
+        }
       }
     },
     "canvasNumber": {
@@ -477,13 +542,55 @@
         "glow": {"oneOf": [{"const": true}, {"$ref": "#/$defs/canvasColor"}]},
         "id": {"type": "string", "minLength": 1},
         "roll": {"type": "boolean"},
-        "animate": {"type": "object"},
-        "loop": {"type": "object"},
+        "animate": {
+          "type": "object", "required": ["ms"], "additionalProperties": false,
+          "properties": {
+            "ms": {"type": "integer", "minimum": 120, "maximum": 1200},
+            "ease": {"enum": ["linear", "spring"], "default": "linear"}
+          }
+        },
+        "loop": {
+          "type": "object", "required": ["kind", "period_ms"], "additionalProperties": false,
+          "properties": {
+            "kind": {"enum": ["pulse", "flow", "bob", "spin"]},
+            "period_ms": {"type": "integer", "minimum": 800, "maximum": 4294967295}
+          }
+        },
         "burst": {"const": "confetti"},
-        "hit": {"type": "object"},
-        "hover": {"type": "object"},
-        "scroll": {"type": "object"},
-        "tips": {"type": "array", "items": {"type": "object"}}
+        "hit": {
+          "type": "object", "minProperties": 1, "maxProperties": 1, "additionalProperties": false,
+          "properties": {
+            "action": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,39}$"},
+            "open": {"type": "string", "minLength": 1, "maxLength": 2048, "pattern": "^[Hh][Tt][Tt][Pp][Ss]://"},
+            "copy": {"type": "string", "maxLength": 2000}
+          }
+        },
+        "hover": {
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "opacity": {"$ref": "#/$defs/canvasNumber", "minimum": 0, "maximum": 1},
+            "lift": {"$ref": "#/$defs/canvasNumber"},
+            "fill": {"$ref": "#/$defs/canvasColor"}
+          }
+        },
+        "scroll": {
+          "type": "object", "required": ["axis", "content"], "additionalProperties": false,
+          "properties": {
+            "axis": {"const": "y"},
+            "content": {"type": "number", "exclusiveMinimum": 0}
+          }
+        },
+        "tips": {
+          "type": "array",
+          "items": {
+            "type": "object", "required": ["x", "label", "value"], "additionalProperties": false,
+            "properties": {
+              "x": {"type": "number", "minimum": -2000, "maximum": 2000},
+              "label": {"type": "string"},
+              "value": {"type": "string"}
+            }
+          }
+        }
       }
     },
     "setting": {

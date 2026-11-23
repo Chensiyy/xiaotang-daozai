@@ -11,7 +11,7 @@ use eframe::{
 };
 use std::{f32::consts::PI, time::Instant};
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub(super) struct Transform {
     origin: Pos2,
     pub angle: f32,
@@ -24,6 +24,13 @@ impl Transform {
             origin: Pos2::ZERO,
             angle: 0.0,
             scale,
+        }
+    }
+
+    pub fn at(scale: f32, origin: Pos2) -> Self {
+        Self {
+            origin,
+            ..Self::new(scale)
         }
     }
 
@@ -47,6 +54,11 @@ impl Transform {
         self.xy(x.initial(), y.initial())
     }
 
+    pub fn local(self, point: Pos2) -> Pos2 {
+        let rotation = Rot2::from_angle(-self.angle);
+        (rotation * (point - self.origin) / self.scale).to_pos2()
+    }
+
     pub fn bounds(self, bounds: &Bounds) -> Rect {
         (rect(bounds).rotate_bb(Rot2::from_angle(self.angle)) * self.scale)
             .translate(self.origin.to_vec2())
@@ -58,7 +70,7 @@ pub(super) fn rect(bounds: &Bounds) -> Rect {
     Rect::from_min_size(pos2(x, y), vec2(width, height))
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub(super) struct Clip {
     pub rect: Rect,
     planes: Vec<(Pos2, Vec2)>,
@@ -100,6 +112,14 @@ impl Clip {
 
     pub fn has_planes(&self) -> bool {
         !self.planes.is_empty()
+    }
+
+    pub fn contains(&self, point: Pos2) -> bool {
+        self.rect.contains(point)
+            && self
+                .planes
+                .iter()
+                .all(|&(at, inward)| (point - at).dot(inward) >= 0.0)
     }
 
     /// 保留裁剪后顶点的纹理坐标、颜色和抗锯齿透明度。
