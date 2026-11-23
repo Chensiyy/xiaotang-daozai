@@ -59,6 +59,22 @@ impl Fixture {
     }
 }
 
+fn click(fixture: &Fixture, mouse: egui::Pos2) -> egui::FullOutput {
+    let event = |pressed| egui::Event::PointerButton {
+        pos: mouse,
+        button: egui::PointerButton::Primary,
+        pressed,
+        modifiers: egui::Modifiers::NONE,
+    };
+    fixture.draw(
+        0.1,
+        vec![egui::Event::PointerMoved(mouse), event(true)],
+        true,
+        false,
+    );
+    fixture.draw(0.2, vec![event(false)], true, false)
+}
+
 fn painted(output: &egui::FullOutput, value: &str) -> bool {
     output.shapes.iter().any(
         |clipped| matches!(&clipped.shape, egui::Shape::Text(text) if text.galley.text() == value),
@@ -84,20 +100,7 @@ fn plugin_status_sensitive_values_are_masked_until_clicked_and_for_private_frame
         assert!(!painted(&initial, text), "{text}");
     }
 
-    let mouse = egui::pos2(90.0, 58.0);
-    let event = |pressed| egui::Event::PointerButton {
-        pos: mouse,
-        button: egui::PointerButton::Primary,
-        pressed,
-        modifiers: egui::Modifiers::NONE,
-    };
-    fixture.draw(
-        0.1,
-        vec![egui::Event::PointerMoved(mouse), event(true)],
-        true,
-        false,
-    );
-    let revealed = fixture.draw(0.2, vec![event(false)], true, false);
+    let revealed = click(&fixture, egui::pos2(90.0, 58.0));
     assert!(painted(&revealed, "¥4321.25"));
     for (env, exclude) in [
         (
@@ -124,6 +127,19 @@ fn plugin_status_sensitive_values_are_masked_until_clicked_and_for_private_frame
     }
     let masked = fixture.draw(30.3, vec![], true, false);
     assert!(!painted(&masked, "¥4321.25"));
+}
+
+#[test]
+fn plugin_status_sensitive_counter_is_hidden_after_its_rate_changes() {
+    let status = |rate| json!({
+        "state":"running","label":"实时",
+        "counter":{"start_value":9.5,"per_second":rate,"start_at":0,"decimals":2,"prefix":"¥","sensitive":true}
+    });
+    let mut fixture = Fixture::new(status(0), json!({"components":[{"type":"counter"}]}));
+    assert!(painted(&fixture.draw(0.0, vec![], true, false), MASKED_VALUE));
+    assert!(painted(&click(&fixture, egui::pos2(90.0, 58.0)), "¥9.50"));
+    fixture.status = serde_json::from_value(status(1)).unwrap();
+    assert!(painted(&fixture.draw(0.3, vec![], true, false), MASKED_VALUE));
 }
 
 #[test]
