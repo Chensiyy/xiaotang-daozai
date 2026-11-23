@@ -591,11 +591,14 @@ impl eframe::App for Shell {
         // 设置里改了岛体大小：下一帧起主窗口按新倍率栅格化，定位逻辑随像素比变化同步调整画布。
         #[cfg(windows)] eframe::set_root_viewport_scale(self.app.settings.island_scale());
         #[cfg(windows)]
+        thread_local!{static AFTER_INTERACTIVE_CAPTURE:std::cell::Cell<bool>=const{std::cell::Cell::new(false)};}
+        #[cfg(windows)]
         if let Some(start)=_frame.interactive_frame_start {
             self.frame_at=start;
-        } else if self.was_interactive_transition && self.app.render_compat_running {
-            // 兼容渲染的切换动画：上一帧刚请求读回，这一帧要把画面交给分层窗口。
-            // 再按帧间隔睡一次会错过下一次屏幕刷新，动画掉到 30 帧；节奏由交互截图的截止时间和垂直同步控制。
+            AFTER_INTERACTIVE_CAPTURE.set(true);
+        } else if AFTER_INTERACTIVE_CAPTURE.replace(false) {
+            // 交互截图帧之后紧跟的这一帧负责把读回画面交给分层窗口，只隔几毫秒就会到来。
+            // 再按帧间隔睡一次会错过下一次屏幕刷新，切页等动画掉到 30 帧；节奏已由交互截图的截止时间控制。
             self.frame_at=Instant::now();
         } else {
             // 用帧间隔限制刷新，绕过部分 Intel 驱动在垂直同步中的忙等待。
