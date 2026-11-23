@@ -751,6 +751,24 @@ fn opaque_surface_gets_a_contour_with_every_skin_and_dock(){
 }
 
 #[test]
+fn regression_blur_follows_its_switch_even_when_compat_rendering_needs_the_contour(){
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    for skin in crate::model::Skin::ALL {for glass_blur in [false,true] {for opaque_surface in [false,true] {
+        let mut h=H::new();h.app.settings.skin=skin;h.app.settings.glass_blur=glass_blur;
+        let size=Vec2::new(WIN_W,WIN_H);
+        let mut blur=None;
+        let raw=egui::RawInput{screen_rect:Some(Rect::from_min_size(Pos2::ZERO,size)),..Default::default()};
+        let _=h.ctx.run(raw,|ctx|{
+            egui::CentralPanel::default().show(ctx,|ui|{
+                let out=h.app.frame(ui,Rect::from_min_size(ui.max_rect().min,size),&Env{opaque_surface,..Default::default()});
+                blur=Some(out.blur);
+            });
+        });
+        assert_eq!(blur,Some(skin.is_glass() && glass_blur),"皮肤={skin:?}，模糊={glass_blur}，兼容渲染={opaque_surface}");
+    }}}
+}
+
+#[test]
 fn changing_qq_metadata_cannot_spawn_lyrics_workers_while_one_is_running(){
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();
     let (release,wait)=std::sync::mpsc::channel();

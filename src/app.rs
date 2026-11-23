@@ -454,6 +454,8 @@ pub struct FrameOut {
     pub region: Rect,
     /// 毛玻璃 + 系统模糊时，替代 `region` 的贴合轮廓；其余情况为 None。
     pub glass: Option<Vec<GlassShape>>,
+    /// 是否在 glass 轮廓下方显示系统模糊；兼容渲染只借轮廓裁剪时为 false。
+    pub blur: bool,
     #[cfg(all(windows, feature = "sdk-material"))]
     pub(crate) material_layer: Option<crate::material::Layer>,
     /// 常驻条实际占用的窗口轮廓，透明留白交给下层窗口。
@@ -2797,6 +2799,7 @@ impl App {
         FrameOut {
             region: rel(floating_toast.into_iter().chain(self.shelf_menu_rect.map(|r|r.union(r + ctx.style().visuals.popup_shadow.margin()).expand(1.0 / ctx.pixels_per_point()))).fold(region,Rect::union).intersect(ui.max_rect())),
             glass: glass_region,
+            blur: glass_skin && self.settings.glass_blur,
             #[cfg(all(windows, feature = "sdk-material"))]
             material_layer,
             resident_clip,
