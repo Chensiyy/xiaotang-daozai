@@ -12,7 +12,7 @@
   "events": ["focus.finished"],
   "statusLayout": {
     "components": [{"type":"state"}, {"type":"fields"}, {"type":"actions"}, {"type":"list"}],
-    "style": {"accent":"#38A3CF", "density":"compact"}
+    "style": {"accent":"#38A3CF", "density":"comfortable"}
   },
   "dataVersion": 1,
   "permissions": {},
