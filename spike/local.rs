@@ -204,6 +204,9 @@ impl Record {
     }
 
     fn valid(&self, id: &str) -> bool {
+        if !script_settings::valid_storage(&self.storage) {
+            return false;
+        }
         self.package.as_ref().is_none_or(|package| {
             let manifest = &package.manifest;
             manifest.id == id
@@ -833,7 +836,8 @@ impl LocalPlugins {
                 if !valid_id(id) {
                     continue;
                 }
-                let parsed = bounded(&p, 2 * 1024 * 1024)
+                // 快照中的脚本、包数据和设置字符串在 JSON 中还会转义。
+                let parsed = bounded(&p, 4 * 1024 * 1024)
                     .ok()
                     .and_then(|v| serde_json::from_str::<Record>(&v).ok());
                 let valid = parsed.as_ref().is_some_and(|r| r.valid(id));

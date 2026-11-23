@@ -201,11 +201,11 @@ version 是插件版本，api 是需要的接口主版本，dataVersion 是存�
 
 `list` 声明 1 至 3 个子设置 `item` 和 `maxItems`（最多 8）。子设置支持 text、choice、number、date、time。保存为 JSON 数组字符串，每行对象的值仍为字符串，例如 `[{"city":"北京","zone":"Asia/Shanghai"}]`。脚本可用 `JSON.parse(settings.cities)` 读取。
 
-`input.now` 是 Unix 毫秒，`input.tz` 提供本机 `{offset_minutes,name}`。清单声明 `timezones:true` 后，`input.zones` 包含设置中出现的有效 IANA 时区，值为 `{offset_minutes,dst}`。宿主用已有的时区数据库处理夏令时。
+`input.now` 是 Unix 毫秒，`input.tz` 提供本机 `{offset_minutes,name}`。清单声明 `timezones:true` 后，`input.zones` 包含设置中出现的有效 IANA 时区，值为 `{offset_minutes,dst}`。SDK 复用项目原有的 `chrono-tz` 依赖，在本机换算偏移和夏令时。
 
-清单 `data` 可列出包根目录的 UTF-8 JSON，单个 64 KiB、合计 256 KiB。脚本通过 `input.data[文件名]` 读取。安装、测试集市和 `--plugin-pack` 都包含已声明的数据。节假日示例自带 2026 年数据，作者应每年发新版本更新。
+清单 `data` 可列出包根目录的 UTF-8 JSON，单个 64 KiB、合计 256 KiB。脚本通过 `input.data[文件名]` 读取。安装、测试集市和 `--plugin-pack` 都包含已声明的数据。节假日示例自带 2026 年数据，2027 年起由作者随新版本按年更新。
 
-带 `timer` 的插件可返回 Unix 秒 `next_refresh_at`。下一次刷新取正常周期和指定时刻里较早的时间，至少间隔 60 秒。`storage` 单独限 256 KiB，其余输出限 16 KiB。
+带 `timer` 的插件可返回 Unix 秒 `next_refresh_at`。下一次刷新取正常周期和指定时刻里较早的时间，至少间隔 60 秒。`storage` 单独限 256 KiB，其余输出限 16 KiB。写入超限时保留原有数据，在插件详情提示错误。
 
 宿主检查字段、ID、默认值、版本、入口和封面，并拒绝越出包目录的文件。重启时重新检查安装快照，出现无效记录提示重新安装。测试集市 ZIP 包含包根的 `plugin.json`、`cover.png` 和清单指定的 JavaScript 或快捷切换 JSON 入口。宿主核对目录中的大小与 SHA-256，直接在内存中读取包内容。正式资源包和独立模块的字段见清单格式检查表。
 

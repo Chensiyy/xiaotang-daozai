@@ -690,16 +690,29 @@ impl LocalPlugins {
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing.y = 8.0;
+                    if let Some(error) = self.errors.get(id) {
+                        settings_hint(ui, &format!("刷新失败 · {error}"));
+                    }
                     match &found {
                         Some((catalog, entry)) => {
                             manage = self.market_details(ui, catalog, entry);
                         }
                         None => {
-                            ui.strong(if self.market_catalog(true).is_some() {
-                                "此插件已下架"
+                            if let Some(package) =
+                                self.records.get(id).and_then(|record| record.package.as_ref())
+                            {
+                                ui.heading(&package.manifest.name);
+                                ui.label(format!(
+                                    "{} · v{}",
+                                    package.manifest.author, package.manifest.version
+                                ));
                             } else {
-                                "暂时无法查看详情"
-                            });
+                                ui.strong(if self.market_catalog(true).is_some() {
+                                    "此插件已下架"
+                                } else {
+                                    "暂时无法查看详情"
+                                });
+                            }
                             if self.is_favorite(id) && ui.button("取消收藏").clicked() {
                                 if let Err(error) = self.remove_favorite(id) {
                                     self.notice = error.to_string();

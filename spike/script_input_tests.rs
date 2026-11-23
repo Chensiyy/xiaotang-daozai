@@ -130,11 +130,88 @@ fn package_data_validates_names_limits_and_examples() -> Result<()> {
     assert_eq!(result.marker, "调休上班");
     assert!(result.next_refresh_at.is_some());
     let countdown = Package::read(&examples.join("countdown/plugin.json"))?;
-    let result = countdown.render(
-        &countdown.settings_values(&Values::new()),
-        &Value::Null,
-        "2026-12-31",
-    )?;
+    let mut settings = countdown.settings_values(&Values::new());
+    let result = countdown.render(&settings, &Value::Null, "2026-12-31")?;
     assert_eq!(result.marker, "纪念日");
+    assert_eq!(
+        countdown
+            .render(&settings, &Value::Null, "2027-01-02")?
+            .card,
+        "纪念日已到期"
+    );
+    settings.insert("mode".into(), "since".into());
+    assert_eq!(
+        countdown
+            .render(&settings, &Value::Null, "2027-01-02")?
+            .card,
+        "纪念日已过 2 天"
+    );
+    Ok(())
+}
+
+#[test]
+fn package_data_rejects_hard_links() -> Result<()> {
+    let dir = std::env::temp_dir().join(format!(
+        "daozai-data-links-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos()
+    ));
+    fs::create_dir(&dir)?;
+    let dir = dir.canonicalize()?;
+    let file = dir.join("data.json");
+    let link = dir.join("link.json");
+    fs::write(&file, "[]")?;
+    assert_eq!(package_data::read_file(&dir, "data.json")?, "[]");
+    fs::hard_link(&file, &link)?;
+    let result = package_data::read_file(&dir, "link.json");
+    fs::remove_file(link)?;
+    fs::remove_file(file)?;
+    fs::remove_dir(dir)?;
+    assert!(result.is_err());
+    Ok(())
+}
+
+#[test]
+fn records_restore_maximum_package_data_and_storage_after_json_escaping() -> Result<()> {
+    const ID: &str = "example.payday";
+    let dir = std::env::temp_dir().join(format!(
+        "daozai-data-snapshot-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos()
+    ));
+    let mut host = LocalPlugins::open(dir.clone());
+    host.install(&Path::new(env!("CARGO_MANIFEST_DIR")).join("spike/examples/payday/plugin.json"))?;
+    let mut record = host.records[ID].clone();
+    let package = record.package.as_mut().unwrap();
+    package.source = format!(
+        "/*{}*/{}",
+        "\x01".repeat(SCRIPT_SOURCE_LIMIT as usize - package.source.len() - 4),
+        package.source
+    );
+    package.manifest.data = (0..4).map(|i| format!("data-{i}.json")).collect();
+    package.data = package_data::read_data(&package.manifest.data, |_| {
+        Ok(format!(
+            "{}0",
+            "\n".repeat(package_data::DATA_FILE_LIMIT as usize - 1)
+        ))
+    })?;
+    record.storage = Value::String("x".repeat(256 * 1024 - 2));
+    assert!(record.valid(ID));
+    let path = host.path(ID);
+    host.put(ID, record)?;
+    assert!(fs::metadata(&path)?.len() > 2 * 1024 * 1024);
+    drop(host);
+
+    let host = LocalPlugins::open(dir.clone());
+    let restored = &host.records[ID];
+    assert_eq!(restored.package.as_ref().unwrap().data.len(), 4);
+    assert_eq!(restored.storage.as_str().unwrap().len(), 256 * 1024 - 2);
+    drop(host);
+    fs::remove_file(path)?;
+    fs::remove_dir(dir)?;
     Ok(())
 }

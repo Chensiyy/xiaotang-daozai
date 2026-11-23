@@ -157,6 +157,73 @@ fn script_settings_controls_save_values_in_the_owner_page() -> Result<()> {
     Ok(())
 }
 
+#[cfg(windows)]
+#[test]
+fn storage_limit_error_is_visible_in_local_plugin_details() -> Result<()> {
+    const ID: &str = "example.payday";
+    const ERROR: &str = "私有存储已满，上限为 256 KiB";
+    let dir = std::env::temp_dir().join(format!(
+        "daozai-storage-detail-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos()
+    ));
+    let mut host = LocalPlugins::open(dir.clone());
+    let sample = Path::new(env!("CARGO_MANIFEST_DIR")).join("spike/examples/payday/plugin.json");
+    host.install(&sample)?;
+    let mut record = host.records[ID].clone();
+    record.storage = json!("已保存的数据");
+    record.package.as_mut().unwrap().source =
+        r#"function refresh() {return {card:"待办",storage:"x".repeat(256*1024)};}"#.into();
+    host.put(ID, record)?;
+    host.enable(ID, true)?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !host.errors.contains_key(ID) {
+        host.tick_features(true, false, false, "2026-11-23");
+        assert!(Instant::now() < deadline, "等待插件存储错误超时");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    assert_eq!(host.errors[ID], ERROR);
+    assert_eq!(host.records[ID].storage, json!("已保存的数据"));
+
+    let ctx = egui::Context::default();
+    crate::theme::load_fonts(&ctx);
+    let mut draw = |ui: &mut egui::Ui| {
+        host.manage(
+            ui,
+            true,
+            true,
+            true,
+            #[cfg(feature = "sdk-material")]
+            None,
+        );
+    };
+    click(&ctx, "···", &mut draw);
+    click(&ctx, "查看详情", &mut draw);
+    for _ in 0..20 {
+        let _ = frame(&ctx, vec![], &mut draw);
+    }
+    let output = frame(&ctx, vec![], &mut draw);
+    assert!(has_text(&output, ID));
+    let count = output
+        .shapes
+        .iter()
+        .filter(|shape| {
+            matches!(
+                &shape.shape,
+                egui::Shape::Text(text) if text.galley.text().contains(ERROR)
+            )
+        })
+        .count();
+    assert!(count >= 2, "已安装列表和详情都应显示存储超限原因");
+    let record_path = host.path(ID);
+    drop(host);
+    fs::remove_file(record_path)?;
+    fs::remove_dir(dir)?;
+    Ok(())
+}
+
 #[test]
 fn status_page_management_opens_and_switches_independently() -> Result<()> {
     const ID: &str = "example.status-management";

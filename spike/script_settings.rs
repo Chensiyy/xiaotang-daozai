@@ -171,9 +171,14 @@ pub(super) fn next_delay(now: i64, requested: i64, interval: u32) -> Duration {
     Duration::from_secs(requested.saturating_sub(now).clamp(60, i64::from(interval)) as u64)
 }
 
+const STORAGE_LIMIT: usize = 256 * 1024;
+
+pub(super) fn valid_storage(storage: &Value) -> bool {
+    serde_json::to_vec(storage).is_ok_and(|bytes| bytes.len() <= STORAGE_LIMIT)
+}
+
 pub(super) fn split_output(raw: &str) -> Result<(Value, Value)> {
     const OUTPUT_LIMIT: usize = 16 * 1024;
-    const STORAGE_LIMIT: usize = 256 * 1024;
     if raw.len() > OUTPUT_LIMIT + STORAGE_LIMIT + 16 {
         return Err(fail("插件输出或私有存储超过大小限制（16 KiB / 256 KiB）"));
     }
@@ -183,7 +188,7 @@ pub(super) fn split_output(raw: &str) -> Result<(Value, Value)> {
         .ok_or_else(|| fail("插件输出必须为对象"))?
         .remove("storage")
         .unwrap_or(Value::Null);
-    if serde_json::to_vec(&storage)?.len() > STORAGE_LIMIT {
+    if !valid_storage(&storage) {
         return Err(fail("私有存储已满，上限为 256 KiB"));
     }
     if serde_json::to_vec(&output)?.len() > OUTPUT_LIMIT {

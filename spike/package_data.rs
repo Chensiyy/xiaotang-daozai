@@ -1,8 +1,8 @@
-use super::{bounded, fail, Result};
+use super::{cover::open_plain_file, fail, Result};
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs,
+    io::Read,
     path::Path,
 };
 
@@ -58,18 +58,14 @@ pub(super) fn valid_names(names: &[String]) -> bool {
 
 pub(super) fn read_file(dir: &Path, name: &str) -> Result<String> {
     let path = dir.join(name);
-    let metadata = fs::symlink_metadata(&path)?;
-    #[cfg(windows)]
-    let reparse_point = {
-        use std::os::windows::fs::MetadataExt;
-        metadata.file_attributes() & 0x400 != 0
-    };
-    #[cfg(not(windows))]
-    let reparse_point = false;
-    if !metadata.is_file() || reparse_point || path.canonicalize()?.parent() != Some(dir) {
-        return Err(fail(&format!("数据文件 {name} 必须是包根目录中的普通文件")));
+    let message = format!("数据文件 {name} 必须是包根目录中的普通文件");
+    let file = open_plain_file(&path, &message)?;
+    let mut bytes = Vec::new();
+    file.take(DATA_FILE_LIMIT + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > DATA_FILE_LIMIT {
+        return Err(fail(&format!("数据文件 {name} 超过 64 KiB")));
     }
-    bounded(&path, DATA_FILE_LIMIT)
+    String::from_utf8(bytes).map_err(|_| fail(&format!("数据文件 {name} 必须使用 UTF-8")))
 }
 
 pub(super) fn read_data(

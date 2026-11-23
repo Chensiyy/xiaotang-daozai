@@ -1230,7 +1230,7 @@ impl LocalPlugins {
                         self.open_source_dialog(ui, id);
                         ui.close_menu();
                     }
-                    if listed && ui.button("查看详情").clicked() {
+                    if (listed || runtime_error.is_some()) && ui.button("查看详情").clicked() {
                         market_browse_ui::select_detail(ui, id);
                         ui.close_menu();
                     }
