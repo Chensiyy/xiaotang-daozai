@@ -115,7 +115,7 @@ impl App {
         } else {
             c.fill(bx,by-th/2.0,bw,th,th/2.0,if has {Color32::from_gray(90)}else{theme::TRACK});
         }
-        if !glassy && self.settings.skin==crate::model::Skin::Fluid {
+        if !glassy && self.effective_skin()==crate::model::Skin::Fluid {
             let head=bx+bw*frac;
             let hot=if bar.is_pointer_button_down_on(){1.0}else if np.playing{0.62}else{0.45};
             if has && frac>0.0 {

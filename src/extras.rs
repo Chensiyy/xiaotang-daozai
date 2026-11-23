@@ -1611,6 +1611,8 @@ impl App {
         settings_card(ui,|ui|{
             ui.horizontal(|ui|{
                 let icon=settings_page_icon(page);
+                #[cfg(feature="sdk-js")]
+                let icon=self.plugins.appearance_icon(page,false).unwrap_or(icon);
                 if page==crate::app::BLUETOOTH_PAGE {
                     let (rect,_)=ui.allocate_exact_size(egui::vec2(36.0,36.0),egui::Sense::hover());
                     paint_wireless_settings_icon(ui,rect,icon);
@@ -1722,6 +1724,8 @@ impl App {
                         SETTINGS_TAB_PLUGINS=>egui::include_image!("../assets/settings-icons/system/shelf.svg"),
                         _=>egui::include_image!("../assets/settings-icons/system/about.svg"),
                     };
+                    #[cfg(feature="sdk-js")]
+                    let icon=settings_tab_module(start).and_then(|page|self.plugins.appearance_icon(page,true)).unwrap_or(icon);
                     let icon_bg=egui::Rect::from_center_size(egui::pos2(rect.left()+21.0,rect.center().y),egui::vec2(23.0,23.0));
                     if start==SETTINGS_TAB_WIRELESS {paint_wireless_settings_icon(ui,icon_bg,icon);}
                     else {egui::Image::new(icon).paint_at(ui,icon_bg);}
@@ -1965,10 +1969,16 @@ impl App {
                         settings_label(ui,"岛体外观");
                         settings_card(ui,|ui|{
                             use crate::model::{self as model,Skin};
-                            let skins:Vec<(Skin,&str)>=Skin::ALL.iter().map(|s|(*s,s.label())).collect();
-                            settings_control_row_right(ui,"皮肤",|ui|{settings_segmented(ui,&mut self.settings.skin,&skins,64.0);});
-                            settings_hint(ui,self.settings.skin.description());
-                            if self.settings.skin.is_glass() {
+                            #[cfg(feature="sdk-js")]
+                            let plugin_picker=self.plugins.appearance_picker(ui,crate::sdk_spike::local::appearance_assets::Kind::Skin,Some(&mut self.settings.skin));
+                            #[cfg(not(feature="sdk-js"))]
+                            let plugin_picker=false;
+                            if !plugin_picker {
+                                let skins:Vec<(Skin,&str)>=Skin::ALL.iter().map(|s|(*s,s.label())).collect();
+                                settings_control_row_right(ui,"皮肤",|ui|{settings_segmented(ui,&mut self.settings.skin,&skins,64.0);});
+                            }
+                            settings_hint(ui,self.effective_skin().description());
+                            if self.effective_skin().is_glass() {
                                 let mut blur=self.settings.glass_blur;
                                 setting_row(ui,"背景模糊","需开启系统“透明效果”；关闭后改为烟熏半透明",&mut blur);
                                 self.settings.glass_blur=blur;
@@ -1984,6 +1994,8 @@ impl App {
                                     ctx.request_repaint_of(egui::ViewportId::ROOT);
                                 }
                             }
+                            #[cfg(feature="sdk-js")]
+                            self.plugins.appearance_picker(ui,crate::sdk_spike::local::appearance_assets::Kind::Icon,None);
                             ui.separator();
                             let shapes:Vec<(model::IslandShape,&str)>=model::IslandShape::ALL.iter().map(|s|(*s,s.label())).collect();
                             settings_control_row_right(ui,"形状",|ui|{settings_segmented(ui,&mut self.settings.island_shape,&shapes,64.0);});
@@ -2008,6 +2020,8 @@ impl App {
                             let mut pet=self.settings.pet;
                             setting_row(ui,"岛仔吉祥物","收起时常驻，播放音乐时一起唱歌",&mut pet);
                             if pet!=self.settings.pet {self.set_pet(pet);}
+                            #[cfg(feature="sdk-js")]
+                            self.plugins.appearance_picker(ui,crate::sdk_spike::local::appearance_assets::Kind::Pet,None);
                             settings_advanced(ui,"settings-appearance-advanced",|ui|{
                                 setting_row(ui,"OLED 像素偏移","防止 OLED 屏幕烧屏：收起静止时让岛体缓慢移动几个像素，不改动你保存的位置",&mut self.settings.oled_shift);
                             });

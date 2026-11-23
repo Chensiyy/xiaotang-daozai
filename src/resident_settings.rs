@@ -45,7 +45,7 @@ impl crate::app::App {
         let fill=self.preview_fill();
         if pill {ui.painter().rect_filled(body,15.0*scale,fill);}
         else {crate::shape::fill(ui.painter(),body,8.0*scale,10.0*scale,12.0*scale,fill,1.0/ui.ctx().pixels_per_point());}
-        if self.settings.skin.is_glass() {
+        if self.effective_skin().is_glass() {
             let rim=egui::Stroke::new(1.0_f32,Color32::from_white_alpha(60));
             if pill {ui.painter().rect_stroke(body,15.0*scale,rim,egui::StrokeKind::Inside);}
             else {

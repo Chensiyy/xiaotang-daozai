@@ -563,7 +563,7 @@ fn prepare_record(mut record: Record, package: Package) -> Result<Record> {
     {
         return Err(fail("新版本与已保存的设置不兼容"));
     }
-    if !manifest.is_page_shortcuts() && !manifest.is_wireless() {
+    if manifest.runtime == "js" {
         package.render(
             &values,
             &record.storage,

@@ -39,7 +39,9 @@ function refresh({ settings, today }) {
 | 专注事件 · 实验 | 声明 event，清单顶层写 "events":["focus.finished"]。专注计时完成时调用 event(input) | 启用插件后完成一轮专注 |
 | 一次性提醒 · Windows 实验 | 声明 notice，脚本返回 notice 对象 | 岛上的通知与未读，遵循系统内的通知和正文显示开关 |
 | 只读数据源 · Windows 测试版 | 清单通过 `permissions.source.read` 声明 `file`、`loopback` 或 `https`。宿主将已授权数据传给 `refresh` 的 `source` 输入。 | 「设置 → 插件 → 已安装 → 授权数据源」 |
-| 皮肤、表情、图标 · 待宿主实现 | 无代码包清单片段 `{"runtime":"assets","capabilities":["appearance.skin"],"assets":["theme.json"]}`。表情与图标分别声明 appearance.pet、appearance.icon | 原外观选择器，可切回内置素材 |
+| 皮肤 · 测试版 | `runtime: "assets"`、`owner: "appearance"`、`appearance.skin`，入口 `theme.json` | 设置 → 外观 → 皮肤 |
+| 功能图标 · 测试版 | `runtime: "assets"`、`owner: "appearance"`、`appearance.icon`，入口 `icons.json` | 设置 → 外观 → 功能图标，替换设置侧栏及功能标题卡图标 |
+| 吉祥物表情 · 测试版 | `runtime: "assets"`、`owner: "appearance"`、`appearance.pet`，入口 `expressions.json` | 设置 → 外观 → 吉祥物表情，沿用原动作的触发时机与帧速 |
 | 底部快捷切换 · 已实现 | 声明 `runtime: "assets"`、`owner: "pages"` 和 `navigation.shortcuts`，在 `shortcuts.json` 配置选中配色 | 展开岛仔，点击底部图标直达已启用页面。设置归属「页面管理」 |
 | GPU 材质 · 已实现 | 清单用 `runtime: "material"`、`owner: "appearance"`、`appearance.material` 能力和 `screen.backdrop` 权限。WGSL 入口实现 `material()`，沿用[材质接口](gpu-material.md) | 「设置 → 外观 → 材质」，同一时间选用一个材质，需开启 Direct3D 12 兼容渲染 |
 
@@ -47,7 +49,13 @@ action 接收按钮 ID 和表单值，event 接收事件名和事件数据。两
 
 ## 3. 用户去哪里用，去哪里调
 
-岛仔用一张能力表核对清单（[能力表](../../spike/capabilities.rs)）。每种能力写明需要的运行环境、落在哪里，以及能否和别的能力同时声明。`owner` 只决定插件设置放在哪个设置页，以及哪个模块关掉时整个插件暂停。脚本插件的归属可选 tasks、calendar、quota、status，并且至少要带上这个归属自己的输出：tasks 带 card，calendar 带 card 或 calendar.marker，quota 带 quota.source，status 带 status.page。材质、快捷切换和无线设备兼容包各自独占一个包，只能另加 settings。
+岛仔用一张能力表核对清单（[能力表](../../spike/capabilities.rs)）。每种能力写明需要的运行环境、落在哪里，以及能否和别的能力同时声明。`owner` 只决定插件设置放在哪个设置页，以及哪个模块关掉时整个插件暂停。脚本插件的归属可选 tasks、calendar、quota、status，并且至少要带上这个归属自己的输出：tasks 带 card，calendar 带 card 或 calendar.marker，quota 带 quota.source，status 带 status.page。材质、皮肤、图标、表情、快捷切换和无线设备兼容包各自独占一个包。外观资源包只声明一种能力，`permissions` 填 `{}`，`settings` 填 `[]`。
+
+外观资源包由 `plugin.json`、入口文件和 `cover.png` 组成，本地开发目录也可带说明文件。岛仔沿用集市的 ZIP 大小上限 576 KiB。各类入口的 UTF-8 JSON 格式如下。
+
+- 皮肤包入口最多 4 KiB，例如 `{"base":"cream","colors":{"paper":"#F4F8F6","ink":"#20382F","accent":"#248161"}}`。经典 `classic` 和奶油 `cream` 开放 `paper`（底色）、`ink`（文字）和 `accent`（强调色）。毛玻璃 `glass_light`、`glass_dark` 和悬浮云 `fluid` 开放 `accent`，保留原来的透明度和纹理。至少提供一个 `#RRGGBB` 颜色。缺少的颜色沿用基础皮肤。可参考[青瓷皮肤样例](../../spike/examples/celadon-skin/plugin.json)。
+- 图标包入口最多 128 KiB，格式为 `{"icons":{"music":"<svg …>…</svg>"}}`。功能页键可用 `music`、`focus`、`health`、`shelf`、`tasks`、`mail`、`quota`、`calendar`、`weather`、`performance`、`wireless`。每个 SVG 最多 8 KiB，声明 SVG 命名空间与 `viewBox`，使用路径、基础形状和分组，可用十六进制颜色、`none` 或 `currentColor`。禁止脚本、样式表、外部资源和 `foreignObject`。
+- 表情包入口最多 768 KiB，格式为 `{"expressions":{"wink":"PNG 的 Base64 字符串"}}`。可替换 `wink`、`smug`、`blush`、`delighted`、`side-glance`、`praised`、`heart`、`giggle`、`shy-peek`、`scan`、`peek`、`search`。每张 PNG 为 144×1440，从上到下排列 16 帧，每帧 144×90，最多 64 KiB。缺少的图标或表情沿用内置素材。
 
 用户习惯去原功能完成的事，可以往原设置页加一项。皮肤进入外观选择器，歌词来源进入音乐设置。只需要看一眼的内容可以做卡片，少量参数仍放在所属页。
 
@@ -76,7 +84,8 @@ action 接收按钮 ID 和表单值，event 接收事件名和事件数据。两
 | 在「已安装」关掉今日农历的开关 | 日历里的农历和节气标注消失，日程页仍可使用 |
 | 关日程，再开日程 | 关闭时暂停农历插件。重新打开日程后，已启用的农历插件恢复显示 |
 | 纪念日同时在日历和常驻栏展示 | 关日程只撤日历记录。关纪念日模块时撤下功能入口、固定倒数及日历记录，「已安装」保留总开关，路径提示去页面管理。两项开关都开启时找回原文、日期和固定选择 |
-| 奶油皮肤换成插件皮肤，期间把胶囊改成刘海，再停用插件 | 回到奶油＋刘海。插件只在启用期间覆盖它提供的外观，基础皮肤、形状和停靠由用户掌管，材质专属选项只在支持它的皮肤上生效 |
+| 奶油皮肤换成插件皮肤，期间把胶囊改成刘海，再停用或卸载皮肤包 | 回到奶油＋刘海，保留用户设置的停靠位置。皮肤包重新启用后可再次到外观选择 |
+| 停用或卸载正在使用的图标包或表情包 | 立即换回对应的内置素材 |
 | 停用后重启，或卸载 | 停用立即撤下输出，宿主停止发起新调用。已经开始的一次计算即使稍后返回也丢弃结果。重启保持停用，卸载可选择保留或删除数据 |
 
 修改设置、关上级模块或重新安装时，同样作废此前发出的计算。插件重新启用后按当前设置重新计算。单选来源由岛仔记住，当前来源不可用时回到最近一次可用的选择。未获授权、执行出错或超时的调用，其结果一律作废。

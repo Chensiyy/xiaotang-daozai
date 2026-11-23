@@ -29,6 +29,10 @@ pub struct Palette {
     pub glass_chrome: bool,
 }
 
+/// 经典皮肤的原色基准，供外观资源包替换部分令牌。
+#[cfg(feature = "sdk-js")]
+pub(crate) const CLASSIC: Palette = Palette { paper: [0, 0, 0], ink: [255, 255, 255], accent: None, dark_alpha: 1.0, lift: 1.0, darken: 1.0, chip: 1.0, glass_chrome: false };
+
 /// 奶油（参考 Oyen）：暖白底、深棕字、橙色强调。
 pub const CREAM: Palette = Palette { paper: [255, 243, 228], ink: [46, 32, 22], accent: Some([240, 138, 36]), dark_alpha: 1.0, lift: 1.0, darken: 0.78, chip: 1.0, glass_chrome: false };
 /// 毛玻璃·浅：白色磨砂、近黑字、系统蓝。

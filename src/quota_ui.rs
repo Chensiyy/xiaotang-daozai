@@ -384,7 +384,7 @@ fn claude_disclaimer(ui:&mut egui::Ui){
 impl App {
     fn quota_badge_skin(&self)->crate::model::Skin {
         use crate::model::Skin;
-        if !self.glassy() { return self.settings.skin; }
+        if !self.glassy() { return self.effective_skin(); }
         if self.island_palette().is_some_and(|palette|palette.glass_chrome) {Skin::GlassLight}else{Skin::GlassDark}
     }
     pub(crate) fn quota_close_connection(&mut self){
