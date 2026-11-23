@@ -1,4 +1,7 @@
-//! 用岛仔画布绘制只读的状态详情。
+//! 用岛仔画布绘制状态详情。
+#[path = "plugin_status_controls.rs"]
+mod controls;
+pub(crate) use controls::{DEFAULT_FORM_HEIGHT, Interaction, InteractionResponse};
 
 use crate::{
     paint::{self, Card, H},
@@ -43,9 +46,28 @@ pub(crate) fn draw_status_page(
         return;
     };
     if let Some(layout) = layout {
-        draw_layout(c, status, layout);
+        draw_layout(c, status, layout, None);
     } else {
         draw_default(c, status);
+    }
+}
+
+pub(crate) fn draw_interactive_status_page(
+    c: &Card,
+    status: &PluginStatus,
+    layout: Option<&StatusLayout>,
+    interaction: &mut Interaction<'_>,
+) {
+    if let Some(layout) = layout {
+        draw_layout(c, status, layout, Some(interaction));
+    } else {
+        draw_default(c, status);
+        let y = STATUS_PAGE_H - PAGE_BOTTOM_SPACE;
+        interaction.fields(c, status, LEFT + 14.0, y, TEXT_RIGHT - LEFT - 14.0);
+        interaction.actions(
+            c, status, LEFT + 14.0, y + controls::fields_height(status.fields.len()),
+            TEXT_RIGHT - LEFT - 14.0,
+        );
     }
 }
 
@@ -179,6 +201,8 @@ fn component_height(component: StatusComponent, density: StatusDensity, metrics:
         }
         StatusComponent::Alert {} => 30.0,
         StatusComponent::UpdatedAt {} => 14.0,
+        StatusComponent::Actions {} => controls::ACTION_HEIGHT,
+        StatusComponent::Fields {} => controls::fields_height(controls::MAX_FIELDS),
     }
 }
 
@@ -194,7 +218,12 @@ fn stack_height(
     (height - gap).max(0.0)
 }
 
-fn draw_layout(c: &Card, status: &PluginStatus, layout: &StatusLayout) {
+fn draw_layout(
+    c: &Card,
+    status: &PluginStatus,
+    layout: &StatusLayout,
+    mut interaction: Option<&mut Interaction<'_>>,
+) {
     let density = layout.style.density;
     let accent = layout.style.accent_rgb().map_or_else(
         || state_color(status.state),
@@ -211,6 +240,8 @@ fn draw_layout(c: &Card, status: &PluginStatus, layout: &StatusLayout) {
             StatusComponent::Metrics { .. } => !status.metrics.is_empty(),
             StatusComponent::Alert {} => status.alert.is_some(),
             StatusComponent::UpdatedAt {} => status.observed_at.is_some(),
+            StatusComponent::Actions {} => !status.actions.is_empty(),
+            StatusComponent::Fields {} => !status.fields.is_empty(),
         });
     let height = stack_height(components.clone(), density, status.metrics.len());
     if height == 0.0 {
@@ -292,6 +323,16 @@ fn draw_layout(c: &Card, status: &PluginStatus, layout: &StatusLayout) {
                         theme::DIM,
                         H::Left,
                     );
+                }
+            }
+            StatusComponent::Actions {} => {
+                if let Some(interaction) = interaction.as_deref_mut() {
+                    interaction.actions(c, status, x, y, TEXT_RIGHT - x);
+                }
+            }
+            StatusComponent::Fields {} => {
+                if let Some(interaction) = interaction.as_deref_mut() {
+                    interaction.fields(c, status, x, y, TEXT_RIGHT - x);
                 }
             }
         }

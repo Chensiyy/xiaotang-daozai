@@ -37,6 +37,10 @@ pub(crate) struct PluginStatus {
     pub alert: Option<String>,
     pub observed_at: Option<i64>,
     pub expires_at: Option<i64>,
+    #[serde(default)]
+    pub actions: Vec<StatusAction>,
+    #[serde(default)]
+    pub fields: Vec<StatusField>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
@@ -44,6 +48,22 @@ pub(crate) struct PluginStatus {
 pub(crate) struct StatusMetric {
     pub label: String,
     pub value: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct StatusAction {
+    pub id: String,
+    pub label: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct StatusField {
+    pub key: String,
+    pub label: String,
+    pub value: Option<String>,
+    pub max: usize,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -92,6 +112,8 @@ pub(crate) enum StatusComponent {
     },
     Alert {},
     UpdatedAt {},
+    Actions {},
+    Fields {},
 }
 
 fn default_metric_columns() -> u8 {
@@ -171,6 +193,20 @@ impl PluginStatus {
                 .metrics
                 .iter()
                 .all(|metric| valid_text(&metric.label, 28) && valid_text(&metric.value, 32))
+            && self.actions.len() <= 3
+            && self.actions.iter().enumerate().all(|(index, action)| {
+                valid_control_id(&action.id)
+                    && valid_text(&action.label, 6)
+                    && self.actions[..index].iter().all(|other| other.id != action.id)
+            })
+            && self.fields.len() <= 3
+            && self.fields.iter().enumerate().all(|(index, field)| {
+                valid_control_id(&field.key)
+                    && valid_text(&field.label, 28)
+                    && (1..=200).contains(&field.max)
+                    && field.value.as_deref().is_none_or(|value| field.accepts(value))
+                    && self.fields[..index].iter().all(|other| other.key != field.key)
+            })
             && self.observed_at.is_none_or(valid_timestamp)
             && self.expires_at.is_none_or(valid_timestamp)
             && self
@@ -184,7 +220,19 @@ impl PluginStatus {
     }
 }
 
-fn valid_text(text: &str, max_chars: usize) -> bool {
+impl StatusField {
+    pub(crate) fn accepts(&self, value: &str) -> bool {
+        value.chars().count() <= self.max && !value.chars().any(char::is_control)
+    }
+}
+
+pub(crate) fn valid_control_id(id: &str) -> bool {
+    id.len() <= 40
+        && id.starts_with(|ch: char| ch.is_ascii_lowercase())
+        && id.bytes().all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || matches!(ch, b'_' | b'-'))
+}
+
+pub(crate) fn valid_text(text: &str, max_chars: usize) -> bool {
     !text.trim().is_empty()
         && text.chars().count() <= max_chars
         && !text.chars().any(char::is_control)
@@ -238,7 +286,7 @@ mod tests {
             assert!(!status.valid(), "{key}: {status:?}");
         }
         assert!(serde_json::from_value::<PluginStatus>(json!({
-            "state":"idle","label":"就绪","actions":[]
+            "state":"idle","label":"就绪","unknown_field":[]
         }))
         .is_err());
         assert!(serde_json::from_value::<PluginStatus>(json!({

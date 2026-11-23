@@ -41,6 +41,9 @@ pub(super) const CAPABILITIES: &[Capability] = &[
     Capability { name: "settings", runtime: "*", role: Role::Helper },
     Capability { name: "timer", runtime: "js", role: Role::Helper },
     Capability { name: "storage", runtime: "js", role: Role::Helper },
+    Capability { name: "action", runtime: "js", role: Role::Helper },
+    Capability { name: "event", runtime: "js", role: Role::Helper },
+    Capability { name: "notice", runtime: "js", role: Role::Helper },
     Capability {
         name: "appearance.material",
         runtime: "material",
@@ -110,6 +113,9 @@ pub(super) fn check(runtime: &str, owner: &str, names: &[String]) -> Result<Vec<
             }
             Role::Helper => {}
         }
+    }
+    if seen.contains("action") && !seen.contains("status.page") {
+        return Err("按钮和表单需要同时声明 status.page".into());
     }
     if let Some(name) = exclusive {
         if names.iter().any(|other| other != name && other != "settings") {

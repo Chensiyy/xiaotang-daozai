@@ -331,6 +331,7 @@ impl LocalPlugins {
                 material_granted: false,
                 source_grant: None,
                 status_page_disabled: false,
+                notice_history: NoticeHistory::default(),
             }
         };
         let entry = entry.clone();
@@ -381,6 +382,7 @@ impl LocalPlugins {
             // 校验期间，旧插件可能完成一次后台刷新，保留该次已保存的数据。
             if let Some(current) = self.records.get(&job.id) {
                 record.storage = current.storage.clone();
+                record.notice_history = current.notice_history.clone();
                 record.enabled = current.enabled;
                 record.source_grant = current.source_grant().cloned();
             }

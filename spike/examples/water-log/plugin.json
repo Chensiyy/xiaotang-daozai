@@ -1,0 +1,20 @@
+{
+  "id": "example.water-log",
+  "name": "喝水记录",
+  "author": "岛仔",
+  "version": "1.0.0",
+  "api": 1,
+  "runtime": "js",
+  "entry": "main.js",
+  "cover": "cover.png",
+  "owner": "status",
+  "capabilities": ["status.page", "action", "event", "notice", "storage"],
+  "events": ["focus.finished"],
+  "statusLayout": {
+    "components": [{"type":"state"}, {"type":"progress", "variant":"bar"}, {"type":"fields"}, {"type":"actions"}],
+    "style": {"accent":"#38A3CF", "density":"compact"}
+  },
+  "dataVersion": 1,
+  "permissions": {},
+  "settings": []
+}
