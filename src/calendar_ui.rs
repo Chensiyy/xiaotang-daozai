@@ -442,6 +442,12 @@ impl App {
         let day=self.calendar.view.day;
         let heading=format!("{} · {}月{}日",if day==today{"今天"}else{WEEKDAYS[day.weekday().num_days_from_monday() as usize]},day.month(),day.day());
         c.text(167.0,44.0,&heading,8.8,W::Semibold,accent,H::Left);
+        #[cfg(feature="sdk-js")]
+        if let Some(marker)=self.plugins.calendar_annotation(&env.today).filter(|_|day==today) {
+            let label=marker.lines().next().unwrap_or_default().trim();
+            let text=c.fit(label,8.5,W::Regular,52.0);
+            c.centered_text(376.0,44.0,&text,8.5,W::Regular,muted,H::Right);
+        }
         let focus=self.calendar.view.focus.clone();
         let scroll_to_focus=if c.live{std::mem::take(&mut self.calendar.view.scroll_to_focus)}else{false};
         let mut first=self.calendar.view.first;

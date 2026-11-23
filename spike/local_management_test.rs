@@ -81,6 +81,83 @@ fn has_text(output: &egui::FullOutput, label: &str) -> bool {
 }
 
 #[test]
+fn script_settings_controls_save_values_in_the_owner_page() -> Result<()> {
+    const ID: &str = "example.script-settings";
+    let dir = std::env::temp_dir().join(format!(
+        "daozai-script-settings-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos()
+    ));
+    let mut host = LocalPlugins::open(dir.clone());
+    host.install(&Path::new(env!("CARGO_MANIFEST_DIR")).join("spike/examples/payday/plugin.json"))?;
+    let mut record = host.records["example.payday"].clone();
+    let package = record.package.as_mut().unwrap();
+    package.manifest.id = ID.into();
+    package.manifest.name = "设置控件测试".into();
+    package.manifest.owner = "tasks".into();
+    package.manifest.capabilities = vec!["card".into(), "settings".into()];
+    package.manifest.settings = serde_json::from_value(json!([
+        {"key":"switch", "label":"启用选项", "type":"switch", "default":"false"},
+        {"key":"choice", "label":"计数方式", "type":"choice", "default":"remain",
+         "choices":[{"value":"remain","label":"剩余天数"},{"value":"elapsed","label":"累计天数"}]},
+        {"key":"number", "label":"计数步长", "type":"number", "default":"4",
+         "min":1, "max":10, "step":1, "unit":"天", "precision":0},
+        {"key":"time", "label":"提醒时间", "type":"time", "default":"08:00"},
+        {"key":"weekdays", "label":"重复日期", "type":"weekdays", "default":"1,3"},
+        {"key":"list", "label":"城市列表", "type":"list", "default":"[]", "maxItems":2,
+         "item":[{"key":"city","label":"城市","type":"text","default":"北京"}]}
+    ]))?;
+    package.source = "function refresh() { return {card: '设置控件测试'}; }".into();
+    package.manifest.validate()?;
+    record.values = package.settings_values(&Values::new());
+    host.put(ID, record)?;
+    host.enable(ID, true)?;
+
+    let ctx = egui::Context::default();
+    crate::theme::load_fonts(&ctx);
+    let mut draw = |ui: &mut egui::Ui| host.settings(ui, "tasks", true);
+    let first = frame(&ctx, vec![], &mut draw);
+    assert!(has_text(&first, "设置控件测试"));
+    assert!(has_text(&first, "插件"));
+    let switch = ctx
+        .read_response(egui::Id::new(("settings-plugin-switch", format!("{ID}:switch"))))
+        .expect("脚本插件设置开关")
+        .rect
+        .center();
+    click_at(&ctx, switch, &mut draw);
+    click(&ctx, "累计天数", &mut draw);
+    click(&ctx, "4天", &mut draw);
+    frame(&ctx, vec![], &mut draw);
+    frame(&ctx, vec![egui::Event::Text("7".into())], &mut draw);
+    frame(&ctx, vec![egui::Event::Key {
+        key: egui::Key::Enter,
+        physical_key: None,
+        pressed: true,
+        repeat: false,
+        modifiers: Default::default(),
+    }], &mut draw);
+    click(&ctx, "+", &mut draw);
+    click(&ctx, "日", &mut draw);
+    click(&ctx, "添加一行", &mut draw);
+    click(&ctx, "保存设置", &mut draw);
+
+    drop(host);
+    let host = LocalPlugins::open(dir.clone());
+    let values = &host.records[ID].values;
+    assert_eq!(values["switch"], "true");
+    assert_eq!(values["choice"], "elapsed");
+    assert_eq!(values["number"], "7");
+    assert_eq!(values["time"], "08:15");
+    assert_eq!(values["weekdays"], "1,3,7");
+    assert_eq!(serde_json::from_str::<Value>(&values["list"])?, json!([{"city":"北京"}]));
+    drop(host);
+    fs::remove_dir_all(dir)?;
+    Ok(())
+}
+
+#[test]
 fn status_page_management_opens_and_switches_independently() -> Result<()> {
     const ID: &str = "example.status-management";
     const NAME: &str = "模拟状态详情";

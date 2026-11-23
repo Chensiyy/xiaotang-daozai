@@ -23,6 +23,8 @@ mod plugin_guide_ui;
 #[path = "plugin_feedback_ui.rs"]
 mod plugin_feedback_ui;
 use plugin_feedback_ui::{plugin_feedback, request_plugin_feedback};
+#[path = "script_settings_ui.rs"]
+mod script_settings_ui;
 
 const COVERS: &str = "settings-plugin-covers";
 type CoverCache = std::collections::VecDeque<(egui::Id, Option<egui::TextureHandle>)>;
@@ -1891,13 +1893,8 @@ impl LocalPlugins {
                             .entry(id.clone())
                             .or_insert_with(|| r.values.clone());
                         for f in &m.settings {
-                            settings_control_row(ui, &f.label, 68., |ui| {
-                                ui.text_edit_singleline(
-                                    fields
-                                        .entry(f.key.clone())
-                                        .or_insert_with(|| f.default.clone()),
-                                )
-                            });
+                            let field = fields.entry(f.key.clone()).or_insert_with(|| f.default.clone());
+                            script_settings_ui::field_row(ui, &id, f, field);
                         }
                         if ui.button("保存设置").clicked() {
                             let values = fields.clone();

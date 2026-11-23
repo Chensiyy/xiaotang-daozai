@@ -525,6 +525,7 @@ dependencies = [
  "eframe",
  "egui_extras",
  "flate2",
+ "iana-time-zone",
  "image",
  "imap",
  "imap-proto",

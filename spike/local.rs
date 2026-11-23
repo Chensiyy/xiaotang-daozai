@@ -14,6 +14,10 @@ mod market_metrics;
 mod market_state;
 #[path = "source_read.rs"]
 mod source_read;
+#[path = "script_settings.rs"]
+mod script_settings;
+#[path = "package_data.rs"]
+mod package_data;
 #[path = "local_ui.rs"]
 mod ui;
 use super::{fail, Result};
@@ -21,6 +25,8 @@ use crate::plugin_status::{PluginStatus, StatusHealth, StatusLayout};
 use crate::quota_plugin::PluginQuota;
 use capabilities::Surface;
 use cover::{CoverPng, COVER_FILE};
+use script_settings::{valid_field, valid_fields, Choice};
+use package_data::PackageData;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use source_read::{SourceGrant, SourceKind};
@@ -70,6 +76,12 @@ struct Field {
         skip_serializing_if = "Option::is_none"
     )]
     precision: Option<u8>,
+    #[serde(default, deserialize_with = "present_value", skip_serializing_if = "Option::is_none")]
+    choices: Option<Vec<Choice>>,
+    #[serde(default, deserialize_with = "present_value", skip_serializing_if = "Option::is_none")]
+    item: Option<Vec<Field>>,
+    #[serde(rename = "maxItems", default, deserialize_with = "present_value", skip_serializing_if = "Option::is_none")]
+    max_items: Option<usize>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -136,6 +148,10 @@ struct Manifest {
         skip_serializing_if = "Option::is_none"
     )]
     status_layout: Option<StatusLayout>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    data: Vec<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    timezones: bool,
 }
 fn default_refresh() -> u32 {
     60
@@ -147,6 +163,8 @@ struct Package {
     source: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     cover: Option<CoverPng>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    data: PackageData,
     #[serde(skip)]
     page_shortcut_colors: OnceLock<BTreeMap<String, [u8; 3]>>,
 }
@@ -194,6 +212,7 @@ impl Record {
                 && manifest.cover.is_some() == package.cover.is_some()
                 && !package.source.trim().is_empty()
                 && package.source.len() as u64 <= manifest.source_limit()
+                && package_data::valid_snapshot(&manifest.data, &package.data)
                 && package.validate_page_shortcut_colors().is_ok()
                 && manifest.settings.iter().all(|field| {
                     self.values
@@ -249,6 +268,8 @@ struct Output {
     status: Option<PluginStatus>,
     #[serde(default)]
     storage: Value,
+    #[serde(default)]
+    next_refresh_at: Option<i64>,
 }
 
 #[derive(Serialize)]
@@ -277,33 +298,6 @@ fn valid_id(id: &str) -> bool {
                 && p.bytes()
                     .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
         })
-}
-fn valid_field(f: &Field, v: &str) -> bool {
-    if f.kind != "number" && (f.unit.is_some() || f.precision.is_some()) {
-        return false;
-    }
-    match f.kind.as_str() {
-        "text" if f.min.is_none() && f.max.is_none() && f.step.is_none() => {
-            !v.trim().is_empty() && v.chars().count() <= 80
-        }
-        "date" if f.min.is_none() && f.max.is_none() && f.step.is_none() => {
-            chrono::NaiveDate::parse_from_str(v, "%Y-%m-%d").is_ok_and(|d| d.to_string() == v)
-        }
-        "number" => {
-            let (Some(min), Some(max), Some(step)) = (f.min, f.max, f.step) else {
-                return false;
-            };
-            let width = max - min;
-            width.is_finite()
-                && step > 0.0
-                && step <= width
-                && f.unit.as_ref().is_none_or(|unit| unit.chars().count() <= 4)
-                && f.precision.is_none_or(|precision| precision <= 3)
-                && v.parse::<f32>()
-                    .is_ok_and(|number| number.is_finite() && (min..=max).contains(&number))
-        }
-        _ => false,
-    }
 }
 impl Manifest {
     fn decode(contents: &str) -> Result<Self> {
@@ -404,6 +398,11 @@ impl Manifest {
             return Err(fail("请核对插件 ID、作者、版本和 API 版本"));
         }
         capabilities::check(&m.runtime, &m.owner, &m.capabilities).map_err(|e| fail(&e))?;
+        if (!m.data.is_empty() || m.timezones) && m.runtime != "js"
+            || !package_data::valid_names(&m.data)
+        {
+            return Err(fail("只有脚本插件可声明时区与包根目录中的 JSON 数据文件"));
+        }
         if let Some(layout) = &m.status_layout {
             if !m.is_status_page() {
                 return Err(fail("statusLayout 只适用于声明了 status.page 的插件"));
@@ -457,21 +456,9 @@ impl Manifest {
         {
             return Err(fail("脚本插件只能申请 source.read 一项权限，且不能带材质参数"));
         }
-        let mut keys = std::collections::BTreeSet::new();
         if m.settings.len() > 32
             || (!m.settings.is_empty() && !m.capabilities.iter().any(|c| c == "settings"))
-            || !m.settings.iter().all(|f| {
-                (f.kind == "number") == material
-                    && valid_field(f, &f.default)
-                    && !f.label.trim().is_empty()
-                    && f.label.chars().count() <= 80
-                    && f.key.starts_with(|c: char| c.is_ascii_lowercase())
-                    && f.key.len() <= 40
-                    && f.key.bytes().all(|b| {
-                        b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_'
-                    })
-                    && keys.insert(&f.key)
-            })
+            || !valid_fields(&m.settings, material)
         {
             return Err(fail("设置项名称、类型、默认值或显示格式无效"));
         }
@@ -578,7 +565,10 @@ impl Package {
             validate_material_files(&base, &base.join("plugin.json"), &resolved)?;
         }
         let source = bounded(&resolved, manifest.source_limit())?;
-        Self::from_entry(manifest, source, cover)
+        let data = package_data::read_data(&manifest.data, |name| package_data::read_file(&base, name))?;
+        let mut package = Self::from_entry(manifest, source, cover)?;
+        package.data = data;
+        Ok(package)
     }
 
     fn from_entry(manifest: Manifest, source: String, cover: CoverPng) -> Result<Self> {
@@ -589,6 +579,7 @@ impl Package {
             source,
             manifest,
             cover: Some(cover),
+            data: BTreeMap::new(),
             page_shortcut_colors: OnceLock::new(),
         };
         package.validate_page_shortcut_colors()?;
@@ -666,6 +657,10 @@ impl Package {
         runtime.set_max_stack_size(128 * 1024);
         let ctx = rquickjs::Context::full(&runtime)?;
         let mut input = json!({"settings":values,"storage":storage,"today":today});
+        script_settings::time_input(&mut input, chrono::Utc::now(), self.manifest.timezones, &self.manifest.settings, values);
+        if !self.data.is_empty() {
+            input["data"] = serde_json::to_value(package_data::data_input(&self.data)?)?;
+        }
         let require_source = self.manifest.source_kind().is_some();
         let ready = !require_source || matches!(&source, SourceInput::Ready { .. });
         if require_source {
@@ -679,10 +674,9 @@ impl Package {
             c.globals().set("__input", input)?;
             c.eval("JSON.stringify(refresh(JSON.parse(__input)))")
         })?;
-        if raw.len() > 16 * 1024 {
-            return Err(fail("插件输出超过 16 KiB"));
-        }
-        let mut output: Output = serde_json::from_str(&raw)?;
+        let (output, storage) = script_settings::split_output(&raw)?;
+        let mut output: Output = serde_json::from_value(output)?;
+        output.storage = storage;
         let surfaces = self.manifest.surfaces();
         let has = |surface| surfaces.contains(&surface);
         if self.manifest.legacy_calendar_card() {
@@ -1157,7 +1151,7 @@ impl LocalPlugins {
             .iter()
             .all(|f| v.get(&f.key).is_some_and(|s| valid_field(f, s)))
         {
-            return Err(fail("请检查文本和日期格式 YYYY-MM-DD"));
+            return Err(fail("请检查设置格式和取值范围"));
         }
         r.values = v;
         self.put(id, r)?;
@@ -1288,18 +1282,27 @@ impl LocalPlugins {
                     Ok(Some(output))
                 });
             match result {
-                Ok(Some(Output { card, marker, quota, status, .. })) => {
+                Ok(Some(Output { card, marker, quota, status, next_refresh_at, .. })) => {
                     self.errors.remove(&id);
-                    let Some(surfaces) = self
+                    let Some(manifest) = self
                         .records
                         .get(&id)
                         .and_then(|record| record.package.as_ref())
-                        .map(|package| package.manifest.surfaces())
+                        .map(|package| &package.manifest)
                     else {
                         continue;
                     };
+                    if let Some(at) = next_refresh_at {
+                        if manifest.capabilities.iter().any(|cap| cap == "timer") {
+                            let delay = script_settings::next_delay(chrono::Utc::now().timestamp(), at, manifest.refresh_seconds);
+                            let now = Instant::now();
+                            if let Some(next) = self.next.get_mut(&id) {
+                                *next = (*next).min(now + delay).max(now + Duration::from_secs(60));
+                            }
+                        }
+                    }
                     let live = self.live.clone();
-                    for surface in surfaces {
+                    for surface in manifest.surfaces() {
                         // 模块关着时这一位置的结果直接丢掉，重新打开时会补算。
                         let shown = surface == Surface::StatusPage || live.contains(&surface);
                         match surface {
@@ -1579,3 +1582,6 @@ mod quota_source_tests;
 #[cfg(all(test, windows))]
 #[path = "status_source_tests.rs"]
 mod status_source_tests;
+#[cfg(test)]
+#[path = "script_input_tests.rs"]
+mod script_input_tests;
