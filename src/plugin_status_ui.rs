@@ -1,14 +1,22 @@
 //! 用岛仔画布绘制只读的状态详情。
 
+#[path = "plugin_status_components.rs"]
+mod components;
+use components::{
+    badge_count, draw_badges, draw_chart, draw_icon, draw_list, draw_note, list_rows, note_lines,
+    BADGE_ROW_HEIGHT, NOTE_LINE_HEIGHT,
+};
+
 use crate::{
     paint::{self, Card, H},
     plugin_status::{
-        PluginStatus, ProgressVariant, StatusComponent, StatusDensity, StatusHealth, StatusLayout,
-        StatusState, StatusSurface,
+        PluginStatus, ProgressVariant, StatusComponent, StatusDensity, StatusEmphasis,
+        StatusHealth, StatusLayout, StatusState, StatusStyle, StatusSurface, MAX_ITEMS,
     },
+    skin_paint::{self, Palette},
     theme::{self, size, W},
 };
-use eframe::egui::Color32;
+use eframe::egui::{self, Color32};
 use std::f32::consts::{FRAC_PI_2, TAU};
 
 pub(crate) const STATUS_PAGE_H: f32 = 236.0;
@@ -20,30 +28,117 @@ const CONTENT_TOP: f32 = 42.0;
 const PAGE_BOTTOM_SPACE: f32 = 16.0;
 const MIN_LAYOUT_HEIGHT: f32 = 156.0;
 const MAX_METRICS: usize = 6;
+const MAX_PAGE_HEIGHT: f32 = 348.0;
+const MAX_CARD_HEIGHT: f32 = MAX_PAGE_HEIGHT - CONTENT_TOP - PAGE_BOTTOM_SPACE;
+
+#[derive(Clone, Copy)]
+pub(crate) struct StatusBackdrop {
+    pub palette: Option<Palette>,
+    pub island: Color32,
+}
+
+impl StatusBackdrop {
+    fn card_color(self, surface: StatusSurface) -> Color32 {
+        let [r, g, b, _] = self.island.to_srgba_unmultiplied();
+        let island = Color32::from_rgb(r, g, b);
+        if surface == StatusSurface::Plain {
+            return island;
+        }
+        let card = self.palette.map_or(theme::CARD, |palette| {
+            skin_paint::map_color(theme::CARD, &palette)
+        });
+        let [r, g, b, alpha] = card.to_srgba_unmultiplied();
+        paint::mix(island, Color32::from_rgb(r, g, b), f32::from(alpha) / 255.0)
+    }
+}
+
+#[derive(Clone, Copy)]
+struct Accent {
+    color: Color32,
+    fixed: bool,
+}
+
+impl Accent {
+    fn native(color: Color32) -> Self {
+        Self {
+            color,
+            fixed: false,
+        }
+    }
+
+    fn draw(self, c: &Card, draw: impl FnOnce(Color32)) {
+        let layer = c.painter.layer_id();
+        let from = self
+            .fixed
+            .then(|| skin_paint::shape_count(c.ui.ctx(), layer));
+        draw(self.color);
+        if let Some(from) = from {
+            // 强调色已经根据最终卡片底色校正，后续皮肤换色保留此色。
+            skin_paint::tone_since(c.ui.ctx(), layer, from, |color, _| color);
+        }
+    }
+}
+
+fn readable_accent(color: Color32, background: Color32) -> Color32 {
+    let contrast = |color: Color32| {
+        let rgb = |c: Color32| [c.r(), c.g(), c.b()].map(|v| f32::from(v) / 255.0);
+        crate::glass::contrast(rgb(color), rgb(background))
+    };
+    if contrast(color) >= 3.0 {
+        return color;
+    }
+    let target = if contrast(Color32::BLACK) > contrast(Color32::WHITE) {
+        Color32::BLACK
+    } else {
+        Color32::WHITE
+    };
+    let (mut low, mut high) = (0.0, 1.0);
+    for _ in 0..8 {
+        let mid = (low + high) * 0.5;
+        if contrast(paint::mix(color, target, mid)) >= 3.0 {
+            high = mid;
+        } else {
+            low = mid;
+        }
+    }
+    paint::mix(color, target, high)
+}
 
 pub(crate) fn status_page_height(layout: Option<&StatusLayout>) -> f32 {
     let Some(layout) = layout else {
         return STATUS_PAGE_H;
     };
-    let density = layout.style.density;
-    let (padding, _) = spacing(density);
     // 给可出现的组件留足空间，读数缺失或断源时保留页面高度。
-    let height = stack_height(layout.components.iter().copied(), density, MAX_METRICS);
-    (CONTENT_TOP + padding * 2.0 + height + PAGE_BOTTOM_SPACE).max(MIN_LAYOUT_HEIGHT)
+    (CONTENT_TOP + layout_card_height(layout, None) + PAGE_BOTTOM_SPACE)
+        .clamp(MIN_LAYOUT_HEIGHT, MAX_PAGE_HEIGHT)
+}
+
+pub(crate) fn status_scroll_area(
+    status: &PluginStatus,
+    layout: &StatusLayout,
+) -> Option<egui::Rect> {
+    (layout_card_height(layout, Some(status)) > MAX_CARD_HEIGHT).then(|| {
+        egui::Rect::from_min_size(
+            egui::pos2(LEFT, CONTENT_TOP),
+            egui::vec2(WIDTH, MAX_CARD_HEIGHT),
+        )
+    })
 }
 
 pub(crate) fn draw_status_page(
     c: &Card,
+    id: &str,
     status: Option<&PluginStatus>,
     health: StatusHealth,
     layout: Option<&StatusLayout>,
+    backdrop: StatusBackdrop,
 ) {
     let Some(status) = status.filter(|_| health == StatusHealth::Ready) else {
         draw_unavailable(c, health);
         return;
     };
     if let Some(layout) = layout {
-        draw_layout(c, status, layout);
+        draw_layout(c, id, status, layout, backdrop);
     } else {
         draw_default(c, status);
     }
@@ -53,7 +148,7 @@ fn draw_default(c: &Card, status: &PluginStatus) {
     let color = state_color(status.state);
     c.fill(LEFT, 42.0, WIDTH, 78.0, 9.0, theme::CARD);
     let head_x = if let Some(progress) = status.progress_pct {
-        draw_progress_ring(c, progress, color, (84.0, 81.0), 27.0);
+        draw_progress_ring(c, progress, Accent::native(color), (84.0, 81.0), 27.0);
         128.0
     } else {
         56.0
@@ -164,7 +259,11 @@ fn metric_row_height(density: StatusDensity) -> f32 {
     }
 }
 
-fn component_height(component: StatusComponent, density: StatusDensity, metrics: usize) -> f32 {
+fn component_height(
+    component: StatusComponent,
+    density: StatusDensity,
+    status: Option<&PluginStatus>,
+) -> f32 {
     match component {
         StatusComponent::State {} => 18.0,
         StatusComponent::Summary {} => 26.0,
@@ -175,66 +274,147 @@ fn component_height(component: StatusComponent, density: StatusDensity, metrics:
             (ProgressVariant::Bar, StatusDensity::Compact) => 22.0,
         },
         StatusComponent::Metrics { columns } => {
+            let metrics = status.map_or(MAX_METRICS, |status| status.metrics.len());
             metrics.div_ceil(usize::from(columns)) as f32 * metric_row_height(density)
         }
         StatusComponent::Alert {} => 30.0,
         StatusComponent::UpdatedAt {} => 14.0,
+        StatusComponent::List {} => {
+            let count = status.map_or(MAX_ITEMS, |status| status.items.len());
+            list_rows(density, count) as f32 * metric_row_height(density)
+        }
+        StatusComponent::Chart {} => {
+            if density == StatusDensity::Compact {
+                30.0
+            } else {
+                44.0
+            }
+        }
+        StatusComponent::Text {} => {
+            note_lines(density, status.and_then(|status| status.note.as_deref())) as f32
+                * NOTE_LINE_HEIGHT
+        }
+        StatusComponent::Badge {} => {
+            let count = badge_count(density, status.map_or(4, |status| status.tags.len()));
+            let columns = if density == StatusDensity::Compact {
+                3
+            } else {
+                2
+            };
+            count.div_ceil(columns) as f32 * BADGE_ROW_HEIGHT
+        }
     }
 }
 
-fn stack_height(
-    components: impl Iterator<Item = StatusComponent>,
-    density: StatusDensity,
-    metrics: usize,
-) -> f32 {
-    let (_, gap) = spacing(density);
-    let height: f32 = components
-        .map(|component| component_height(component, density, metrics) + gap)
-        .sum();
-    (height - gap).max(0.0)
-}
-
-fn draw_layout(c: &Card, status: &PluginStatus, layout: &StatusLayout) {
-    let density = layout.style.density;
-    let accent = layout.style.accent_rgb().map_or_else(
-        || state_color(status.state),
-        |[r, g, b]| Color32::from_rgb(r, g, b),
-    );
-    let components = layout
-        .components
-        .iter()
-        .copied()
-        .filter(|component| match component {
+fn components_with_data<'a>(
+    layout: &'a StatusLayout,
+    status: Option<&'a PluginStatus>,
+) -> impl Iterator<Item = StatusComponent> + 'a {
+    layout.components.iter().copied().filter(move |component| {
+        status.is_none_or(|status| match component {
             StatusComponent::State {} => true,
             StatusComponent::Summary {} => status.summary.is_some(),
             StatusComponent::Progress { .. } => status.progress_pct.is_some(),
             StatusComponent::Metrics { .. } => !status.metrics.is_empty(),
             StatusComponent::Alert {} => status.alert.is_some(),
             StatusComponent::UpdatedAt {} => status.observed_at.is_some(),
-        });
-    let height = stack_height(components.clone(), density, status.metrics.len());
+            StatusComponent::List {} => !status.items.is_empty(),
+            StatusComponent::Chart {} => status.series.is_some(),
+            StatusComponent::Text {} => status.note.is_some(),
+            StatusComponent::Badge {} => !status.tags.is_empty(),
+        })
+    })
+}
+
+fn layout_card_height(layout: &StatusLayout, status: Option<&PluginStatus>) -> f32 {
+    let density = layout.style.density;
+    let (padding, gap) = spacing(density);
+    let height: f32 = components_with_data(layout, status)
+        .map(|component| component_height(component, density, status) + gap)
+        .sum();
+    if height > 0.0 {
+        height - gap + padding * 2.0
+    } else {
+        0.0
+    }
+}
+
+fn draw_layout(
+    c: &Card,
+    id: &str,
+    status: &PluginStatus,
+    layout: &StatusLayout,
+    backdrop: StatusBackdrop,
+) {
+    let height = layout_card_height(layout, Some(status));
     if height == 0.0 {
         draw_message(c, "当前没有可显示的数据", None, theme::DIM);
         return;
     }
-    let (padding, gap) = spacing(density);
     if layout.style.surface == StatusSurface::Card {
         c.fill(
             LEFT,
             CONTENT_TOP,
             WIDTH,
-            height + padding * 2.0,
+            height.min(MAX_CARD_HEIGHT),
             9.0,
             theme::CARD,
         );
     }
+    let accent = layout.style.accent_rgb().map_or_else(
+        || Accent::native(state_color(status.state)),
+        |[r, g, b]| Accent {
+            color: readable_accent(
+                Color32::from_rgb(r, g, b),
+                backdrop.card_color(layout.style.surface),
+            ),
+            fixed: backdrop.palette.is_some(),
+        },
+    );
+    if height <= MAX_CARD_HEIGHT {
+        draw_components(c, status, layout, accent);
+        return;
+    }
+
+    let viewport = c.rect(LEFT, CONTENT_TOP, WIDTH, MAX_CARD_HEIGHT);
+    let mut content = egui::Ui::new(
+        c.ui.ctx().clone(),
+        egui::Id::new(("plugin-status-scroll", id, c.live)),
+        egui::UiBuilder::new()
+            .max_rect(viewport)
+            .layer_id(c.painter.layer_id())
+            .style(c.ui.style().clone()),
+    );
+    content.set_clip_rect(viewport.intersect(c.painter.clip_rect()));
+    content.set_opacity(c.painter.opacity());
+    if !c.live {
+        content.disable();
+    }
+    content.spacing_mut().scroll.bar_width = 4.0 * c.s;
+    egui::ScrollArea::vertical()
+        .max_height(viewport.height())
+        .auto_shrink([false, false])
+        .show(&mut content, |ui| {
+            let (rect, _) =
+                ui.allocate_exact_size(egui::vec2(WIDTH * c.s, height * c.s), egui::Sense::hover());
+            let origin = rect.min - egui::vec2(LEFT, CONTENT_TOP) * c.s;
+            let mut inner = Card::new(ui, origin, ui.clip_rect());
+            inner.s = c.s;
+            inner.live = c.live;
+            draw_components(&inner, status, layout, accent);
+        });
+}
+
+fn draw_components(c: &Card, status: &PluginStatus, layout: &StatusLayout, accent: Accent) {
+    let density = layout.style.density;
+    let (padding, gap) = spacing(density);
     let mut y = CONTENT_TOP + padding;
-    for component in components {
-        let height = component_height(component, density, status.metrics.len());
+    for component in components_with_data(layout, Some(status)) {
+        let height = component_height(component, density, Some(status));
         let center_y = y + height / 2.0;
         let x = LEFT + 14.0;
         match component {
-            StatusComponent::State {} => draw_state(c, status, accent, x, center_y),
+            StatusComponent::State {} => draw_state(c, status, &layout.style, accent, x, center_y),
             StatusComponent::Summary {} => {
                 if let Some(summary) = status.summary.as_deref() {
                     draw_lines(c, summary, x, y + 7.0, TEXT_RIGHT - x, theme::GRAY);
@@ -294,37 +474,52 @@ fn draw_layout(c: &Card, status: &PluginStatus, layout: &StatusLayout) {
                     );
                 }
             }
+            StatusComponent::List {} => draw_list(c, status, density, x, y),
+            StatusComponent::Chart {} => {
+                if let Some(series) = &status.series {
+                    draw_chart(c, series, layout.style.emphasis, accent, x, y, height);
+                }
+            }
+            StatusComponent::Text {} => {
+                if let Some(note) = status.note.as_deref() {
+                    draw_note(c, note, density, x, y);
+                }
+            }
+            StatusComponent::Badge {} => draw_badges(c, status, density, accent, x, y),
         }
         y += height + gap;
     }
 }
 
-fn draw_state(c: &Card, status: &PluginStatus, accent: Color32, x: f32, y: f32) {
+fn draw_state(
+    c: &Card,
+    status: &PluginStatus,
+    style: &StatusStyle,
+    accent: Accent,
+    x: f32,
+    y: f32,
+) {
     let device_offline = status.state == StatusState::Offline && status.label != "设备离线";
-    let color = match status.state {
+    let indicator = match status.state {
         StatusState::Paused | StatusState::Error | StatusState::Offline => {
-            state_color(status.state)
+            Accent::native(state_color(status.state))
         }
         _ => accent,
     };
-    c.circle(x + 3.0, y, 2.8, color);
-    let x = x + 12.0;
+    indicator.draw(c, |color| c.circle(x + 3.0, y, 2.8, color));
+    let mut x = x + 12.0;
+    if let Some(icon) = style.icon {
+        draw_icon(c, icon, x + 7.0, y);
+        x += 20.0;
+    }
     let reserved = if device_offline { 58.0 } else { 0.0 };
-    let label = c.fit(
-        &status.label,
-        size::TITLE,
-        W::Semibold,
-        TEXT_RIGHT - x - reserved,
-    );
-    c.centered_text(
-        x,
-        y,
-        &label,
-        size::TITLE,
-        W::Semibold,
-        theme::WHITE,
-        H::Left,
-    );
+    let (size, weight) = if style.emphasis == StatusEmphasis::Strong {
+        (size::TITLE + 2.0, W::Bold)
+    } else {
+        (size::TITLE, W::Semibold)
+    };
+    let label = c.fit(&status.label, size, weight, TEXT_RIGHT - x - reserved);
+    c.centered_text(x, y, &label, size, weight, theme::WHITE, H::Left);
     if device_offline {
         c.centered_text(
             TEXT_RIGHT,
@@ -376,12 +571,14 @@ fn draw_metrics(
     }
 }
 
-fn draw_progress_bar(c: &Card, progress: f64, color: Color32, x: f32, y: f32) {
+fn draw_progress_bar(c: &Card, progress: f64, accent: Accent, x: f32, y: f32) {
     let width = TEXT_RIGHT - x - 55.0;
     c.fill(x, y - 4.0, width, 8.0, 4.0, theme::TRACK);
     if progress > 0.0 {
         let filled = width * progress as f32 / 100.0;
-        c.fill(x, y - 4.0, filled, 8.0, 4.0_f32.min(filled / 2.0), color);
+        accent.draw(c, |color| {
+            c.fill(x, y - 4.0, filled, 8.0, 4.0_f32.min(filled / 2.0), color)
+        });
     }
     c.centered_text(
         TEXT_RIGHT - 12.0,
@@ -403,24 +600,26 @@ fn draw_progress_bar(c: &Card, progress: f64, color: Color32, x: f32, y: f32) {
     );
 }
 
-fn draw_progress_ring(c: &Card, progress: f64, color: Color32, center: (f32, f32), radius: f32) {
+fn draw_progress_ring(c: &Card, progress: f64, accent: Accent, center: (f32, f32), radius: f32) {
     let (x, y) = center;
     c.track(x, y, radius, 4.0, theme::TRACK);
-    if progress >= 100.0 {
-        c.track(x, y, radius, 4.0, color);
-    } else if progress > 0.0 {
-        let start = -FRAC_PI_2;
-        let end = start + TAU * progress as f32 / 100.0;
-        c.arc(x, y, radius, start, end, 4.0, color);
-        for angle in [start, end] {
-            c.circle(
-                x + radius * angle.cos(),
-                y + radius * angle.sin(),
-                2.0,
-                color,
-            );
+    accent.draw(c, |color| {
+        if progress >= 100.0 {
+            c.track(x, y, radius, 4.0, color);
+        } else if progress > 0.0 {
+            let start = -FRAC_PI_2;
+            let end = start + TAU * progress as f32 / 100.0;
+            c.arc(x, y, radius, start, end, 4.0, color);
+            for angle in [start, end] {
+                c.circle(
+                    x + radius * angle.cos(),
+                    y + radius * angle.sin(),
+                    2.0,
+                    color,
+                );
+            }
         }
-    }
+    });
     let percent = progress_text(progress);
     let size = if percent.len() > 2 { 19.0 } else { 22.0 };
     let width = c.text_w(&percent, size, W::Bold);

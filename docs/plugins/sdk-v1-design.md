@@ -29,7 +29,7 @@ function refresh({ settings, today }) {
 | 一个插件多处输出 · 测试版 | 在 capabilities 里同时列出几种输出，例如 `["card","calendar.marker","timer"]`，一次返回 `{card, marker}`。同时有多种输出时，某项返回空值表示这次不显示 | 每处输出只跟着自己所在模块的开关，关日程只撤日历标注；关掉插件归属的模块则整个插件暂停 |
 | 周期刷新 · 已实现 | 两个样例在清单声明 `"refreshSeconds":60` 和 timer 能力。到期由岛仔调用 refresh | 卡片按期更新 |
 | 常驻、固定、临时卡 · 待宿主实现 | `function refresh(i){return {cards:[{id:"job",mode:"temporary",text:i.settings.title,ttlMs:5000}]}}` | 常驻栏、临时位置，用户自行选择固定 |
-| 结构化状态卡和独立详情页 · 测试版 | 清单使用 `"owner":"status"` 和 `"capabilities":["status.page","timer"]`，`refresh` 返回 `status`。可用 `statusLayout` 选择组件、排序和样式。 | 在岛上翻页查看，在「设置 → 页面管理 → 状态详情」单独启停 |
+| 结构化状态卡和独立详情页 · 测试版 | 清单使用 `"owner":"status"` 和 `"capabilities":["status.page","timer"]`，`refresh` 返回 `status`。可用 `statusLayout` 选择组件、排序和样式，可加入列表、迷你折线、多行说明和标签。 | 在岛上翻页查看，在「设置 → 页面管理 → 状态详情」单独启停 |
 | 可编辑独立模块、列表、表单 · 待宿主实现 | 清单声明 module 与按钮 `actions:["save"]`。示意 `function action(i){return {page:{kind:"detail",text:i.form.text},storage:{note:i.form.text}}}` | 岛上功能栏查看、编辑，侧栏调偏好，页面管理启停 |
 | 日程来源 · 待宿主实现 | `function refresh(i){return {calendar:[{id:"anniversary",title:i.settings.title,date:i.settings.target}]}}` | 日程里的来源，按来源和条目 ID 更新 |
 | 歌词来源 · 待宿主实现 | `function refresh(i){return {lyrics:{trackId:i.track.id,lines:i.source.lines}}}`。换歌后宿主只接收当前曲目的结果 | 原音乐页 |
@@ -127,7 +127,7 @@ function refresh({ source }) {
 
 JS 清单使用 `"owner":"status"`，能力列出 `status.page`。可选的 `timer`、`settings` 和 `storage` 沿用现有约定。读取文件或本机接口时使用同一套 `source.read` 授权。宿主会用清单的显示名称和固定插件 ID 注册详情页，无需声明页面编号。
 
-返回 `{status: ...}`，表中所有文字字段填单行可显示文字。
+返回 `{status: ...}`，`note` 支持多行，其余文字字段填单行可显示文字。
 
 | 字段 | 取值 |
 | --- | --- |
@@ -135,6 +135,10 @@ JS 清单使用 `"owner":"status"`，能力列出 `status.page`。可选的 `tim
 | `summary`、`alert` | 可选的摘要与告警，各 1 至 120 字 |
 | `progress_pct` | 可选，0 至 100 的数字 |
 | `metrics` | 可选，最多 6 项。每项填 `label`（1 至 28 字）和 `value`（1 至 32 字），数值和单位可放在同一段文字 |
+| `items` | 可选，最多 8 项。每项有 `label`（1 至 28 字），可选 `detail`（1 至 80 字）和 `state`（同上） |
+| `series` | 可选，2 至 48 个有限数字，按数组顺序绘制 |
+| `note` | 可选，1 至 300 字的多行说明，支持 LF 或 CRLF 换行 |
+| `tags` | 可选，最多 4 个标签，每个 1 至 8 字 |
 | `observed_at`、`expires_at` | 可选的 Unix 秒，分别表示观察和过期时间。观察时间须早于或等于过期时间，到了过期时间会撤下旧读数 |
 
 #### 自定义详情页布局
@@ -156,7 +160,7 @@ JS 清单使用 `"owner":"status"`，能力列出 `status.page`。可选的 `tim
 }
 ```
 
-选择 1 至 6 个不同类型的组件，数组顺序就是展示顺序。有数据的组件按顺序显示。
+选择 1 至 8 个不同类型的组件，数组顺序就是展示顺序。有数据的组件按顺序显示，卡片内容溢出时可以在卡片内滚动。
 
 | 组件 `type` | 数据与选项 |
 | --- | --- |
@@ -164,10 +168,16 @@ JS 清单使用 `"owner":"status"`，能力列出 `status.page`。可选的 `tim
 | `summary` | 显示 `summary` |
 | `progress` | 显示 `progress_pct`。`variant` 可选 `ring`（默认，圆环）或 `bar`（横向进度条） |
 | `metrics` | 显示 `metrics`。`columns` 可选 `1` 或 `2`（默认） |
+| `list` | 显示 `items`，用颜色点表达每项的状态 |
+| `chart` | 将 `series` 绘成迷你折线，包含网格、面积填充和末点 |
+| `text` | 按行显示 `note`，超长部分用省略号提示 |
+| `badge` | 显示 `tags` |
 | `alert` | 显示 `alert` |
 | `updated_at` | 显示 `observed_at` |
 
-`style` 可以省略。主色 `accent` 使用六位 `#RRGGBB`，省略时沿用岛仔默认状态色。间距 `density` 可选 `comfortable`（默认）或 `compact`。背景 `surface` 可选 `card`（默认）或 `plain`。
+`style` 可以省略。强调色 `accent` 使用六位 `#RRGGBB`，岛仔按实际底色校正到至少 3:1，省略时沿用岛仔默认状态色。间距 `density` 可选 `comfortable`（默认）或 `compact`。紧凑模式最多显示 3 项列表、2 行说明、3 个标签。背景 `surface` 可选 `card`（默认）或 `plain`。强调程度 `emphasis` 可选 `normal`（默认）或 `strong`，作用于状态标题和折线。`icon` 可将岛仔内置的 `battery`、`cup`、`clock` 或 `chart` 图标放到状态标题旁。
+
+[打印机状态样例](../../spike/examples/printer-status/plugin.json) 通过模拟脚本演示列表、折线、说明、标签和主题令牌。
 
 返回 `{status:null}` 时显示等待状态。取数失败会撤下旧读数，在本页显示数据源暂不可用。来源正常返回 `state:"offline"` 时，按插件提供的设备离线状态展示。宿主按插件 ID 分开刷新和撤下状态。
 

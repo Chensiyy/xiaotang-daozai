@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
+pub(super) const MAX_ITEMS: usize = 8;
 const MAX_TIMESTAMP: i64 = 253_402_300_799;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -34,6 +35,12 @@ pub(crate) struct PluginStatus {
     pub progress_pct: Option<f64>,
     #[serde(default)]
     pub metrics: Vec<StatusMetric>,
+    #[serde(default)]
+    pub items: Vec<StatusItem>,
+    pub series: Option<Vec<f64>>,
+    pub note: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
     pub alert: Option<String>,
     pub observed_at: Option<i64>,
     pub expires_at: Option<i64>,
@@ -46,6 +53,14 @@ pub(crate) struct StatusMetric {
     pub value: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct StatusItem {
+    pub label: String,
+    pub detail: Option<String>,
+    pub state: Option<StatusState>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct StatusLayout {
@@ -56,8 +71,8 @@ pub(crate) struct StatusLayout {
 
 impl StatusLayout {
     pub(crate) fn validate(&self) -> Result<(), &'static str> {
-        if !(1..=6).contains(&self.components.len()) {
-            return Err("状态页布局需要 1 至 6 个组件");
+        if !(1..=8).contains(&self.components.len()) {
+            return Err("状态页布局需要 1 至 8 个组件");
         }
         for (index, component) in self.components.iter().enumerate() {
             if self.components[..index].iter().any(|previous| {
@@ -92,6 +107,10 @@ pub(crate) enum StatusComponent {
     },
     Alert {},
     UpdatedAt {},
+    List {},
+    Chart {},
+    Text {},
+    Badge {},
 }
 
 fn default_metric_columns() -> u8 {
@@ -111,7 +130,7 @@ pub(crate) enum ProgressVariant {
 pub(crate) struct StatusStyle {
     #[serde(
         default,
-        deserialize_with = "present_accent",
+        deserialize_with = "present_value",
         skip_serializing_if = "Option::is_none"
     )]
     accent: Option<String>,
@@ -119,10 +138,20 @@ pub(crate) struct StatusStyle {
     pub density: StatusDensity,
     #[serde(default)]
     pub surface: StatusSurface,
+    #[serde(default)]
+    pub emphasis: StatusEmphasis,
+    #[serde(
+        default,
+        deserialize_with = "present_value",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub icon: Option<StatusIcon>,
 }
 
-fn present_accent<'de, D: serde::Deserializer<'de>>(input: D) -> Result<Option<String>, D::Error> {
-    String::deserialize(input).map(Some)
+fn present_value<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
+    input: D,
+) -> Result<Option<T>, D::Error> {
+    T::deserialize(input).map(Some)
 }
 
 impl StatusStyle {
@@ -152,6 +181,23 @@ pub(crate) enum StatusSurface {
     Plain,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum StatusEmphasis {
+    #[default]
+    Normal,
+    Strong,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum StatusIcon {
+    Battery,
+    Cup,
+    Clock,
+    Chart,
+}
+
 impl PluginStatus {
     pub(crate) fn valid(&self) -> bool {
         valid_text(&self.label, 40)
@@ -171,6 +217,20 @@ impl PluginStatus {
                 .metrics
                 .iter()
                 .all(|metric| valid_text(&metric.label, 28) && valid_text(&metric.value, 32))
+            && self.items.len() <= MAX_ITEMS
+            && self.items.iter().all(|item| {
+                valid_text(&item.label, 28)
+                    && item
+                        .detail
+                        .as_deref()
+                        .is_none_or(|text| valid_text(text, 80))
+            })
+            && self.series.as_ref().is_none_or(|series| {
+                (2..=48).contains(&series.len()) && series.iter().all(|value| value.is_finite())
+            })
+            && self.note.as_deref().is_none_or(valid_note)
+            && self.tags.len() <= 4
+            && self.tags.iter().all(|tag| valid_text(tag, 8))
             && self.observed_at.is_none_or(valid_timestamp)
             && self.expires_at.is_none_or(valid_timestamp)
             && self
@@ -188,6 +248,13 @@ fn valid_text(text: &str, max_chars: usize) -> bool {
     !text.trim().is_empty()
         && text.chars().count() <= max_chars
         && !text.chars().any(char::is_control)
+}
+
+fn valid_note(note: &str) -> bool {
+    let note = note.replace("\r\n", "\n");
+    !note.trim().is_empty()
+        && note.chars().count() <= 300
+        && !note.chars().any(|ch| ch != '\n' && ch.is_control())
 }
 
 fn valid_timestamp(timestamp: i64) -> bool {
@@ -238,12 +305,98 @@ mod tests {
             assert!(!status.valid(), "{key}: {status:?}");
         }
         assert!(serde_json::from_value::<PluginStatus>(json!({
-            "state":"idle","label":"就绪","actions":[]
+            "state":"idle","label":"就绪","unknown_field":[]
         }))
         .is_err());
         assert!(serde_json::from_value::<PluginStatus>(json!({
             "state":"unknown","label":"异常"
         }))
         .is_err());
+    }
+
+    #[test]
+    fn plugin_status_checks_component_data_limits() {
+        let mut status: PluginStatus = serde_json::from_value(json!({
+            "state":"running", "label":"打印中",
+            "items":vec![json!({"label":"任务","detail":"热床升温","state":"paused"}); 8],
+            "series":vec![15.0; 48],
+            "note":format!("{}\r\n结束", "行".repeat(297)),
+            "tags":["标签标签标签标签","模拟","精细","颜色"]
+        }))
+        .unwrap();
+        assert!(status.valid());
+
+        for series in [
+            vec![],
+            vec![1.0],
+            vec![0.0; 49],
+            vec![1.0, f64::INFINITY],
+            vec![1.0, f64::NAN],
+        ] {
+            status.series = Some(series);
+            assert!(!status.valid());
+        }
+
+        status.series = Some(vec![-f64::MAX, f64::MAX]);
+        assert!(status.valid());
+        status.items.push(status.items[0].clone());
+        assert!(!status.valid());
+        status.items.pop();
+        status.items[0].detail = Some("测".repeat(81));
+        assert!(!status.valid());
+        status.items[0].detail = None;
+        status.items[0].label = " ".into();
+        assert!(!status.valid());
+        status.items[0].label = "打印".into();
+        status.note = Some("测".repeat(301));
+        assert!(!status.valid());
+        status.note = Some("第一行\t第二行".into());
+        assert!(!status.valid());
+        status.note = Some("第一行\n第二行".into());
+        assert!(status.valid());
+
+        status.tags.push("第五条".into());
+        assert!(!status.valid());
+        status.tags.pop();
+        status.tags[0] = "标签标签标签标签超".into();
+        assert!(!status.valid());
+    }
+
+    #[test]
+    fn plugin_status_layout_allows_eight_unique_components_and_known_tokens() {
+        let mut definition = json!({
+            "components": [
+                {"type":"state"}, {"type":"summary"}, {"type":"progress"}, {"type":"metrics"},
+                {"type":"list"}, {"type":"chart"}, {"type":"text"}, {"type":"badge"}
+            ],
+            "style":{"emphasis":"strong","icon":"chart"}
+        });
+        let layout: StatusLayout = serde_json::from_value(definition.clone()).unwrap();
+        assert!(layout.validate().is_ok());
+        assert_eq!(layout.style.emphasis, StatusEmphasis::Strong);
+        assert_eq!(layout.style.icon, Some(StatusIcon::Chart));
+
+        let components = definition["components"].as_array_mut().unwrap();
+        components.push(json!({"type":"alert"}));
+        assert!(serde_json::from_value::<StatusLayout>(definition.clone())
+            .unwrap()
+            .validate()
+            .is_err());
+        definition["components"][0] = json!({"type":"text"});
+        definition["components"].as_array_mut().unwrap().pop();
+        assert!(serde_json::from_value::<StatusLayout>(definition.clone())
+            .unwrap()
+            .validate()
+            .is_err());
+
+        definition["components"] = json!([{"type":"state"}]);
+        for style in [
+            json!({"icon":null}),
+            json!({"icon":"custom"}),
+            json!({"emphasis":"extra"}),
+        ] {
+            definition["style"] = style;
+            assert!(serde_json::from_value::<StatusLayout>(definition.clone()).is_err());
+        }
     }
 }

@@ -430,3 +430,24 @@ fn structured_status_discards_old_data_and_rejects_other_owners() -> Result<()> 
     assert!(Package::read(&unauthorized).is_err());
     Ok(())
 }
+
+#[test]
+fn printer_status_example_installs_and_returns_all_new_components() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let mut host = fixture.host();
+    let path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("spike/examples/printer-status/plugin.json");
+    let id = "example.printer-status";
+    host.install(&path)?;
+    host.enable(id, true)?;
+    settle(&mut host, false);
+    let (_, snapshot, health) = host.status_page(id).unwrap();
+    assert_eq!(health, StatusHealth::Ready);
+    let snapshot = snapshot.unwrap();
+    assert_eq!(snapshot.items.len(), 2);
+    assert_eq!(snapshot.series.as_ref().unwrap().len(), 5);
+    assert!(snapshot.note.as_ref().unwrap().contains('\n'));
+    assert_eq!(snapshot.tags.len(), 3);
+    assert_eq!(host.status_layout(id).unwrap().components.len(), 8);
+    Ok(())
+}

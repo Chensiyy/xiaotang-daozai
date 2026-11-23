@@ -2331,7 +2331,17 @@ impl App {
                 let mail_list=self.page==5 && !self.mail.accounts.is_empty() && self.mail.open_uid.is_none() && self.mail_list_bounds().contains(cursor);
                 let music_volume=self.page==0 && (Rect::from_min_max(Pos2::new(354.0,106.0),Pos2::new(380.0,130.0)).contains(cursor)
                     || self.music_volume_open && self.music_volume_bounds().contains(cursor));
-                if mail_reading || mail_list || music_volume {self.wheel_delta=0.0;}
+                #[cfg(feature="sdk-js")]
+                let status_scroll=self.page.checked_sub(PAGE_NAMES.len())
+                    .and_then(|index|self.status_pages.get(index))
+                    .and_then(|(id,_)|{
+                        let (_,status,health)=self.plugins.status_page(id)?;
+                        if health!=crate::plugin_status::StatusHealth::Ready {return None;}
+                        crate::plugin_status_ui::status_scroll_area(status?,self.plugins.status_layout(id)?)
+                    }).is_some_and(|area|area.contains(cursor));
+                #[cfg(not(feature="sdk-js"))]
+                let status_scroll=false;
+                if mail_reading || mail_list || music_volume || status_scroll {self.wheel_delta=0.0;}
                 else {
                     // 累积高精度滚轮的小幅输入；停顿或反向时丢弃上一段余量。
                     if self.t-self.wheel_at>0.18 || self.wheel_delta*scroll<0.0 {self.wheel_delta=0.0;}
@@ -3899,7 +3909,10 @@ impl App {
         #[cfg(feature="sdk-js")]
         if let Some((id,_))=page.checked_sub(PAGE_NAMES.len()).and_then(|index|self.status_pages.get(index)) {
             if let Some((_,status,health))=self.plugins.status_page(id) {
-                crate::plugin_status_ui::draw_status_page(c,status,health,self.plugins.status_layout(id));
+                let backdrop=crate::plugin_status_ui::StatusBackdrop{
+                    palette:self.island_palette(),island:self.island_overlay_fill(),
+                };
+                crate::plugin_status_ui::draw_status_page(c,id,status,health,self.plugins.status_layout(id),backdrop);
             }
             return;
         }
