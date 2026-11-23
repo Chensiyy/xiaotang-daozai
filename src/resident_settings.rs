@@ -1,14 +1,14 @@
 use crate::{bar_layout::*,paint::{self,Card,H},resident_date::ResidentDay,theme::{self,W}};
 use eframe::egui::{self,Color32,RichText,Rect,Pos2,Vec2};
 
-pub(crate) fn preview_layout(order:&[usize],quotas:usize)->Layout {
+pub(crate) fn preview_layout(order:&[usize],quotas:usize,performance_width:f32)->Layout {
     let mut layout=Layout::new(true,quotas.max(1),true,true,false,true,true);
-    layout.reorder(order);layout
+    layout.add_performance(performance_width);layout.reorder(order);layout
 }
 
 impl crate::app::App {
     pub(crate) fn resident_order_settings(&mut self,ui:&mut egui::Ui){
-        let default=if self.settings.show_battery {DEFAULT_ORDER.to_vec()}else{vec![QUOTA,PET,CLOCK,WEATHER,BATTERY,MUSIC,FOCUS]};
+        let default=if self.settings.show_battery {DEFAULT_ORDER.to_vec()}else{vec![QUOTA,PET,CLOCK,WEATHER,BATTERY,MUSIC,FOCUS,PERFORMANCE]};
         let mut order=if valid_order(&self.settings.resident_order){self.settings.resident_order.clone()}else{default.clone()};
         ui.horizontal(|ui|{
             ui.label(RichText::new("拖动岛上的图标").color(ui.visuals().text_color()));
@@ -19,7 +19,9 @@ impl crate::app::App {
         ui.add_space(12.0);
         let indices=self.quota_bar_indices();let count=indices.len();
         let weather_snapshot=self.weather_pill().cloned();
-        let mut layout=preview_layout(&order,count);
+        let performance_enabled=self.module_on(crate::app::PERFORMANCE_PAGE) && self.settings.performance_bar.width(self.settings.performance_metrics)>0.0;
+        let performance_width=if performance_enabled {self.settings.performance_bar.width(self.settings.performance_metrics)}else{20.0};
+        let mut layout=preview_layout(&order,count,performance_width);
         for (position,extra) in self.quota_balance_layout(ui.ctx()){layout.balance_tail(position,extra);}
         let now=chrono::Local::now();
         let clock_text=self.settings.clock_text(&now.format("%H:%M:%S").to_string());
@@ -43,7 +45,7 @@ impl crate::app::App {
         let fill=self.preview_fill();
         if pill {ui.painter().rect_filled(body,15.0*scale,fill);}
         else {crate::shape::fill(ui.painter(),body,8.0*scale,10.0*scale,12.0*scale,fill,1.0/ui.ctx().pixels_per_point());}
-        if self.settings.skin.is_glass() {
+        if self.effective_skin().is_glass() {
             let rim=egui::Stroke::new(1.0_f32,Color32::from_white_alpha(60));
             if pill {ui.painter().rect_stroke(body,15.0*scale,rim,egui::StrokeKind::Inside);}
             else {
@@ -59,10 +61,10 @@ impl crate::app::App {
         let mut movement=None;
         let label=|slot|match slot{
             CLOCK if day.is_some()=>if clock.is_some(){"时间和日期"}else{"日期"},
-            CLOCK=>"时间",BATTERY=>"电量",WEATHER=>"天气",QUOTA=>"AI 额度",MUSIC=>"音乐",FOCUS=>"专注",_=>"吉祥物"};
+            CLOCK=>"时间",BATTERY=>"电量",WEATHER=>"天气",QUOTA=>"AI 额度",MUSIC=>"音乐",FOCUS=>"专注",PERFORMANCE=>"系统性能",_=>"吉祥物"};
         for (index,&slot) in order.iter().enumerate(){
             let x=cx+layout.x[slot].unwrap();
-            let width=match slot{CLOCK=>layout.widths[CLOCK],BATTERY=>20.0,WEATHER=>layout.widths[WEATHER],PET=>32.0,MUSIC=>14.0,FOCUS=>crate::focus_bar::WIDTH,_=>{
+            let width=match slot{CLOCK=>layout.widths[CLOCK],BATTERY=>20.0,WEATHER=>layout.widths[WEATHER],PET=>32.0,MUSIC=>14.0,FOCUS=>crate::focus_bar::WIDTH,PERFORMANCE=>layout.widths[PERFORMANCE],_=>{
                 let left=layout.quota_slots().filter_map(|i|layout.x[i].map(|x|x-layout.widths[i]/2.0)).fold(f32::INFINITY,f32::min);
                 let right=layout.quota_slots().filter_map(|i|layout.x[i].map(|x|x+layout.widths[i]/2.0)).fold(f32::NEG_INFINITY,f32::max);
                 right-left
@@ -78,9 +80,11 @@ impl crate::app::App {
             let dx=if is_dragged{pointer.map(|p|((p.x-origin.x)/scale-(left+width/2.0)).clamp(-left,layout.width-left-width)).unwrap_or(0.0)}else{0.0};
             if is_dragged {ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);}
             else if response.hovered(){ui.painter().rect_filled(rect,6.0,Color32::from_white_alpha(18));}
-            let active=match slot{CLOCK=>clock.is_some()||day.is_some(),BATTERY=>self.settings.show_battery&&self.resident_power.0.is_some(),WEATHER=>weather_snapshot.is_some(),PET=>self.settings.pet,QUOTA=>count>0,MUSIC=>self.media.is_music(),FOCUS=>self.pomo.running,_=>true};
+            let active=match slot{CLOCK=>clock.is_some()||day.is_some(),BATTERY=>self.settings.show_battery&&self.resident_power.0.is_some(),WEATHER=>weather_snapshot.is_some(),PET=>self.settings.pet,QUOTA=>count>0,MUSIC=>self.media.is_music(),FOCUS=>self.pomo.running,PERFORMANCE=>self.performance_on_bar(),_=>true};
             let c=card.shifted(dx,0.0).faded(if active||is_dragged{1.0}else{0.38}).ghost();
             match slot{
+                PERFORMANCE if performance_enabled=>self.paint_performance_bar(&c,x),
+                PERFORMANCE=>{c.arc(x,15.0,7.0,2.25,7.18,2.0,theme::GRAY);c.seg((x,15.0),(x+3.0,11.5),1.8,theme::WHITE);},
                 BATTERY=>paint::battery(&c,x,15.0,self.resident_power.0,self.resident_power.1,1.0),
                 CLOCK=>{
                     if let Some(day)=&day {
@@ -109,5 +113,7 @@ impl crate::app::App {
         ui.painter().text(Pos2::new(stage.center().x,stage.bottom()-22.0),egui::Align2::CENTER_CENTER,"按住图标左右拖动",theme::font(11.0,W::Regular),Color32::from_gray(160));
         ui.add_space(8.0);
         ui.label(RichText::new("灰色图标为暂未显示的组件；位置会保留。").size(11.0).color(ui.visuals().weak_text_color()));
+        #[cfg(feature="sdk-js")]
+        self.plugins.pinned_order_settings(ui);
     }
 }

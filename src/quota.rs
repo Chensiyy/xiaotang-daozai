@@ -56,9 +56,51 @@ impl Accent {
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Account {pub id:String, pub provider:Provider, pub alias:String, pub source:PathBuf, pub slot:Option<String>, pub enabled:bool, pub pinned:bool}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum RelayIcon {
+    #[default]
+    Key,
+    Layers,
+    Plane,
+    Bolt,
+    Link,
+    Arrows,
+    Box,
+}
+impl RelayIcon {
+    pub(crate) const ALL: [Self; 7] = [
+        Self::Key, Self::Layers, Self::Plane, Self::Bolt, Self::Link, Self::Arrows, Self::Box,
+    ];
+
+    pub(crate) fn key(self) -> &'static str {
+        match self {
+            Self::Key => "key",
+            Self::Layers => "layers",
+            Self::Plane => "plane",
+            Self::Bolt => "bolt",
+            Self::Link => "link",
+            Self::Arrows => "arrows",
+            Self::Box => "box",
+        }
+    }
+
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Key => "默认钥匙",
+            Self::Layers => "叠层",
+            Self::Plane => "纸飞机",
+            Self::Bolt => "闪电",
+            Self::Link => "连接",
+            Self::Arrows => "双向箭头",
+            Self::Box => "方盒",
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Config {pub enabled:bool, pub compact:bool, pub selected:String, pub accounts:Vec<Account>, pub colors:HashMap<String,Accent>}
-impl Default for Config {fn default()->Self {Self{enabled:true,compact:true,selected:String::new(),accounts:vec![],colors:HashMap::new()}}}
+pub struct Config {pub enabled:bool, pub compact:bool, pub selected:String, pub accounts:Vec<Account>, pub colors:HashMap<String,Accent>, pub(crate) relay_icons:HashMap<String,RelayIcon>}
+impl Default for Config {fn default()->Self {Self{enabled:true,compact:true,selected:String::new(),accounts:vec![],colors:HashMap::new(),relay_icons:HashMap::new()}}}
 impl Config {
     pub fn load()->Self {
         let path=crate::model::config_dir().join("ai-quota.json");
@@ -66,13 +108,31 @@ impl Config {
         serde_json::from_slice(&raw).ok().map(|v|Self::from_json(&v)).unwrap_or_default()
     }
     fn from_json(v:&Value)->Self {
-        let accounts=v["accounts"].as_array().into_iter().flatten().filter_map(|a|Some(Account{
+        let accounts:Vec<_>=v["accounts"].as_array().into_iter().flatten().filter_map(|a|Some(Account{
             id:a["id"].as_str()?.into(),provider:Provider::parse(a["provider"].as_str()?)?,alias:a["alias"].as_str()?.into(),source:PathBuf::from(a["source"].as_str()?),slot:a["slot"].as_str().map(str::to_owned),enabled:a["enabled"].as_bool().unwrap_or(true),pinned:a["pinned"].as_bool().unwrap_or(false)
         })).collect();
         let colors=v["colors"].as_object().into_iter().flatten().filter_map(|(id,value)|{let color=Accent::parse(value.as_str()?);(color!=Accent::Brand).then(||(id.clone(),color))}).collect();
-        Self{enabled:v["enabled"].as_bool().unwrap_or(true),compact:v["compact"].as_bool().unwrap_or(true),selected:v["selected"].as_str().unwrap_or_default().into(),accounts,colors}
+        let relay_icons=accounts.iter().filter(|a|a.provider.relay()).filter_map(|a|{
+            let key=v["relay_icons"][a.id.as_str()].as_str()?;
+            let icon=RelayIcon::ALL.into_iter().find(|icon|icon.key()==key && *icon!=RelayIcon::Key)?;
+            Some((a.id.clone(),icon))
+        }).collect();
+        Self{enabled:v["enabled"].as_bool().unwrap_or(true),compact:v["compact"].as_bool().unwrap_or(true),selected:v["selected"].as_str().unwrap_or_default().into(),accounts,colors,relay_icons}
     }
-    fn json(&self)->Value {let colors:serde_json::Map<String,Value>=self.colors.iter().map(|(id,color)|(id.clone(),json!(color.key()))).collect();json!({"enabled":self.enabled,"compact":self.compact,"selected":self.selected,"colors":colors,"accounts":self.accounts.iter().map(|a|json!({"id":a.id,"provider":a.provider.name(),"alias":a.alias,"source":a.source,"slot":a.slot,"enabled":a.enabled,"pinned":a.pinned})).collect::<Vec<_>>()})}
+    fn json(&self)->Value {
+        let colors:serde_json::Map<String,Value>=self.colors.iter().map(|(id,color)|(id.clone(),json!(color.key()))).collect();
+        let relay_icons:serde_json::Map<String,Value>=self.relay_icons.iter().map(|(id,icon)|(id.clone(),json!(icon.key()))).collect();
+        json!({"enabled":self.enabled,"compact":self.compact,"selected":self.selected,"colors":colors,"relay_icons":relay_icons,"accounts":self.accounts.iter().map(|a|json!({"id":a.id,"provider":a.provider.name(),"alias":a.alias,"source":a.source,"slot":a.slot,"enabled":a.enabled,"pinned":a.pinned})).collect::<Vec<_>>()})
+    }
+    pub(crate) fn relay_icon(&self, account:&Account)->RelayIcon {
+        if account.provider.relay() {self.relay_icons.get(&account.id).copied().unwrap_or_default()}
+        else {RelayIcon::Key}
+    }
+    pub(crate) fn set_relay_icon(&mut self, account:&Account, icon:RelayIcon) {
+        if !account.provider.relay() {return;}
+        if icon==RelayIcon::Key {self.relay_icons.remove(&account.id);}
+        else {self.relay_icons.insert(account.id.clone(),icon);}
+    }
     pub fn save(&self) {let _=self.save_checked();}
     pub(crate) fn save_checked(&self)->Result<(),String>{
         let dir=crate::model::config_dir();fs::create_dir_all(&dir).map_err(|_|"无法创建额度配置目录")?;
@@ -765,5 +825,29 @@ fn fetch_subscription_at(agent:&ureq::Agent,account:&Account,url:&str)->Result<S
         assert!(parse(Provider::Kimi,&json!({})).unwrap_err().contains("已登录"));
     }
     #[test] fn claude_null_window_and_kimi_string_numbers(){let c=parse(Provider::Claude,&json!({"five_hour":null,"seven_day":{"utilization":60,"resets_at":"2030-01-01T12:00:00Z"}})).unwrap();assert_eq!(c.rings().len(),1);assert!(c.windows[0].reset.is_some());let k=parse(Provider::Kimi,&json!({"usage":{"limit":"100","remaining":"70"},"limits":[{"window":{"duration":300,"timeUnit":"TIME_UNIT_MINUTE"},"detail":{"limit":"20","used":"5"}}]})).unwrap();assert_eq!(k.rings().len(),2);assert_eq!(k.rings()[0].remaining,75.0);}
+    #[test]
+    fn relay_icon_preferences_are_per_account_and_compatible_with_old_config() {
+        let legacy=json!({"accounts":[
+            {"id":"a","provider":"New API","alias":"日常","source":"https://daily.example"},
+            {"id":"b","provider":"New API","alias":"备用","source":"https://backup.example"},
+            {"id":"c","provider":"Codex","alias":"本机","source":"auth.json"}
+        ]});
+        let mut config=Config::from_json(&legacy);
+        let accounts=config.accounts.clone();
+        assert!(accounts.iter().all(|account|config.relay_icon(account)==RelayIcon::Key));
+        config.set_relay_icon(&accounts[0],RelayIcon::Plane);
+        config.set_relay_icon(&accounts[1],RelayIcon::Arrows);
+        config.set_relay_icon(&accounts[2],RelayIcon::Box);
+        let mut saved=config.json();
+        assert_eq!(Config::from_json(&saved),config);
+        assert!(saved["relay_icons"]["c"].is_null());
+        saved["relay_icons"]["b"]=json!("unknown");
+        let mut restored=Config::from_json(&saved);
+        assert_eq!(restored.relay_icon(&accounts[0]),RelayIcon::Plane);
+        assert_eq!(restored.relay_icon(&accounts[1]),RelayIcon::Key);
+        restored.set_relay_icon(&accounts[0],RelayIcon::Key);
+        assert!(restored.relay_icons.is_empty());
+    }
+
     #[test] fn multi_account_config_keeps_sources_and_selection_separate(){let mut c=Config::default();for n in 1..=2{c.accounts.push(Account{id:n.to_string(),provider:Provider::Codex,alias:format!("账号 {n}"),source:PathBuf::from(format!("profile-{n}/auth.json")),slot:None,enabled:true,pinned:true});}c.selected="2".into();let raw=c.json();assert_eq!(Config::from_json(&raw),c);assert_eq!(c.selected_index(),Some(1));assert_eq!(c.pinned_indices(),vec![0,1]);assert!(!raw.to_string().contains("access_token"));}
 }

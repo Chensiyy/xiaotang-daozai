@@ -1,5 +1,7 @@
 //! 同心额度环、账号选择及账号设置。
-use crate::{app::{App,Cmd},extras::{settings_control_row},paint::{Card,H},quota::{self,Accent,Account,Amount,Config,Provider,Snapshot},theme::{self,W}};
+use crate::{app::{App,Cmd},extras::{settings_control_row},paint::{Card,H},quota::{self,Accent,Account,Amount,Config,Provider,RelayIcon,Snapshot},theme::{self,W}};
+#[cfg(all(windows, feature = "sdk-material"))]
+use crate::material::ControlRole;
 use eframe::egui::{self,Color32};
 use std::collections::{HashMap,HashSet};
 use chrono::Datelike;
@@ -10,6 +12,7 @@ const CLAUDE_LOCAL_NOTICE:&str="由于 Claude 对网络使用环境要求较高�
 pub(crate) struct State {
     cache_path:Option<std::path::PathBuf>,
     pub config:Config,pub rows:HashMap<String,Result<Snapshot,String>>,pub busy:HashSet<String>,
+    #[cfg(feature = "sdk-js")]
     selected_plugin: Option<(String, String)>,
     pub provider:Provider,pub alias:String,pub source:String,pub note:String,
     pub relay_manual:bool,
@@ -163,12 +166,64 @@ fn logo_texture(ctx:&egui::Context,provider:Provider,pixels:u32)->Option<egui::T
     if (!provider.balance()||provider.relay())&&!keeps_brand_color(provider){crate::skin_paint::mark_monochrome(texture.id());}else{crate::skin_paint::mark_colored(texture.id());}
     ctx.data_mut(|data|data.insert_temp(key,texture.clone()));Some(texture)
 }
+fn relay_logo_texture(ctx:&egui::Context,provider:Provider,icon:RelayIcon,pixels:u32)->Option<egui::TextureHandle>{
+    let bytes:&[u8]=match icon{
+        RelayIcon::Key=>return logo_texture(ctx,provider,pixels),
+        RelayIcon::Layers=>include_bytes!("../assets/ai-icons/relay-layers.svg"),
+        RelayIcon::Plane=>include_bytes!("../assets/ai-icons/relay-plane.svg"),
+        RelayIcon::Bolt=>include_bytes!("../assets/ai-icons/relay-bolt.svg"),
+        RelayIcon::Link=>include_bytes!("../assets/ai-icons/relay-link.svg"),
+        RelayIcon::Arrows=>include_bytes!("../assets/ai-icons/relay-arrows.svg"),
+        RelayIcon::Box=>include_bytes!("../assets/ai-icons/relay-box.svg"),
+    };
+    let key=egui::Id::new(("relay-logo",icon.key(),pixels));
+    if let Some(texture)=ctx.data(|data|data.get_temp(key)){return Some(texture);}
+    let image=egui_extras::image::load_svg_bytes_with_size(bytes,Some(egui::load::SizeHint::Size(pixels,pixels))).ok()?;
+    let texture=ctx.load_texture(format!("relay-logo-{}-{pixels}",icon.key()),image,egui::TextureOptions::LINEAR);
+    crate::skin_paint::mark_colored(texture.id());
+    ctx.data_mut(|data|data.insert_temp(key,texture.clone()));
+    Some(texture)
+}
+
 fn logo(c:&Card,provider:Provider,x:f32,y:f32,size:f32){
+    account_logo(c,provider,RelayIcon::Key,x,y,size);
+}
+
+fn account_logo(c:&Card,provider:Provider,icon:RelayIcon,x:f32,y:f32,size:f32){
     let ctx=c.ui.ctx();let ppp=ctx.pixels_per_point();let center=c.pos(x,y);
     let pixels=(size*c.s*ppp).round().max(1.0) as u32;let half=pixels as f32/2.0;
     let min=egui::pos2((center.x*ppp-half).round()/ppp,(center.y*ppp-half).round()/ppp);
     let rect=egui::Rect::from_min_size(min,egui::Vec2::splat(pixels as f32/ppp));
-    if let Some(texture)=logo_texture(ctx,provider,pixels){c.painter.image(texture.id(),rect,egui::Rect::from_min_max(egui::pos2(0.0,0.0),egui::pos2(1.0,1.0)),Color32::WHITE);}
+    if let Some(texture)=relay_logo_texture(ctx,provider,icon,pixels){c.painter.image(texture.id(),rect,egui::Rect::from_min_max(egui::pos2(0.0,0.0),egui::pos2(1.0,1.0)),Color32::WHITE);}
+}
+
+fn relay_icon_image(ui:&egui::Ui,provider:Provider,icon:RelayIcon)->Option<egui::Image<'static>>{
+    let size=18.0;
+    let pixels=(size*ui.ctx().pixels_per_point()).round().max(1.0) as u32;
+    let texture=relay_logo_texture(ui.ctx(),provider,icon,pixels)?;
+    let tint=if icon==RelayIcon::Key{ui.visuals().text_color()}else{Color32::WHITE};
+    Some(egui::Image::from_texture((texture.id(),egui::Vec2::splat(size))).tint(tint))
+}
+
+fn relay_icon_picker(ui:&mut egui::Ui,provider:Provider,icon:&mut RelayIcon){
+    ui.horizontal(|ui|{
+        let label=ui.label(egui::RichText::new("图标").size(12.0));
+        if let Some(image)=relay_icon_image(ui,provider,*icon){ui.add(image);}
+        let _=egui::ComboBox::from_id_salt("relay-icon").width(124.0)
+            .selected_text(icon.label())
+            .show_ui(ui,|ui|{
+                for choice in RelayIcon::ALL{
+                    let button=match relay_icon_image(ui,provider,choice){
+                        Some(image)=>egui::Button::image_and_text(image,choice.label()),
+                        None=>egui::Button::new(choice.label()),
+                    };
+                    if ui.add_sized([ui.available_width(),25.0],button.selected(choice==*icon)).clicked(){
+                        *icon=choice;
+                        ui.close_menu();
+                    }
+                }
+            }).response.labelled_by(label.id);
+    });
 }
 fn deepseek_badge_svg(skin:crate::model::Skin)->String{
     use crate::model::Skin;
@@ -230,9 +285,11 @@ fn reset_text(at:Option<i64>,now:&chrono::DateTime<chrono::Local>)->String {
     let format=if at.date_naive()==now.date_naive(){"今天 %H:%M 重置"}else if at.year()==now.year(){"%-m月%-d日 %H:%M 重置"}else{"%Y/%-m/%-d %H:%M 重置"};
     at.format(format).to_string()
 }
+#[cfg(feature = "sdk-js")]
 fn plugin_quota_colors()->[Color32;2]{
     [theme::CYAN,crate::paint::mix(theme::CYAN,Color32::WHITE,0.16)]
 }
+#[cfg(feature = "sdk-js")]
 fn draw_plugin_quota(c:&Card,name:&str,quota:&crate::quota_plugin::PluginQuota){
     let colors=plugin_quota_colors();
     let remaining:Vec<_>=quota.windows.iter().filter_map(|window|window.percent()).take(2).collect();
@@ -325,6 +382,11 @@ fn claude_disclaimer(ui:&mut egui::Ui){
     ui.add(egui::Label::new(egui::RichText::new("岛仔为非官方辅助工具，数据仅供参考，以 Claude 官方显示为准；本地读取不构成账号安全保证。").size(12.0).color(crate::settings_theme::color(ui.ctx(),Color32::from_gray(180),Color32::from_gray(75)))).wrap());
 }
 impl App {
+    fn quota_badge_skin(&self)->crate::model::Skin {
+        use crate::model::Skin;
+        if !self.glassy() { return self.effective_skin(); }
+        if self.island_palette().is_some_and(|palette|palette.glass_chrome) {Skin::GlassLight}else{Skin::GlassDark}
+    }
     pub(crate) fn quota_close_connection(&mut self){
         if let Some(connect)=&mut self.quota.kiro_connecting{connect.cancel();}
         self.quota.connect_open=false;self.quota.connect_target=None;
@@ -437,7 +499,7 @@ impl App {
     pub fn quota_event(&mut self,event:quota::Event){self.quota.receive(event);}
     pub fn quota_set_source(&mut self,path:std::path::PathBuf){self.quota.source=path.to_string_lossy().into_owned();}
     pub(crate) fn quota_bar_indices(&self)->Vec<usize>{
-        if !self.quota.config.enabled || !self.quota.config.compact || !self.settings.visible_pages[6] || self.settings.minimal || self.t<self.notification_bell_until{return vec![];}
+        if !self.quota.config.enabled || !self.quota.config.compact || !self.settings.visible_pages[6] || self.settings.minimal || self.notification_bell().is_some(){return vec![];}
         self.quota.config.pinned_indices()
     }
     /// 常驻胶囊里每个额度槽的实际宽度：图标右侧跟数字的账号需要额外占位。
@@ -459,7 +521,7 @@ impl App {
             let snapshot=self.quota.rows.get(&a.id).and_then(|r|r.as_ref().ok());
             if a.provider.balance(){
                 let wide=true;let extra=if wide{layout.widths[crate::bar_layout::quota_slot(position)]-27.0}else{0.0};let icon_x=x-extra/2.0;
-                if a.provider!=Provider::DeepSeek{logo(c,a.provider,icon_x,15.0,22.0);}else{deepseek_badge(c,self.settings.skin,icon_x,15.0,24.0);}
+                if a.provider!=Provider::DeepSeek{account_logo(c,a.provider,self.quota.config.relay_icon(a),icon_x,15.0,22.0);}else{deepseek_badge(c,self.quota_badge_skin(),icon_x,15.0,24.0);}
                 let loading=self.quota.balance_loading(&a.id);let stale=self.quota.stale.contains_key(&a.id);
                 if stale||(!loading&&snapshot.is_none()){
                     c.circle(icon_x+9.0,24.0,3.8,Color32::BLACK);
@@ -489,25 +551,30 @@ impl App {
             if bar_tooltip(c.hit(x-14.0,1.0,28.0+extra,28.0,("quota-pin",&a.id)),format!("{} · {}\n{}",a.provider.name(),a.alias,summary)).clicked(){chosen=Some(a.id.clone());}
         }
         if let Some(id)=chosen{
-            self.quota.selected_plugin=None;
+            #[cfg(feature = "sdk-js")]
+            {self.quota.selected_plugin=None;}
             self.quota.config.selected=id;self.quota.config.save();self.show_page(6);
         }
     }
     pub(crate) fn page_quota(&mut self,c:&Card,header:&Card){
         if header.hit(303.0,8.0,32.0,21.0,"quota-refresh").on_hover_text("刷新额度").clicked(){
-            self.quota_plugins.refresh();
+            #[cfg(feature = "sdk-js")]
+            self.plugins.refresh_quota();
             self.pending.push(Cmd::QuotaRefresh);
         }
         header.text(319.0,23.0,if self.quota.busy.is_empty(){"刷新"}else{"更新中"},10.5,W::Regular,theme::GRAY,H::Center);
         #[derive(Clone,Copy)]
         enum Source {
             Account(usize),
+            #[cfg(feature = "sdk-js")]
             Plugin(usize),
         }
         let sources:Vec<_>=self.quota.config.ordered_indices(false).into_iter().map(Source::Account).collect();
-        let plugin_sources:Vec<_>=self.quota_plugins.quota_sources().collect();
+        #[cfg(feature = "sdk-js")]
+        let plugin_sources:Vec<_>=self.plugins.quota_sources().collect();
         let selected_account=self.quota.config.selected_index();
         let builtin_position=selected_account.and_then(|selected|sources.iter().position(|source|matches!(source,Source::Account(index) if *index==selected)));
+        #[cfg(feature = "sdk-js")]
         let (sources,position)={
             let selected=self.quota.selected_plugin.as_ref()
                 .filter(|(_, account)| account == &self.quota.config.selected)
@@ -521,10 +588,14 @@ impl App {
             let position=selected.map(|index|plugin_start+index).or(builtin_position);
             (sources,position)
         };
+        #[cfg(not(feature = "sdk-js"))]
+        let position=builtin_position;
         let Some(pos)=position.or_else(||(!sources.is_empty()).then_some(0)) else{
             c.text(43.0,61.0,"还没有添加 AI 账号",13.0,W::Bold,theme::WHITE,H::Left);
             c.text(43.0,80.0,"连接 AI 账号，查看剩余额度",10.5,W::Regular,theme::GRAY,H::Left);
-            let(r,b)=crate::paint::capsule(c,43.0,92.0,94.0,24.0,"add-quota-account",theme::BTN,theme::BTN_HOVER);
+            let(r,b)=crate::paint::material_capsule(c,43.0,92.0,94.0,24.0,"add-quota-account",theme::BTN,theme::BTN_HOVER,
+                self.glassy().then_some((self.glass_controls_ready(),0.16,0.42)),
+                #[cfg(all(windows, feature = "sdk-material"))] ControlRole::QuotaAdd);
             b.text(90.0,108.0,"添加账号",10.0,W::Semibold,theme::WHITE,H::Center);if r.clicked(){self.settings_tab=11;self.open_settings();}return;
         };
         let start=pos/3*3;
@@ -536,6 +607,7 @@ impl App {
                     let a=&self.quota.config.accounts[index];
                     (a.alias.as_str(),format!("quota-account-{}",a.id),format!("{} · {}",a.provider.name(),a.alias),accent_colors(&self.quota.config,a))
                 },
+                #[cfg(feature = "sdk-js")]
                 Source::Plugin(index)=>{
                     let (id,name,_)=plugin_sources[index];
                     (name,format!("quota-plugin-{id}"),format!("{name} · 插件"),plugin_quota_colors())
@@ -550,15 +622,18 @@ impl App {
         if let Some(index)=picked{
             match sources[index]{
                 Source::Account(i)=>{
-                    self.quota.selected_plugin=None;
+                    #[cfg(feature = "sdk-js")]
+                    {self.quota.selected_plugin=None;}
                     self.quota.config.selected=self.quota.config.accounts[i].id.clone();
                     self.quota.config.save();
                 },
+                #[cfg(feature = "sdk-js")]
                 Source::Plugin(i)=>{self.quota.selected_plugin=Some((plugin_sources[i].0.to_owned(),self.quota.config.selected.clone()));},
             }
         }
         let selected=match sources[pos]{
             Source::Account(index)=>index,
+            #[cfg(feature = "sdk-js")]
             Source::Plugin(index)=>{
                 let (_,name,quota)=plugin_sources[index];
                 draw_plugin_quota(c,name,quota);
@@ -596,7 +671,7 @@ impl App {
             return;
         }
         if a.provider==Provider::DeepSeek{
-            deepseek_badge(c,self.settings.skin,85.0,105.0,50.0);
+            deepseek_badge(c,self.quota_badge_skin(),85.0,105.0,50.0);
             if let Some(s)=snapshot{
                 if let Some(wallet)=&s.wallet{
                     let b=wallet.primary();
@@ -612,7 +687,7 @@ impl App {
             return;
         }
         if a.provider.relay(){
-            logo(c,a.provider,85.0,105.0,44.0);
+            account_logo(c,a.provider,self.quota.config.relay_icon(a),85.0,105.0,44.0);
             if let Some(q)=snapshot.and_then(|s|s.relay.as_ref()){
                 if let Some(amount)=q.primary(){
                     let exhausted=amount.remaining.is_some_and(|n|n<=0.0)&&!amount.unlimited;
@@ -736,7 +811,7 @@ impl App {
     fn quota_remove_account(&mut self,id:&str){
         if let Some(a)=self.quota.config.accounts.iter().find(|a|a.id==id&&(a.provider.api_key()||a.provider==Provider::Doubao)).cloned(){
             if a.provider.api_key(){if let Some(slot)=&a.slot{if let Err(error)=quota::api::queue_cleanup(slot){self.quota.note=error;return;}}}
-            let mut candidate=self.quota.config.clone();candidate.accounts.retain(|a|a.id!=id);candidate.colors.remove(id);
+            let mut candidate=self.quota.config.clone();candidate.accounts.retain(|a|a.id!=id);candidate.colors.remove(id);candidate.relay_icons.remove(id);
             if candidate.selected==id{candidate.selected=candidate.accounts.iter().find(|a|a.enabled).map(|a|a.id.clone()).unwrap_or_default();}
             if let Err(error)=candidate.save_checked(){self.quota.note=error;return;}
             self.quota.config=candidate;self.quota.rows.remove(id);self.quota.stale.remove(id);self.quota.busy.remove(id);self.quota.save_snapshots();
@@ -753,7 +828,8 @@ impl App {
             if ui.button("＋ 添加账号").clicked(){self.quota_open_connection(None);}
             if ui.button("识别本机账号").clicked(){self.quota.note=self.quota.config.discover().message();}
             if ui.add_enabled(self.quota.busy.is_empty(),egui::Button::new("刷新额度")).clicked(){
-                self.quota_plugins.refresh();
+                #[cfg(feature = "sdk-js")]
+                self.plugins.refresh_quota();
                 self.pending.push(Cmd::QuotaRefresh);
             }
         });ui.add_space(8.0);
@@ -770,7 +846,11 @@ impl App {
                     ui.horizontal(|ui|{
                         ui.add(egui::Label::new("::").sense(egui::Sense::drag())).on_hover_text("拖动调整账号顺序").dnd_set_drag_payload(a.id.clone());
                         let (rect,_)=ui.allocate_exact_size(egui::vec2(26.0,28.0),egui::Sense::hover());let c=Card::new(ui,rect.min,ui.clip_rect());
-                        if a.provider==Provider::DeepSeek{deepseek_badge(&c,if ui.visuals().dark_mode{crate::model::Skin::Classic}else{crate::model::Skin::GlassLight},13.0,14.0,26.0);}else if matches!(a.provider,Provider::ZCode|Provider::Kiro){logo(&c,a.provider,13.0,14.0,26.0);}else{c.circle(13.0,14.0,13.0,crate::paint::mix(accent_colors(&self.quota.config,&a)[0],Color32::BLACK,0.75));logo(&c,a.provider,13.0,14.0,20.0);}
+                        let icon=self.quota.config.relay_icon(&a);
+                        if icon!=RelayIcon::Key{account_logo(&c,a.provider,icon,13.0,14.0,24.0);}
+                        else if a.provider==Provider::DeepSeek{deepseek_badge(&c,if ui.visuals().dark_mode{crate::model::Skin::Classic}else{crate::model::Skin::GlassLight},13.0,14.0,26.0);}
+                        else if matches!(a.provider,Provider::ZCode|Provider::Kiro){logo(&c,a.provider,13.0,14.0,26.0);}
+                        else{c.circle(13.0,14.0,13.0,crate::paint::mix(accent_colors(&self.quota.config,&a)[0],Color32::BLACK,0.75));logo(&c,a.provider,13.0,14.0,20.0);}
                         ui.label(egui::RichText::new(if a.provider.relay(){"中转站"}else{a.provider.name()}).strong());
                         if !a.alias.is_empty(){ui.label(egui::RichText::new(format!("· {}",a.alias)).color(ui.visuals().weak_text_color()));}
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{
@@ -792,12 +872,19 @@ impl App {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center),|ui|{
                             if ui.add_enabled(self.quota.api_connecting.is_none()&&self.quota.workbuddy_connecting.is_none()&&self.quota.deepseek_connecting.is_none()&&self.quota.gemini_connecting.is_none()&&self.quota.doubao_connecting.is_none()&&self.quota.login.is_none(),egui::Button::new("移除")).clicked(){remove=Some(a.id.clone());}
                             if ui.selectable_label(self.quota.config.selected==a.id,"当前").clicked(){
-                                self.quota.selected_plugin=None;
+                                #[cfg(feature = "sdk-js")]
+                                {self.quota.selected_plugin=None;}
                                 self.quota.config.selected=a.id.clone();
                             }
                             ui.add_sized([ui.available_width().max(55.0),26.0],egui::TextEdit::singleline(&mut a.alias).hint_text("账号名称")).on_hover_text("直接修改账号名称");
                         });
                     });
+                    if a.provider.relay(){
+                        let previous=self.quota.config.relay_icon(&a);
+                        let mut icon=previous;
+                        relay_icon_picker(ui,a.provider,&mut icon);
+                        if icon!=previous{self.quota.config.set_relay_icon(&a,icon);}
+                    }
                     if let Some(s)=snapshot{
                         if a.provider.api_key()||matches!(a.provider,Provider::Doubao|Provider::Antigravity){ui.label(snapshot_details(s));}else if let Some(credits)=&s.credits{ui.horizontal_wrapped(|ui|{ui.label(egui::RichText::new("可用积分").size(11.0).color(ui.visuals().weak_text_color()));ui.label(egui::RichText::new(credits.full()).size(20.0).strong());ui.label(egui::RichText::new(credits.packages.iter().map(|(label,n)|format!("{label} {n}")).collect::<Vec<_>>().join(" · ")).size(11.0).color(ui.visuals().weak_text_color()));});}else if let Some(wallet)=&s.wallet{
                             ui.horizontal_wrapped(|ui|{
@@ -1316,7 +1403,7 @@ impl App {
         let summary;
         if a.provider.balance(){
             let icon_y=mid-7.0;
-            if a.provider!=Provider::DeepSeek{logo(c,a.provider,cx,icon_y,20.0);}else{deepseek_badge(c,self.settings.skin,cx,icon_y,22.0);}
+            if a.provider!=Provider::DeepSeek{account_logo(c,a.provider,self.quota.config.relay_icon(&a),cx,icon_y,20.0);}else{deepseek_badge(c,self.quota_badge_skin(),cx,icon_y,22.0);}
             let loading=self.quota.balance_loading(&a.id);let stale=self.quota.stale.contains_key(&a.id);
             if stale||(!loading&&snapshot.is_none()){
                 c.circle(cx+8.0,icon_y+8.0,3.6,Color32::BLACK);
@@ -1346,7 +1433,8 @@ impl App {
         }
         let hit=c.hit(cx-17.0,mid-height/2.0,34.0,height,("quota-side",&a.id));
         if bar_tooltip(hit,format!("{} · {}\n{}",a.provider.name(),a.alias,summary)).clicked(){
-            self.quota.selected_plugin=None;
+            #[cfg(feature = "sdk-js")]
+            {self.quota.selected_plugin=None;}
             self.quota.config.selected=a.id.clone();self.quota.config.save();self.show_page(6);
         }
     }

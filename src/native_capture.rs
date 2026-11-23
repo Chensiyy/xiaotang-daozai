@@ -70,16 +70,75 @@ impl Exclusion {
         self.set_with(desired, targets, supported, apply_system);
     }
 
+    #[cfg(feature = "sdk-material")]
+    pub(super) fn restore(&mut self, desired: bool, targets: Targets) {
+        self.apply_to_targets(desired, targets, supported, apply_system);
+    }
+
+    #[cfg(feature = "sdk-material")]
+    pub(super) fn ensure(&mut self, targets: Targets) -> Result<bool, String> {
+        use windows::Win32::UI::WindowsAndMessaging::GetWindowDisplayAffinity;
+
+        self.ensure_with(targets, supported, |target| {
+            let mut affinity = 0;
+            unsafe { GetWindowDisplayAffinity(target.hwnd, &mut affinity) }
+                .map_err(|error| format!("{}无法读取截图排除（{}）", target.name, error.code()))?;
+            Ok(affinity == WDA_EXCLUDEFROMCAPTURE.0)
+        }, apply_system)
+    }
+
+    #[cfg(feature = "sdk-material")]
+    fn ensure_with(
+        &mut self,
+        targets: Targets,
+        system_supported: impl FnOnce() -> bool,
+        mut is_applied: impl FnMut(Target) -> Result<bool, String>,
+        mut apply: impl FnMut(Target, bool) -> Result<(), String>,
+    ) -> Result<bool, String> {
+        if let Some(error) = self.take_error() {
+            return Err(error);
+        }
+        if !self.active {
+            self.set_with(true, targets, system_supported, apply);
+            return self.take_error().map_or(Ok(true), Err);
+        }
+        let mut repaired = false;
+        for target in targets.into_iter().flatten() {
+            let result = is_applied(target).and_then(|applied| {
+                if !applied {
+                    apply(target, true)?;
+                    repaired = true;
+                }
+                Ok(())
+            });
+            if let Err(error) = result {
+                self.rollback(error, targets.into_iter().flatten(), apply);
+                return Err(self.take_error().unwrap());
+            }
+        }
+        Ok(repaired)
+    }
+
     fn set_with(
+        &mut self,
+        desired: bool,
+        targets: Targets,
+        system_supported: impl FnOnce() -> bool,
+        apply: impl FnMut(Target, bool) -> Result<(), String>,
+    ) {
+        if self.active == desired {
+            return;
+        }
+        self.apply_to_targets(desired, targets, system_supported, apply);
+    }
+
+    fn apply_to_targets(
         &mut self,
         desired: bool,
         targets: Targets,
         system_supported: impl FnOnce() -> bool,
         mut apply: impl FnMut(Target, bool) -> Result<(), String>,
     ) {
-        if self.active == desired {
-            return;
-        }
         self.error = None;
         if !desired {
             self.active = false;
@@ -180,6 +239,30 @@ mod tests {
         Target {
             hwnd: HWND(id as *mut _),
             name: "测试窗口",
+        }
+    }
+
+    #[cfg(feature = "sdk-material")]
+    #[test]
+    fn material_capture_repairs_and_restores_the_saved_preference() {
+        use std::cell::Cell;
+
+        let targets = [Some(target(1)), None, None, None];
+        for preference in [false, true] {
+            let mut state = Exclusion::default();
+            let applied = Cell::new(false);
+            let write = |_: Target, enabled| { applied.set(enabled); Ok(()) };
+            state.set_with(preference, targets, || true, write);
+            assert_eq!(state.ensure_with(targets, || true, |_| Ok(applied.get()), write), Ok(!preference));
+            assert!(applied.get());
+            applied.set(false);
+            assert_eq!(state.ensure_with(targets, || true, |_| Ok(applied.get()), write), Ok(true));
+            assert_eq!(state.ensure_with(targets, || true, |_| Ok(applied.get()), write), Ok(false));
+            state.rollback("窗口状态改变".into(), targets.into_iter().flatten(), |_, _| Err("清除失败".into()));
+            assert!(applied.get());
+            state.apply_to_targets(preference, targets, || true, write);
+            assert_eq!(applied.get(), preference);
+            assert_eq!(state.take_error(), None);
         }
     }
 

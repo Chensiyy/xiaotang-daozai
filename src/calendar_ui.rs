@@ -1,5 +1,7 @@
 //! 岛内日程的月历和按日期排列的列表。
 use crate::{app::{App, Cmd, Env, CALENDAR_PAGE}, calendar, mail, paint::{self,Card,H}, theme::{self,W}};
+#[cfg(all(windows, feature = "sdk-material"))]
+use crate::material::ControlRole;
 use chrono::{Datelike, NaiveDate};
 use eframe::egui::{self,Color32};
 use std::collections::{BTreeMap, HashMap};
@@ -253,6 +255,7 @@ impl App {
     }
 
     pub fn open_calendar(&mut self, meeting:Option<mail::Meeting>) {
+        if !self.module_on(CALENDAR_PAGE) {self.show_page(CALENDAR_PAGE);return;}
         if let Some(meeting)=meeting {
             self.calendar.agenda=false;
             if let Some(day)=event_day(&meeting){self.select_calendar_day(day);}
@@ -290,6 +293,7 @@ impl App {
     }
 
     pub(crate) fn request_calendar_month(&mut self, force:bool) {
+        if !self.module_on(CALENDAR_PAGE) {return;}
         let has_accounts=!self.calendar_configs().is_empty();
         let view=&mut self.calendar.view;
         if !has_accounts || !force && (view.loaded==Some(view.month) || view.loading || !view.error.is_empty()){return;}
@@ -360,7 +364,9 @@ impl App {
             if self.calendar.agenda {self.show_calendar_agenda(current_month);}
             else {self.select_calendar_day(today);}
         }
-        let (add,b)=paint::capsule(header,101.0,9.0,46.0,18.0,"calendar-add-local",theme::BTN,theme::BTN_HOVER);
+        let (add,b)=paint::material_capsule(header,101.0,9.0,46.0,18.0,"calendar-add-local",theme::BTN,theme::BTN_HOVER,
+            self.glassy().then_some((self.glass_controls_ready(),0.16,0.42)),
+            #[cfg(all(windows, feature = "sdk-material"))] ControlRole::CalAdd);
         b.centered_text(124.0,18.0,"＋ 新增",9.0,W::Regular,theme::WHITE,H::Center);
         if add.clicked(){self.open_calendar_editor(None);return;}
 
@@ -436,6 +442,12 @@ impl App {
         let day=self.calendar.view.day;
         let heading=format!("{} · {}月{}日",if day==today{"今天"}else{WEEKDAYS[day.weekday().num_days_from_monday() as usize]},day.month(),day.day());
         c.text(167.0,44.0,&heading,8.8,W::Semibold,accent,H::Left);
+        #[cfg(feature="sdk-js")]
+        if let Some(marker)=self.plugins.calendar_annotation(&env.today).filter(|_|day==today) {
+            let label=marker.lines().next().unwrap_or_default().trim();
+            let text=c.fit(label,8.5,W::Regular,52.0);
+            c.centered_text(376.0,44.0,&text,8.5,W::Regular,muted,H::Right);
+        }
         let focus=self.calendar.view.focus.clone();
         let scroll_to_focus=if c.live{std::mem::take(&mut self.calendar.view.scroll_to_focus)}else{false};
         let mut first=self.calendar.view.first;

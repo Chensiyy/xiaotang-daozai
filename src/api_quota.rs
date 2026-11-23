@@ -204,8 +204,10 @@ impl Config {
     #[test]
     fn explicit_reconnection_can_change_relay_template_and_keep_preferences(){
         let mut config=Config::default();config.accounts.push(Account{id:"original-relay".into(),provider:Provider::NewApi,alias:"原账号".into(),source:"https://relay.example".into(),slot:None,enabled:true,pinned:true});config.colors.insert("original-relay".into(),super::super::Accent::Gold);
+        config.relay_icons.insert("original-relay".into(),super::super::RelayIcon::Layers);
         let connected=Connected{provider:Provider::RelayGeneral,source:"https://relay.example".into(),alias:"我的中转站".into(),slot:"synthetic-ref".into(),snapshot:Snapshot::default()};
         assert_eq!(config.connect_api(&connected,Some("original-relay")).unwrap(),"original-relay");assert_eq!(config.accounts[0].provider,Provider::RelayGeneral);assert!(config.accounts[0].pinned);assert_eq!(config.colors["original-relay"],super::super::Accent::Gold);
+        assert_eq!(config.relay_icon(&config.accounts[0]),super::super::RelayIcon::Layers);
     }
     #[test]
     fn reconnect_zcode_with_glm_key_replaces_reference_and_retains_preferences(){

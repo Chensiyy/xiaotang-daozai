@@ -15,9 +15,12 @@ pub(crate) const BELL: usize = 8;
 pub(crate) const PET: usize = 9;
 /// 天气徽标的基础槽宽；温度文字更长时由 `widen` 补足。
 pub(crate) const WEATHER_WIDTH: f32 = 38.0;
-const WIDTHS: [f32; 10] = [44.0,20.0,27.0,27.0,27.0,WEATHER_WIDTH,14.0,crate::focus_bar::WIDTH,20.0,32.0];
+pub(crate) const PERFORMANCE: usize = 10;
+pub(crate) const BLUETOOTH:usize=11;
+pub(crate) const PINNED:usize=12;
+const WIDTHS: [f32; 13] = [44.0,20.0,27.0,27.0,27.0,WEATHER_WIDTH,14.0,crate::focus_bar::WIDTH,20.0,32.0,0.0,0.0,0.0];
 
-pub(crate) const DEFAULT_ORDER: [usize;7]=[BATTERY,PET,CLOCK,WEATHER,QUOTA,MUSIC,FOCUS];
+pub(crate) const DEFAULT_ORDER: [usize;8]=[BATTERY,PET,CLOCK,WEATHER,QUOTA,MUSIC,FOCUS,PERFORMANCE];
 pub(crate) fn valid_order(order:&[usize])->bool {
     order.len()==DEFAULT_ORDER.len() && DEFAULT_ORDER.iter().all(|slot|order.iter().filter(|value|*value==slot).count()==1)
 }
@@ -72,6 +75,20 @@ impl Layout {
         let width=cursor-12.0+16.0;
         for value in x.iter_mut().flatten() {*value-=width/2.0;}
         Self {width:width.max(96.0),x,widths,quotas}
+    }
+    pub fn add_performance(&mut self,width:f32) {
+        let extra=width+12.0;
+        for x in self.x.iter_mut().flatten() {*x-=extra/2.0;}
+        self.width+=extra;
+        self.widths[PERFORMANCE]=width;
+        self.x[PERFORMANCE]=Some(self.width/2.0-16.0-width/2.0);
+    }
+    pub fn append_bluetooth(&mut self,width:f32){
+        self.append_slot(BLUETOOTH,width);
+    }
+    pub(crate) fn append_slot(&mut self,slot:usize,width:f32){
+        let extra=width+12.0;for x in self.x.iter_mut().flatten(){*x-=extra/2.0;}
+        self.width+=extra;self.widths[slot]=width;self.x[slot]=Some(self.width/2.0-16.0-width/2.0);
     }
     pub fn quota_slots(&self)->impl Iterator<Item=usize> { (0..self.quotas).map(quota_slot) }
     /// 把某个槽加宽 extra：其余槽对称让位并记入总宽。点数文字、时段时钟、天气温度共用。
@@ -137,7 +154,7 @@ pub(crate) struct Motion {
     initialized: bool,
 }
 impl Default for Motion {
-    fn default()->Self {Self {target:Layout::new(false,0,false,false,false,false,false),positions:vec![Spring::new(0.0,360.0,0.76);10],center_offset:0.0,initialized:false}}
+    fn default()->Self {Self {target:Layout::new(false,0,false,false,false,false,false),positions:vec![Spring::new(0.0,360.0,0.76);WIDTHS.len()],center_offset:0.0,initialized:false}}
 }
 impl Motion {
     pub fn step(&mut self,target:Layout,dt:f32,animate:bool,centered:bool) {
@@ -167,6 +184,18 @@ impl Motion {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn bluetooth_slot_keeps_quotas_and_device_chips_separate(){
+        for quotas in 0..=8 {
+            let mut layout=Layout::new(true,quotas,true,false,false,true,true);
+            layout.append_bluetooth(102.0);
+            let mut boxes:Vec<_>=layout.x.iter().enumerate().filter_map(|(i,x)|x.map(|x|(x-layout.widths[i]/2.0,x+layout.widths[i]/2.0))).collect();
+            boxes.sort_by(|a,b|a.0.total_cmp(&b.0));
+            assert!(boxes.windows(2).all(|pair|pair[1].0-pair[0].1>=6.9));
+            assert_eq!(layout.quota_slots().count(),quotas);
+            assert!(boxes.last().unwrap().1<=layout.width/2.0-15.9);
+        }
+    }
     use super::*;
     #[test]
     fn date_group_resizes_clock_slot_without_overlapping_other_items(){
@@ -206,7 +235,7 @@ mod tests {
     }
     #[test]
     fn weather_can_be_reordered_independently_of_the_clock(){
-        let order=[WEATHER,FOCUS,MUSIC,QUOTA,CLOCK,PET,BATTERY];
+        let order=[WEATHER,FOCUS,MUSIC,QUOTA,CLOCK,PET,BATTERY,PERFORMANCE];
         assert!(valid_order(&order),"天气应有独立的排列位置");
         for quotas in 0..=5 {for enabled in [false,true] {
             let mut layout=Layout::new(true,quotas,true,true,false,true,enabled);
@@ -218,7 +247,7 @@ mod tests {
         }}
     }
     #[test] fn deepseek_balance_follows_more_and_never_overlaps(){
-        for order in [DEFAULT_ORDER,[FOCUS,MUSIC,QUOTA,CLOCK,WEATHER,PET,BATTERY]] {for quotas in 1..=6 {for battery in [false,true]{
+        for order in [DEFAULT_ORDER,[FOCUS,MUSIC,QUOTA,CLOCK,WEATHER,PET,BATTERY,PERFORMANCE]] {for quotas in 1..=6 {for battery in [false,true]{
             let mut layout=Layout::new(battery,quotas,true,true,false,true,false);layout.reorder(&order);layout.balance_tail(quotas-1,76.0);layout.widen_clock(40.0);
             let mut boxes:Vec<_>=layout.x.iter().enumerate().filter_map(|(i,x)|x.map(|x|{let width=layout.widths[i];(x-width/2.0,x+width/2.0)})).collect();boxes.sort_by(|a,b|a.0.total_cmp(&b.0));
             assert!(boxes.windows(2).all(|p|p[1].0-p[0].1>=6.9));assert!(boxes.last().unwrap().1<=layout.width/2.0-15.9);
@@ -227,7 +256,7 @@ mod tests {
     }
     #[test]
     fn clock_12h_keeps_components_separate_in_custom_orders(){
-        for order in [DEFAULT_ORDER,[FOCUS,MUSIC,QUOTA,CLOCK,WEATHER,PET,BATTERY]] {
+        for order in [DEFAULT_ORDER,[FOCUS,MUSIC,QUOTA,CLOCK,WEATHER,PET,BATTERY,PERFORMANCE]] {
             for quotas in 0..=5 {
                 let mut layout=Layout::new(true,quotas,true,true,false,true,false);
                 layout.reorder(&order);layout.widen_clock(40.0);
@@ -246,7 +275,7 @@ mod tests {
     fn custom_order_preserves_groups_and_hidden_positions(){
         assert!(!valid_order(&[0,0,2,6,7,9]));
         assert!(!valid_order(&[0,1,2]));
-        let order=[FOCUS,MUSIC,QUOTA,CLOCK,WEATHER,PET,BATTERY];
+        let order=[FOCUS,MUSIC,QUOTA,CLOCK,WEATHER,PET,BATTERY,PERFORMANCE];
         for battery in [false,true]{for count in 0..=5 {
             let mut layout=Layout::new(battery,count,true,true,false,true,false);
             let width=layout.width;layout.reorder(&order);
@@ -273,8 +302,22 @@ mod tests {
         }}}}}}}
     }
     #[test]
+    fn performance_width_keeps_extra_quota_slots_separate(){
+        for style in crate::performance::BarStyle::ALL {
+            let mut layout=Layout::new(true,7,true,true,false,true,true);
+            layout.add_performance(style.width(0x1ff));
+            let mut order=DEFAULT_ORDER;order.reverse();layout.reorder(&order);
+            layout.balance_tail(6,58.0);layout.widen_clock(24.0);
+            let mut boxes:Vec<_>=layout.x.iter().enumerate().filter_map(|(i,x)|x.map(|x|(x-layout.widths[i]/2.0,x+layout.widths[i]/2.0))).collect();
+            boxes.sort_by(|a,b|a.0.total_cmp(&b.0));
+            assert_eq!(boxes.len(),14);
+            assert!(boxes.windows(2).all(|pair|pair[1].0-pair[0].1>=6.9));
+            assert!(boxes.last().unwrap().1<=layout.width/2.0-15.9);
+        }
+    }
+    #[test]
     fn weather_defaults_after_the_clock_and_preserves_custom_spacing(){
-        for order in [DEFAULT_ORDER,[FOCUS,MUSIC,QUOTA,CLOCK,WEATHER,PET,BATTERY],[QUOTA,MUSIC,CLOCK,WEATHER,PET,FOCUS,BATTERY]] {
+        for order in [DEFAULT_ORDER,[FOCUS,MUSIC,QUOTA,CLOCK,WEATHER,PET,BATTERY,PERFORMANCE],[QUOTA,MUSIC,CLOCK,WEATHER,PET,FOCUS,BATTERY,PERFORMANCE]] {
             for quotas in 0..=3 {for battery in [false,true] {
                 let mut layout=Layout::new(battery,quotas,true,true,false,true,true);
                 layout.reorder(&order);

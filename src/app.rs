@@ -23,6 +23,7 @@ use std::path::PathBuf;
 // ---------- 几何（逻辑点；原版 125% 截图 ÷ 1.25） ----------
 pub const PW: f32 = 419.0; // 展开面板宽
 pub const PH: f32 = 140.0; // 展开面板高
+const PAGE_SHORTCUT_ROW_H: f32 = 24.0;
 pub const MUSIC_PAGE: usize = 0;
 pub const FOCUS_PAGE: usize = 1;
 pub const WATER_PAGE: usize = 2;
@@ -35,6 +36,8 @@ pub const MAIL_PAGE: usize = 5;
 pub const QUOTA_PAGE: usize = 6;
 pub const CALENDAR_PAGE: usize = 7;
 pub const WEATHER_PAGE: usize = 8;
+pub const PERFORMANCE_PAGE: usize = 9;
+pub const BLUETOOTH_PAGE: usize = 10;
 pub(crate) const WEATHER_H: f32 = 232.0;
 pub(crate) const CALENDAR_H: f32 = 216.0;
 pub const BAR_W: f32 = 163.0; // 收起药丸宽
@@ -50,7 +53,7 @@ pub const FLARE_H: f32 = 16.0; // 外翻收敛高度
 pub const RAD: f32 = 33.0; // 底部圆角
 pub const WIN_W: f32 = 640.0; // 窗口（透明画布）
 pub const CANVAS_W: f32 = WIN_W + 320.0; // 保留右侧通知及阴影的完整空间，原岛仍按 WIN_W 定位。
-pub const WIN_H: f32 = 270.0;
+pub const WIN_H: f32 = 378.0 + PAGE_SHORTCUT_ROW_H; // 性能页展开 360 高，再留出投影
 /// 胶囊皮肤与屏幕顶边的间隙。
 pub const PILL_GAP: f32 = 6.0;
 
@@ -79,8 +82,12 @@ fn pill_shadow(painter:&egui::Painter,rect:Rect,radius:f32,strength:f32){
         painter.rect_filled(r,radius+grow*0.8,Color32::from_black_alpha((255.0*a*strength) as u8));
     }
 }
-pub(crate) const PAGE_NAMES: [&str; 9] = ["音乐", "专注", "健康", "置物架", "待办", "邮箱", "AI 额度", "日程", "天气"];
-pub(crate) const PAGE_SETTINGS_TABS: [usize; 9] = [1,2,3,5,4,7,11,8,12];
+pub(crate) const PAGE_NAMES: [&str; 11] = ["音乐", "专注", "健康", "置物架", "待办", "邮箱", "AI 额度", "日程", "天气", "系统性能", "无线设备"];
+pub(crate) const PAGE_SHORTCUT_KEYS: [&str; PAGE_NAMES.len()] = [
+    "music", "focus", "health", "shelf", "tasks", "mail", "quota", "calendar", "weather",
+    "performance", "wireless",
+];
+pub(crate) const PAGE_SETTINGS_TABS: [usize; 11] = [1,2,3,5,4,7,11,8,12,15,crate::extras::SETTINGS_TAB_WIRELESS];
 
 // ---------- 动效参数 ----------
 /// 悬停意图缓冲：光标停留这么久才真正展开（期间药丸轻微胀大作为反馈），防误触。
@@ -136,6 +143,8 @@ pub struct Env {
     pub idle_seconds: Option<f64>,
     /// 当前会话是否处于锁屏（Win + L、自动锁屏、唤醒后的登录界面）。
     pub screen_locked: bool,
+    /// 正在生成岛仔演示录屏。
+    pub recording: bool,
     /// 因「全屏时隐藏」而隐藏岛体，沿用外壳对设置和所在屏幕的判断。
     pub fullscreen_hidden: bool,
     /// 前台浏览器的顶部是否与岛重叠；岛仔自身窗口或暂不可读时为 None。
@@ -143,10 +152,12 @@ pub struct Env {
     pub media: NowPlaying,
     /// 系统主音量（0..100, 是否静音）；v0.5.4 音量条与系统双向同步。
     pub volume: Option<(u32, bool)>,
-    /// 已连接的蓝牙音频设备（名称 + 可选电量）。
+    /// 蓝牙设备快照：连接状态、电量来源及本次会话的断开记录。
     pub bt: Vec<crate::bt::Device>,
     /// 蓝牙服务是否已经完成首次扫描。
     pub bt_ready: bool,
+    /// Windows 当前识别到的 2.4G USB 接收器。
+    pub receivers: Vec<crate::bt::Device>,
     /// 岛所在屏幕（与 `win` 同一坐标系，逻辑点）；用于让通知详情留在屏幕内。
     pub screen: Option<Rect>,
     /// 毛玻璃皮肤：岛体四周采样得到的背景色（sRGB 0..1）。
@@ -155,6 +166,10 @@ pub struct Env {
     pub glass_blur: bool,
     /// 不支持逐像素透明的兼容后端需要按内容轮廓裁剪窗口。
     pub opaque_surface: bool,
+    #[cfg(all(windows, feature = "sdk-material"))]
+    pub material_active: bool,
+    #[cfg(all(windows, feature = "sdk-material"))]
+    pub material_appearance: crate::material::Appearance,
 }
 
 impl Env {
@@ -184,6 +199,8 @@ pub enum Cmd {
     Media(Transport),
     Open(PathBuf),
     ViewMessenger(Unread),
+    #[cfg(windows)]
+    OpenPluginNotice { source: String, id: String, session: String },
     OpenUrl(String),
     /// 需要键盘输入：外壳应让窗口可激活并取得焦点。
     Focus,
@@ -437,6 +454,10 @@ pub struct FrameOut {
     pub region: Rect,
     /// 毛玻璃 + 系统模糊时，替代 `region` 的贴合轮廓；其余情况为 None。
     pub glass: Option<Vec<GlassShape>>,
+    /// 是否在 glass 轮廓下方显示系统模糊；兼容渲染只借轮廓裁剪时为 false。
+    pub blur: bool,
+    #[cfg(all(windows, feature = "sdk-material"))]
+    pub(crate) material_layer: Option<crate::material::Layer>,
     /// 常驻条实际占用的窗口轮廓，透明留白交给下层窗口。
     pub resident_clip: Option<Vec<GlassShape>>,
     /// 鼠标命中区（相对 `win` 左上角），区域外点击穿透到下层窗口。
@@ -481,6 +502,16 @@ pub(crate) struct Pomo {
     pub phase: Phase,
     pub remaining: f32,
     pub running: bool,
+    #[cfg(feature="sdk-js")]
+    configured_minutes: u32,
+}
+
+impl Pomo {
+    pub(crate) fn reset_remaining(&mut self, seconds: f32) {
+        self.remaining=seconds;
+        #[cfg(feature="sdk-js")]
+        {self.configured_minutes=(seconds/60.0).round() as u32;}
+    }
 }
 
 /// 本地歌词（酷狗、汽水）每 5 秒复查，最多约 1 分钟；网络失败每 30 秒重试，最多约 5 分钟。手动点重试会重新计数。
@@ -593,6 +624,7 @@ pub(crate) struct MailState {
     pub open_uid: Option<(String, u32)>,
     pub reading: Option<mail::Item>,
     pub reader_focus: bool,
+    pub bell_at: Option<f64>,
     /// 已经提醒过的会议，键是 `UID + DTSTART`（邮件和日历两条来源共用）。
     pub fired: std::collections::HashSet<String>,
 }
@@ -735,12 +767,24 @@ const CENTER_SWEEP: f64 = 0.55;
 const CENTER_TINT: (f32, f32, f32) = (88.0, 222.0, 140.0);
 
 pub struct App {
+    #[cfg(feature="sdk-js")]
+    pub(crate) plugins: crate::sdk_spike::local::LocalPlugins,
+    #[cfg(feature="sdk-js")]
+    plugin_form_focused: bool,
+    #[cfg(feature="sdk-js")]
+    pub(crate) pinned_display: Option<crate::sdk_spike::local::PinnedDisplay>,
     pub opts: Options,
     pub settings: model::Settings,
     /// 由主程序应用原生截图保护后再保存。
     pub capture_exclusion_request: Option<bool>,
     /// 截图和录屏隐藏未能生效时，在设置中显示原因。
     pub capture_exclusion_error: Option<String>,
+    #[cfg(all(windows, feature = "sdk-material"))]
+    pub material_capture_forced: bool,
+    #[cfg(all(windows, feature = "sdk-material"))]
+    pub material_active_id: Option<String>,
+    #[cfg(all(windows, feature = "sdk-material"))]
+    material_appearance: crate::material::Appearance,
     /// 本次运行实际使用兼容渲染（Direct3D 12）；设置里的开关与它不同时提示重启。
     pub render_compat_running: bool,
     pub(crate) todos: model::TodoList,
@@ -781,12 +825,14 @@ pub struct App {
     // 切页
     pub(crate) page: usize,
     page_from: usize,
+    #[cfg(feature="sdk-js")]
+    status_pages: Vec<(String, String)>,
     page_from_offset: f32,
     page_from_elapsed: f32,
     page_scroll_area: Option<Rect>,
     page_dir: f32,
     page_t0: f64,
-    dots: [Spring; 9],
+    dots: [Spring; 11],
     wheel_delta: f32,
     pub(crate) content_scroll: Option<(egui::Id, f32)>,
     wheel_at: f64,
@@ -882,6 +928,10 @@ pub struct App {
     notice_width: Spring,
     notice_details: bool,
     pub pending_messengers:Vec<Unread>,
+    #[cfg(windows)]
+    pub(crate) plugin_notice_ui: crate::plugin_notice_ui::NoticeUi,
+    #[cfg(windows)]
+    pub(crate) plugin_notice_host: crate::plugin_notice_settings::NoticeHost,
     messenger_scroll: f32,
     pub(crate) alerts: std::collections::VecDeque<Alert>,
     pub(crate) history: std::collections::VecDeque<Alert>,
@@ -920,6 +970,15 @@ pub struct App {
     pub(crate) music_restart_at: Option<f64>,
     /// 上一次看到的蓝牙设备，用来只在连接/断开时提示一次。
     pub(crate) bt_shown: Vec<crate::bt::Device>,
+    pub(crate) wireless_devices: Vec<crate::bt::Device>,
+    pub(crate) wireless_offset: usize,
+    pub(crate) wireless_focus: Option<String>,
+    /// 展开电量页的时刻，用于入场动效；离开页面或收起后清空。
+    pub(crate) wireless_enter_at: Option<f64>,
+    pub(crate) wireless_fx: std::collections::HashMap<String,crate::bluetooth_ui::WirelessFx>,
+    pub(crate) wireless_alerted: std::collections::HashMap<(String,&'static str),f64>,
+    /// 每台已连接设备第一次出现的时刻；用来区分“正在读取电量”和“设备不提供电量”。
+    pub(crate) wireless_seen_at: std::collections::HashMap<String,f64>,
     bt_initialized: bool,
     /// v0.5.5：邮件账号、最近邮件与设置表单。
     pub(crate) mail: MailState,
@@ -928,12 +987,12 @@ pub struct App {
     /// v0.5.6：日历（CalDAV）配置、未来 24 小时事件与设置表单。
     pub(crate) calendar: CalendarState,
     pub(crate) quota: crate::quota_ui::State,
-    pub(crate) quota_plugins: crate::plugin_quota_host::PluginQuotaHost,
     /// 天气页的当前数据与后台拉取状态。
     pub(crate) weather: crate::weather::State,
     pub(crate) weather_source: crate::weather_source_ui::State,
     pub(crate) updates: crate::updates::State,
     pub(crate) resident: bar::Motion,
+    pub(crate) performance: crate::performance::Monitor,
     pub(crate) resident_power: (Option<u8>,bool),
 }
 
@@ -958,11 +1017,23 @@ impl App {
         let mut weather=crate::weather::State::load(&settings.weather_city,settings.weather_position.as_ref());
         if weather_source.displayed==crate::weather_source_ui::Provider::Qweather {weather.snapshot=weather_source.runtime.snapshot();}
         Self {
+            #[cfg(feature="sdk-js")]
+            plugins: crate::sdk_spike::local::LocalPlugins::open(model::config_dir().join("local-plugins")),
+            #[cfg(feature="sdk-js")]
+            plugin_form_focused: false,
+            #[cfg(feature="sdk-js")]
+            pinned_display: None,
             opts,
             render_compat_running: settings.render_compat,
             settings,
             capture_exclusion_request: None,
             capture_exclusion_error: None,
+            #[cfg(all(windows, feature = "sdk-material"))]
+            material_capture_forced: false,
+            #[cfg(all(windows, feature = "sdk-material"))]
+            material_active_id: None,
+            #[cfg(all(windows, feature = "sdk-material"))]
+            material_appearance: Default::default(),
             todos: model::TodoList::load(),
             water: model::Water::default(),
             shelf: model::Shelf::load(),
@@ -988,6 +1059,8 @@ impl App {
             grip_hover_since: None,
             page: initial_page,
             page_from: initial_page,
+            #[cfg(feature="sdk-js")]
+            status_pages: Vec::new(),
             page_from_offset: 0.0,
             page_from_elapsed: PAGE_TURN_DURATION,
             page_scroll_area: None,
@@ -1026,7 +1099,11 @@ impl App {
             fullscreen_hidden: false,
             sit_start: 0.0,
             sit_t: Spring::new(1.0, 400.0, 0.8),
-            pomo: Pomo { phase: Phase::Focus, remaining: focus_seconds, running: false }, settings_editing:false,
+            pomo: Pomo {
+                phase: Phase::Focus, remaining: focus_seconds, running: false,
+                #[cfg(feature="sdk-js")]
+                configured_minutes: (focus_seconds/60.0).round() as u32,
+            }, settings_editing:false,
             ring_shown: Spring::new(1.0, 160.0, 0.95),
             reset_spin: Spring::new(0.0, 160.0, 0.82),
             adding: false,
@@ -1044,6 +1121,10 @@ impl App {
             forced_open_until:0.0, settings_open:false, settings_window:std::sync::Arc::new(std::sync::Mutex::new(crate::settings_window::State::load())), displays:Vec::new(), browser_at_top:false, browser_minimal_active:false, glass_tint:0.0, fluid:Default::default(), fluid_origin:Pos2::ZERO, fluid_art:None, fluid_title:String::new(), screen:None, settings_focus_requested:false, settings_tab:0, settings_category:0, messenger_statuses:Default::default(), notification_apps:model::NotificationApps::load(), subpage:None, task_dialog:None,
             listener_status: "尚未连接".into(),
             notification_bell_until: 0.0, notification_bell_at: -10.0, notice: None, hud_notice: None, hud_alpha: 0.0, notice_width:Spring::new(0.0,CLOSE.0,CLOSE.1), notice_details:false, pending_messengers:Vec::new(), messenger_scroll:0.0, alerts: Default::default(), history: Default::default(), pending: vec![],
+            #[cfg(windows)]
+            plugin_notice_ui: Default::default(),
+            #[cfg(windows)]
+            plugin_notice_host: Default::default(),
             todo_first: 0, todo_choosing: false, pet: Default::default(), last_drink: None,
             toast: None, toast_below: false,
             last_input: 0.0, system_idle: None,
@@ -1064,18 +1145,36 @@ impl App {
             music_seek_ui: None,
             music_seek_quiet_until: 0.0,
             music_restart_at: None,
-            bt_shown: Vec::new(),
+            bt_shown: Vec::new(), wireless_devices:Vec::new(),wireless_offset:0,wireless_focus:None,wireless_enter_at:None,wireless_fx:Default::default(),wireless_alerted:Default::default(),wireless_seen_at:Default::default(),
             bt_initialized: false,
             mail: MailState { accounts: mail::load_accounts(), ..Default::default() },
             mail_lines_cache: Vec::new(),
             calendar: CalendarState::load(),
             quota: crate::quota_ui::State::load(),
-            quota_plugins: crate::plugin_quota_host::PluginQuotaHost::load(),
             weather,
             weather_source,
             updates: crate::updates::State::load(model::config_dir().join("update-check.json")),
-            resident: Default::default(), resident_power:(None,false),
+            performance: Default::default(), resident: Default::default(), resident_power:(None,false),
         }
+    }
+
+    #[cfg(windows)]
+    pub fn wireless_compat_store(&self) -> crate::bt::compat::Store {
+        #[cfg(feature = "sdk-js")]
+        return self.plugins.wireless_store();
+
+        #[cfg(not(feature = "sdk-js"))]
+        crate::bt::compat::Store::default()
+    }
+
+    #[cfg(all(windows, feature = "sdk-js", feature = "sdk-material"))]
+    pub fn material_spec(&self) -> Option<crate::sdk_spike::local::MaterialSpec<'_>> {
+        self.plugins.active_material()
+    }
+
+    #[cfg(all(windows, feature = "sdk-js", feature = "sdk-material"))]
+    pub fn deactivate_material(&mut self) -> Result<(), String> {
+        self.plugins.activate_material(None, false).map_err(|error| error.to_string())
     }
 
     pub fn say(&mut self, msg: impl Into<String>) {
@@ -1157,6 +1256,7 @@ impl App {
 
     /// 收信服务推来的事件；历史邮件静默，新邮件进入通知队列。
     pub fn mail_event(&mut self, ev: mail::Event) {
+        if !self.module_on(MAIL_PAGE){return;}
         let watching=|email:&str|self.mail_active() && self.mail.accounts.iter().any(|a|a.enabled && a.email.eq_ignore_ascii_case(email));
         match ev {
             mail::Event::Managed(done)=>self.mail_managed(done),
@@ -1224,6 +1324,7 @@ impl App {
 
     /// v0.5.6：日历服务推来的事件。失败不弹窗，只累计次数（连续两次才显示红字）。
     pub fn calendar_event(&mut self, ev: calendar::Event) {
+        if !self.module_on(CALENDAR_PAGE) {return;}
         match ev {
             calendar::Event::Test { ok, message, count, config } => {
                 self.calendar.testing = false;
@@ -1585,30 +1686,47 @@ impl App {
 
     /// v0.5.4：把系统音量与蓝牙设备状态同步进界面；只在连接/断开时提示一次。
     fn sync_device(&mut self, env: &Env) {
+        if !(self.open&&self.page==BLUETOOTH_PAGE) {self.wireless_enter_at=None;}
+        self.track_wireless_changes(&env.bt);
+        self.wireless_devices=env.bt.clone();
+        if self.module_on(BLUETOOTH_PAGE) {
+            self.wireless_devices.extend(env.receivers.iter().cloned());
+        }
+        if self.wireless_focus.as_ref().is_some_and(|id|!self.wireless_devices.iter().any(|d|&d.id==id)) {
+            self.wireless_focus=None;
+        }
         if self.t >= self.volume_quiet_until {
             if let Some(v) = env.volume {
                 self.volume_ui = Some(v);
             }
         }
-        if !self.settings.bluetooth_notifications {
+        let battery_enabled=self.settings.bluetooth_battery_notifications&&self.module_on(BLUETOOTH_PAGE);
+        let connection_enabled=self.settings.bluetooth_notifications;
+        if !battery_enabled||!connection_enabled {
+            let enabled=|a:&crate::extras::Alert| {
+                a.source!=crate::extras::AlertSource::Internal||a.title!="蓝牙设备"||
+                    if a.page==BLUETOOTH_PAGE {battery_enabled} else {connection_enabled}
+            };
+            self.alerts.retain(&enabled);
+            if self.notice.as_ref().is_some_and(|a|!enabled(a)) {self.notice=None;}
+        }
+        if !connection_enabled {
             self.bt_shown.clear();
             self.bt_initialized=false;
-            self.alerts.retain(|a|a.source!=crate::extras::AlertSource::Internal || a.title!="蓝牙设备");
-            if self.notice.as_ref().is_some_and(|a|a.source==crate::extras::AlertSource::Internal && a.title=="蓝牙设备") {self.notice=None;}
             return;
         }
         if !env.bt_ready { return; }
         // 只把首次完整扫描作为基线，之后的连接变化都应提示。
         if !self.bt_initialized {
             self.bt_initialized = true;
-            self.bt_shown = env.bt.clone();
+            self.bt_shown = env.bt.iter().filter(|d|d.connected).cloned().collect();
             return;
         }
-        let connected: Vec<_> = env.bt.iter().filter(|d| !self.bt_shown.iter().any(|old| old.id == d.id)).cloned().collect();
-        let disconnected: Vec<_> = self.bt_shown.iter().filter(|d| !env.bt.iter().any(|new| new.id == d.id)).cloned().collect();
+        let connected: Vec<_> = env.bt.iter().filter(|d| d.connected && !self.bt_shown.iter().any(|old| old.id == d.id)).cloned().collect();
+        let disconnected: Vec<_> = self.bt_shown.iter().filter(|d| !env.bt.iter().any(|new| new.connected && new.id == d.id)).cloned().collect();
         for device in &connected { self.bluetooth_alert(device, true); }
         for device in &disconnected { self.bluetooth_alert(device, false); }
-        self.bt_shown = env.bt.clone();
+        self.bt_shown = env.bt.iter().filter(|d|d.connected).cloned().collect();
     }
 
     /// 距离上次交互的秒数（小精灵出现的依据）。
@@ -1617,8 +1735,8 @@ impl App {
     }
 
     pub fn show_page(&mut self,page:usize) {
-        if !self.settings.visible_pages[page] {
-            self.settings_tab=PAGE_SETTINGS_TABS[page];
+        if !self.module_on(page) {
+            self.settings_tab=self.page_settings_tab(page);
             self.open_settings();
             return;
         }
@@ -1668,7 +1786,9 @@ impl App {
     // ---------- 功能模块：页面开关即模块开关，关闭后页面隐藏、后台同步和提醒一并停止 ----------
 
     /// 模块是否开启（与「页面管理」里的页面开关一致）。
-    pub fn module_on(&self,page:usize)->bool {self.settings.visible_pages.get(page).copied().unwrap_or(false)}
+    pub fn module_on(&self,page:usize)->bool {
+        self.settings.visible_pages.get(page).copied().unwrap_or_else(||page-PAGE_NAMES.len()<self.status_page_count())
+    }
     /// 收信线程是否应运行：邮箱模块开启且打开了「新邮件提醒」。
     pub fn mail_active(&self)->bool {self.module_on(MAIL_PAGE) && self.settings.mail_enabled}
     /// 剪贴板监听是否应运行：置物架模块开启且打开了「记录剪贴板」。
@@ -1695,23 +1815,108 @@ impl App {
         if !visible && self.settings.visible_pages.iter().filter(|enabled|**enabled).count()==1
             && self.settings.visible_pages[page] { return; }
         self.settings.visible_pages[page]=visible;
-        if !visible && page==QUOTA_PAGE {self.quota_plugins.pause();}
-        // 关掉专注模块时一并停止正在进行的计时，避免页面不可见却到点弹提醒。
-        if !visible && page==FOCUS_PAGE {self.pomo.running=false;}
-        if !self.settings.visible_pages[self.page] {
+        #[cfg(feature="sdk-js")]
+        if !visible {
+            match page {
+                TODO_PAGE=>self.plugins.pause_owner("tasks"),
+                CALENDAR_PAGE=>self.plugins.pause_owner("calendar"),
+                QUOTA_PAGE=>self.plugins.pause_owner("quota"),
+                _=>{}
+            }
+        }
+        if page==SHELF_PAGE {self.clipboard.set_enabled(self.clipboard_active());}
+        if !visible {
+            match page {
+                FOCUS_PAGE=>self.pomo.running=false,
+                MAIL_PAGE=>self.close_mail_module(),
+                CALENDAR_PAGE=>{
+                    self.calendar.view.loading=false;
+                    for feed in &mut self.calendar.feeds {feed.month.loading=false;}
+                    self.calendar.testing=false;
+                    self.calendar.test_password.clear();
+                    self.calendar.form.open=false;
+                    self.pending.retain(|cmd|!matches!(cmd,Cmd::CalendarTest(..)|Cmd::CalendarSync|Cmd::CalendarMonth(_)|Cmd::CalendarForget|Cmd::CalendarImport));
+                }
+                BLUETOOTH_PAGE=>{
+                    self.wireless_focus=None;
+                    self.wireless_offset=0;
+                }
+                _=>{}
+            }
+            self.clear_module_reminders(page);
+        }
+        if !self.module_on(self.page) {
             if let Some(first)=self.settings.page_order.iter().copied().find(|page|self.settings.visible_pages[*page]) { self.go(first,1.0); }
         }
     }
 
-    fn navigate_page(&mut self,next:bool) {
-        let position=self.settings.page_order.iter().position(|page|*page==self.page).unwrap();
-        for offset in 1..=PAGE_NAMES.len() {
-            let page=self.settings.page_order[(position+if next {offset}else{PAGE_NAMES.len()-offset})%PAGE_NAMES.len()];
-            if self.settings.visible_pages[page] {
-                self.go(page,if next {1.0}else{-1.0});
-                break;
-            }
+    fn status_page_count(&self) -> usize {
+        #[cfg(feature="sdk-js")]
+        { self.status_pages.len() }
+        #[cfg(not(feature="sdk-js"))]
+        { 0 }
+    }
+
+    fn navigation_pages(&self) -> impl Iterator<Item=usize> + '_ {
+        self.settings.page_order.iter().copied()
+            .filter(|page|self.settings.visible_pages[*page])
+            .chain(PAGE_NAMES.len()..PAGE_NAMES.len()+self.status_page_count())
+    }
+
+    fn navigation_page_name(&self, page: usize) -> &str {
+        if let Some(name)=PAGE_NAMES.get(page) {return name;}
+        #[cfg(feature="sdk-js")]
+        if let Some((_,name))=self.status_pages.get(page-PAGE_NAMES.len()) {return name;}
+        "页面管理"
+    }
+
+    fn page_settings_tab(&self, page: usize) -> usize {
+        PAGE_SETTINGS_TABS.get(page).copied().unwrap_or(crate::extras::SETTINGS_TAB_PAGES)
+    }
+
+    #[cfg(feature="sdk-js")]
+    fn sync_status_pages(&mut self) {
+        if self.status_pages.iter().map(|(id,name)|(id.as_str(),name.as_str())).eq(self.plugins.status_pages()) {
+            return;
         }
+        let pages:Vec<_>=self.plugins.status_pages().map(|(id,name)|(id.to_owned(),name.to_owned())).collect();
+        // 数字页码只用于绘制和翻页，安装或停用其他插件时按 ID 找回原来的页面。
+        let remap=|page:usize| {
+            if page<PAGE_NAMES.len() {return Some(page);}
+            let (id,_)=self.status_pages.get(page-PAGE_NAMES.len())?;
+            pages.iter().position(|(other,_)|other==id).map(|index|PAGE_NAMES.len()+index)
+        };
+        let current=remap(self.page);
+        let previous=remap(self.page_from);
+        self.drag_saved=self.drag_saved.and_then(remap);
+        self.status_pages=pages;
+        if let Some(page)=current {
+            self.page=page;
+            self.page_from=previous.unwrap_or(page);
+        } else {
+            let fallback=self.navigation_pages().next().unwrap_or(MUSIC_PAGE);
+            self.page=fallback;
+            self.page_from=self.page;
+            self.page_t0=self.t-PAGE_TURN_DURATION as f64;
+            self.subpage=None;
+            self.cancel_edit();
+        }
+        self.dots_target();
+    }
+
+    #[cfg(feature="sdk-js")]
+    pub(crate) fn show_status_page(&mut self, id: &str) {
+        self.sync_status_pages();
+        if let Some(index)=self.status_pages.iter().position(|(source,_)|source==id) {
+            self.show_page(PAGE_NAMES.len()+index);
+        }
+    }
+
+    fn navigate_page(&mut self,next:bool) {
+        let pages:Vec<_>=self.navigation_pages().collect();
+        let Some(position)=pages.iter().position(|&page|page==self.page) else {return;};
+        let offset=if next {1} else {pages.len()-1};
+        self.go(pages[(position+offset)%pages.len()],if next {1.0}else{-1.0});
     }
 
     /// OLED 像素偏移只在收起动画完成、没有鼠标交互、不在编辑时移动；
@@ -1730,6 +1935,8 @@ impl App {
     }
 
     pub fn is_editing(&self) -> bool {
+        #[cfg(feature="sdk-js")]
+        if self.plugin_form_focused { return true; }
         self.adding || self.editing.is_some() || self.todo_choosing || self.task_dialog.is_some() || self.calendar.draft.is_some() || self.settings_editing
     }
 
@@ -1741,7 +1948,7 @@ impl App {
 
     /// 带过渡地切到某页。`dir` > 0 表示内容从右侧进入。
     pub(crate) fn go(&mut self, page: usize, dir: f32) {
-        if page == self.page || !self.settings.visible_pages[page] { return; }
+        if page == self.page || !self.module_on(page) { return; }
         if self.drag_departing {
             self.drag_departing=false;
             self.drag_saved=None;
@@ -1784,6 +1991,8 @@ impl App {
     }
 
     pub(crate) fn cancel_edit(&mut self) {
+        #[cfg(feature="sdk-js")]
+        {self.plugin_form_focused=false;}
         self.settings_editing=false;
         self.adding = false;
         self.editing = None;
@@ -1806,7 +2015,13 @@ impl App {
         self.settings.island_lyrics && self.settings.visible_pages[0] && self.media.is_music() && self.media.playing
             && !self.browser_minimal_active
     }
-    pub(crate) fn compact_notices(&self)->bool {self.island_lyrics_active()&&!self.open&&!self.notice.as_ref().is_some_and(|a|a.meeting.is_some()||self.settings.notification_preview&&matches!(a.source,crate::extras::AlertSource::External(_)))}
+    pub(crate) fn compact_notices(&self)->bool {
+        #[cfg(windows)]
+        if self.notice.as_ref().is_some_and(|a| matches!(a.source, crate::extras::AlertSource::Plugin { .. })) {
+            return false;
+        }
+        self.island_lyrics_active()&&!self.open&&!self.notice.as_ref().is_some_and(|a|a.meeting.is_some()||self.settings.notification_preview&&matches!(a.source,crate::extras::AlertSource::External(_)))
+    }
 
     /// 换句、分段和展开高亮共用时间调整；正数延后，负数提前。
     pub(crate) fn lyric_position(&self)->f32 {(self.media.position-self.settings.lyric_delay_ms as f64/1000.0)as f32}
@@ -1881,21 +2096,35 @@ impl App {
     pub fn set_minimal(&mut self,enabled:bool) {
         self.settings.minimal=enabled;if enabled {self.settings.pet=false;}self.settings.save();
     }
+    pub(crate) fn notification_bell(&self)->Option<f64>{
+        let mail=self.mail.bell_at.filter(|at|self.module_on(MAIL_PAGE)&&self.t<at+6.0);
+        if self.t<self.notification_bell_until {
+            Some(mail.map_or(self.notification_bell_at,|at|self.notification_bell_at.max(at)))
+        }else{mail}
+    }
     fn base_size(&self) -> (f32, f32) {
         if !self.compact_notices()&&!self.open {
             if let Some(a)=&self.notice {let (width,height)=self.notice_size(a);return (width+self.pet_space(),height);}
         }
         if self.side() {
             // 左右停靠：竖向胶囊（通知仍是贴边滑出的横向卡片，见上）。
-            return self.side_base_size(self.effective_minimal()&&self.t>=self.notification_bell_until);
+            return self.side_base_size(self.effective_minimal()&&self.notification_bell().is_none());
         }
         if self.island_lyrics_active() {
             (self.lyric_bar_width(),BAR_H)
-        } else if self.effective_minimal()&&self.t>=self.notification_bell_until {
+        } else if self.effective_minimal()&&self.notification_bell().is_none() {
             (BAR_W_MIN, BAR_H_MIN)
         } else {
             (self.resident.target.width.min(self.resident_limit()), BAR_H)
         }
+    }
+
+    /// 常驻区比展开面板还宽时（比如开了综合监测），展开、收起途中岛宽会先窄于常驻内容。
+    /// 这时常驻内容跟着岛宽一起等比收拢，而不是被岛的边缘直接切掉。
+    fn resident_squeeze(&self)->f32 {
+        if self.side()||self.island_lyrics_active()||self.notice.is_some() {return 1.0;}
+        let content=self.resident.target.width.min(self.resident_limit());
+        (self.w.pos/content.max(1.0)).clamp(0.5,1.0)
     }
 
     /// 0 = 药丸，1 = 完整面板（展开时可略超过 1）。
@@ -1913,8 +2142,42 @@ impl App {
         self.page_scroll_area=None;
     }
 
+    fn active_page_shortcut_colors(&self) -> Option<&std::collections::BTreeMap<String, [u8; 3]>> {
+        #[cfg(feature = "sdk-js")]
+        return self.plugins.active_page_shortcut_colors();
+        #[cfg(not(feature = "sdk-js"))]
+        { None }
+    }
+
+    fn page_shortcuts_enabled(&self) -> bool {
+        self.settings.show_page_shortcuts
+            && self.active_page_shortcut_colors().is_some()
+            && self.navigation_pages().nth(1).is_some()
+    }
+
     pub(crate) fn expanded_height(&self)->f32 {
-        if self.page==CALENDAR_PAGE {CALENDAR_H}else if self.page==WEATHER_PAGE {WEATHER_H}else if self.page==6{176.0}else if self.page==5&&self.mail.open_uid.is_some(){236.0}else{PH}
+        #[cfg(windows)]
+        if self.plugin_notice_detail_open() { return crate::plugin_notice_ui::DETAIL_HEIGHT; }
+        self.page_content_height() + if self.page_shortcuts_enabled() { PAGE_SHORTCUT_ROW_H } else { 0.0 }
+    }
+
+    fn page_content_height(&self)->f32 {
+        #[cfg(feature="sdk-js")]
+        {
+            if let Some(index)=self.page.checked_sub(PAGE_NAMES.len()) {
+                let page=self.status_pages.get(index);
+                let height=page.map_or(
+                    crate::plugin_status_ui::STATUS_PAGE_H, |(id,_)|self.plugins.status_height(id),
+                );
+                #[cfg(windows)]
+                if page.is_some_and(|(id,_)|self.plugins.source_attribution(id).is_some()) {
+                    return height+crate::plugin_status_ui::ATTRIBUTION_HEIGHT;
+                }
+                return height;
+            }
+            if self.page==TODO_PAGE && self.plugins.has_card(){return PH+46.0;}
+        }
+        if self.page==PERFORMANCE_PAGE {crate::performance_ui::PAGE_H}else if self.page==BLUETOOTH_PAGE {194.0}else if self.page==CALENDAR_PAGE {CALENDAR_H}else if self.page==WEATHER_PAGE {WEATHER_H}else if self.page==6{176.0}else if self.page==5&&self.mail.open_uid.is_some(){236.0}else{PH}
     }
 
     // ---------------------------------------------------------------
@@ -1922,6 +2185,12 @@ impl App {
     // ---------------------------------------------------------------
     pub fn frame(&mut self, ui: &mut egui::Ui, win: Rect, env: &Env) -> FrameOut {
         let ctx = ui.ctx().clone();
+        #[cfg(feature="sdk-js")]
+        self.pet.expressions.set_sheets(self.plugins.appearance_pet());
+        #[cfg(all(windows, feature = "sdk-material"))]
+        {
+            self.material_appearance = if env.material_active { env.material_appearance } else { Default::default() };
+        }
         let dt = match self.last_t {
             Some(t0) => (env.t - t0).clamp(0.0, 0.1) as f32,
             None => 0.0,
@@ -1931,15 +2200,14 @@ impl App {
         self.t = env.t;
         self.fullscreen_hidden=env.fullscreen_hidden;
         self.quota_tick();
-        self.quota_plugins.tick(self.quota_active());
         self.weather_tick();
         self.current_hour=env.hour();
         self.system_idle=env.idle_seconds;
         self.dt = dt;
         if let Some(at_top)=env.browser_at_top {self.browser_at_top=at_top;}
         self.screen=env.screen;
-        if self.settings.skin.is_glass() {
-            let target=if self.settings.skin==model::Skin::GlassLight {glass::light_tint(env.backdrop,env.glass_blur)}else{glass::glass_tint(env.backdrop,env.glass_blur)};
+        if self.effective_skin().is_glass() {
+            let target=if self.effective_skin()==model::Skin::GlassLight {glass::light_tint(env.backdrop,env.glass_blur)}else{glass::glass_tint(env.backdrop,env.glass_blur)};
             self.glass_tint=if self.glass_tint<=0.0 {target}else{anim::approach(self.glass_tint,target,3.0,dt)};
         }
         let browser_minimal=self.settings.browser_minimal && self.browser_at_top;
@@ -1963,21 +2231,37 @@ impl App {
         let mut cmds = Vec::new();
 
         self.tick(env, dt, elapsed);
+        #[cfg(feature="sdk-js")]
+        if self.plugins.watch_files_enabled() { ctx.request_repaint_after(std::time::Duration::from_millis(200)); }
         self.sync_device(env);
         self.update_mail_code_alerts(env);
         self.tick_alerts();
+        #[cfg(windows)]
+        self.tick_plugin_notices(&ctx, env);
+        #[cfg(windows)]
+        let plugin_notice_detail = self.plugin_notice_detail_open();
+        #[cfg(not(windows))]
+        let plugin_notice_detail = false;
         let hud_active=self.notice.clone();
         if hud_active.as_ref().map(|a|&a.title)!=self.hud_notice.as_ref().map(|a|&a.title)||hud_active.is_none(){self.notice_details=false;}
         if let Some(a)=&hud_active {self.hud_notice=Some(a.clone());}
         self.hud_alpha=anim::approach(self.hud_alpha,if hud_active.is_some(){1.0}else{0.0},if hud_active.is_some(){16.0}else{8.0},dt);
         if hud_active.is_none() && self.hud_alpha<0.003 {self.hud_notice=None;}
-        let notice_target=if !self.notice.as_ref().is_some_and(|a|a.messenger().is_some()) && self.compact_notices()&&(self.notice.is_some()||self.t<self.notification_bell_until) {44.0}else{0.0};
+        let notice_target=if !self.notice.as_ref().is_some_and(|a|a.messenger().is_some()) && self.compact_notices()&&(self.notice.is_some()||self.notification_bell().is_some()) {44.0}else{0.0};
         self.notice_width.target=notice_target;
         if self.compact_notices(){self.notice_width.step(dt);}else{self.notice_width.snap(0.0);self.notice_details=false;}
         self.update_media(env,&ctx);
-        let bell=self.t<self.notification_bell_until&&!self.compact_notices();
+        let bell=self.notification_bell().is_some()&&!self.compact_notices();
         self.resident_power=(env.battery,env.charging);
         let mut layout=Layout::new(self.settings.show_battery&&env.battery.is_some(),self.quota_bar_indices().len(),self.media.is_music()&&!bell,self.pomo.running,bell,self.pet_enabled(),self.weather_pill().is_some());
+        let performance_bar=self.performance_on_bar();
+        let performance_visible=!env.fullscreen_hidden && !env.screen_locked &&
+            (if self.open {self.page==PERFORMANCE_PAGE} else {performance_bar && self.notice.is_none() && !self.island_lyrics_active()});
+        let performance_detail=performance_visible && self.open && self.page==PERFORMANCE_PAGE;
+        self.performance.tick(self.module_on(PERFORMANCE_PAGE),performance_visible,performance_detail,&ctx);
+        // 鼠标移开收起再移回来，接着看刚才的详情；切到别的页面才回到设置里的起始页。
+        if self.page!=PERFORMANCE_PAGE {self.performance.view=None;}
+        if performance_bar {layout.add_performance(self.settings.performance_bar.width(self.settings.performance_metrics));}
         layout.reorder(&self.settings.resident_order);
         for (position,extra) in self.quota_balance_layout(&ctx){layout.balance_tail(position,extra);}
         let resident_day=if self.settings.resident_date==model::ResidentDate::Off {None}else{
@@ -1993,6 +2277,25 @@ impl App {
         }
         if let Some(extra)=self.weather_pill_extra(&ctx){ layout.widen(bar::WEATHER,extra); }
         if resident_day.is_none() && !self.settings.show_clock {layout.hide_clock();}
+        let wireless=self.wireless_resident();
+        // 放不下整组时不挤压其他常驻项，整组隐藏。
+        let wireless_w=self.wireless_bar_width();
+        if !wireless.is_empty()&&wireless_w<=WIN_W-32.0-layout.width-12.0 {layout.append_bluetooth(wireless_w);}
+        #[cfg(feature="sdk-js")]
+        {
+            let width = (self.resident_limit() - layout.width - 12.0).min(156.0);
+            self.pinned_display = None;
+            let fits = if self.side() { self.side_bar_len() + crate::side_dock::PINNED_HEIGHT <= self.resident_limit() }
+                else { width >= 58.0 };
+            let suppress = self.open || self.effective_minimal() || self.notice.is_some() || self.hud_alpha > 0.003
+                || plugin_notice_detail || self.island_lyrics_active() || env.fullscreen_hidden || env.screen_locked
+                || !fits;
+            self.pinned_display = self.plugins.pinned_display(suppress).map(|(value, repaint)| {
+                if let Some(delay) = repaint { ctx.request_repaint_after(delay); }
+                if !self.side() { layout.append_slot(bar::PINNED, width); }
+                value
+            });
+        }
         if self.pet_enabled() {
             if let Some(a)=self.notice.as_ref().filter(|_|!self.compact_notices()&&!self.open){layout.x[bar::PET]=Some(22.0-(self.notice_size(a).0+self.pet_space())/2.0);}
             else if self.island_lyrics_active() {layout.x[bar::PET]=Some(60.0-self.lyric_bar_width()/2.0);}
@@ -2069,12 +2372,21 @@ impl App {
         if self.music_volume_open && ctx.input_mut(|i|i.consume_key(egui::Modifiers::NONE,egui::Key::Escape)) {
             self.music_volume_open=false;
         }
+        #[cfg(feature="sdk-js")]
+        if self.plugin_form_focused && !ctx.viewport(|viewport|viewport.ime_owns_keys)
+            && ctx.input_mut(|i|i.consume_key(egui::Modifiers::NONE,egui::Key::Escape))
+        {
+            ctx.memory_mut(|memory| {
+                if let Some(id)=memory.focused() {memory.surrender_focus(id);}
+            });
+            self.plugin_form_focused=false;
+        }
         if ctx.input(|i| i.key_pressed(egui::Key::Escape)) && self.is_editing() {
             if self.calendar.draft.as_mut().is_none_or(|draft|draft.picker.take().is_none()) {
                 self.cancel_edit();
             }
         }
-        if (!self.is_editing() || self.todo_choosing) && page_hover && self.open && self.reveal > 0.95 {
+        if !plugin_notice_detail && (!self.is_editing() || self.todo_choosing) && page_hover && self.open && self.reveal > 0.95 {
             let (scroll, left, right, esc) = ctx.input(|i| (i.raw_scroll_delta.y, i.key_pressed(egui::Key::ArrowLeft), i.key_pressed(egui::Key::ArrowRight), i.key_pressed(egui::Key::Escape)));
             if esc { self.hover_lock = true; }
             if (left || right) && !self.todo_choosing {
@@ -2086,7 +2398,17 @@ impl App {
                 let mail_list=self.page==5 && !self.mail.accounts.is_empty() && self.mail.open_uid.is_none() && self.mail_list_bounds().contains(cursor);
                 let music_volume=self.page==0 && (Rect::from_min_max(Pos2::new(354.0,106.0),Pos2::new(380.0,130.0)).contains(cursor)
                     || self.music_volume_open && self.music_volume_bounds().contains(cursor));
-                if mail_reading || mail_list || music_volume {self.wheel_delta=0.0;}
+                #[cfg(feature="sdk-js")]
+                let status_scroll=self.page.checked_sub(PAGE_NAMES.len())
+                    .and_then(|index|self.status_pages.get(index))
+                    .and_then(|(id,_)|{
+                        let (_,status,health)=self.plugins.status_page(id)?;
+                        if health!=crate::plugin_status::StatusHealth::Ready {return None;}
+                        crate::plugin_status_ui::status_scroll_area(status?,self.plugins.status_layout(id)?)
+                    }).is_some_and(|area|area.contains(cursor));
+                #[cfg(not(feature="sdk-js"))]
+                let status_scroll=false;
+                if mail_reading || mail_list || music_volume || status_scroll {self.wheel_delta=0.0;}
                 else {
                     // 累积高精度滚轮的小幅输入；停顿或反向时丢弃上一段余量。
                     if self.t-self.wheel_at>0.18 || self.wheel_delta*scroll<0.0 {self.wheel_delta=0.0;}
@@ -2095,6 +2417,9 @@ impl App {
                     if self.wheel_delta.abs()>=8.0 {
                         let next=self.wheel_delta<0.0;
                         self.wheel_delta=0.0;
+                        // 性能 CPU、内存详情的程序列表：滚轮在列表上只滚列表，滚到头也不翻页。
+                        let performance_list=self.page==PERFORMANCE_PAGE && crate::performance_ui::list_area().contains(cursor);
+                        let performance_max=if performance_list {self.performance_list_max()}else{0};
                         let clipboard_tab=self.page==3 && self.shelf_tab==1;
                         let clipboard_body=clipboard_tab && Rect::from_min_max(Pos2::new(42.0,31.0),Pos2::new(377.0,124.0)).contains(cursor);
                         let list=match self.page {
@@ -2105,6 +2430,8 @@ impl App {
                                 =>Some((&mut self.clip_first,self.clipboard.lock().items.len().saturating_sub(crate::pages::CLIP_ROWS))),
                             3 if !clipboard_tab && Rect::from_min_max(Pos2::new(36.0,28.0),Pos2::new(383.0,128.0)).contains(cursor)
                                 =>Some((&mut self.shelf_first,self.shelf.items.len().saturating_sub(5))),
+                            PERFORMANCE_PAGE if performance_list && performance_max>0
+                                =>Some((&mut self.performance.list_first,performance_max)),
                             _=>None,
                         };
                         let content_scrolls=list.as_ref().is_some_and(|(_,max)|*max>0);
@@ -2123,7 +2450,7 @@ impl App {
             }
         } else {self.wheel_delta=0.0;}
         let volume_dragging=self.music_volume_open && ctx.is_being_dragged(egui::Id::new(("card-drag",true,"m-volume-track")));
-        let want = self.hold_open || (page_hover && !self.hover_lock && (self.compact_notices()||self.notice.is_none()||self.open)) || self.open && on_notice || (self.open && self.t<self.forced_open_until) || self.drag_hot || volume_dragging || (self.is_editing() && self.open);
+        let want = plugin_notice_detail || self.hold_open || (page_hover && !self.hover_lock && (self.compact_notices()||self.notice.is_none()||self.open)) || self.open && on_notice || (self.open && self.t<self.forced_open_until) || self.drag_hot || volume_dragging || (self.is_editing() && self.open);
         self.morph(want, inside, env.t, dt);
         let staying_open = self.open && want;
         if !self.drag_departing || staying_open {
@@ -2161,7 +2488,7 @@ impl App {
         let notice_shape=notice_rect.map(|r|Rect::from_min_max(Pos2::new(r.left()-36.0,r.top()),r.max));
         let body=messenger_rect.filter(|_|outside_badge.is_none()).map_or(panel,|badge|panel.union(badge));
         let body=notice_shape.map_or(body,|notice|body.union(notice));
-        let minimal_strip = self.effective_minimal() && !self.island_lyrics_active() && self.notice.is_none() && self.t>=self.notification_bell_until;
+        let minimal_strip = self.effective_minimal() && !self.island_lyrics_active() && self.notice.is_none() && self.notification_bell().is_none();
         let minimal_pill = minimal_strip && pc < 0.02;
         let flare = if minimal_pill || pill { 0.0 } else { lerp(5.0, FLARE, pc) };
         let k = (w / PW).clamp(0.3, 1.1);
@@ -2169,13 +2496,15 @@ impl App {
         let radius = if minimal_pill { BAR_H_MIN / 2.0 } else if pill { (w.min(h) * 0.5).min(lerp(thickness * 0.5, 26.0, pc)) } else { lerp(12.5, RAD * k.min(1.0), pc) };
         let flare_h = lerp(8.0, FLARE_H, pc);
         let thick = glass::thickness(PH);
-        let glass_skin = self.settings.skin.is_glass();
+        let glass_skin = self.effective_skin().is_glass() && !self.glassy();
         let layer = painter.layer_id();
-        let palette = self.skin_palette();
+        let palette = self.island_palette();
         // 换色时跳过的图形范围（岛体底色、阴影、吉祥物）。
         let mut keep_colors:Vec<(usize,usize)>=Vec::new();
         // 毛玻璃：真实模糊下保留柔和投影增加层次；无模糊时阴影再减淡一些，保持轻盈。
-        let skin_shadow = if !glass_skin {1.0} else if env.glass_blur {0.75} else {0.7};
+        let skin_shadow = if !self.effective_skin().is_glass() {1.0} else if env.glass_blur {0.75} else {0.7};
+        #[cfg(all(windows, feature = "sdk-material"))]
+        let skin_shadow = self.material_appearance.shadow.unwrap_or(skin_shadow);
         let shadow_k = glass::shadow_alpha(0.0, thick) / 0.12 * skin_shadow;
         let island_shadow=|r:Rect,flare:f32,flare_h:f32,radius:f32,strength:f32| if pill {pill_shadow(&painter,r,radius,strength)} else if dock!=model::Dock::Top {shape::shadow_docked(&painter,r,dock,flare,flare_h,radius,strength)} else {shape::shadow(&painter,r,flare,flare_h,radius,strength)};
         // 拿起时投影加深，像被从屏幕边缘提起来。
@@ -2183,10 +2512,10 @@ impl App {
         island_shadow(body, flare, flare_h, radius, (smoothstep(0.1, 0.9, pc) + lifted * 0.9) * shadow_k);
         if let Some(r)=outside_badge{
             let appear=self.messenger_appear();
-            painter.rect_filled(r,r.width()/2.0,paint::alpha(self.glass_fill(),appear));
+            painter.rect_filled(r,r.width()/2.0,paint::alpha(self.island_overlay_fill(),appear));
             if glass_skin {painter.rect_stroke(r,r.width()/2.0,egui::Stroke::new(1.0_f32,paint::alpha(self.glass_rim(),appear)),egui::StrokeKind::Inside);}
         }
-        if self.settings.skin==model::Skin::Fluid {
+        if !self.glassy() && self.effective_skin()==model::Skin::Fluid {
             self.fluid_origin=body.min;
             let art=self.music_artwork.as_ref().map(|(_,texture)|texture.id());
             if art!=self.fluid_art || self.media.title!=self.fluid_title {
@@ -2201,7 +2530,19 @@ impl App {
             if !self.open || self.page!=0 || self.media.title.is_empty(){self.fluid.set_seek(None,0.0);}
             self.fluid.advance(env.t,dt);
         }
-        self.paint_body(&painter, body, flare, flare_h, radius, feather);
+        if !self.glassy() { self.paint_body(&painter, body, flare, flare_h, radius, feather); }
+        #[cfg(all(windows, feature = "sdk-material"))]
+        let material_layer = env.material_active.then(|| {
+            let radius=if pill {radius.min(body.width().min(body.height())*0.5)} else {radius};
+            let notch=(!pill).then_some((flare,flare_h));
+            let fallback = if self.glassy() {
+                egui::Shape::Rect(egui::epaint::RectShape::new(
+                    body, radius, self.material_glass_fill(225),
+                    egui::Stroke::new(1.0, Color32::from_white_alpha(80)), egui::StrokeKind::Inside,
+                ))
+            } else { egui::Shape::Noop };
+            crate::material::Layer::reserve(&painter, ui.max_rect(), body, radius, pc, notch, dock, self.music_artwork.as_ref(), fallback)
+        });
         if lifted > 0.01 {self.paint_lift_halo(&painter, body, flare, flare_h, radius, lifted.min(1.0));}
         let arrival=1.0-smoothstep(0.0,0.12,(self.t-self.crossed_at) as f32);
         if self.seam_guide>0.01 || arrival>0.0 {
@@ -2243,7 +2584,7 @@ impl App {
             }
         }else if banner {
             if let Some(a)=self.notice.clone(){self.draw_notice(&Card::new(ui,panel.min+Vec2::new(self.pet_space(),0.0),panel.intersect(ui.max_rect())),panel,&a,&mut cmds);}
-        }else if !minimal_pill || pc > 0.0 {
+        }else if !plugin_notice_detail && (!minimal_pill || pc > 0.0) {
             self.resident_header(&base, panel, cx, if restoring_lyrics{0.0}else{pc}, reveal, env, resident_day.as_ref());
         }
         if let Some(rect)=notice_rect {
@@ -2257,10 +2598,10 @@ impl App {
                 }else{crate::extras::notice_badge(&c,18.0,15.0,&a);}
                 let button=crate::quota_ui::bar_tooltip(c.hit(0.0,0.0,36.0,BAR_H,"notice-badge"),format!("{}\n{}",a.title,a.body));
                 if button.clicked(){if let Some(kind)=a.health(){self.confirm_health_reminder(kind);}else{self.notice_details=!self.notice_details;}}
-            }else if self.t<self.notification_bell_until {
-                paint::bell(&c.scaled(20.0,14.0,1.2),20.0,14.0,theme::WHITE,paint::bell_swing(self.t-self.notification_bell_at));
+            }else if let Some(at)=self.notification_bell(){
+                paint::bell(&c.scaled(20.0,14.0,1.2),20.0,14.0,theme::WHITE,paint::bell_swing(self.t-at));
                 c.circle(24.0,9.5,2.0,Color32::from_rgb(255,72,72));
-                if c.hit(6.0,0.0,28.0,30.0,"bell-mail").clicked(){self.show_page(5);}
+                if self.module_on(MAIL_PAGE)&&c.hit(6.0,0.0,28.0,30.0,"bell-mail").clicked(){self.show_page(MAIL_PAGE);}
             }
         }
         if let Some(rect)=messenger_rect {
@@ -2281,7 +2622,7 @@ impl App {
             let radius=if self.hud_notice.as_ref().is_some_and(|a|a.meeting.is_some()){14.0}else{10.0};
             let from=crate::skin_paint::shape_count(&ctx,layer);
             shape::shadow(&painter,rect,0.0,0.0,radius,0.5*shadow_k);
-            painter.rect_filled(rect,radius,self.glass_fill());
+            painter.rect_filled(rect,radius,self.island_overlay_fill());
             if glass_skin {
                 painter.rect_stroke(rect,radius,egui::Stroke::new(1.0_f32,self.glass_rim()),egui::StrokeKind::Inside);
             }
@@ -2293,12 +2634,19 @@ impl App {
         if pet_alpha>0.004 && !minimal_pill {
             let y=(h.min(self.base_size().1)-BAR_H).max(0.0)/2.0;
             // 吉祥物跟随皮肤换色：浅色底上变成深色版本，保持清晰。
-            let fit=if self.island_lyrics_active()||self.notice.is_some(){1.0}else{(self.resident_limit()/self.resident.target.width).min(1.0)};
-            self.pet.draw(&base.scaled(cx-origin.x,15.0,fit).shifted(0.0,y).faded(pet_alpha),cx-origin.x+self.resident.position(bar::PET),self.t,self.skin_palette());
+            let fit=if self.island_lyrics_active()||self.notice.is_some(){1.0}else{(self.resident_limit()/self.resident.target.width).min(1.0)*self.resident_squeeze()};
+            self.pet.draw(&base.scaled(cx-origin.x,15.0,fit).shifted(0.0,y).faded(pet_alpha),cx-origin.x+self.resident.position(bar::PET),self.t,palette);
         }
         let previous_scroll=self.content_scroll.take();
         let mut page_transition=false;
-        if reveal > 0.004 && !banner && !restoring_lyrics {
+        #[cfg(feature="sdk-js")]
+        {self.plugin_form_focused=false;}
+        if plugin_notice_detail {
+            #[cfg(windows)]
+            if self.open && reveal > 0.6 {
+                self.draw_plugin_notice_detail(&base, &mut cmds);
+            }
+        } else if reveal > 0.004 && !banner && !restoring_lyrics {
             let c = base.shifted(0.0, (1.0 - reveal) * -5.0).faded(reveal);
             let c = if reveal < 0.6 { c.ghost() } else { c };
             if self.drag_departing {
@@ -2316,12 +2664,12 @@ impl App {
             } else {origin};
             self.toast_layer(&Card::new(ui,toast_origin,win),if bottom {-36.0}else{h+8.0})
         }else{None};
-        if (self.adding||self.editing.is_some()) && reveal > 0.9 && self.page == 4 && self.page_e() > 0.25 {
+        if !plugin_notice_detail && (self.adding||self.editing.is_some()) && reveal > 0.9 && self.page == 4 && self.page_e() > 0.25 {
             self.input_field(ui, origin, &mut cmds);
         }
 
-        if self.task_dialog.is_some() && reveal>0.9 {self.task_editor_inputs(ui,origin,&mut cmds);}
-        if self.calendar.draft.is_some() && reveal>0.9 {self.calendar_editor_inputs(ui,origin,&mut cmds);}
+        if !plugin_notice_detail && self.task_dialog.is_some() && reveal>0.9 {self.task_editor_inputs(ui,origin,&mut cmds);}
+        if !plugin_notice_detail && self.calendar.draft.is_some() && reveal>0.9 {self.calendar_editor_inputs(ui,origin,&mut cmds);}
 
         // ---------- 输出 ----------
         let rel = |r: Rect| r.translate(-win.min.to_vec2());
@@ -2337,7 +2685,9 @@ impl App {
             if dock==model::Dock::Left {Rect::from_min_max(Pos2::new(win.left(),r.top()),r.max)} else {Rect::from_min_max(r.min,Pos2::new(win.right(),r.bottom()))}
         } else if p > 0.02 || self.open {
             let height=self.expanded_height().max(self.h.pos)*1.08+16.0;
-            Rect::from_center_size(Pos2::new(cx, top + height/2.0), Vec2::new(PW + FLARE * 2.0 + 56.0, height))
+            // 常驻条比展开面板宽时（比如开了综合监测），展开开头和收起末尾岛还比面板宽；
+            // 窗口区域按当前岛宽取大，否则两侧会被系统按面板宽度直接切掉。
+            Rect::from_center_size(Pos2::new(cx, top + height/2.0), Vec2::new(PW.max(self.w.pos) + FLARE * 2.0 + 56.0, height))
         } else {
             let (bw, bh) = self.base_size();
             Rect::from_center_size(Pos2::new(cx, top + (bh * SWELL.1 + 12.0) / 2.0), Vec2::new(bw * SWELL.0 + 24.0, bh * SWELL.1 + 12.0))
@@ -2412,19 +2762,25 @@ impl App {
             || pet_fading || resident_moving
             || self.open && self.page==2 && (!self.water_ring.settled(1.0) || !self.sit_view_t.settled(1.0) || !self.sit_t.settled(1.0))
             || self.toast.is_some()
-            || self.t < self.notification_bell_until && self.t-self.notification_bell_at < 0.95
+            || self.notification_bell().is_some_and(|at|self.t-at<0.95)
             || self.notice.as_ref().is_some_and(|a|a.source!=crate::extras::AlertSource::Internal&&self.t-a.at<0.95)
             || self.hud_alpha > 0.003 && self.hud_alpha < 0.997
             || !self.notice_width.settled(1.0);
         let pet_visible=self.pet_a>0.01 && !self.open && !minimal_pill;
-        let ambient=self.settings.skin==model::Skin::Fluid && self.fluid.animating() || self.pomo.running && (self.open && self.page==1 || !self.open && !minimal_pill && self.notice.is_none() && bar::animations_enabled())
+        let ambient=!self.glassy() && self.effective_skin()==model::Skin::Fluid && self.fluid.animating() || self.pomo.running && (self.open && self.page==1 || !self.open && !minimal_pill && self.notice.is_none() && bar::animations_enabled())
             || self.media.playing && (self.open && self.page==0 || !self.open && !minimal_pill && self.notice.is_none() && self.media.is_music())
-            || self.notice.as_ref().is_some_and(|notice|notice.meeting.is_some());
+            || self.notice.as_ref().is_some_and(|notice|notice.meeting.is_some())
+            || self.wireless_animating();
         let animating=transitioning || ambient || pet_visible && self.pet.state!=PetState::Sleeping;
         // 交互形变保持 60 帧，媒体 30 帧；小表情 20 帧，睡眠 10 帧，静态界面每秒核对提醒。
         let repaint_after=std::time::Duration::from_secs_f64(if transitioning{1.0/60.0}else if ambient{1.0/30.0}else if pet_visible{if self.pet.state==PetState::Sleeping{0.1}else{0.05}}else{1.0});
         cmds.append(&mut self.pending);
         let next_hit=if side {self.side_hit_rect(win,self.progress(),self.page_height.pos).translate(offset)} else {orient(self.hit_rect(cx,top,self.progress()))};
+        #[cfg(feature="sdk-js")]
+        if page_before!=self.page || !self.open || self.page<PAGE_NAMES.len()
+            || self.status_values_blocked(env) {
+            crate::plugin_status_ui::clear_sensitive_reveal(&ctx);
+        }
         if page_before!=self.page && self.open {
             let previous=self.page_scroll_area.map_or(hit,|area|hit.union(area));
             // 滚轮续翻的空白带按最终页边界计算，点击区域则跟随当前画面。
@@ -2445,6 +2801,9 @@ impl App {
         FrameOut {
             region: rel(floating_toast.into_iter().chain(self.shelf_menu_rect.map(|r|r.union(r + ctx.style().visuals.popup_shadow.margin()).expand(1.0 / ctx.pixels_per_point()))).fold(region,Rect::union).intersect(ui.max_rect())),
             glass: glass_region,
+            blur: glass_skin && self.settings.glass_blur,
+            #[cfg(all(windows, feature = "sdk-material"))]
+            material_layer,
             resident_clip,
             hit: rel(next_hit),
             page_scroll_area:self.page_scroll_area.map(rel),
@@ -2513,7 +2872,12 @@ impl App {
     fn unread_slot(&self,height:f32)->f32 {
         if self.unread_count()>=3 {(height-4.0)/3.0} else {UNREAD_SLOT}
     }
-    fn unread_count(&self)->usize {self.pending_messengers.len()+self.health_badges().len()}
+    fn unread_count(&self)->usize {
+        let count=self.pending_messengers.len()+self.health_badges().len();
+        #[cfg(windows)]
+        let count=count+self.plugin_notice_ui.item_count();
+        count
+    }
     /// 收起时叠放的来源图标，每个客户端各占一个。
     fn unread_sources(&self)->Vec<Messenger>{
         let mut sources=Vec::new();
@@ -2522,13 +2886,15 @@ impl App {
     }
     /// 收起时叠放区沿胶囊方向的长度。
     fn unread_stack_len(&self,horizontal:bool)->f32 {
-        let icons=(self.unread_sources().len()+self.health_badges().len()) as f32;
+        let icons=self.unread_sources().len()+self.health_badges().len();
+        #[cfg(windows)]
+        let icons=icons+self.plugin_notice_ui.collapsed_count();
+        let icons=icons as f32;
         if icons==0.0 {0.0}else{32.0+unread_step(horizontal)*(icons-1.0)}
     }
 
     pub(crate) fn resident_limit(&self)->f32 {
         let limit=if self.side(){crate::side_dock::SIDE_H-24.0}else{WIN_W-32.0};
-        if self.pending_messengers.is_empty() && !self.health_pending.contains(&true){return limit;}
         limit-self.unread_stack_len(!self.side())
     }
 
@@ -2554,7 +2920,7 @@ impl App {
     fn messenger_badge_rect(&self,win:Rect,panel:Rect)->Option<Rect>{
         if self.unread_count()==0 || self.browser_minimal_active && !self.open {return None;}
         // 完整横幅已包含该来源图标。歌词模式和横幅收起后使用常驻入口。
-        if !self.open && !self.compact_notices() && self.pending_messengers.len()==1 && self.health_badges().is_empty()
+        if !self.open && !self.compact_notices() && self.unread_count()==1 && self.pending_messengers.len()==1
             && self.notice.as_ref().and_then(|a|a.messenger())==self.pending_messengers.first().map(|u|u.source){return None;}
         let bounds=self.screen.map_or(win,|screen|screen.intersect(win));
         let appear=self.messenger_appear();
@@ -2619,8 +2985,12 @@ impl App {
             let button=inner.hit(0.0,cy-slot/2.0,UNREAD_W,slot,self.unread_id(i)).on_hover_text(format!("查看{name}"));
             if button.clicked(){cmds.push(Cmd::ViewMessenger(u));}
         }
-        for (i,kind) in self.health_badges().into_iter().enumerate() {
-            let cy=2.0+slot*((self.pending_messengers.len()+i) as f32+0.5)-self.messenger_scroll;
+        let health=self.health_badges();
+        let health_offset=self.pending_messengers.len();
+        #[cfg(windows)]
+        self.draw_plugin_notice_capsule(&inner, health_offset+health.len(), slot, height, self.messenger_scroll, UNREAD_W, cmds);
+        for (i,kind) in health.into_iter().enumerate() {
+            let cy=2.0+slot*((health_offset+i) as f32+0.5)-self.messenger_scroll;
             if cy< -slot || cy>height+slot {continue;}
             kind.icon(&inner,x,cy,0.8);
             inner.circle(x+10.0,cy-9.0,2.6,Color32::from_rgb(255,59,48));
@@ -2641,6 +3011,8 @@ impl App {
         let health=self.health_badges();
         let count=self.pending_messengers.len();
         let icons=sources.len()+health.len();
+        #[cfg(windows)]
+        let icons=icons+self.plugin_notice_ui.collapsed_count();
         let step=unread_step(horizontal);
         let at=|k:usize|if horizontal {(16.0+step*k as f32,14.0)}else{(16.0,14.0+step*k as f32)};
         for k in 0..sources.len() {
@@ -2650,9 +3022,9 @@ impl App {
         }
         for (i,kind) in health.iter().enumerate(){let (x,y)=at(sources.len()+i);kind.icon(c,x,y,0.7);}
         // 每个来源图标右上角一个小红点，不显示数字。
-        for k in 0..icons {let (x,y)=at(k);c.circle(x+8.0,y-7.0,2.6,Color32::from_rgb(255,59,48));}
+        for k in 0..sources.len()+health.len() {let (x,y)=at(k);c.circle(x+8.0,y-7.0,2.6,Color32::from_rgb(255,59,48));}
         let length=self.unread_stack_len(horizontal);
-        let messenger_length=if health.is_empty(){length}else{sources.len() as f32*step+if horizontal{5.0}else{3.0}};
+        let messenger_length=if icons==sources.len(){length}else{sources.len() as f32*step+if horizontal{5.0}else{3.0}};
         let (w,h)=if horizontal {(messenger_length,BAR_H)}else{(32.0,messenger_length)};
         if count==1 {
             let u=self.pending_messengers[0];
@@ -2662,6 +3034,8 @@ impl App {
             let button=c.hit(0.0,0.0,w,h,"messenger-stack").on_hover_text(format!("{count} 条未读 · 展开挑选"));
             if button.clicked(){self.reveal_unread();}
         }
+        #[cfg(windows)]
+        self.draw_plugin_notice_stack(c,horizontal,sources.len()+health.len(),step,length,cmds);
         for (i,kind) in health.into_iter().enumerate() {
             let k=sources.len()+i;
             let (x,y)=at(k);
@@ -2692,14 +3066,65 @@ impl App {
         Some(Rect::from_min_size(Pos2::new(x,if self.dock()==model::Dock::Bottom {badge.top()-height-6.0}else{badge.bottom()+6.0}),Vec2::new(width,height)))
     }
 
-    /// 当前皮肤的换色调色板（经典为 None）。
+    pub(crate) fn glassy(&self) -> bool {
+        #[cfg(all(windows, feature = "sdk-material"))]
+        { self.material_appearance.glass_foreground }
+        #[cfg(not(all(windows, feature = "sdk-material")))]
+        { false }
+    }
+
+    pub(crate) fn glass_controls_ready(&self) -> bool {
+        #[cfg(all(windows, feature = "sdk-material"))]
+        { self.glassy() && self.material_appearance.controls && self.material_appearance.ready && self.open && self.reveal >= 0.6 && self.progress() >= 0.985 }
+        #[cfg(not(all(windows, feature = "sdk-material")))]
+        { false }
+    }
+
+    pub(crate) fn glass_control_scale(&self, _response: &egui::Response, press: f32) -> f32 {
+        #[cfg(all(windows, feature = "sdk-material"))]
+        if self.glass_controls_ready() {
+            if let Some(scale) = crate::material::control_scale(&_response.ctx, _response.id) { return scale; }
+        }
+        1.0 + 0.14 * press
+    }
+
+    #[cfg(all(windows, feature = "sdk-material"))]
+    fn material_glass_fill(&self, alpha: u8) -> Color32 {
+        let (r, g, b) = if self.material_appearance.light { (248, 248, 250) } else { (24, 27, 33) };
+        Color32::from_rgba_unmultiplied(r, g, b, alpha)
+    }
+
+    fn island_overlay_fill(&self) -> Color32 {
+        #[cfg(all(windows, feature = "sdk-material"))]
+        if self.glassy() { return self.material_glass_fill(215); }
+        self.glass_fill()
+    }
+
+    pub(crate) fn island_palette(&self)->Option<crate::skin_paint::Palette> {
+        #[cfg(all(windows, feature = "sdk-material"))]
+        if self.glassy() {
+            return Some(if self.material_appearance.light { crate::skin_paint::GLASS_LIGHT_READABLE } else { crate::skin_paint::GLASS_DARK });
+        }
+        self.skin_palette()
+    }
+
+    /// 岛体绘制使用的内置皮肤，插件选中时由它提供基础外观。
+    pub fn effective_skin(&self)->model::Skin {
+        #[cfg(feature="sdk-js")]
+        if let Some(skin)=self.plugins.active_skin() {return skin.base;}
+        self.settings.skin
+    }
+
+    /// 基础皮肤的换色调色板，也用于独立设置窗口的预览。
     pub(crate) fn skin_palette(&self)->Option<crate::skin_paint::Palette> {
+        #[cfg(feature="sdk-js")]
+        if let Some(skin)=self.plugins.active_skin() {return Some(skin.palette);}
         match self.settings.skin {model::Skin::Cream=>Some(crate::skin_paint::CREAM),model::Skin::GlassLight=>Some(crate::skin_paint::GLASS_LIGHT),model::Skin::GlassDark=>Some(crate::skin_paint::GLASS_DARK),model::Skin::Classic|model::Skin::Fluid=>None}
     }
 
     /// 设置页预览用的岛体底色：没有真实模糊，毛玻璃按较实的玻璃表现。
     pub(crate) fn preview_fill(&self)->Color32 {
-        match self.settings.skin {
+        match self.effective_skin() {
             model::Skin::GlassDark=>{let (r,g,b)=glass::GROUND_DARK;Color32::from_rgba_unmultiplied(r,g,b,215)}
             model::Skin::GlassLight=>{let [r,g,b]=glass::LIGHT_GROUND.map(|v|(v*255.0).round() as u8);Color32::from_rgba_unmultiplied(r,g,b,225)}
             _=>self.glass_fill(),
@@ -2708,8 +3133,13 @@ impl App {
 
     /// 岛体底色：经典为纯黑；奶油为暖白；毛玻璃按当前着色量叠加深色或浅色玻璃。
     fn glass_fill(&self)->Color32 {
+        #[cfg(feature="sdk-js")]
+        if let Some(skin)=self.plugins.active_skin().filter(|skin|matches!(skin.base,model::Skin::Classic|model::Skin::Cream)) {
+            let [r,g,b]=skin.palette.paper;
+            return Color32::from_rgb(r,g,b);
+        }
         let alpha=(self.glass_tint.clamp(0.0,1.0)*255.0).round() as u8;
-        match self.settings.skin {
+        match self.effective_skin() {
             model::Skin::GlassDark=>{let (r,g,b)=glass::GROUND_DARK;Color32::from_rgba_unmultiplied(r,g,b,alpha)}
             model::Skin::GlassLight=>{let [r,g,b]=glass::LIGHT_GROUND.map(|v|(v*255.0).round() as u8);Color32::from_rgba_unmultiplied(r,g,b,alpha)}
             model::Skin::Cream=>{let [r,g,b]=crate::skin_paint::CREAM.paper;Color32::from_rgb(r,g,b)}
@@ -2720,13 +3150,13 @@ impl App {
 
     /// 毛玻璃边缘高光：浅色玻璃更亮，像苹果的玻璃边缘。
     fn glass_rim(&self)->Color32 {
-        let strength=if self.settings.skin==model::Skin::GlassLight {0.55} else {glass::rim_alpha()*0.7};
+        let strength=if self.effective_skin()==model::Skin::GlassLight {0.55} else {glass::rim_alpha()*0.7};
         Color32::from_white_alpha((255.0*strength).round() as u8)
     }
 
     /// 绘制岛体（或通知胶囊）的本体：经典皮肤为纯黑；毛玻璃为着色底 + 顶部柔光 + 边缘高光。
     fn paint_body(&self,painter:&egui::Painter,rect:Rect,flare:f32,flare_h:f32,radius:f32,feather:f32){
-        let skin=self.settings.skin;
+        let skin=self.effective_skin();
         if skin==model::Skin::Fluid {
             let pill=self.settings.island_shape==model::IslandShape::Pill;
             let (map,frame)=shape::EdgeMap::of(rect,if pill {model::Dock::Top}else{self.dock()});
@@ -3103,6 +3533,21 @@ impl App {
         let (prev_w,prev_h)=(self.w.pos,self.h.pos);
         self.w.step(dt);
         self.h.step(dt);
+        // 常驻条比展开面板还宽时（比如开了综合监测），展开是「由宽变窄」。宽高各走各的弹簧会出现又宽又高的空黑框。
+        // 这时宽度不再单独弹，直接跟着高度的进度走：同一个动作里一边往下长一边收窄，收起时反过来，和短岛一样一气呵成。
+        if !self.side() && self.position_drag.is_none() && bw > PW + 1.0 {
+            let full = self.expanded_height();
+            // 从悬停微胀的形态起步；收起时回到微胀高度就交还给弹簧，悬停微胀照旧。
+            let start = bh * SWELL.1;
+            let from = if self.open {bw * SWELL.0} else {bw};
+            if self.open || self.h.pos > start + 0.5 {
+                let k = ((self.h.pos - start) / (full - start).max(1.0)).clamp(0.0, 1.0);
+                let ease = 1.0 - (1.0 - k) * (1.0 - k);
+                self.w.pos = lerp(from, PW, ease);
+                self.w.vel = 0.0;
+                self.w.target = if self.open {PW} else {bw};
+            }
+        }
         // 仅在从外侧越过目标时收住，扩展提示条时不强制跳到目标宽度。
         if !self.open {
             if prev_w>=bw && self.w.pos<bw {self.w.snap(bw);}
@@ -3118,7 +3563,7 @@ impl App {
     // ---------------------------------------------------------------
     fn shared_header(&mut self, base: &Card, cx: f32, p: f32, reveal: f32, env: &Env, resident_day: Option<&ResidentDay>) {
         let local_cx = cx - base.origin.x;
-        let fit=if self.island_lyrics_active(){1.0}else{(self.resident_limit()/self.resident.target.width).min(1.0)};
+        let fit=if self.island_lyrics_active(){1.0}else{(self.resident_limit()/self.resident.target.width).min(1.0)*self.resident_squeeze()};
         let fitted=base.scaled(local_cx,15.0,lerp(fit,1.0,p));
         let base=&fitted;
         let lyric=self.island_lyric().map(|(index,_)|index);
@@ -3189,7 +3634,7 @@ impl App {
         });
         let clock_clearance=if resident_day.is_some(){layout.date_group_clearance()}else{layout.clearance(bar::CLOCK)};
 
-        if self.effective_minimal() && self.t>=self.notification_bell_until && p < 0.02 { return; }
+        if self.effective_minimal() && self.notification_bell().is_none() && p < 0.02 { return; }
         // 电池：位置/大小连续插值
         let bk = lerp(1.0, 0.8*fit, m);
         let bpos = (lerp(pb.0, hb.0, m), lerp(pb.1, hb.1, m));
@@ -3247,7 +3692,7 @@ impl App {
             let y=lerp(15.0,18.0,m);
             paint::playback_bars(base,x,y,self.t,self.media.playing,theme::WHITE);
             if self.open && reveal>0.6 && base.hit(x-13.0,y-14.0,26.0,28.0,"header-music")
-                .on_hover_text(if self.settings.visible_pages[0]{"返回音乐播放页"}else{"打开音乐设置"})
+                .on_hover_text("返回音乐播放页")
                 .on_hover_cursor(egui::CursorIcon::PointingHand).clicked(){self.show_page(0);}
         }
         let compact_alpha=1.0-smoothstep(0.0,0.22,p);
@@ -3257,17 +3702,23 @@ impl App {
                 day.draw_after_clock(&base.faded(date_alpha),pcx,self.settings.show_clock.then_some(clock.as_str()));
             }
         }
-        if self.t<self.notification_bell_until&&!self.compact_notices()&&p<0.1 {
-            if let Some(x)=layout.x[bar::BELL]{
-                let x=local_cx+x;paint::bell(&base.scaled(x,14.0,1.2),x,14.0,theme::WHITE,paint::bell_swing(self.t-self.notification_bell_at));
+        if !self.compact_notices()&&p<0.1 {
+            if let (Some(at),Some(x))=(self.notification_bell(),layout.x[bar::BELL]){
+                let x=local_cx+x;paint::bell(&base.scaled(x,14.0,1.2),x,14.0,theme::WHITE,paint::bell_swing(self.t-at));
                 base.circle(x+4.0,9.5,2.0,Color32::from_rgb(255,72,72));
-                if base.hit(x-14.0,3.0,28.0,25.0,"bell-mail").clicked(){self.show_page(5);}
+                if self.module_on(MAIL_PAGE)&&base.hit(x-14.0,3.0,28.0,25.0,"bell-mail").clicked(){self.show_page(MAIL_PAGE);}
             }
         }
         if compact_alpha>0.004 {
             let c=base.faded(compact_alpha);let c=if compact_alpha<0.8{c.ghost()}else{c};
             self.draw_quota_bar(&c,local_cx,&layout);
+            if let Some(x)=layout.x[bar::PERFORMANCE] {self.performance_bar(&c,local_cx+x);}
+            self.draw_wireless_bar(&c,local_cx,&layout);
             if let Some(x)=layout.x[bar::WEATHER] { self.draw_pill_weather(&c,local_cx+x,&layout); }
+            #[cfg(feature="sdk-js")]
+            if let (Some(x), Some(display)) = (layout.x[bar::PINNED], &self.pinned_display) {
+                display.draw(&c, local_cx+x, 15.0, layout.widths[bar::PINNED], false);
+            }
         }
         if self.pomo.running && compact_alpha>0.004 {
             crate::focus_bar::draw(&base.faded(compact_alpha),local_cx+layout.x[bar::FOCUS].unwrap(),15.0,self.t,&self.pomo,self.phase_secs(self.pomo.phase),false);
@@ -3279,7 +3730,7 @@ impl App {
     fn resident_header(&mut self, base: &Card, panel: Rect, cx: f32, p: f32, reveal: f32, env: &Env, resident_day: Option<&ResidentDay>) {
         if !self.side() {self.shared_header(base,cx,p,reveal,env,resident_day);return;}
         let bar_alpha=1.0-smoothstep(0.0,0.3,p);
-        let minimal=self.effective_minimal()&&self.t>=self.notification_bell_until;
+        let minimal=self.effective_minimal()&&self.notification_bell().is_none();
         if bar_alpha>0.004 && !minimal {
             let c=base.shifted(panel.min.x-base.origin.x,panel.min.y-base.origin.y).faded(bar_alpha);
             let c=if bar_alpha<0.8 {c.ghost()} else {c};
@@ -3350,11 +3801,23 @@ impl App {
     fn panel_body(&mut self, c: &Card, env: &Env, cmds: &mut Vec<Cmd>) -> bool {
         let settings_card=if self.side() {c.edge_control(380.0,4.0,28.0,28.0)} else {Some(c.clone())};
         if let Some(c)=settings_card {
-            let settings=c.hit(380.0,4.0,28.0,28.0,"page-settings").on_hover_text(format!("打开{}设置窗口",PAGE_NAMES[self.page]));
+            let settings=c.hit(380.0,4.0,28.0,28.0,"page-settings").on_hover_text(format!("打开{}设置窗口",self.navigation_page_name(self.page)));
             let (hover,press)=c.hover_t(&settings);
-            c.circle(394.0,18.0,13.0,Color32::from_white_alpha((hover*24.0) as u8));
-            paint::gear(&c.scaled(394.0,18.0,0.8*(1.0-press*0.08)),394.0,18.0,paint::mix(theme::GRAY,theme::WHITE,hover));
-            if settings.clicked(){self.settings_tab=PAGE_SETTINGS_TABS[self.page];self.open_settings();}
+            #[cfg(all(windows, feature = "sdk-material"))]
+            if !self.glassy() || self.glass_controls_ready() {
+                c.material_circle_with_role(&settings,394.0,18.0,13.0,crate::material::ControlRole::Gear);
+            }
+            if self.glassy() {
+                let scale=self.glass_control_scale(&settings,press);
+                if !self.glass_controls_ready() {
+                    paint::glass_disc(&c.scaled(394.0,18.0,scale),394.0,18.0,13.0,0.12+hover*0.72);
+                }
+                paint::gear(&c.scaled(394.0,18.0,0.8*scale),394.0,18.0,theme::WHITE);
+            } else {
+                c.circle(394.0,18.0,13.0,Color32::from_white_alpha((hover*24.0) as u8));
+                paint::gear(&c.scaled(394.0,18.0,0.8*(1.0-press*0.08)),394.0,18.0,paint::mix(theme::GRAY,theme::WHITE,hover));
+            }
+            if settings.clicked(){self.settings_tab=self.page_settings_tab(self.page);self.open_settings();}
         }
         if self.subpage==Some(self.page) {
             c.text(15.0,25.0,"‹",19.0,W::Bold,theme::WHITE,H::Left);
@@ -3374,7 +3837,7 @@ impl App {
             // 旧页停在当前位置淡出，新页朝目标单向滑入。
             let old_a = Self::page_slide_alpha(self.page_from_elapsed) * (1.0 - smoothstep(0.0, 0.16, e));
             let new_a = Self::page_slide_alpha(e);
-            if old_a > 0.0 {
+            if old_a > 0.0 && self.module_on(self.page_from) {
                 let oc = c.faded(old_a).ghost();
                 let old_header=c.faded(Self::page_header_alpha(self.page_from_elapsed)*(1.0-smoothstep(0.0,0.10,e))).ghost();
                 self.page_title(self.page_from, &old_header);
@@ -3398,6 +3861,12 @@ impl App {
 
     fn page_title(&self, page: usize, c: &Card) {
         let base = 25.0;
+        #[cfg(feature="sdk-js")]
+        if page>=PAGE_NAMES.len() {
+            let title=c.fit(self.navigation_page_name(page),size::TITLE,W::Bold,142.0);
+            c.text(15.0,base,&title,size::TITLE,W::Bold,theme::WHITE,H::Left);
+            return;
+        }
         let (a, b, col) = match page {
             0 | CALENDAR_PAGE => return,
             1 => ("番茄", "专注", theme::RED_TOP),
@@ -3409,7 +3878,11 @@ impl App {
             5 => ("邮箱", "", theme::CYAN),
             6 => ("AI", "额度", theme::SOFT_GREEN),
             8 if self.weather.solar_open => ("日出", "日落", theme::YELLOW),
+            PERFORMANCE_PAGE => ("系统", "性能", crate::performance_ui::CPU_COLOR),
             8 => ("当地", "天气", theme::CYAN),
+            // 详情页的标题带返回箭头，由页面自己画。
+            BLUETOOTH_PAGE if self.wireless_focus.is_some() && self.wireless_devices.len()>1 => return,
+            BLUETOOTH_PAGE => ("无线", "设备", theme::CYAN),
             _ => ("岛仔", "设置", theme::WHITE),
         };
         let wa = c.text(15.0, base, a, size::TITLE, W::Bold, theme::WHITE, H::Left);
@@ -3419,8 +3892,8 @@ impl App {
     }
 
     fn nav(&mut self, c: &Card) {
-        let pages: Vec<_>=self.settings.page_order.iter().copied().filter(|page|self.settings.visible_pages[*page]).collect();
-        if pages.len()<2 { return; }
+        let all_pages:Vec<_>=self.navigation_pages().collect();
+        if all_pages.len()<2 { return; }
         // 停靠方式决定箭头的锚点，切页改变面板高度时仍可原地点击。
         let anchor_y=68.0;
         let arrow_y=match self.dock() {
@@ -3433,24 +3906,86 @@ impl App {
             let Some(arrow_card)=arrow_card else {continue};
             let button=arrow_card.hit(x-13.0,arrow_y-13.0,26.0,26.0,id);
             let (hover,press)=arrow_card.hover_t(&button);
-            paint::chevron(&arrow_card,x,arrow_y,direction,hover,press);
+            #[cfg(all(windows, feature = "sdk-material"))]
+            if !self.glassy() || self.glass_controls_ready() {
+                let role=if direction>0.0 {crate::material::ControlRole::NavR} else {crate::material::ControlRole::NavL};
+                let radius=if self.glassy() {12.0} else {9.0*(1.0-0.08*press)};
+                arrow_card.material_circle_with_role(&button,x,arrow_y,radius,role);
+            }
+            if self.glassy() {
+                paint::chevron_glass(&arrow_card,x,arrow_y,direction,hover,self.glass_control_scale(&button,press),self.glass_controls_ready());
+            } else {
+                paint::chevron(&arrow_card,x,arrow_y,direction,hover,press);
+            }
             if button.clicked() {self.navigate_page(direction>0.0);}
         }
-        // 页码豆：宽度由弹簧驱动，整行实时居中；当前页是白色长条
-        let gap = 4.0;
-        let dot_y=self.page_height.pos-7.2;
-        let total: f32 = pages.iter().map(|page| self.dots[*page].pos).sum::<f32>() + gap * (pages.len()-1) as f32;
-        let mut x = PW / 2.0 - total / 2.0;
+        let shortcuts = self.page_shortcuts_enabled();
+        // 页数较多时，底栏随当前页移动，左右箭头和滚轮仍可切到每一页。
+        let max_slots=if shortcuts {PAGE_NAMES.len()}else{40};
+        let current=all_pages.iter().position(|&page|page==self.page).unwrap_or_default();
+        let start=current.saturating_sub(max_slots/2).min(all_pages.len().saturating_sub(max_slots));
+        let pages=&all_pages[start..(start+max_slots).min(all_pages.len())];
+        let dot_width=|page:usize|self.dots.get(page).map_or(if page==self.page {16.0}else{4.0},|dot|dot.pos);
+        let gap = if shortcuts { 3.0 } else { 4.0 };
+        let dot_scale = if shortcuts { 0.75 } else { 1.0 };
+        let dot_size = 4.0 * dot_scale;
+        let dot_y = if shortcuts {
+            self.page_height.pos - PAGE_SHORTCUT_ROW_H / 2.0
+        } else {
+            self.page_height.pos - 7.2
+        };
+        // 图标和页码点共用底部一行，按可见页面的数量整体居中。
+        let dots_width = pages.iter().copied().map(dot_width).sum::<f32>() * dot_scale
+            + gap * (pages.len() - 1) as f32;
+        let shortcut_slot = 26.0;
+        let group_gap = 14.0;
+        let shortcut_width = if shortcuts { shortcut_slot * pages.len() as f32 + group_gap } else { 0.0 };
+        let mut x = (PW - dots_width - shortcut_width) / 2.0;
         let mut clicked = None;
-        for i in pages {
-            let w = self.dots[i].pos.max(3.0);
-            let on = anim::remap(w, 4.0, 16.0);
+        if shortcuts {
+            let row_width = dots_width + shortcut_width;
+            // 只在整行已经露出时显示，避免展开过程点击穿到正文控件。
+            let Some(row) = c.edge_control(x - 2.0, dot_y - 11.0, row_width + 4.0, 22.0) else { return; };
+            for &page in pages {
+                let center = x + shortcut_slot / 2.0;
+                let button = row.hit(x, dot_y - 11.0, shortcut_slot, 22.0, ("page-shortcut", page))
+                    .on_hover_text(self.navigation_page_name(page))
+                    .on_hover_cursor(egui::CursorIcon::PointingHand);
+                let (hover, press) = row.hover_t(&button);
+                let (ink, bg) = if page == self.page {
+                    let accent = self.active_page_shortcut_colors()
+                        .and_then(|colors| PAGE_SHORTCUT_KEYS.get(page).and_then(|key|colors.get(*key)))
+                        .map_or(theme::GRAY, |&[r, g, b]| Color32::from_rgb(r, g, b));
+                    (paint::mix(accent, theme::WHITE, 0.45), paint::alpha(accent, 0.30))
+                } else {
+                    (paint::mix(Color32::from_gray(174), theme::WHITE, hover),
+                        Color32::from_white_alpha((hover * 25.0) as u8))
+                };
+                row.fill(center - 10.5, dot_y - 9.0, 21.0, 18.0, 5.0, bg);
+                let icon=row.scaled(center, dot_y, 1.0 - 0.08 * press);
+                if page<PAGE_NAMES.len() {
+                    paint::page_shortcut_icon(&icon, page, center, dot_y, ink);
+                } else {
+                    icon.seg((center-5.0,dot_y+4.0),(center-5.0,dot_y+1.0),1.7,ink);
+                    icon.seg((center,dot_y+4.0),(center,dot_y-4.0),1.7,ink);
+                    icon.seg((center+5.0,dot_y+4.0),(center+5.0,dot_y-1.0),1.7,ink);
+                }
+                if button.clicked() { clicked = Some(page); }
+                x += shortcut_slot;
+            }
+            row.seg((x + group_gap / 2.0, dot_y - 6.0), (x + group_gap / 2.0, dot_y + 6.0), 1.0, Color32::from_gray(55));
+            x += group_gap;
+        }
+        for &i in pages {
+            let w = dot_width(i).max(3.0) * dot_scale;
+            let on = anim::remap(w, 4.0 * dot_scale, 16.0 * dot_scale);
             let col = paint::mix(Color32::from_rgb(92, 92, 96), theme::WHITE, on);
-            c.fill(x, dot_y - 2.0, w, 4.0, 2.0, col);
-            let hr = c.hit(x - 2.0, dot_y - 6.0, w + 4.0, 12.0, ("dot", i));
-            hr.clone().on_hover_text(PAGE_NAMES[i]);
+            c.fill(x, dot_y - dot_size / 2.0, w, dot_size, dot_size / 2.0, col);
+            let extra = gap / 2.0;
+            let hr = c.hit(x - extra, dot_y - 6.0, w + gap, 12.0, ("dot", i));
+            hr.clone().on_hover_text(self.navigation_page_name(i));
             if hr.hovered() && i != self.page {
-                c.fill(x - 1.0, dot_y - 3.0, w + 2.0, 6.0, 3.0, Color32::from_white_alpha(28));
+                c.fill(x - 1.0, dot_y - dot_size / 2.0 - 1.0, w + 2.0, dot_size + 2.0, 3.0, Color32::from_white_alpha(28));
             }
             if hr.clicked() {
                 clicked = Some(i);
@@ -3458,24 +3993,60 @@ impl App {
             x += w + gap;
         }
         if let Some(i) = clicked {
-            let position=|page|self.settings.page_order.iter().position(|p|*p==page).unwrap();
-            let dir = if position(i) > position(self.page) { 1.0 } else { -1.0 };
+            let dir = if all_pages.iter().position(|&page|page==i).is_some_and(|index|index>current) {1.0}else{-1.0};
             self.go(i, dir);
         }
     }
 
+    #[cfg(feature="sdk-js")]
+    fn status_values_blocked(&self, env: &Env) -> bool {
+        #[cfg(all(windows,feature="sdk-material"))]
+        if self.material_capture_forced {return true;}
+        let exclude=self.settings.exclude_from_capture || self.capture_exclusion_request==Some(true);
+        crate::plugin_status_ui::sensitive_values_blocked(exclude,env)
+    }
+
     fn render_page(&mut self, page: usize, c: &Card, header: &Card, env: &Env, cmds: &mut Vec<Cmd>) {
+        #[cfg(feature="sdk-js")]
+        if let Some((id,_))=page.checked_sub(PAGE_NAMES.len()).and_then(|index|self.status_pages.get(index)) {
+            let backdrop=crate::plugin_status_ui::StatusBackdrop{
+                palette:self.island_palette(),island:self.island_overlay_fill(),
+            };
+            let privacy_blocked=!self.open
+                || self.status_values_blocked(env);
+            let interaction=self.plugins.draw_status_controls(c,id,backdrop,privacy_blocked);
+            #[cfg(windows)]
+            if let Some((label,url,time))=self.plugins.source_attribution(id) {
+                let top=self.plugins.status_height(id);
+                crate::plugin_status_ui::draw_attribution(c,id,top,label,url,time);
+            }
+            if c.live {
+                self.plugin_form_focused=interaction.focused;
+                if interaction.gained_focus {cmds.push(Cmd::Focus);}
+            }
+            return;
+        }
         // 页面内容横向滑动，右侧操作只随切页淡入淡出，避免滑过图钉。
         let actions=header.shifted(-self.header_music_shift(),0.0);
+        #[cfg(any(feature="sdk-js",feature="sdk-wasm"))]
+        if page==4 && crate::sdk_spike::live_card(c){return;}
         match page {
             0 => self.page_music(c, env, cmds),
             1 => self.page_focus(c, header, env),
             2 => self.page_water(c, header, env),
             3 => self.page_shelf(c, header, env, cmds),
-            4 => self.page_todo(c, env, cmds),
+            4 => {self.page_todo(c, env, cmds);
+                #[cfg(feature="sdk-js")]
+                if self.plugins.card(c) {
+                    self.settings_tab=PAGE_SETTINGS_TABS[TODO_PAGE];
+                    self.open_settings();
+                }
+            }
             5 => self.page_mail(c, env, cmds),
             6 => self.page_quota(c,&actions),
+            PERFORMANCE_PAGE => self.page_performance(c),
             8 => self.page_weather(c,&actions,env,cmds),
+            BLUETOOTH_PAGE => self.page_wireless(c,env),
             CALENDAR_PAGE => self.page_calendar(c,header,env),
             _ => self.page_settings(c),
         }
@@ -3518,19 +4089,23 @@ impl App {
             self.water_ml = self.water.drunk_ml as f32;
             self.water_ring.snap(self.water.percent() / 100.0);
         }
+        #[cfg(feature="sdk-js")]
+        let mut focus_finished=None;
         if self.pomo.running && !self.module_on(FOCUS_PAGE) {self.pomo.running=false;}
         if self.pomo.running {
             self.pomo.remaining -= elapsed;
             if self.pomo.remaining <= 0.0 {
                 let next = match self.pomo.phase {
                     Phase::Focus => {
+                        #[cfg(feature="sdk-js")]
+                        {focus_finished=Some(self.pomo.configured_minutes);}
                         self.pet.react(PetState::Happy);
                         Phase::Rest
                     }
                     Phase::Rest => Phase::Focus,
                 };
                 self.pomo.phase = next;
-                self.pomo.remaining = self.phase_secs(next);
+                self.pomo.reset_remaining(self.phase_secs(next));
                 self.pomo.running = false;
                 self.alert("专注计时", format!("该{}了", next.label()), 1, true);
             }
@@ -3550,6 +4125,22 @@ impl App {
         }
         let now = format!("{} {}", env.today, env.clock.get(..5).unwrap_or("00:00"));
         let todo_on=self.module_on(TODO_PAGE);
+        #[cfg(feature="sdk-js")]
+        {
+            let plugin_start=std::time::Instant::now();
+            let calendar_on=self.module_on(CALENDAR_PAGE);
+            let quota_on=self.quota_active();
+            self.plugins.tick_features(todo_on,calendar_on,quota_on,&env.today);
+            if let Some(minutes)=focus_finished {
+                self.plugins.focus_finished(chrono::Utc::now().timestamp(),minutes,todo_on,calendar_on,quota_on);
+            }
+            #[cfg(windows)]
+            for notice in self.plugins.take_script_notices(self.settings.notifications,chrono::Utc::now().timestamp_millis()) {
+                self.receive_plugin_notice(notice);
+            }
+            self.sync_status_pages();
+            crate::resources::PLUGIN_FRAME_US.store(plugin_start.elapsed().as_micros() as usize,std::sync::atomic::Ordering::Relaxed);
+        }
         let due: Vec<_> = self.todos.items.iter().enumerate().filter(|(_, item)| todo_on && item.reminder_due(&now)).map(|(i,item)| (i,item.text.clone())).collect();
         for (i,text) in due { self.todos.items[i].mark_reminded(&now); self.todos.save(); self.alert("待办到时间了", text, 4, true); }
         // v0.5.5 会议提醒：.ics 里的开始时间，默认提前 15 分钟（可设 5/15/30）。
@@ -3601,7 +4192,7 @@ impl App {
         self.remind_t.step(dt);
         self.sit_t.target = if self.settings.sit_remind { 1.0 } else { 0.0 };
         self.sit_t.step(dt);
-        // 剪贴板记录开关：关闭时同时清掉未固定的记录。
+        // 剪贴板记录同时受置物架模块和记录开关控制。
         if self.clipboard.is_enabled() != self.clipboard_active() {
             self.clipboard.set_enabled(self.clipboard_active());
         }
@@ -3617,7 +4208,9 @@ impl App {
     /// 媒体进度在两次 SMTC 刷新之间按时间外推，进度条才会连续走动。
     fn update_media(&mut self, env: &Env, ctx: &egui::Context) {
         let m = &env.media;
-        if !m.is_music() {
+        if !self.module_on(MUSIC_PAGE) || !m.is_music() {
+            self.music_seek_ui=None;
+            self.music_restart_at=None;
             self.music_volume_ui=None;
             self.music_volume_quiet_until=0.0;
             self.music_volume_open=false;

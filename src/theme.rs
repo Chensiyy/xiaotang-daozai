@@ -13,6 +13,9 @@ use std::sync::Arc;
 pub const RED: Color32 = Color32::from_rgb(242, 48, 70);
 pub const RED_TOP: Color32 = Color32::from_rgb(253, 104, 92);
 pub const BLUE: Color32 = Color32::from_rgb(62, 172, 248);
+/// “已连接”蓝：蓝牙连接提醒和无电量设备的连接环共用，不在电量的绿黄橙红里。
+pub const LINK: Color32 = Color32::from_rgb(10, 132, 255);
+pub const LINK_SOFT: Color32 = Color32::from_rgb(90, 169, 255);
 pub const BLUE_DEEP: Color32 = Color32::from_rgb(13, 69, 128);
 pub const CYAN: Color32 = Color32::from_rgb(102, 219, 255);
 pub const SOFT_GREEN: Color32 = Color32::from_rgb(118, 196, 151);
@@ -30,6 +33,8 @@ pub const TRACK: Color32 = Color32::from_rgb(36, 36, 39);
 pub const ARROW_BG: Color32 = Color32::from_rgb(48, 48, 51);
 pub const WATER_TRACK: Color32 = Color32::from_rgb(15, 38, 64);
 pub const YELLOW: Color32 = Color32::from_rgb(255, 196, 61);
+/// 无线设备电量 10–19%：介于黄色“一般”和红色“即将耗尽”之间。
+pub const ORANGE: Color32 = Color32::from_rgb(255, 138, 61);
 
 pub fn alpha_blue(a: f32) -> Color32 {
     Color32::from_rgba_unmultiplied(BLUE.r(), BLUE.g(), BLUE.b(), (255.0 * a) as u8)
