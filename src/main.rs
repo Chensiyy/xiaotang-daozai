@@ -1167,7 +1167,8 @@ impl eframe::App for Shell {
         }
         let parts=PREVIOUS_PARTS.replace([pre_cost,settings_cost,elapsed.saturating_sub(pre_cost+draw_cost+native_cost+settings_cost),update_start.elapsed().saturating_sub(elapsed)]);
         // 动画帧会请求很快的下一帧；闲置和定时刷新不计。
-        let animating=out.repaint_after<=Duration::from_millis(34);
+        let animating=out.repaint_after<=Duration::from_millis(34)
+            || ctx.requested_repaint_last_pass() && std::env::var_os("DAOZAI_FRAME_TRACE").is_some();
         if let Some((start,logic))=PREVIOUS_FRAME.get().filter(|_|animating) {
             let interval=frame_start.duration_since(start);
             if interval>=Duration::from_millis(25) || std::env::var_os("DAOZAI_FRAME_TRACE").is_some() {
