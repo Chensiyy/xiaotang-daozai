@@ -473,6 +473,8 @@ pub struct FrameOut {
     pub expanded: bool,
     pub editing: bool,
     pub animating: bool,
+    /// 岛或浮层的外接范围还在变化，保持本轮动画的原生外框。
+    pub geometry_transitioning: bool,
     /// 当前帧正在绘制翻页过渡。
     pub page_transition: bool,
     /// 喝水页的百分比环和柱状图正在切换。
@@ -2798,7 +2800,13 @@ impl App {
                 Some(band)
             });
         }
+        let geometry_transitioning = resizing
+            || !self.notice_width.settled(1.0) || !self.resident.settled()
+            || !self.drag_lift.settled(1.0) || !self.drag_stretch.settled(1.0)
+            || self.position_drag.is_some() || self.drag_glide.is_some() || self.drag_hot
+            || self.hover_since.is_some() && !self.open || self.leave_since.is_some() || page_transition;
         FrameOut {
+            geometry_transitioning,
             region: rel(floating_toast.into_iter().chain(self.shelf_menu_rect.map(|r|r.union(r + ctx.style().visuals.popup_shadow.margin()).expand(1.0 / ctx.pixels_per_point()))).fold(region,Rect::union).intersect(ui.max_rect())),
             glass: glass_region,
             blur: glass_skin && self.settings.glass_blur,

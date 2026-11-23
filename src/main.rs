@@ -556,6 +556,15 @@ impl eframe::App for Shell {
         [0.0; 4]
     }
 
+    #[cfg(windows)]
+    fn raw_input_hook(&mut self, _ctx:&egui::Context, input:&mut egui::RawInput) {
+        if input.viewport_id != egui::ViewportId::ROOT || self.native.is_none() {return;}
+        let size=if self.app.settings.dock.is_side() {
+            egui::vec2(daozai::side_dock::SIDE_W,daozai::side_dock::SIDE_H)
+        } else {egui::vec2(app::CANVAS_W,app::WIN_H)};
+        input.screen_rect=Some(egui::Rect::from_min_size(Pos2::ZERO,size));
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         let update_start=Instant::now();
         #[cfg(all(windows, feature = "sdk-js", feature = "sdk-material"))]
@@ -646,7 +655,7 @@ impl eframe::App for Shell {
             let moving_display=self.placed && (self.app.dragging_position() || self.placement_key.0!=placement_key.0);
             self.placement_key=placement_key;
             let scale=display.filter(|_|moving_display).map_or(self.placement_scale,|d|d.scale(self.app.settings.island_scale()*ctx.zoom_factor()));
-            if bounds.is_some_and(|b|self.native.as_ref().is_some_and(|w|w.place_on_display(scale,b,offset,self.app.settings.dock,shift))) {
+            if bounds.is_some_and(|b|self.native.as_mut().is_some_and(|w|w.place_on_display(scale,b,offset,self.app.settings.dock,shift))) {
                 self.placed_bounds=bounds;
                 if !self.placed {
                     diagnostics::startup("目标屏幕物理坐标定位完成，已请求显示");
@@ -909,7 +918,7 @@ impl eframe::App for Shell {
             if shift!=self.oled_shift {
                 self.oled_shift=shift;
                 let display=daozai::display_layout::selected(&self.app.displays,&self.app.settings.display_id);
-                if display.is_some_and(|d|self.native.as_ref().is_some_and(|w|w.place_on_display(ctx.pixels_per_point(),d.dock_bounds(self.app.settings.dock,self.app.settings.avoids_top_bar()),self.app.placement_offset(),self.app.settings.dock,shift))) {
+                if display.is_some_and(|d|self.native.as_mut().is_some_and(|w|w.place_on_display(ctx.pixels_per_point(),d.dock_bounds(self.app.settings.dock,self.app.settings.avoids_top_bar()),self.app.placement_offset(),self.app.settings.dock,shift))) {
                     self.placement_key.4=shift;
                 }
                 ctx.request_repaint();
@@ -918,6 +927,7 @@ impl eframe::App for Shell {
 
         #[cfg(windows)]
         if let Some(native) = &mut self.native {
+            native.begin_crop_frame(_frame.root_gl_front_ready);
             // 兼容渲染：读回的画面交给分层窗口，边缘保留抗锯齿。画面变化（或有其他输入）时才请求下一次读回，
             // 读回完成本身触发的那一帧若画面没变就停下，静止时不会一直空转。
             if native.wants_frames() {
@@ -954,13 +964,26 @@ impl eframe::App for Shell {
             // 保留主窗口的事件循环，避免全屏隐藏后设置窗口无法关闭或重新打开。
             let region=if self.hidden {(0.0,0.0,0.0,0.0)} else {r(out.region)};
             let hit=if self.hidden || out.click_through && out.notice_hit.is_none() {(0.0,0.0,0.0,0.0)} else {r(out.hit)};
-            native.set_page_scroll_area(out.page_scroll_area.filter(|_|!self.hidden && out.expanded),ctx.pixels_per_point());
+            let ppp=ctx.pixels_per_point();
             let glass=if self.hidden {None}else{out.glass.as_deref()};
             #[cfg(all(windows, feature = "sdk-material"))]
             let glass=glass.filter(|_| self.material.is_none());
+            // 系统模糊要铺满整块轮廓，开着时不收紧窗口外框。
+            let tight=(!self.hidden && native.supports_compact_bounds() && !out.blur
+                && !self.app.settings.minimal && !out.click_through).then(||{
+                let painted=ctx.paint_bounds();
+                if painted.is_positive() {
+                    painted.expand(2.0/ppp).union(out.hit).union(out.notice_hit.unwrap_or(egui::Rect::NOTHING)).intersect(out.region)
+                } else {out.region}
+            });
+            native.request_crop(tight,out.geometry_transitioning);
             let native_start=Instant::now();
-            native.update(region, hit, if self.hidden{None}else{out.notice_hit.map(r)},if self.hidden{None}else{out.file_drop_zone.map(r)},glass,out.blur,ctx.pixels_per_point(), out.editing && !self.hidden, !self.hidden && out.expanded,if self.hidden {None}else{out.resident_clip.as_deref()});
+            if let Some(wait)=native.update(region, hit, if self.hidden{None}else{out.notice_hit.map(r)},if self.hidden{None}else{out.file_drop_zone.map(r)},glass,out.blur,ppp, out.editing && !self.hidden, !self.hidden && out.expanded,if self.hidden {None}else{out.resident_clip.as_deref()}) {
+                ctx.request_repaint_after(wait);
+            }
             native_cost=native_start.elapsed();
+            _frame.root_window_offset=native.paint_offset();
+            native.set_page_scroll_area(out.page_scroll_area.filter(|_|!self.hidden && out.expanded),ppp);
             if !self.hidden && self.app.settings.avoids_top_bar() && self.app.settings.top_bar_on_top && self.app.settings.dock==daozai::model::Dock::Top {
                 if let Some(display)=daozai::display_layout::selected(&self.app.displays,&self.app.settings.display_id) {
                     native.keep_above_top_bar(display.bounds);

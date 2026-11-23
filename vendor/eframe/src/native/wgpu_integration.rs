@@ -82,6 +82,7 @@ pub struct Viewport {
     info: ViewportInfo,
     actions_requested: HashSet<ActionRequested>,
     capture_deadline: Option<Instant>,
+    root_surface_size: Option<[u32; 2]>,
 
     /// `None` for sync viewports.
     viewport_ui_cb: Option<Arc<DeferredViewportUiCallback>>,
@@ -339,6 +340,7 @@ impl<'app> WgpuWinitApp<'app> {
                 info,
                 actions_requested: Default::default(),
                 capture_deadline: None,
+                root_surface_size: None,
                 viewport_ui_cb: None,
                 window: Some(window),
                 egui_winit: Some(egui_winit),
@@ -722,18 +724,40 @@ impl WgpuWinitRunning<'_> {
         let Viewport {
             window: Some(window),
             egui_winit: Some(egui_winit),
+            root_surface_size,
             ..
         } = viewport
         else {
             return Ok(EventResult::Wait);
         };
 
+        let root_offset = integration.root_window_offset(viewport_id);
+        let mut clipped_primitives = egui_ctx.tessellate(shapes, pixels_per_point);
         if viewport_id == ViewportId::ROOT {
+            if let Some(offset) = root_offset {
+                super::epi_integration::translate_root_output(
+                    &mut platform_output,
+                    &mut clipped_primitives,
+                    offset,
+                    pixels_per_point,
+                );
+            }
             crate::scale_root_output(&mut platform_output, crate::root_viewport_scale());
         }
         egui_winit.handle_platform_output(window, platform_output);
 
-        let clipped_primitives = egui_ctx.tessellate(shapes, pixels_per_point);
+        if root_offset.is_some() {
+            let size: [u32; 2] = window.inner_size().into();
+            if *root_surface_size != Some(size) {
+                if let [Some(width), Some(height)] = size.map(NonZeroU32::new) {
+                    // 本帧已调整客户区，运行绘制前同步交换链的物理尺寸。
+                    painter.on_window_resized(viewport_id, width, height);
+                    *root_surface_size = Some(size);
+                }
+            }
+        } else {
+            *root_surface_size = None;
+        }
 
         let mut screenshot_commands = vec![];
         viewport.actions_requested.retain(|cmd| {
@@ -875,7 +899,9 @@ impl WgpuWinitRunning<'_> {
                 // Resize with 0 width and height is used by winit to signal a minimize event on Windows.
                 // See: https://github.com/rust-windowing/winit/issues/208
                 // This solves an issue where the app would panic when minimizing on Windows.
-                if let Some(viewport_id) = viewport_id {
+                if let Some(viewport_id) = viewport_id.filter(|&id| {
+                    integration.root_window_offset(id).is_none()
+                }) {
                     if let (Some(width), Some(height)) = (
                         NonZeroU32::new(physical_size.width),
                         NonZeroU32::new(physical_size.height),
@@ -917,6 +943,7 @@ impl WgpuWinitRunning<'_> {
             .and_then(|viewport_id| {
                 shared.viewports.get_mut(&viewport_id).and_then(|viewport| {
                     Some(integration.on_window_event(
+                        viewport_id,
                         viewport.window.as_deref()?,
                         viewport.egui_winit.as_mut()?,
                         event,
@@ -1201,6 +1228,7 @@ fn initialize_or_update_viewport<'a>(
                 info: Default::default(),
                 actions_requested: HashSet::new(),
                 capture_deadline: None,
+                root_surface_size: None,
                 viewport_ui_cb,
                 window: None,
                 egui_winit: None,
