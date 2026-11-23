@@ -254,21 +254,33 @@ fn gold_example_charts_fresh_prices_and_notifies_once_per_crossing() -> Result<(
     assert_eq!(series[47], 751.5);
     assert_eq!(rising.storage["points"].as_array().unwrap().len(), 48);
     assert!(rising.notice.is_some());
+    assert!(rising.pinned.is_some());
     assert_eq!(status.alert.as_deref(), Some("金价达到 750 元/克"));
     let repeated = run(&quote, &rising.storage)?;
     assert_eq!(repeated.storage, rising.storage);
     assert!(repeated.notice.is_none());
+    assert!(repeated.status.as_ref().unwrap().alert.is_none());
+    assert!(repeated.pinned.is_some());
 
     quote["price_as_of"] = json!((now - chrono::TimeDelta::seconds(20)).to_rfc3339());
     quote["xau"]["price"] = json!(749);
     let falling = run(&quote, &rising.storage)?;
     assert!(falling.notice.is_some());
+    assert!(falling.pinned.is_some());
     assert_eq!(falling.status.as_ref().unwrap().alert.as_deref(), Some("金价跌至 750 元/克"));
     quote["data_state"]["status"] = json!("stale");
     let stale = run(&quote, &falling.storage)?;
     assert_eq!(stale.storage, falling.storage);
     assert!(stale.status.is_none());
     assert!(stale.notice.is_none());
+    assert!(stale.pinned.is_none());
+
+    let source = SourceInput::Multiple(BTreeMap::from([("gold".into(), SourceInput::Offline)]));
+    let offline = package.render_input(&settings, &falling.storage, TODAY, source, Call::Refresh)?;
+    assert_eq!(offline.storage, falling.storage);
+    assert!(offline.status.is_none());
+    assert!(offline.notice.is_none());
+    assert!(offline.pinned.is_none());
     Ok(())
 }
 
