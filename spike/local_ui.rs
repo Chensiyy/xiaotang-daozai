@@ -1079,7 +1079,7 @@ impl LocalPlugins {
             "pages" | "wireless" | "appearance" => true,
             _ => tasks_on,
         };
-        let has_settings = !manifest.settings.is_empty() || manifest.has_surface(Surface::IslandPinned);
+        let has_settings = manifest.has_settings() || manifest.has_surface(Surface::IslandPinned);
         #[cfg(windows)]
         let has_source = manifest.source_kind().is_some();
         let key = egui::Id::new(("installed", &r.origin, id, &manifest.version));
@@ -1976,7 +1976,7 @@ impl LocalPlugins {
                             });
                             *draft = seconds.to_string();
                         }
-                        if !m.settings.is_empty() && ui.button("保存设置").clicked() {
+                        if m.has_settings() && ui.button("保存设置").clicked() {
                             let values = fields.clone();
                             self.notice = match self.save(&id, values) {
                                 Ok(()) => {

@@ -466,6 +466,7 @@ fn realtime_examples_install_and_return_bounded_host_values() -> Result<()> {
         host.install(&path)?;
         host.enable(id, true)?;
     }
+    host.set_pinned("example.live-pay", true)?;
     settle(&mut host, false);
 
     let (_, snapshot, health) = host.status_page("example.live-pay").unwrap();
@@ -473,9 +474,125 @@ fn realtime_examples_install_and_return_bounded_host_values() -> Result<()> {
     let salary = snapshot.unwrap();
     assert!(salary.counter[0].sensitive);
     assert_eq!(salary.countdown.len(), 1);
+    let (pin, _) = host.pinned_display(false).expect("工资样例应提供常驻倒计时");
+    assert_eq!(pin.text, salary.countdown[0].label);
+    assert!(pin.value.is_some_and(|text| !text.contains('¥')));
 
     let (_, snapshot, health) = host.status_page("example.world-clock").unwrap();
     assert_eq!(health, StatusHealth::Ready);
     assert_eq!(snapshot.unwrap().clock.len(), 4);
+    Ok(())
+}
+
+
+fn run_realtime_sample(package: &Package, mut input: Value) -> Result<Output> {
+    let invocation = Call::Refresh.prepare(&mut input);
+    let result = devtools::run_script(
+        package.source.as_bytes(),
+        &package.manifest.entry,
+        input.to_string(),
+        invocation,
+        &mut Vec::new(),
+    )?;
+    let result: Output = serde_json::from_str(&result)?;
+    assert!(result.status.as_ref().is_some_and(PluginStatus::valid));
+    assert!(result.pinned.as_ref().is_none_or(pinned::Pinned::valid));
+    Ok(result)
+}
+
+#[test]
+fn realtime_pay_uses_local_work_hours_and_schedules_non_sensitive_pins() -> Result<()> {
+    use crate::plugin_status::StatusState;
+
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("spike/examples/live-pay/plugin.json");
+    let package = Package::read(&path)?;
+    let settings = package.settings_values(&Values::new());
+    let timestamp = |instant: &str| instant.parse::<chrono::DateTime<chrono::Utc>>().unwrap();
+    let mut input = json!({"settings":settings,"tz":{"offset_minutes":480,"name":"Asia/Shanghai"}});
+    for (instant, state, label, wages, countdown, next_refresh) in [
+        (
+            "2026-11-23T00:30:00Z",
+            StatusState::Idle,
+            "距上班",
+            "¥0.00",
+            "0天 00:30",
+            "2026-11-23T01:00:00Z",
+        ),
+        (
+            "2026-11-23T02:00:00Z",
+            StatusState::Running,
+            "距下班",
+            "¥52.91",
+            "08:00:00",
+            "2026-11-23T10:00:00Z",
+        ),
+        (
+            "2026-11-23T11:00:00Z",
+            StatusState::Idle,
+            "距上班",
+            "¥476.19",
+            "0天 14:00",
+            "2026-11-23T16:00:00Z",
+        ),
+    ] {
+        let now = timestamp(instant);
+        input["now"] = json!(now.timestamp_millis());
+        let result = run_realtime_sample(&package, input.clone())?;
+        let status = result.status.unwrap();
+        assert_eq!(status.state, state);
+        assert_eq!(status.countdown[0].label, label);
+        assert_eq!(status.countdown[0].value_at(now.timestamp()), countdown);
+        assert_eq!(status.counter[0].value_at(now.timestamp()), wages);
+        assert!(status.counter[0].sensitive);
+        assert!(result.pinned.is_some());
+        assert_eq!(
+            result.next_refresh_at,
+            Some(timestamp(next_refresh).timestamp())
+        );
+    }
+
+    input["settings"]["days"] = json!("");
+    let result = run_realtime_sample(&package, input)?;
+    assert_eq!(
+        result.status.unwrap().summary.as_deref(),
+        Some("请先选择工作日")
+    );
+    assert!(result.pinned.is_none() && result.next_refresh_at.is_none());
+    Ok(())
+}
+
+#[test]
+fn world_clock_uses_ordered_city_settings_and_host_daylight_saving() -> Result<()> {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("spike/examples/world-clock/plugin.json");
+    let package = Package::read(&path)?;
+    let settings = package.settings_values(&Values::from([(
+        "cities".into(),
+        r#"[{"label":"纽约","zone":"America/New_York"},{"label":"北京","zone":"Asia/Shanghai"},{"label":"待检查","zone":"Example/Unknown"}]"#.into(),
+    )]));
+    for (iso, new_york) in [
+        ("2026-01-10T12:00:00Z", "07:00:00"),
+        ("2026-07-10T12:00:00Z", "08:00:00"),
+    ] {
+        let now = iso.parse::<chrono::DateTime<chrono::Utc>>()?;
+        let mut input = json!({"settings":settings});
+        script_settings::time_input(
+            &mut input,
+            now,
+            package.manifest.timezones,
+            &package.manifest.settings,
+            &settings,
+        );
+        let status = run_realtime_sample(&package, input)?.status.unwrap();
+        assert_eq!(status.clock.len(), 2);
+        assert_eq!(status.clock[0].label, "纽约");
+        assert_eq!(status.clock[0].value_at(now.timestamp()), new_york);
+        assert_eq!(status.clock[1].label, "北京");
+        assert_eq!(status.clock[1].value_at(now.timestamp()), "20:00:00");
+        assert!(status
+            .summary
+            .as_deref()
+            .unwrap()
+            .contains("1 个时区无法识别"));
+    }
     Ok(())
 }

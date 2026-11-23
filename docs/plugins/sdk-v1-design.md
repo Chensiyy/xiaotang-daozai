@@ -133,7 +133,7 @@ JS 卡片可用空权限，或申请一个本地只读数据源。材质插件�
 }
 ```
 
-[国际现货金价样例](../../spike/examples/gold-price)使用第 1 步的提醒和第 3 步的折线，两项接入后即可试装。XAUS 的 `/api/v1/spot?currency=CNY&unit=gram` 可返回人民币每克的国际现货参考报价。XAUS 要求至少缓存 60 秒，高用量商业集成应按其公平使用说明联系服务方。[XAUS API 公平使用说明](https://xaus.com/api/#fair-use)
+[国际现货金价样例](../../spike/examples/gold-price)可直接试装，演示迷你折线和阈值提醒。XAUS 的 `/api/v1/spot?currency=CNY&unit=gram` 可返回人民币每克的国际现货参考报价。XAUS 要求至少缓存 60 秒，高用量商业集成应按其公平使用说明联系服务方。[XAUS API 公平使用说明](https://xaus.com/api/#fair-use)
 
 样例把最近 48 个新报价存入 `storage.points` 并绘制趋势。价格向上或向下穿越阈值时，岛仔显示一次性提醒，报价时刻用于提醒去重。独立验证本步 HTTPS 时可试装[仓库动态样例](../../spike/examples/https-repository)。
 
@@ -230,7 +230,7 @@ JS 清单使用 `"owner":"status"`，能力列出 `status.page`。可选的 `tim
 
 `style` 可以省略。强调色 `accent` 使用六位 `#RRGGBB`，岛仔按实际底色校正到至少 3:1，省略时沿用岛仔默认状态色。间距 `density` 可选 `comfortable`（默认）或 `compact`。紧凑模式最多显示 3 项列表、2 行说明、3 个标签。背景 `surface` 可选 `card`（默认）或 `plain`。强调程度 `emphasis` 可选 `normal`（默认）或 `strong`，作用于状态标题和折线。`icon` 可将岛仔内置的 `battery`、`cup`、`clock`、`chart`、`cloud` 或 `calendar` 图标放到状态标题旁。
 
-[打印机状态样例](../../spike/examples/printer-status/plugin.json) 通过模拟脚本演示列表、折线、说明、标签和主题令牌。[实时工资](../../spike/examples/live-pay/plugin.json) 和 [世界时钟](../../spike/examples/world-clock/plugin.json) 分别演示敏感实时金额、倒计时和四个时钟。
+[打印机状态样例](../../spike/examples/printer-status/plugin.json) 通过模拟脚本演示列表、折线、说明、标签和主题令牌。[实时工资](../../spike/examples/live-pay/plugin.json) 和 [世界时钟](../../spike/examples/world-clock/plugin.json) 分别演示敏感实时金额、常驻上下班倒计时，以及最多四个可配置的城市时钟。世界时钟由宿主换算所选 IANA 时区。
 
 敏感值默认打码，点击后显示 30 秒，再次点击可立即盖上。敏感计数参数更新后重新打码。锁屏、岛仔演示录制及开启「截图和录屏中隐藏岛仔」时始终打码。使用第三方录屏前可开启此设置。
 
