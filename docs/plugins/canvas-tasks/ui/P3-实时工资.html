@@ -114,12 +114,26 @@ td{padding:7px 8px;font-size:12.5px;border-bottom:1px solid #EEEEE9;vertical-ali
       <ul class="muted" style="margin: 0; padding-left: 18px; font-size: 13.5px; line-height: 1.7">
         <li>主角是计价器式数字：每位一格，变化时那一格向上翻，最后一位用绿色。</li>
         <li>下面是一条游戏经验条：一天就是一关，每小时一格，左边写「LV.5」表示第 5 小时；条纹会缓慢流动。</li>
-        <li>岛仔（黑色胶囊、两只白眼睛）沿着进度往前走，轻轻上下浮动；终点是一面旗。</li>
         <li>休息时段在设置里自己填：可以加多段（午休、下午茶），也可以一段都不填（无午休）。经验条上用橙色斜纹标出。</li>
         <li>进入休息时段：进度条变成橙色回血条，岛仔闭眼冒 Zz，计价器暂停（每段可单独设成「计薪」）；结束自动醒来。</li>
-        <li>到下班：「通关」，岛仔举旗、撒一下彩纸。</li>
         <li>常驻条显示内容可选：金额、下班倒计时、两者轮换。隐私由用户自己决定，插件不强制打码。</li>
       </ul>
+      <div class="k" style="margin-top: 2px">岛仔的动作（展开时在进度头原地循环）</div>
+      <div class="card" style="padding: 12px 14px; display: flex; flex-direction: column; gap: 8px">
+        <div style="background: #000; border-radius: 10px; padding: 10px 12px; display: flex; align-items: flex-end; justify-content: space-between">
+          <span style="display: flex; flex-direction: column; align-items: center; gap: 3px"><svg width="34" height="30" viewBox="0 0 34 30" aria-hidden="true"><g transform="translate(0 6) rotate(-14 15 15) scale(1 .86)"><rect x="2" y="7" width="26" height="15" rx="7.5" fill="#111113" stroke="#8B95F5" stroke-width="1.6"></rect><rect x="10" y="11" width="3" height="6" rx="1.5" fill="#FAFAF5"></rect><rect x="17" y="10.4" width="3" height="6" rx="1.5" fill="#FAFAF5"></rect></g></svg><span style="font-size: 9px; color: #8E8E99">蓄力</span></span>
+          <span style="display: flex; flex-direction: column; align-items: center; gap: 3px"><svg width="34" height="36" viewBox="0 0 34 36" aria-hidden="true"><g transform="translate(0 -2) rotate(-14 15 15) scale(1 1.08)"><rect x="2" y="7" width="26" height="15" rx="7.5" fill="#111113" stroke="#8B95F5" stroke-width="1.6"></rect><path d="M9.5 14l2.5-2.5 2.5 2.5M16.5 13.5l2.5-2.5 2.5 2.5" stroke="#FAFAF5" stroke-width="1.6" fill="none" stroke-linecap="round"></path></g><ellipse cx="15" cy="34" rx="7" ry="1.5" fill="#2A2A2E"></ellipse></svg><span style="font-size: 9px; color: #8E8E99">起跳 · 眯眼</span></span>
+          <span style="display: flex; flex-direction: column; align-items: center; gap: 3px"><svg width="34" height="36" viewBox="0 0 34 36" aria-hidden="true"><g transform="translate(0 -6) rotate(-14 15 15)"><rect x="2" y="7" width="26" height="15" rx="7.5" fill="#111113" stroke="#8B95F5" stroke-width="1.6"></rect><path d="M11.5 16.5l-2-2a1.3 1.3 0 0 1 2-1.7 1.3 1.3 0 0 1 2 1.7z M18.5 16l-2-2a1.3 1.3 0 0 1 2-1.7 1.3 1.3 0 0 1 2 1.7z" fill="#FF7EB3"></path></g><ellipse cx="15" cy="34" rx="5" ry="1.2" fill="#2A2A2E"></ellipse></svg><span style="font-size: 9px; color: #8E8E99">空中 · 爱心</span></span>
+          <span style="display: flex; flex-direction: column; align-items: center; gap: 3px"><svg width="34" height="30" viewBox="0 0 34 30" aria-hidden="true"><g transform="translate(0 7) rotate(-14 15 15) scale(1.08 .82)"><rect x="2" y="7" width="26" height="15" rx="7.5" fill="#111113" stroke="#8B95F5" stroke-width="1.6"></rect><rect x="9" y="12" width="4" height="3" rx="1.5" fill="#FAFAF5"></rect><rect x="18" y="11.5" width="3" height="5" rx="1.5" fill="#FAFAF5"></rect></g><circle cx="3" cy="27" r="1.6" fill="#3A3A40"></circle><circle cx="28" cy="27" r="1.3" fill="#3A3A40"></circle></svg><span style="font-size: 9px; color: #8E8E99">落地 · 扬尘</span></span>
+          <span style="display: flex; flex-direction: column; align-items: center; gap: 3px"><svg width="34" height="30" viewBox="0 0 34 30" aria-hidden="true"><g transform="translate(0 5) rotate(-14 15 15)"><rect x="2" y="7" width="26" height="15" rx="7.5" fill="#111113" stroke="#8B95F5" stroke-width="1.6"></rect><rect x="12" y="11" width="3" height="6" rx="1.5" fill="#FAFAF5"></rect><rect x="19" y="10.4" width="3" height="6" rx="1.5" fill="#FAFAF5"></rect></g></svg><span style="font-size: 9px; color: #8E8E99">斜眼</span></span>
+        </div>
+        <ul class="muted" style="margin: 0; padding-left: 18px; font-size: 12.5px; line-height: 1.6">
+          <li>动作：原地「蓄力 → 起跳 → 空中 → 落地扬尘」循环，一次约 0.7 秒，像游戏加载页的小人。只在展开且可见时播放，收起即停。</li>
+          <li>表情：工作时每 6–10 秒随机换一个现有表情（wink、得意、害羞、爱心、斜眼…），跟随用户装的表情包。</li>
+          <li>休息时段改为睡觉姿态，通关时用「被夸」表情举旗。</li>
+          <li>岛仔由岛仔自己画（画布里的 pet 节点），插件只给位置、动作和状态，不画脸。</li>
+        </ul>
+      </div>
       <div class="k" style="margin-top: 4px">实现方式</div>
       <div class="card" style="padding: 6px 14px">
         <table style="width: 100%; border-collapse: collapse">
@@ -127,9 +141,9 @@ td{padding:7px 8px;font-size:12.5px;border-bottom:1px solid #EEEEE9;vertical-ali
             <tr><td>金额按秒计算，脚本只给起点和速度</td><td style="text-align: right"><span class="live">counter 绑定</span></td></tr>
             <tr><td>计价器数字格和翻动动画</td><td style="text-align: right"><span class="cvs">自绘画布 + 数字翻动</span></td></tr>
             <tr><td>经验条、检查点、小人位置按时间走</td><td style="text-align: right"><span class="cvs">画布 · 时间绑定</span></td></tr>
-            <tr><td>休息换色、岛仔睡觉、通关彩纸</td><td style="text-align: right"><span class="cvs">画布 · 状态切换动画</span></td></tr>
+            <tr><td>岛仔本体：表情轮播、原地跑跳、睡觉、举旗</td><td style="text-align: right"><span class="cvs">画布 pet 节点（宿主绘制）</span></td></tr>
+            <tr><td>休息换色、通关彩纸</td><td style="text-align: right"><span class="cvs">画布 · 状态切换动画</span></td></tr>
             <tr><td>休息时段：可多段、可为空，每段可选是否计薪</td><td style="text-align: right"><span class="std">list 设置（time、time、switch）</span></td></tr>
-            <tr><td>距离下班</td><td style="text-align: right"><span class="live">countdown 绑定</span></td></tr>
             <tr><td>常驻条：金额 / 下班 / 轮换</td><td style="text-align: right"><span class="cvs">常驻小画布 + choice 设置</span></td></tr>
             <tr><td>月薪、上下班、工作日</td><td style="text-align: right"><span class="std">settings</span></td></tr>
           </tbody>
