@@ -1416,6 +1416,7 @@ struct H {
     cmds:Vec<crate::app::Cmd>,
     region:Rect,
     hit:Rect,
+    top_bar_notice:Option<Rect>,
     animating:bool,
     interactive_transition:bool,
     shapes:Vec<egui::epaint::ClippedShape>,
@@ -1447,7 +1448,7 @@ impl H {
         std::env::set_var("DAOZAI_DATA_DIR", &dir);
         let ctx = egui::Context::default();
         let app = App::new(&ctx, Options { fetch_lyrics: false, pet_idle: 1e9 });
-        Self { ctx, app, t: 0.0, cursor: None,cmds:vec![],region:Rect::NOTHING,hit:Rect::NOTHING,animating:false,interactive_transition:false,shapes:Vec::new(), bt:Vec::new(),receivers:Vec::new(),media:Default::default(),power:(None,false),network:None,system_idle:None,screen_locked:false,fullscreen:false,browser_at_top:None,file_drop_zone:None,hovered_files:vec![],dropped_files:vec![] }
+        Self { ctx, app, t: 0.0, cursor: None,cmds:vec![],region:Rect::NOTHING,hit:Rect::NOTHING,top_bar_notice:None,animating:false,interactive_transition:false,shapes:Vec::new(), bt:Vec::new(),receivers:Vec::new(),media:Default::default(),power:(None,false),network:None,system_idle:None,screen_locked:false,fullscreen:false,browser_at_top:None,file_drop_zone:None,hovered_files:vec![],dropped_files:vec![] }
     }
     fn frame(&mut self, events: Vec<egui::Event>) {
         self.t += 1.0 / 60.0;
@@ -1482,6 +1483,7 @@ impl H {
         let cmds=&mut self.cmds;
         let region=&mut self.region;
         let hit=&mut self.hit;
+        let top_bar_notice=&mut self.top_bar_notice;
         let animating=&mut self.animating;
         let interactive_transition=&mut self.interactive_transition;
         let app = &mut self.app;
@@ -1489,7 +1491,7 @@ impl H {
         let output = self.ctx.run(raw, |ctx| {
             egui::CentralPanel::default().frame(egui::Frame::new()).show(ctx, |ui| {
                 let win = Rect::from_min_size(ui.max_rect().min,Vec2::new(WIN_W,WIN_H));
-                let frame=app.frame(ui, win, &env);*region=frame.region;*hit=frame.hit;*animating=frame.animating;*interactive_transition=frame.interactive_transition;*file_drop_zone=frame.file_drop_zone;cmds.extend(frame.cmds);
+                let frame=app.frame(ui, win, &env);*region=frame.region;*hit=frame.hit;*top_bar_notice=frame.top_bar_notice;*animating=frame.animating;*interactive_transition=frame.interactive_transition;*file_drop_zone=frame.file_drop_zone;cmds.extend(frame.cmds);
             });
         });
         self.shapes=output.shapes;
@@ -5873,6 +5875,35 @@ fn lyric_notifications_expand_about_the_dock_center(){
 }
 
 #[test]
+fn top_bar_notice_covers_the_compact_mail_badge_and_detail(){
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=H::new();
+    h.app.settings.island_lyrics=true;
+    h.media=crate::smtc::NowPlaying{title:"Track".into(),artist:"Artist".into(),playing:true,position:7.0,duration:120.0,..Default::default()};
+    h.app.set_lyrics("Track","Artist",120.0,crate::lyrics::parse_lrc("[00:00]晚风吹过了山岗\n[01:00]下一句"));
+    for _ in 0..60{h.frame(vec![]);}
+    assert!(h.top_bar_notice.is_none());
+
+    h.app.new_mail_alert("项目组 · 新邮件".into());
+    for _ in 0..60{h.frame(vec![]);}
+    assert!(h.app.compact_notices());
+    let badge=h.notice_button().center();
+    let hit=h.top_bar_notice.expect("紧凑的邮件通知应提供置顶命中区");
+    assert!(hit.contains(badge));
+    assert!(!hit.contains(h.hit.center()),"邮件通知命中区应避开歌词");
+
+    h.click_notice_badge();
+    h.frame(vec![]);
+    let detail=h.ctx.read_response(egui::Id::new(("card",true,"notice-action"))).expect("邮件详情应提供查看按钮");
+    let hit=h.top_bar_notice.expect("展开邮件详情后应继续提供通知命中区");
+    assert!(hit.contains(badge) && hit.contains_rect(detail.interact_rect));
+    h.click_text("查看");
+    h.frame(vec![]);
+    assert_eq!(h.app.page,crate::app::MAIL_PAGE);
+    assert!(h.top_bar_notice.is_none(),"邮件通知结束后应清空通知命中区");
+}
+
+#[test]
 fn an_open_page_and_lyrics_can_coexist_with_notifications_and_the_bell(){
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let mut h=H::new();h.app.settings.island_lyrics=true;
     h.media=crate::smtc::NowPlaying{title:"Track".into(),artist:"Artist".into(),playing:true,position:7.0,duration:120.0,..Default::default()};
@@ -9840,11 +9871,18 @@ fn qq_bound_notices_open_their_original_account_and_clear_independently(){
     h.app.receive_notification_from("QQ".into(),"QQ".into(),"有新消息".into(),Some(b));
     assert_eq!(h.app.pending_messengers,[a,b]);
     for _ in 0..45{h.frame(vec![]);}
+    assert!(!h.app.open);
+    let hit=h.top_bar_notice.expect("收起态的消息横幅应提供置顶命中区");
+    for id in ["messenger-view","messenger-dismiss"] {
+        let button=h.ctx.read_response(egui::Id::new(("card",true,id))).expect("横幅按钮应可点击");
+        assert!(hit.contains_rect(button.interact_rect),"{id} 应位于通知命中区内");
+    }
     h.click_text("查看");assert!(h.cmds.contains(&Cmd::ViewMessenger(a)),"横幅应打开它自己的账号，不能取最近新增的另一个账号");
     h.app.viewed_client(Messenger::Qq,200);h.frame(vec![]);
     assert_eq!(h.app.pending_messengers,[a]);
     h.cmds.clear();h.click_text("查看");assert!(h.cmds.contains(&Cmd::ViewMessenger(a)));
     h.app.discard_unread(a);h.frame(vec![]);assert!(h.app.pending_messengers.is_empty());assert!(h.app.notice.is_none());
+    assert!(h.top_bar_notice.is_none());
 }
 
 #[test]
@@ -10274,6 +10312,7 @@ fn shelf_menu_last_action_fits_inside_window_and_works(){
     }).expect("右键菜单应显示移除操作");
     assert!(h.region.contains_rect(h.app.shelf_menu_rect.unwrap() + h.ctx.style().visuals.popup_shadow.margin()));
     assert!(h.app.shelf_menu_rect.unwrap().contains_rect(label));
+    assert!(h.top_bar_notice.is_none(),"置物架菜单不能触发通知置顶");
     h.hover(label.center(),1.0);
     assert!(h.app.open);
     h.click(label.center());
