@@ -1255,6 +1255,29 @@ impl LocalPlugins {
                 ui.spacing_mut().item_spacing.x = 6.0;
                 #[cfg(windows)]
                 ui.menu_button(egui::RichText::new("···").color(muted_color(ui)), |ui| {
+                    let storage = self.records.get(id).and_then(|record| record.package.as_ref())
+                        .is_some_and(|package| package.manifest.has_capability("storage"));
+                    if storage && ui.button("导出数据").clicked() {
+                        match crate::system::pick_folder_for("选择插件备份文件夹") {
+                            Ok(Some(folder)) => self.notice = match self.export_storage(id, &folder) {
+                                Ok(path) => format!("数据已导出到 {}", path.display()),
+                                Err(error) => error.to_string(),
+                            },
+                            Ok(None) => {}
+                            Err(_) => self.notice = "无法选择备份文件夹".into(),
+                        }
+                        ui.close_menu();
+                    }
+                    if storage && ui.button("导入数据").on_hover_text("导入会替换此插件的私有数据").clicked() {
+                        match crate::system::pick_files_for("选择要导入的插件数据备份", false) {
+                            Ok(files) => if let Some(path) = files.first() {
+                                self.notice = self.import_storage(id, path).map_or_else(
+                                    |error| error.to_string(), |_| "插件数据已导入".into());
+                            },
+                            Err(_) => self.notice = "无法选择备份文件".into(),
+                        }
+                        ui.close_menu();
+                    }
                     if has_source && ui.button("管理数据源").clicked() {
                         self.open_source_dialog(ui, id);
                         ui.close_menu();
@@ -1960,9 +1983,10 @@ impl LocalPlugins {
                             .drafts
                             .entry(id.clone())
                             .or_insert_with(|| r.values.clone());
+                        let mut submit = false;
                         for f in &m.settings {
                             let field = fields.entry(f.key.clone()).or_insert_with(|| f.default.clone());
-                            script_settings_ui::field_row(ui, &id, f, field);
+                            submit |= script_settings_ui::field_row(ui, &id, f, field);
                         }
                         #[cfg(windows)]
                         if let Some(min) = r.network().and_then(|network| network.min_refresh_seconds) {
@@ -1976,7 +2000,7 @@ impl LocalPlugins {
                             });
                             *draft = seconds.to_string();
                         }
-                        if m.has_settings() && ui.button("保存设置").clicked() {
+                        if m.has_settings() && (ui.button("保存设置").clicked() || submit) {
                             let values = fields.clone();
                             self.notice = match self.save(&id, values) {
                                 Ok(()) => {

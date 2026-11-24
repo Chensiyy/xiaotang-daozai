@@ -23,7 +23,7 @@ required-features = ["record"]
 
 [features]
 record = []
-sdk-js = []
+sdk-js = ["dep:ab_glyph"]
 sdk-material = [
   "dep:bytemuck", "dep:pollster",
   "eframe/direct-composition",
@@ -45,6 +45,7 @@ wgpu-hal = { path = "vendor/wgpu-hal" }
 ureq = { path = "vendor/ureq" }
 
 [dependencies]
+ab_glyph = { version = "0.2", optional = true }
 eframe = { version = "0.31", default-features = false, features = ["glow", "wgpu", "default_fonts"] }
 egui_extras = { version = "0.31", default-features = false, features = ["svg", "image"] }
 svgtypes = "0.13"

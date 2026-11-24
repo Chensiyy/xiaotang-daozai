@@ -166,7 +166,12 @@ impl App {
                 SideItem::Performance(h) => self.side_performance(c,cx,mid,h),
                 SideItem::Quota(index, h) => self.draw_quota_side(c, cx, mid, h, index),
                 #[cfg(feature="sdk-js")]
-                SideItem::Pinned => if let Some(display) = &self.pinned_display { display.draw(c, cx, mid, width, true); },
+                SideItem::Pinned => if let Some(display) = &self.pinned_display {
+                    if display.draw(c, cx, mid, display.width(width), true, self.pinned_canvas_theme()) {
+                        let id=display.plugin.clone();
+                        self.show_status_page(&id);
+                    }
+                },
                 SideItem::Bell => {
                     if let Some(at)=self.notification_bell(){
                         paint::bell(&c.scaled(cx, mid, 1.1), cx, mid, theme::WHITE, paint::bell_swing(self.t - at));

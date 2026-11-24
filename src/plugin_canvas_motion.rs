@@ -419,6 +419,7 @@ fn roll_digits(c: &Card<'_>, node: &Node, before: &str, scale: f32, t: f32) -> O
         return None;
     };
     let mut changes = false;
+    let fonts = c.ui.fonts(|fonts| fonts.families());
     let job = super::text_job(
         text,
         (size.initial() * scale).min(256.0 / c.ui.ctx().pixels_per_point()),
@@ -426,6 +427,8 @@ fn roll_digits(c: &Card<'_>, node: &Node, before: &str, scale: f32, t: f32) -> O
         align,
         max_width.as_ref().map(|w| w.initial() * scale),
         *lines,
+        font.as_deref(),
+        &fonts,
     );
     let galley = c.ui.fonts(|fonts| fonts.layout_job(job));
     let first = galley.rows.first()?.glyphs.first()?.pos.y;

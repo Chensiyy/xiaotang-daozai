@@ -107,6 +107,7 @@ struct View {
     pixels: f32,
     size: Vec2,
     theme: CanvasTheme,
+    fonts: u64,
 }
 
 #[derive(Clone)]
@@ -191,11 +192,13 @@ fn draw_static(
 ) -> bool {
     let ctx = c.ui.ctx();
     let pixels = ctx.pixels_per_point();
+    let fonts = ctx.fonts(|fonts| fonts.families().into_iter().filter(theme::canvas_font_family).collect::<Vec<_>>());
     let view = View {
         scale: c.s,
         pixels,
         size: area.size(),
         theme,
+        fonts: egui::Id::new(&fonts).value(),
     };
     let id = c.ui.make_persistent_id(("plugin-canvas", id));
     let cache_id = egui::Id::new("plugin-canvas-scenes");
@@ -236,7 +239,7 @@ fn draw_static(
     if !timed_out {
         if cache.scene.is_none() {
             let previous = std::mem::take(&mut cache.geometry);
-            let (scene, geometry) = Builder::new(view, start, previous).build(canvas);
+            let (scene, geometry) = Builder::new(view, start, &fonts, previous).build(canvas);
             cache.scene = scene.map(Arc::new);
             cache.geometry = geometry;
         }
@@ -376,22 +379,24 @@ impl Scene {
     }
 }
 
-struct Builder {
+struct Builder<'a> {
     view: View,
     start: Instant,
     tessellator: Tessellator,
     scene: Scene,
+    fonts: &'a [egui::FontFamily],
     previous: HashMap<egui::Id, CachedMesh>,
     geometry: HashMap<egui::Id, CachedMesh>,
 }
 
-impl Builder {
-    fn new(view: View, start: Instant, previous: HashMap<egui::Id, CachedMesh>) -> Self {
+impl<'a> Builder<'a> {
+    fn new(view: View, start: Instant, fonts: &'a [egui::FontFamily], previous: HashMap<egui::Id, CachedMesh>) -> Self {
         let tessellator = Tessellator::new(view.pixels, Default::default(), [1; 2], Vec::new());
         Self {
             view,
             start,
             tessellator,
+            fonts,
             scene: Scene::default(),
             previous,
             geometry: HashMap::new(),
@@ -470,7 +475,7 @@ impl Builder {
             .fill
             .as_ref()
             .map(|paint| theme.pigment(paint, transform, opacity));
-        let stroke = style
+        let mut stroke = style
             .stroke
             .as_ref()
             .map(|paint| theme.pigment(paint, transform, opacity));
@@ -501,12 +506,12 @@ impl Builder {
                 align,
                 max_width,
                 lines,
-                ..
+                font,
             } => {
                 let size = (size.initial().clamp(6.0, 96.0) * transform.scale)
                     .min(256.0 / self.view.pixels);
                 let max_width = max_width.as_ref().map(|v| v.initial() * transform.scale);
-                let job = text_job(text, size, *weight, align, max_width, *lines);
+                let job = text_job(text, size, *weight, align, max_width, *lines, font.as_deref(), self.fonts);
                 let pigment = fill.unwrap_or_else(|| {
                     Pigment::Solid(theme.token(&Token::Text).gamma_multiply(opacity))
                 });
@@ -538,6 +543,19 @@ impl Builder {
                     ));
                 }
                 return Some(());
+            }
+            Kind::Icon { path: commands, rect } => {
+                let rect = geometry::rect(rect);
+                let scale = rect.width().min(rect.height()) / 24.0;
+                if scale <= 0.0 {
+                    return Some(());
+                }
+                let top_left = rect.center() - vec2(12.0, 12.0) * scale;
+                let local = [top_left.x, top_left.y].map(crate::plugin_canvas::Num::Literal);
+                if fill.is_none() && stroke.is_none() {
+                    stroke = Some(Pigment::Solid(theme.token(&Token::Text).gamma_multiply(opacity)));
+                }
+                (path(commands, transform.child(&local, 0.0, scale), self.view.pixels, self.start)?, None)
             }
             Kind::Pet {
                 at,
@@ -729,6 +747,8 @@ fn text_job(
     align: &Align,
     max_width: Option<f32>,
     lines: u8,
+    font: Option<&str>,
+    fonts: &[egui::FontFamily],
 ) -> egui::text::LayoutJob {
     let weight = match weight {
         0..=499 => W::Regular,
@@ -737,7 +757,7 @@ fn text_job(
     };
     let mut job = egui::text::LayoutJob::simple(
         crate::rtl_text::display(text).into_owned(),
-        theme::font(size.max(0.1), weight),
+        theme::canvas_font(size.max(0.1), weight, font, fonts),
         Color32::PLACEHOLDER,
         max_width.unwrap_or(f32::INFINITY),
     );

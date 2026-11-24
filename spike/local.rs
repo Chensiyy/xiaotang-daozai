@@ -7,6 +7,8 @@ pub(crate) mod appearance_assets;
 mod canvas_images;
 #[path = "capabilities.rs"]
 mod capabilities;
+#[path = "font_assets.rs"]
+mod font_assets;
 #[path = "plugin_devtools.rs"]
 mod devtools;
 #[path = "pinned.rs"]
@@ -32,6 +34,9 @@ mod source_read;
 mod script_settings;
 #[path = "package_data.rs"]
 mod package_data;
+#[cfg(windows)]
+#[path = "plugin_storage_backup.rs"]
+mod storage_backup;
 #[path = "local_ui.rs"]
 mod ui;
 use super::{fail, Result};
@@ -74,6 +79,8 @@ struct Field {
     #[serde(rename = "type")]
     kind: String,
     default: String,
+    #[serde(default, deserialize_with = "present_value", skip_serializing_if = "Option::is_none")]
+    multiline: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     min: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -195,6 +202,8 @@ struct Package {
     data: PackageData,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     canvas_images: canvas_images::CanvasImages,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    font_assets: font_assets::Bundle,
     #[serde(skip)]
     page_shortcut_colors: OnceLock<BTreeMap<String, [u8; 3]>>,
     #[serde(skip)]
@@ -292,6 +301,7 @@ impl Record {
                     || manifest.has_capability("status.canvas") && canvas_images::valid_snapshot(&package.canvas_images))
                 && package.validate_page_shortcut_colors().is_ok()
                 && package.validate_appearance().is_ok()
+                && package.valid_font_assets()
                 && manifest.settings.iter().all(|field| {
                     self.values
                         .get(&field.key)
@@ -653,7 +663,9 @@ impl Manifest {
     }
 }
 
-fn validate_code_free_files(dir: &Path, manifest: &Path, entry: &Path, material: bool) -> Result<()> {
+fn validate_code_free_files(
+    dir: &Path, manifest: &Path, entry: &Path, material: bool, fonts: Option<&font_assets::Entry>,
+) -> Result<()> {
     let (package_type, entry_type) = if material { ("材质包", "WGSL") } else { ("外观资源包", "JSON") };
     let mut folders = vec![dir.to_path_buf()];
     while let Some(folder) = folders.pop() {
@@ -687,7 +699,8 @@ fn validate_code_free_files(dir: &Path, manifest: &Path, entry: &Path, material:
                 || (path != entry
                     && path != manifest
                     && path != dir.join(COVER_FILE)
-                    && !description)
+                    && !description
+                    && !fonts.is_some_and(|fonts| fonts.files().any(|file| path == dir.join(file))))
             {
                 return Err(fail(&format!(
                     "{package_type}只能包含 plugin.json、一个 {entry_type} 入口、cover.png 和说明文件",
@@ -720,6 +733,11 @@ impl Package {
         if !resolved.starts_with(&base) || !resolved.is_file() {
             return Err(fail("入口越出插件目录"));
         }
+        let source = bounded(&resolved, manifest.source_limit())?;
+        let data = package_data::read_data(&manifest.data, |name| package_data::read_file(&base, name))?;
+        let mut package = Self::from_entry(manifest, source, cover)?;
+        package.data = data;
+        let manifest = &package.manifest;
         if manifest.is_material() || manifest.appearance_kind().is_some() {
             if path.file_name().and_then(|name| name.to_str()) != Some("plugin.json") {
                 return Err(fail(if manifest.is_material() {
@@ -728,12 +746,11 @@ impl Package {
                     "外观资源包清单必须命名为 plugin.json"
                 }));
             }
-            validate_code_free_files(&base, &base.join("plugin.json"), &resolved, manifest.is_material())?;
+            validate_code_free_files(&base, &base.join("plugin.json"), &resolved, manifest.is_material(), package.font_entry())?;
         }
-        let source = bounded(&resolved, manifest.source_limit())?;
-        let data = package_data::read_data(&manifest.data, |name| package_data::read_file(&base, name))?;
-        let mut package = Self::from_entry(manifest, source, cover)?;
-        package.data = data;
+        if let Some(entry) = package.font_entry() {
+            package.font_assets = font_assets::read_local(entry, &base, package.font_base_size()?)?;
+        }
         if package.manifest.has_capability("status.canvas") {
             package.canvas_images = canvas_images::read(&base)?;
         }
@@ -750,6 +767,7 @@ impl Package {
             cover: Some(cover),
             data: BTreeMap::new(),
             canvas_images: BTreeMap::new(),
+            font_assets: BTreeMap::new(),
             page_shortcut_colors: OnceLock::new(),
             appearance: OnceLock::new(),
         };
@@ -767,6 +785,25 @@ impl Package {
             let _ = self.appearance.set(appearance_assets::Pack::decode(kind, &self.source)?);
         }
         Ok(())
+    }
+
+    fn font_entry(&self) -> Option<&font_assets::Entry> {
+        match self.appearance.get()? {
+            appearance_assets::Pack::Font(entry) => Some(entry),
+            _ => None,
+        }
+    }
+
+    fn font_base_size(&self) -> Result<u64> {
+        font_assets::base_size(&self.manifest, &self.source, self.cover.as_ref().map_or(0, |cover| cover.bytes().len()))
+    }
+
+    fn valid_font_assets(&self) -> bool {
+        match self.font_entry() {
+            Some(entry) => self.font_base_size()
+                .is_ok_and(|used| font_assets::valid_snapshot(entry, &self.font_assets, used)),
+            None => self.font_assets.is_empty(),
+        }
     }
 
     fn validate_page_shortcut_colors(&self) -> Result<()> {
@@ -950,6 +987,9 @@ impl Package {
         if output.pinned.as_ref().is_some_and(|pinned| !has(Surface::IslandPinned) || !pinned.valid()) {
             return Err(fail("常驻位需要声明 island.pinned 并返回符合格式的 pinned"));
         }
+        if let Some(pinned) = &output.pinned {
+            pinned.validate_canvas(self)?;
+        }
         if !ready {
             output.status = None;
             output.quota = None;
@@ -1095,9 +1135,14 @@ impl LocalPlugins {
                     continue;
                 }
                 // 快照中的脚本、包数据和设置字符串在 JSON 中还会转义。
-                let parsed = bounded(&p, 4 * 1024 * 1024)
+                let parsed = bounded(&p, font_assets::SNAPSHOT_LIMIT)
                     .ok()
-                    .and_then(|v| serde_json::from_str::<Record>(&v).ok());
+                    .and_then(|v| {
+                        let record = serde_json::from_str::<Record>(&v).ok()?;
+                        (v.len() <= 4 * 1024 * 1024 || record.package.as_ref().is_some_and(|package| {
+                            package.manifest.has_capability("appearance.font")
+                        })).then_some(record)
+                    });
                 let valid = parsed.as_ref().is_some_and(|r| r.valid(id));
                 if valid {
                     s.records.insert(id.into(), parsed.unwrap());

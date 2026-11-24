@@ -50,6 +50,7 @@ impl WatchedPackage {
         let manifest = serde_json::to_value(&package.manifest).unwrap_or(Value::Null);
         let mut files = Self::files(base, &record.origin, &package.manifest.entry, &manifest);
         files.extend(package.canvas_images.keys().map(|name| base.join(name)));
+        files.extend(package.font_assets.keys().map(|name| base.join(name)));
         let stamps = Self::read_stamps(&files);
         Self {
             files,

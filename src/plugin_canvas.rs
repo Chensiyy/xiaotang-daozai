@@ -40,6 +40,24 @@ impl Canvas {
         if !(40.0..=360.0).contains(&raw.height) {
             return Err("画布高度必须在 40 到 360 之间".into());
         }
+        Self::parse_nodes(raw, false)
+    }
+
+    pub(crate) fn parse_pinned(mut value: serde_json::Value) -> Result<(f32, Self), String> {
+        let obj = value.as_object_mut().ok_or("常驻画布需要一个对象")?;
+        let width = obj.remove("width").and_then(|width| width.as_f64())
+            .filter(|width| (1.0..=156.0).contains(width))
+            .ok_or("常驻画布宽度须在 1 到 156 之间")?;
+        obj.entry("height").or_insert(serde_json::json!(22));
+        let raw: RawCanvas = serde_json::from_value(value)
+            .map_err(|error| format!("常驻画布格式有误（{error}）"))?;
+        if raw.height != 22.0 {
+            return Err("常驻画布高度须为 22".into());
+        }
+        Ok((width as f32, Self::parse_nodes(raw, true)?))
+    }
+
+    fn parse_nodes(raw: RawCanvas, pinned: bool) -> Result<Self, String> {
         for (name, binding) in &raw.binds {
             if !valid_name(name) || !binding.valid() {
                 return Err(format!("画布绑定无效（{name}）"));
@@ -56,6 +74,23 @@ impl Canvas {
             ids: BTreeSet::new(),
         };
         let nodes = budget.nodes(raw.nodes, 1)?;
+        if pinned {
+            if budget.nodes > 60 {
+                return Err("常驻画布最多 60 个节点".into());
+            }
+            fn has_interaction(nodes: &[Node]) -> bool {
+                nodes.iter().any(|node| node.hit.is_some() || node.hover.is_some()
+                    || node.scroll.is_some() || node.looping.as_ref().is_some_and(|effect| {
+                        effect.kind != live::LoopKind::Flow || !matches!(&node.kind, Kind::Text { .. })
+                    }) || node.burst.is_some()
+                    || node.animate.is_some() || !node.tips.is_empty()
+                    || matches!(&node.kind, Kind::Pet { .. })
+                    || matches!(&node.kind, Kind::Group { group, .. } if has_interaction(group)))
+            }
+            if has_interaction(&nodes) {
+                return Err("常驻画布只支持绑定、数字翻动与横向滚动文字".into());
+            }
+        }
         Ok(Self {
             height: raw.height,
             nodes,
@@ -328,6 +363,7 @@ pub(crate) enum Kind {
         rect: Bounds,
         fit: Fit,
     },
+    Icon { path: Vec<PathCommand>, rect: Bounds },
     Pet {
         at: Point,
         size: Num,
@@ -364,6 +400,7 @@ struct RawNode {
     lines: Option<u8>,
     font: Option<String>,
     image: Option<String>,
+    icon: Option<String>,
     pet: Option<RawPet>,
     #[serde(default)]
     fit: Fit,
@@ -647,7 +684,7 @@ impl Budget<'_> {
 
     fn kind(&mut self, raw: &mut RawNode, depth: usize) -> Result<Kind, String> {
         let count = [
-            raw.rect.is_some() && raw.image.is_none(),
+            raw.rect.is_some() && raw.image.is_none() && raw.icon.is_none(),
             raw.circle.is_some(),
             raw.arc.is_some(),
             raw.line.is_some(),
@@ -655,6 +692,7 @@ impl Budget<'_> {
             raw.path.is_some(),
             raw.text.is_some(),
             raw.image.is_some(),
+            raw.icon.is_some(),
             raw.pet.is_some(),
             raw.group.is_some(),
         ]
@@ -675,6 +713,15 @@ impl Budget<'_> {
                 rect,
                 fit: raw.fit,
             });
+        }
+        if let Some(icon) = raw.icon.take() {
+            let rect = raw.rect.take().ok_or("画布图标缺少 rect")?;
+            self.bounds(&rect)?;
+            let svg_path = crate::plugin_setting_catalog::icon_path(&icon)
+                .ok_or_else(|| format!("未识别的画布图标（{icon}）"))?;
+            let path = path::parse(svg_path, MAX_PATH_COMMANDS - self.commands)?;
+            self.commands += path.len();
+            return Ok(Kind::Icon { path, rect });
         }
         if let Some(rect) = raw.rect.take() {
             self.bounds(&rect)?;

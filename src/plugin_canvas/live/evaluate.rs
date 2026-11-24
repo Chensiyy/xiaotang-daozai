@@ -376,7 +376,7 @@ impl Frame<'_> {
                         self.length(width);
                     }
                 }
-                Kind::Image { rect, .. } => self.bounds(rect),
+                Kind::Image { rect, .. } | Kind::Icon { rect, .. } => self.bounds(rect),
                 Kind::Pet { at, size, .. } => {
                     self.coords(at);
                     self.literal(size, 12.0, 96.0, self.pixels);

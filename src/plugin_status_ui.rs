@@ -1,7 +1,7 @@
 //! 用岛仔画布绘制状态详情。
 #[path = "plugin_status_controls.rs"]
 mod controls;
-pub(crate) use controls::{ClickTarget, DEFAULT_FORM_HEIGHT, Interaction, InteractionResponse};
+pub(crate) use controls::{extra_fields_height, ClickTarget, DEFAULT_FORM_HEIGHT, Interaction, InteractionResponse};
 
 #[path = "plugin_status_components.rs"]
 mod components;
@@ -141,7 +141,9 @@ pub(crate) fn status_page_height(layout: Option<&StatusLayout>, status: Option<&
             + PAGE_BOTTOM_SPACE;
     }
     // 给可出现的组件留足空间，读数缺失或断源时保留页面高度。
-    (CONTENT_TOP + layout_card_height(layout, None) + PAGE_BOTTOM_SPACE)
+    let extra = status.filter(|_| layout.components.contains(&StatusComponent::Fields {}))
+        .map_or(0.0, controls::extra_fields_height);
+    (CONTENT_TOP + layout_card_height(layout, None) + extra + PAGE_BOTTOM_SPACE)
         .clamp(MIN_LAYOUT_HEIGHT, MAX_PAGE_HEIGHT)
 }
 
@@ -206,7 +208,7 @@ pub(crate) fn draw_interactive_status_page(
             c,
             status,
             LEFT + 14.0,
-            y + controls::fields_height(status.fields.len()),
+            y + controls::fields_height(Some(status)),
             TEXT_RIGHT - LEFT - 14.0,
         );
     }
@@ -409,9 +411,7 @@ fn component_height(
         StatusComponent::Alert {} => 30.0,
         StatusComponent::UpdatedAt {} => 14.0,
         StatusComponent::Actions {} => controls::ACTION_HEIGHT,
-        StatusComponent::Fields {} => controls::fields_height(
-            status.map_or(controls::MAX_FIELDS, |status| status.fields.len()),
-        ),
+        StatusComponent::Fields {} => controls::fields_height(status),
         StatusComponent::List {} => {
             let count = status.map_or(MAX_ITEMS, |status| status.items.len());
             list_rows(density, count) as f32 * metric_row_height(density)

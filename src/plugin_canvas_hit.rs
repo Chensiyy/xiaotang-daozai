@@ -379,7 +379,7 @@ pub(super) fn bounds(c: &Card<'_>, node: &Node, transform: Transform) -> Rect {
         .as_ref()
         .map_or(0.0, |_| node.style.width.initial() * transform.scale * 0.5);
     let box_rect = match &node.kind {
-        Kind::Rect { rect, .. } | Kind::Image { rect, .. } => transform.bounds(rect),
+        Kind::Rect { rect, .. } | Kind::Image { rect, .. } | Kind::Icon { rect, .. } => transform.bounds(rect),
         Kind::Pet { at, size, .. } => {
             let center = transform.point(at);
             let size = size.initial() * transform.scale;
@@ -441,7 +441,7 @@ pub(super) fn bounds(c: &Card<'_>, node: &Node, transform: Transform) -> Rect {
             weight,
             align,
             max_width,
-            lines,
+            lines, font,
             ..
         } => {
             let pixels_per_point = c.ui.ctx().pixels_per_point();
@@ -453,6 +453,8 @@ pub(super) fn bounds(c: &Card<'_>, node: &Node, transform: Transform) -> Rect {
                     align,
                     max_width.as_ref().map(|w| w.initial() * transform.scale),
                     *lines,
+                    font.as_deref(),
+                    &fonts.families(),
                 ))
             });
             let base = galley
