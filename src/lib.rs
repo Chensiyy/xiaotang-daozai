@@ -96,6 +96,7 @@ pub mod music_volume;
 pub mod theme;
 pub mod settings_theme;
 mod updates;
+mod supporters;
 #[cfg(windows)]
 pub use updates::record_install_size;
 

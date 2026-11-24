@@ -499,7 +499,7 @@ impl Service {
         None
     }
 }
-fn http_agent()->ureq::Agent{
+pub(crate) fn http_agent()->ureq::Agent{
     http_agent_with_connect_timeout(Duration::from_secs(30))
 }
 fn http_agent_with_connect_timeout(timeout:Duration)->ureq::Agent{

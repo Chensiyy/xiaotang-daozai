@@ -997,6 +997,7 @@ pub struct App {
     pub(crate) weather: crate::weather::State,
     pub(crate) weather_source: crate::weather_source_ui::State,
     pub(crate) updates: crate::updates::State,
+    pub(crate) supporters: crate::supporters::State,
     pub(crate) resident: bar::Motion,
     pub(crate) performance: crate::performance::Monitor,
     pub(crate) resident_power: (Option<u8>,bool),
@@ -1162,6 +1163,7 @@ impl App {
             weather,
             weather_source,
             updates: crate::updates::State::load(model::config_dir().join("update-check.json")),
+            supporters: crate::supporters::State::new(model::config_dir().join("supporters")),
             performance: Default::default(), resident: Default::default(), resident_power:(None,false),
         }
     }
@@ -1764,7 +1766,7 @@ impl App {
     pub fn start_tray(&self,state:crate::tray::State)->Option<crate::tray::Tray>{
         let layout=self.settings_window.clone();
         // 原生文件选择框会占用界面线程，托盘退出时直接保存最近一次观察到的布局。
-        crate::tray::Tray::start_with_exit(state,move||layout.lock().unwrap_or_else(|e|e.into_inner()).close())
+        crate::tray::Tray::start_with_exit(state,move||{layout.lock().unwrap_or_else(|e|e.into_inner()).close();})
     }
 
     pub fn open_settings(&mut self){
