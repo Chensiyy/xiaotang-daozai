@@ -14,7 +14,7 @@ use crate::{
     skin_paint, theme,
 };
 use eframe::egui::{self, pos2, Color32, Pos2, Rect};
-use std::{collections::BTreeMap, time::Instant};
+use std::collections::BTreeMap;
 
 pub(super) type NodeKey = egui::Id;
 
@@ -427,7 +427,8 @@ pub(super) fn bounds(c: &Card<'_>, node: &Node, transform: Transform) -> Rect {
             commands,
             transform,
             c.ui.ctx().pixels_per_point(),
-            Instant::now(),
+            // 点击区域要算完整外框，不受绘制预算限制。
+            None,
         )
         .into_iter()
         .flatten()
