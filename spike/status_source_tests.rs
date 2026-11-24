@@ -98,6 +98,23 @@ fn snapshot(progress: u8) -> String {
 }
 
 #[test]
+fn canvas_title_accent_must_be_a_proper_status_page_suffix() -> Result<()> {
+    let mut manifest: Value = serde_json::from_str(include_str!("examples/canvas-demo/plugin.json"))?;
+    let decode = |manifest: &Value| Manifest::decode(&manifest.to_string());
+    assert!(decode(&manifest).is_ok());
+    for invalid in [json!("画布"), json!("画布图元"), json!(""), json!(null)] {
+        manifest["titleAccent"] = invalid;
+        assert!(decode(&manifest).is_err());
+    }
+    manifest["titleAccent"] = json!("图元");
+    manifest["owner"] = json!("tasks");
+    manifest["capabilities"] = json!(["card"]);
+    manifest.as_object_mut().unwrap().remove("statusLayout");
+    assert!(decode(&manifest).is_err());
+    Ok(())
+}
+
+#[test]
 fn canvas_demo_assets_survive_install_and_market_round_trip() -> Result<()> {
     let fixture = Fixture::new()?;
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("spike/examples/canvas-demo/plugin.json");

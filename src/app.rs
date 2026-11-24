@@ -3871,8 +3871,11 @@ impl App {
         let base = 25.0;
         #[cfg(feature="sdk-js")]
         if page>=PAGE_NAMES.len() {
-            let title=c.fit(self.navigation_page_name(page),size::TITLE,W::Bold,142.0);
-            c.text(15.0,base,&title,size::TITLE,W::Bold,theme::WHITE,H::Left);
+            let accent=self.status_pages.get(page-PAGE_NAMES.len())
+                .and_then(|(id,_)|self.plugins.status_title_accent(id));
+            crate::plugin_status_ui::draw_title(
+                c,self.navigation_page_name(page),accent,self.island_overlay_fill(),
+            );
             return;
         }
         let (a, b, col) = match page {

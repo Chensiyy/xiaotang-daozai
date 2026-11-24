@@ -13,6 +13,12 @@
       "minLength": 1,
       "maxLength": 80
     },
+    "titleAccent": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "description": "状态页标题要着色的末尾文字，必须是 name 的一部分。颜色使用 statusLayout.style.accent。"
+    },
     "author": {
       "type": "string",
       "minLength": 1,
@@ -207,6 +213,31 @@
             "icon": {"enum": ["battery", "cup", "clock", "chart", "cloud", "calendar"]}
           },
           "additionalProperties": false
+        },
+        "canvasFields": {
+          "type": "array",
+          "maxItems": 3,
+          "items": {
+            "type": "object",
+            "properties": {
+              "key": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,39}$"},
+              "rect": {
+                "type": "array",
+                "prefixItems": [
+                  {"type": "integer", "minimum": 0, "maximum": 386},
+                  {"type": "integer", "minimum": 0, "maximum": 359},
+                  {"type": "integer", "minimum": 1, "maximum": 387},
+                  {"type": "integer", "minimum": 1, "maximum": 360}
+                ],
+                "minItems": 4,
+                "items": false
+              },
+              "placeholder": {"type": "string", "minLength": 1, "maxLength": 80},
+              "action": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,39}$"}
+            },
+            "required": ["key", "rect"],
+            "additionalProperties": false
+          }
         }
       },
       "required": ["components"],
@@ -569,8 +600,21 @@
       "then": {"properties": {"runtime": {"const": "js"}}}
     },
     {
-      "if": {"required": ["statusLayout"]},
+      "if": {"anyOf": [{"required": ["statusLayout"]}, {"required": ["titleAccent"]}]},
       "then": {"properties": {"capabilities": {"contains": {"const": "status.page"}}}}
+    },
+    {
+      "if": {
+        "required": ["statusLayout"],
+        "properties": {"statusLayout": {
+          "required": ["canvasFields"],
+          "properties": {"canvasFields": {"minItems": 1}}
+        }}
+      },
+      "then": {"properties": {
+        "capabilities": {"allOf": [{"contains": {"const": "status.canvas"}}, {"contains": {"const": "action"}}]},
+        "statusLayout": {"properties": {"components": {"contains": {"properties": {"type": {"const": "canvas"}}}}}}
+      }}
     },
     {
       "if": {"properties": {"capabilities": {"contains": {"const": "status.canvas"}}}},

@@ -4,7 +4,7 @@ use eframe::egui;
 
 use crate::{
     paint::{self, Card, H},
-    plugin_status::{PluginStatus, StatusItem},
+    plugin_status::{CanvasField, PluginStatus, StatusAction, StatusField, StatusItem, StatusLayout},
     theme::{self, size, W},
 };
 
@@ -15,6 +15,25 @@ pub(crate) const DEFAULT_FORM_HEIGHT: f32 = FIELD_HEIGHT * MAX_FIELDS as f32 + A
 
 pub(super) fn fields_height(count: usize) -> f32 {
     FIELD_HEIGHT * count as f32
+}
+
+pub(super) fn standalone_fields<'a>(
+    status: &'a PluginStatus,
+    layout: Option<&'a StatusLayout>,
+) -> impl Iterator<Item = &'a StatusField> + 'a {
+    status.fields.iter().filter(move |field| {
+        layout.is_none_or(|layout| !layout.active_canvas_fields(status).any(|anchor| anchor.key == field.key))
+    })
+}
+
+pub(super) fn standalone_actions<'a>(
+    status: &'a PluginStatus,
+    layout: Option<&'a StatusLayout>,
+) -> impl Iterator<Item = (usize, &'a StatusAction)> + Clone + 'a {
+    status.actions.iter().enumerate().filter(move |(_, action)| {
+        layout.is_none_or(|layout| !layout.active_canvas_fields(status)
+            .any(|anchor| anchor.action.as_deref() == Some(action.id.as_str())))
+    })
 }
 
 #[derive(Default)]
@@ -60,11 +79,12 @@ impl<'a> Interaction<'a> {
         (self.response, self.clicked)
     }
 
-    pub(super) fn actions(&mut self, c: &Card, status: &PluginStatus, x: f32, y: f32, width: f32) {
+    pub(super) fn actions(&mut self, c: &Card, status: &PluginStatus, x: f32, y: f32, width: f32, layout: Option<&StatusLayout>) {
+        let actions = standalone_actions(status, layout);
         let gap = 6.0;
-        let width = ((width + gap) / status.actions.len().max(1) as f32 - gap).min(98.0);
-        for (index, action) in status.actions.iter().enumerate() {
-            let x = x + index as f32 * (width + gap);
+        let width = ((width + gap) / actions.clone().count().max(1) as f32 - gap).min(98.0);
+        for (column, (index, action)) in actions.enumerate() {
+            let x = x + column as f32 * (width + gap);
             let card = if self.enabled || action.open.is_some() || action.copy.is_some() {
                 c.clone()
             } else {
@@ -154,9 +174,9 @@ impl<'a> Interaction<'a> {
         body_width
     }
 
-    pub(super) fn fields(&mut self, c: &Card, status: &PluginStatus, x: f32, y: f32, width: f32) {
+    pub(super) fn fields(&mut self, c: &Card, status: &PluginStatus, x: f32, y: f32, width: f32, layout: Option<&StatusLayout>) {
         let label_width = 82.0;
-        for (index, field) in status.fields.iter().enumerate() {
+        for (index, field) in standalone_fields(status, layout).enumerate() {
             let top = y + index as f32 * FIELD_HEIGHT;
             let label = c.fit(&field.label, size::SMALL, W::Regular, label_width - 6.0);
             c.centered_text(
@@ -168,40 +188,61 @@ impl<'a> Interaction<'a> {
                 theme::GRAY,
                 H::Left,
             );
-            let id = egui::Id::new((
-                "plugin-field",
-                self.plugin,
-                self.revision,
-                &field.key,
-                c.live,
-            ));
             let rect = c.rect(x + label_width, top, width - label_width, 24.0);
-            let mut ui = egui::Ui::new(
-                c.ui.ctx().clone(),
-                id,
-                egui::UiBuilder::new()
-                    .max_rect(rect)
-                    .layer_id(c.painter.layer_id())
-                    .style(c.ui.style().clone()),
-            );
-            ui.set_clip_rect(rect.intersect(c.painter.clip_rect()));
-            ui.multiply_opacity(c.painter.opacity());
-            let value = self.form.entry(field.key.clone()).or_default();
-            let input = egui::TextEdit::singleline(value)
-                .id(id.with("value"))
-                .font(c.font(size::BODY, W::Regular))
-                .vertical_align(egui::Align::Center)
-                .text_color(theme::WHITE)
-                .desired_width(rect.width())
-                .desired_rows(1)
-                .char_limit(field.max)
-                .interactive(c.live && self.enabled);
-            let response = ui.put(rect, input).on_hover_text(&field.label);
-            if response.changed() {
-                value.retain(|ch| !ch.is_control());
-            }
-            self.response.gained_focus |= response.gained_focus();
-            self.response.focused |= c.live && self.enabled && response.has_focus();
+            self.field(c, field, rect, None);
         }
+    }
+
+    pub(super) fn canvas_fields(&mut self, c: &Card, status: &PluginStatus, layout: &StatusLayout, x: f32, y: f32) {
+        for anchor in layout.active_canvas_fields(status) {
+            let field = status.fields.iter().find(|field| field.key == anchor.key).unwrap();
+            let [left, top, width, height] = anchor.rect.map(f32::from);
+            let rect = c.rect(x + left, y + top, width, height);
+            let response = self.field(c, field, rect, Some(anchor));
+            if c.live && self.enabled && response.lost_focus()
+                && c.ui.input(|input| input.key_pressed(egui::Key::Enter))
+            {
+                self.clicked = status.actions.iter()
+                    .position(|action| Some(action.id.as_str()) == anchor.action.as_deref())
+                    .map(ClickTarget::Button);
+            }
+        }
+    }
+
+    fn field(&mut self, c: &Card, field: &StatusField, rect: egui::Rect, anchor: Option<&CanvasField>) -> egui::Response {
+        let id = egui::Id::new(("plugin-field", self.plugin, self.revision, &field.key, c.live));
+        let mut ui = egui::Ui::new(
+            c.ui.ctx().clone(),
+            id,
+            egui::UiBuilder::new()
+                .max_rect(rect)
+                .layer_id(c.painter.layer_id())
+                .style(c.ui.style().clone()),
+        );
+        ui.set_clip_rect(rect.intersect(c.painter.clip_rect()));
+        ui.multiply_opacity(c.painter.opacity());
+        let value = self.form.entry(field.key.clone()).or_default();
+        let mut input = egui::TextEdit::singleline(value)
+            .id(id.with("value"))
+            .font(c.font(size::BODY, W::Regular))
+            .vertical_align(egui::Align::Center)
+            .text_color(theme::WHITE)
+            .desired_width(rect.width())
+            .desired_rows(1)
+            .char_limit(field.max)
+            .interactive(c.live && self.enabled);
+        if let Some(anchor) = anchor {
+            input = input.frame(false).margin(egui::Margin::symmetric((6.0 * c.s).round() as i8, 0));
+            if let Some(hint) = &anchor.placeholder {
+                input = input.hint_text(hint);
+            }
+        }
+        let response = ui.put(rect, input).on_hover_text(&field.label);
+        if response.changed() {
+            value.retain(|ch| !ch.is_control());
+        }
+        self.response.gained_focus |= response.gained_focus();
+        self.response.focused |= c.live && self.enabled && response.has_focus();
+        response
     }
 }

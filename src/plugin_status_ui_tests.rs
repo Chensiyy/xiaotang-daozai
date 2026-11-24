@@ -214,6 +214,10 @@ fn plugin_canvas_demo_renders_with_mixed_layout() {
     }
     h.hover(cursor, 0.8);
     assert!(has_text(&h, "这行是与画布混排的标准状态组件。"));
+    assert!(has_text(&h, "画布"));
+    assert!(h.shapes.iter().any(|shape| matches!(&shape.shape,
+        egui::Shape::Text(text) if text.galley.text() == "图元"
+            && text.fallback_color == egui::Color32::from_rgb(0x34, 0x7f, 0x69))));
 }
 
 #[test]
