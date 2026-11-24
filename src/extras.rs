@@ -1440,27 +1440,55 @@ pub(crate) fn settings_label(ui:&mut egui::Ui,text:&str){
     ui.label(egui::RichText::new(text).size(11.5).color(settings_color(ctx,Color32::from_gray(185),Color32::from_gray(70))));
     ui.add_space(2.0);
 }
-fn support_author(ui:&mut egui::Ui){
+const SUPPORT_RECENT_URI: &str = "support-recent-uri";
+const SUPPORT_WALL_URI: &str = "support-wall-uri";
+const BUNDLED_SUPPORTERS: usize = 108;
+
+fn support_author(ui:&mut egui::Ui, supporters: &mut crate::supporters::State){
+    supporters.refresh(ui.ctx());
+    let snapshot = supporters.snapshot();
+    let wall_id = egui::Id::new("support-author-wall");
+    if ui.ctx().data(|data| data.get_temp::<bool>(wall_id).unwrap_or(false)) {
+        release_support_image(ui.ctx(), SUPPORT_RECENT_URI);
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("感谢墙").size(17.0).strong());
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.link("← 返回").clicked() {
+                    ui.ctx().data_mut(|data| data.insert_temp(wall_id, false));
+                }
+            });
+        });
+        ui.label(egui::RichText::new("按累计支持排序").size(11.0).weak());
+        ui.add_space(4.0);
+        let image = match snapshot {
+            Some(data) => egui::Image::from_bytes(format!("bytes://supporters/wall-{}.webp", data.version), data.wall.clone()),
+            None => egui::Image::new(egui::include_image!("../assets/support/wall.webp")),
+        }.fit_to_original_size(1.0).max_width(ui.available_width()).alt_text("岛仔感谢墙");
+        add_support_image(ui, image, SUPPORT_WALL_URI);
+        return;
+    }
+    release_support_image(ui.ctx(), SUPPORT_WALL_URI);
     let id=egui::Id::new("support-author-open");
     let open=ui.ctx().data(|data|data.get_temp::<bool>(id).unwrap_or(false));
     if !open {release_support_codes(ui.ctx());}
     let dark=ui.visuals().dark_mode;
-    let accent=if dark{Color32::from_rgb(182,163,245)}else{Color32::from_rgb(105,77,163)};
     ui.scope(|ui|{
-    ui.set_min_height(225.0);
     if !open {
     egui::Frame::new().fill(if dark{Color32::from_rgb(42,37,53)}else{Color32::from_rgb(239,233,250)})
-        .corner_radius(10.0).show(ui,|ui|{
-            ui.set_min_width(ui.available_width());
-            ui.vertical_centered(|ui|{
-                ui.add(egui::Image::new(egui::include_image!("../assets/support/daozai-coffee.svg")).fit_to_exact_size(egui::vec2(211.0,110.0)));
+        .corner_radius(10.0).inner_margin(egui::Margin::symmetric(12,8)).show(ui,|ui|{
+            let image_width=120.0;
+            let text_width=(ui.available_width()-image_width-ui.spacing().item_spacing.x).max(0.0);
+            ui.horizontal(|ui|{
+                ui.allocate_ui_with_layout(egui::vec2(text_width,64.0),egui::Layout::top_down(egui::Align::Min).with_main_align(egui::Align::Center),|ui|{
+                    ui.set_max_width(text_width);
+                    ui.label(egui::RichText::new("请小唐喝杯咖啡").size(19.0).strong());
+                    ui.add(egui::Label::new("岛仔陪你认真生活，你的支持，陪小唐把它慢慢做好。").wrap());
+                });
+                ui.add(egui::Image::new(egui::include_image!("../assets/support/daozai-coffee.svg")).fit_to_exact_size(egui::vec2(image_width,62.5)));
             });
         });
-    ui.add_space(9.0);
-    ui.label(egui::RichText::new("小唐维护 · 岛仔陪伴").size(10.5).color(accent));
-    ui.label(egui::RichText::new("请小唐喝杯咖啡").size(19.0).strong());
-    ui.label("岛仔陪你认真生活，\n你的支持，陪小唐把它慢慢做好。");
     } else {
+        ui.set_min_height(200.0);
         let ctx=ui.ctx().clone();
         // 只解码一次并裁出二维码区域，按实际显示像素缩小：原图解码后两张合计约 17MB，缩小后不到 1MB。
         let pixels=((180.0*ctx.pixels_per_point()).ceil() as u32).clamp(180,600);
@@ -1478,7 +1506,7 @@ fn support_author(ui:&mut egui::Ui){
                 let uv=egui::Rect::from_min_max(egui::pos2(0.0,0.0),egui::pos2(1.0,1.0));
                 columns[i].vertical_centered(|ui|{
                     ui.label(egui::RichText::new(name).color(color).strong());
-                    let side=ui.available_width().min(180.0);
+                    let side=ui.available_width().min(156.0);
                     ui.add(egui::Image::new((texture.id(),egui::vec2(side,side))).uv(uv));
                     ui.label(egui::RichText::new(if i==0{"打开微信扫一扫"}else{"打开支付宝扫一扫"}).size(11.0));
                 });
@@ -1491,8 +1519,51 @@ fn support_author(ui:&mut egui::Ui){
     if ui.add_sized([ui.available_width(),32.0],button).clicked(){
         ui.ctx().data_mut(|data|data.insert_temp(id,!open));
     }
-    ui.add_space(7.0);
+    ui.add_space(if open{4.0}else{7.0});
     ui.label(egui::RichText::new("完全自愿 · 感谢每一份支持 · 不影响功能使用").size(11.0).color(ui.visuals().weak_text_color()));
+    if !open {
+        ui.add_space(4.0);
+        ui.separator();
+        let count = snapshot.map_or(BUNDLED_SUPPORTERS, |data| data.count);
+        ui.label(format!("已有 {count} 位朋友请岛仔喝过咖啡"));
+        ui.horizontal_wrapped(|ui| {
+            ui.label(egui::RichText::new("最近支持").size(11.0).weak());
+            let image = match snapshot {
+                Some(data) => egui::Image::from_bytes(format!("bytes://supporters/recent-{}.webp", data.version), data.recent.clone()),
+                None => egui::Image::new(egui::include_image!("../assets/support/recent.webp")),
+            }.max_size(egui::vec2(190.0, 29.0)).alt_text("最近支持的朋友");
+            add_support_image(ui, image, SUPPORT_RECENT_URI);
+            if ui.link("查看感谢墙 →").clicked() {
+                ui.ctx().data_mut(|data| data.insert_temp(wall_id, true));
+            }
+        });
+    } else {
+        release_support_image(ui.ctx(), SUPPORT_RECENT_URI);
+    }
+}
+
+fn add_support_image(ui: &mut egui::Ui, image: egui::Image<'_>, key: &str) {
+    if let Some(uri) = image.uri() {
+        let previous = ui.ctx().data_mut(|data| {
+            let slot = data.get_temp_mut_or_default::<String>(egui::Id::new(key));
+            (slot.as_str() != uri).then(|| std::mem::replace(slot, uri.to_owned()))
+        });
+        if let Some(previous) = previous.filter(|old| !old.is_empty()) {
+            ui.ctx().forget_image(&previous);
+        }
+    }
+    ui.add(image);
+}
+
+fn release_support_image(ctx: &egui::Context, key: &str) {
+    if let Some(uri) = ctx.data_mut(|data| data.remove_temp::<String>(egui::Id::new(key))) {
+        ctx.forget_image(&uri);
+    }
+}
+
+fn release_support_images(ctx: &egui::Context) {
+    let uris = ctx.data_mut(|data| [SUPPORT_RECENT_URI, SUPPORT_WALL_URI].map(|key| data.remove_temp::<String>(egui::Id::new(key))));
+    for uri in uris.into_iter().flatten() { ctx.forget_image(&uri); }
 }
 pub(crate) fn settings_control_row(ui:&mut egui::Ui,title:&str,label_width:f32,controls:impl FnOnce(&mut egui::Ui)->egui::Response)->egui::Response{
     ui.horizontal(|ui|{
@@ -1648,7 +1719,11 @@ impl App {
         if !self.module_on(crate::app::MAIL_PAGE) {self.mail.form.open=false;}
         if !self.module_on(crate::app::CALENDAR_PAGE) {self.calendar.form.open=false;}
         if !self.module_on(crate::app::QUOTA_PAGE)&&self.quota.connect_open {self.quota_close_connection();}
-        if !self.settings_open{self.window_layout().close();release_support_codes(ctx);self.weather_source.close();}
+        if !self.settings_open{
+            if self.window_layout().close(){release_support_images(ctx);}
+            release_support_codes(ctx);
+            self.weather_source.close();
+        }
         self.updates.poll(ctx);
         self.updates.dialog_ui(ctx);
         if !self.settings_open{return;}
@@ -1746,6 +1821,7 @@ impl App {
                 ui.add_space(6.0);
                 // 合并页：健康（3）并入专注（2），置物（4→5）并入待办，旧序号仍能打开对应页面。
                 let tab=match self.settings_tab {3=>2,5=>4,t=>t};
+                if tab != 9 { release_support_images(ctx); }
                 egui::ScrollArea::vertical().id_salt(("settings-scroll",tab)).auto_shrink([false,false]).show(ui,|ui|{
                     // 右侧给滚动条留出空隙，卡片和开关不会被它压住。
                     ui.set_width((ui.available_width()-12.0).max(240.0));
@@ -2649,7 +2725,7 @@ impl App {
                             });
                         });
                         settings_label(ui,"支持作者");
-                        settings_card(ui,support_author);
+                        settings_card(ui,|ui|support_author(ui,&mut self.supporters));
                     }
                     }
                 });
@@ -2658,7 +2734,7 @@ impl App {
             if before!=format!("{:?}",self.settings){self.settings.save();}
             ctx.set_style(original_style);
         });
-        if !self.settings_open {self.window_layout().close();}
+        if !self.settings_open && self.window_layout().close(){release_support_images(ctx);}
         if self.settings_open&&self.module_on(crate::app::WEATHER_PAGE) {self.weather_tutorial_ui(ctx);}
         else {self.weather_source.close();}
     }

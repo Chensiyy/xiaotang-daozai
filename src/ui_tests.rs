@@ -8069,24 +8069,37 @@ fn about_support_preview() {
         *capture.lock().unwrap()=Some(ctx.run(raw,|ctx|(viewport.viewport_ui_cb)(ctx)));
     });
     let mut raster=crate::preview_raster::Raster::new(690,560);
-    for dark in [true,false] { for open in [false,true] {
+    for dark in [true,false] { for (mode,open,wall) in [("closed",false,false),("open",true,false),("wall",false,true)] {
         h.app.settings.settings_theme=if dark{crate::settings_theme::SettingsTheme::Dark}else{crate::settings_theme::SettingsTheme::Light};
-        h.ctx.data_mut(|data|data.insert_temp(egui::Id::new("support-author-open"),open));
+        h.ctx.data_mut(|data|{
+            data.insert_temp(egui::Id::new("support-author-open"),open);
+            data.insert_temp(egui::Id::new("support-author-wall"),wall);
+        });
         for frame in 0..4 {
             let root=h.ctx.run(Default::default(),|ctx|h.app.settings_ui(ctx,false));
             let child=output.lock().unwrap().take().unwrap();
             raster.update_textures(&root.textures_delta);raster.update_textures(&child.textures_delta);
             if frame==3 {
+                raster.buf.fill([0.0,0.0,0.0,1.0]);
+                raster.draw(&h.ctx.tessellate(child.shapes.clone(),child.pixels_per_point),child.pixels_per_point);
+                let mut rgba=Vec::new();raster.to_rgba8(&mut rgba);
+                image::save_buffer(dest.join(format!("about-{}-{mode}.png",if dark{"dark"}else{"light"})),&rgba,690,560,image::ColorType::Rgba8).unwrap();
                 let has_wechat=child.shapes.iter().any(|shape|matches!(&shape.shape,egui::Shape::Text(text) if text.galley.text()=="微信支付"));
                 assert_eq!(has_wechat,open);
-                for label in [if open{"返回"}else{"请喝咖啡 · 支持作者"},"完全自愿 · 感谢每一份支持 · 不影响功能使用"] {
-                    let shape=child.shapes.iter().find(|shape|matches!(&shape.shape,egui::Shape::Text(text) if text.galley.text()==label)).expect("按钮和说明必须可见");
+                if wall {
+                    assert!(child.shapes.iter().any(|shape| matches!(&shape.shape,egui::Shape::Rect(image)
+                        if image.brush.is_some() && image.rect.width()>350.0 && image.rect.height()>450.0)),
+                        "感谢墙应撑满可用宽度，超出窗口的部分可滚动查看");
+                }
+                let labels: &[&str] = match mode {
+                    "closed" => &["请喝咖啡 · 支持作者", "完全自愿 · 感谢每一份支持 · 不影响功能使用", "最近支持", "查看感谢墙 →"],
+                    "open" => &["返回", "完全自愿 · 感谢每一份支持 · 不影响功能使用"],
+                    _ => &["感谢墙", "← 返回", "按累计支持排序"],
+                };
+                for &label in labels {
+                    let shape=child.shapes.iter().find(|shape|matches!(&shape.shape,egui::Shape::Text(text) if text.galley.text()==label)).unwrap_or_else(||panic!("{mode} 状态的控件必须可见：{label}"));
                     assert!(shape.clip_rect.contains_rect(shape.shape.visual_bounding_rect()),"默认窗口中内容不能被裁切：{label}");
                 }
-                raster.buf.fill([0.0,0.0,0.0,1.0]);
-                raster.draw(&h.ctx.tessellate(child.shapes,child.pixels_per_point),child.pixels_per_point);
-                let mut rgba=Vec::new();raster.to_rgba8(&mut rgba);
-                image::save_buffer(dest.join(format!("about-{}-{}.png",if dark{"dark"}else{"light"},if open{"open"}else{"closed"})),&rgba,690,560,image::ColorType::Rgba8).unwrap();
             }
             raster.free_textures(&root.textures_delta);raster.free_textures(&child.textures_delta);
         }
