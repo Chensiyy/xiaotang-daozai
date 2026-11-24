@@ -348,6 +348,78 @@ fn status_page_egui_button_submits_form_and_updates_output() -> Result<()> {
 }
 
 #[test]
+fn canvas_fields_stay_in_the_canvas_and_submit_the_focused_draft() -> Result<()> {
+    use super::super::management_test::{click_at, frame, has_text};
+    use crate::paint::Card;
+
+    let fixture = Fixture::new()?;
+    let mut manifest: Value = serde_json::from_str(MANIFEST)?;
+    manifest["capabilities"].as_array_mut().unwrap().push(json!("status.canvas"));
+    manifest["statusLayout"] = json!({
+        "components": [{"type": "canvas"}, {"type": "fields"}, {"type": "actions"}],
+        "style": {"surface": "plain"},
+        "canvasFields": [
+            {"key": "note", "rect": [4, 207, 130, 22], "placeholder": "记一笔…", "action": "add"},
+            {"key": "search", "rect": [202, 7, 182, 24], "placeholder": "搜索便签", "action": "search"}
+        ]
+    });
+    fs::write(&fixture.manifest, manifest.to_string())?;
+    fs::write(fixture.root.join("main.js"), r#"
+function refresh({storage}) {
+    return {canvas: {height: 230, nodes: [{rect:[0,0,387,230],fill:"$card"}]},
+        storage,
+        status: {
+            state:"idle",label:"便签",
+            fields: [{key:"note",label:"新便签",max:80}, {key:"search",label:"搜索便签",max:80}],
+            actions: [{id:"add",label:"添加"}, {id:"search",label:"搜索"}]
+        }
+    };
+}
+function action({action}) {
+    return refresh({storage: {id: action.id, form: action.form}});
+}
+"#)?;
+    let mut host = fixture.host()?;
+    let current = revision(&host);
+    let ctx = egui::Context::default();
+    crate::theme::load_fonts(&ctx);
+    let mut draw = |ui: &mut egui::Ui| {
+        let card = Card::new(ui, egui::Pos2::ZERO, ui.max_rect());
+        host.draw_status_controls(
+            &card, ID,
+            crate::plugin_status_ui::StatusBackdrop { palette: None, island: egui::Color32::BLACK },
+            false,
+        );
+    };
+    let page = frame(&ctx, vec![], &mut draw);
+    for label in ["新便签", "添加", "搜索"] {
+        assert!(!has_text(&page, label), "{label} 不应在画布以外重复显示");
+    }
+    let rect = |key| {
+        let id = egui::Id::new(("plugin-field", ID, current, key, true)).with("value");
+        ctx.read_response(id).unwrap().rect
+    };
+    let note = rect("note");
+    let search = rect("search");
+    assert!(note.left() < search.left());
+    assert!((note.top() - search.top() - 200.0).abs() < 1.0);
+    click_at(&ctx, search.center(), &mut draw);
+    frame(&ctx, vec![
+        egui::Event::Ime(egui::ImeEvent::Enabled),
+        egui::Event::Ime(egui::ImeEvent::Preedit("素材".into())),
+        egui::Event::Ime(egui::ImeEvent::Commit("素材".into())),
+    ], &mut draw);
+    frame(&ctx, vec![egui::Event::Key {
+        key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false,
+        modifiers: egui::Modifiers::NONE,
+    }], draw);
+    settle(&mut host);
+    assert_eq!(host.records[ID].storage["id"], "search");
+    assert_eq!(host.records[ID].storage["form"]["search"], "素材");
+    Ok(())
+}
+
+#[test]
 fn host_actions_validate_links_and_dispatch_without_running_script() -> Result<()> {
     let fixture = Fixture::new()?;
     let mut host = fixture.host()?;

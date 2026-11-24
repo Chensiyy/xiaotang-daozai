@@ -128,6 +128,34 @@ fn readable_accent(color: Color32, background: Color32) -> Color32 {
     paint::mix(color, target, high)
 }
 
+pub(crate) fn draw_title(
+    c: &Card,
+    name: &str,
+    accent: Option<(&str, Option<[u8; 3]>)>,
+    background: Color32,
+) {
+    let title = c.fit(name, size::TITLE, W::Bold, 142.0);
+    if let Some((suffix, rgb)) = accent {
+        if let Some(prefix) = name.strip_suffix(suffix) {
+            if let Some(tail) = title.strip_prefix(prefix).filter(|tail| !tail.is_empty()) {
+                let width = c.text(15.0, 25.0, prefix, size::TITLE, W::Bold, theme::WHITE, H::Left);
+                let accent = rgb.map_or_else(
+                    || Accent::native(theme::BLUE),
+                    |[r, g, b]| Accent {
+                        color: readable_accent(Color32::from_rgb(r, g, b), background),
+                        fixed: true,
+                    },
+                );
+                accent.draw(c, |color| {
+                    c.text(15.0 + width, 25.0, tail, size::TITLE, W::Bold, color, H::Left);
+                });
+                return;
+            }
+        }
+    }
+    c.text(15.0, 25.0, &title, size::TITLE, W::Bold, theme::WHITE, H::Left);
+}
+
 pub(crate) fn status_page_height(layout: Option<&StatusLayout>, status: Option<&PluginStatus>) -> f32 {
     let canvas = status.and_then(|status| status.canvas.as_ref());
     if let Some(canvas) = canvas.filter(|_| layout.is_none_or(canvas_only)) {
@@ -176,7 +204,7 @@ pub(crate) fn draw_status_page(
     };
     let privacy = SensitiveValues::new(id, privacy_blocked);
     if layout.is_none_or(canvas_only) && status.canvas.is_some() {
-        draw_full_canvas(c, status, layout, backdrop, paint_canvas);
+        draw_full_canvas(c, status, layout, backdrop, paint_canvas, None);
     } else if let Some(layout) = layout {
         draw_layout(c, id, status, layout, backdrop, &privacy, None, paint_canvas);
     } else {
@@ -197,19 +225,20 @@ pub(crate) fn draw_interactive_status_page(
 ) {
     let privacy = SensitiveValues::new(id, privacy_blocked);
     if layout.is_none_or(canvas_only) && status.canvas.is_some() {
-        draw_full_canvas(c, status, layout, backdrop, paint_canvas);
+        draw_full_canvas(c, status, layout, backdrop, paint_canvas, Some(interaction));
     } else if let Some(layout) = layout {
         draw_layout(c, id, status, layout, backdrop, &privacy, Some(interaction), paint_canvas);
     } else {
         draw_default(c, status, &privacy);
         let y = STATUS_PAGE_H - PAGE_BOTTOM_SPACE;
-        interaction.fields(c, status, LEFT + 14.0, y, TEXT_RIGHT - LEFT - 14.0);
+        interaction.fields(c, status, LEFT + 14.0, y, TEXT_RIGHT - LEFT - 14.0, None);
         interaction.actions(
             c,
             status,
             LEFT + 14.0,
-            y + controls::fields_height(Some(status)),
+            y + controls::fields_height(Some(status), None),
             TEXT_RIGHT - LEFT - 14.0,
+            None,
         );
     }
 }
@@ -224,10 +253,14 @@ fn draw_full_canvas(
     layout: Option<&StatusLayout>,
     backdrop: StatusBackdrop,
     paint_canvas: Option<&mut CanvasPaint<'_>>,
+    interaction: Option<&mut Interaction<'_>>,
 ) {
     if let (Some(draw), Some(canvas)) = (paint_canvas, &status.canvas) {
         draw(c, canvas, c.rect(CANVAS_LEFT, CONTENT_TOP, CANVAS_WIDTH, canvas.height),
             canvas_theme(layout, backdrop));
+        if let (Some(layout), Some(interaction)) = (layout, interaction) {
+            interaction.canvas_fields(c, status, layout, CANVAS_LEFT, CONTENT_TOP);
+        }
     }
 }
 
@@ -392,9 +425,10 @@ fn metric_row_height(density: StatusDensity) -> f32 {
 
 fn component_height(
     component: StatusComponent,
-    density: StatusDensity,
+    layout: &StatusLayout,
     status: Option<&PluginStatus>,
 ) -> f32 {
+    let density = layout.style.density;
     match component {
         StatusComponent::State {} => 18.0,
         StatusComponent::Summary {} => 26.0,
@@ -411,7 +445,7 @@ fn component_height(
         StatusComponent::Alert {} => 30.0,
         StatusComponent::UpdatedAt {} => 14.0,
         StatusComponent::Actions {} => controls::ACTION_HEIGHT,
-        StatusComponent::Fields {} => controls::fields_height(status),
+        StatusComponent::Fields {} => controls::fields_height(status, Some(layout)),
         StatusComponent::List {} => {
             let count = status.map_or(MAX_ITEMS, |status| status.items.len());
             list_rows(density, count) as f32 * metric_row_height(density)
@@ -462,8 +496,8 @@ fn components_with_data<'a>(
                 StatusComponent::Metrics { .. } => !status.metrics.is_empty(),
                 StatusComponent::Alert {} => status.alert.is_some(),
                 StatusComponent::UpdatedAt {} => status.observed_at.is_some(),
-                StatusComponent::Actions {} => !status.actions.is_empty(),
-                StatusComponent::Fields {} => !status.fields.is_empty(),
+                StatusComponent::Actions {} => controls::standalone_actions(status, Some(layout)).next().is_some(),
+                StatusComponent::Fields {} => controls::standalone_fields(status, Some(layout)).next().is_some(),
                 StatusComponent::List {} => !status.items.is_empty(),
                 StatusComponent::Chart {} => status.series.is_some(),
                 StatusComponent::Text {} => status.note.is_some(),
@@ -481,7 +515,7 @@ fn layout_card_height(layout: &StatusLayout, status: Option<&PluginStatus>) -> f
     let density = layout.style.density;
     let (padding, gap) = spacing(density);
     let height: f32 = components_with_data(layout, status)
-        .map(|(component, _)| component_height(component, density, status) + gap)
+        .map(|(component, _)| component_height(component, layout, status) + gap)
         .sum();
     if height > 0.0 {
         height - gap + padding * 2.0
@@ -578,7 +612,7 @@ fn draw_components(
     let clock = chrono::Utc::now();
     let now = clock.timestamp();
     for (component, index) in components_with_data(layout, Some(status)) {
-        let height = component_height(component, density, Some(status));
+        let height = component_height(component, layout, Some(status));
         let center_y = y + height / 2.0;
         let x = LEFT + 14.0;
         match component {
@@ -647,12 +681,12 @@ fn draw_components(
             }
             StatusComponent::Actions {} => {
                 if let Some(interaction) = interaction.as_deref_mut() {
-                    interaction.actions(c, status, x, y, TEXT_RIGHT - x);
+                    interaction.actions(c, status, x, y, TEXT_RIGHT - x, Some(layout));
                 }
             }
             StatusComponent::Fields {} => {
                 if let Some(interaction) = interaction.as_deref_mut() {
-                    interaction.fields(c, status, x, y, TEXT_RIGHT - x);
+                    interaction.fields(c, status, x, y, TEXT_RIGHT - x, Some(layout));
                 }
             }
             StatusComponent::Chart {} => {
@@ -701,6 +735,9 @@ fn draw_components(
             StatusComponent::Canvas {} => {
                 if let (Some(draw), Some(canvas)) = (paint_canvas.as_deref_mut(), &status.canvas) {
                     draw(c, canvas, c.rect(CANVAS_LEFT, y, CANVAS_WIDTH, height), canvas_theme);
+                    if let Some(interaction) = interaction.as_deref_mut() {
+                        interaction.canvas_fields(c, status, layout, CANVAS_LEFT, y);
+                    }
                 }
             }
         }

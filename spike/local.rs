@@ -145,6 +145,8 @@ struct MaterialSpring {
 struct Manifest {
     id: String,
     name: String,
+    #[serde(default, deserialize_with = "present_value", skip_serializing_if = "Option::is_none")]
+    title_accent: Option<String>,
     author: String,
     version: String,
     api: u32,
@@ -526,6 +528,13 @@ impl Manifest {
             return Err(fail("请核对插件 ID、作者、版本和 API 版本"));
         }
         capabilities::check(&m.runtime, &m.owner, &m.capabilities).map_err(|e| fail(&e))?;
+        if m.title_accent.as_deref().is_some_and(|suffix| {
+            !m.has_capability("status.page")
+                || !crate::plugin_status::valid_text(suffix, 80)
+                || !m.name.strip_suffix(suffix).is_some_and(|prefix| !prefix.trim().is_empty())
+        }) {
+            return Err(fail("titleAccent 必须是状态页插件名称的一段末尾文字"));
+        }
         if m.has_capability("event") != m.events.is_some() {
             return Err(fail("声明 event 时须在 events 中订阅一次 focus.finished"));
         }
@@ -539,6 +548,9 @@ impl Manifest {
                 return Err(fail("statusLayout 只适用于声明了 status.page 的插件"));
             }
             layout.validate().map_err(fail)?;
+            if !layout.canvas_fields.is_empty() && !m.has_capability("action") {
+                return Err(fail("画布输入框需要声明 action"));
+            }
             if !m.has_capability("status.canvas") && layout.components.iter().any(|component| {
                 matches!(component, crate::plugin_status::StatusComponent::Canvas {})
             }) {
@@ -1958,6 +1970,13 @@ impl LocalPlugins {
             .manifest
             .status_layout
             .as_ref()
+    }
+
+    pub(crate) fn status_title_accent(&self, id: &str) -> Option<(&str, Option<[u8; 3]>)> {
+        let manifest = &self.records.get(id)?.package.as_ref()?.manifest;
+        let suffix = manifest.title_accent.as_deref()?;
+        let color = manifest.status_layout.as_ref().and_then(|layout| layout.style.accent_rgb());
+        Some((suffix, color))
     }
 
     #[cfg(windows)]

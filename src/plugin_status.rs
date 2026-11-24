@@ -114,6 +114,17 @@ pub(crate) struct StatusLayout {
     pub components: Vec<StatusComponent>,
     #[serde(default)]
     pub style: StatusStyle,
+    #[serde(rename = "canvasFields", default, skip_serializing_if = "Vec::is_empty")]
+    pub canvas_fields: Vec<CanvasField>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CanvasField {
+    pub key: String,
+    pub rect: [u16; 4],
+    pub placeholder: Option<String>,
+    pub action: Option<String>,
 }
 
 impl StatusLayout {
@@ -138,7 +149,36 @@ impl StatusLayout {
         if self.style.accent.is_some() && self.style.accent_rgb().is_none() {
             return Err("状态页强调色需为 #RRGGBB 格式");
         }
+        if self.canvas_fields.len() > 3
+            || !self.canvas_fields.is_empty() && !self.components.contains(&StatusComponent::Canvas {})
+        {
+            return Err("画布输入框需要 canvas 组件，最多 3 个");
+        }
+        for (index, field) in self.canvas_fields.iter().enumerate() {
+            let [x, y, w, h] = field.rect.map(u32::from);
+            if w == 0 || h == 0 || x + w > 387 || y + h > 360
+                || !valid_control_id(&field.key)
+                || self.canvas_fields[..index].iter().any(|other| other.key == field.key)
+                || field.action.as_deref().is_some_and(|id| !valid_control_id(id))
+                || field.placeholder.as_deref().is_some_and(|text| !valid_text(text, 80))
+            {
+                return Err("画布输入框的键、位置、提示或动作无效");
+            }
+        }
         Ok(())
+    }
+
+    pub(super) fn active_canvas_fields<'a>(
+        &'a self,
+        status: &'a PluginStatus,
+    ) -> impl Iterator<Item = &'a CanvasField> {
+        self.canvas_fields.iter().filter(|anchor| {
+            status.canvas.as_ref().is_some_and(|canvas| {
+                f32::from(anchor.rect[1]) + f32::from(anchor.rect[3]) <= canvas.height
+                    && status.fields.iter().any(|field| field.key == anchor.key)
+                    && anchor.action.as_ref().is_none_or(|id| status.actions.iter().any(|action| action.id == *id))
+            })
+        })
     }
 
     pub(super) fn occurrence(&self, index: usize) -> usize {

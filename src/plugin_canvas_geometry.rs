@@ -1,6 +1,5 @@
 //! 画布图形细分与渐变着色。
 
-use super::FRAME_BUDGET;
 use crate::plugin_canvas::{Bounds, Cap, Num, PathCommand, Point};
 use eframe::{
     egui::{emath::Rot2, pos2, vec2, Color32, Pos2, Rect, Vec2},
@@ -127,7 +126,7 @@ impl Clip {
         &self,
         mesh: &mut Mesh,
         to_canvas: impl Fn(Pos2) -> Pos2,
-        start: Option<Instant>,
+        deadline: Option<Instant>,
     ) -> Option<()> {
         if mesh.is_empty() || self.planes.is_empty() {
             return Some(());
@@ -150,7 +149,7 @@ impl Clip {
         }
         let mut output = Mesh::with_texture(mesh.texture_id);
         for indices in mesh.indices.chunks_exact(3) {
-            if start.is_some_and(|start| start.elapsed() >= FRAME_BUDGET) {
+            if deadline.is_some_and(|at| Instant::now() >= at) {
                 return None;
             }
             let mut polygon = indices
@@ -205,7 +204,7 @@ impl Outline {
         width: f32,
         cap: &Cap,
         dash: Option<[f32; 2]>,
-        start: Instant,
+        deadline: Option<Instant>,
     ) -> Option<()> {
         if width <= 0.0 {
             return Some(());
@@ -265,17 +264,21 @@ impl Outline {
                 let distance = delta.length();
                 let mut cursor = 0.0;
                 while cursor < distance {
-                    if start.elapsed() >= FRAME_BUDGET {
+                    if deadline.is_some_and(|at| Instant::now() >= at) {
                         return None;
                     }
                     let step = (distance - cursor).min(remaining);
+                    let next = cursor + step;
+                    if next <= cursor {
+                        return None;
+                    }
                     if on {
                         if segment.is_empty() {
                             segment.push(a + (cursor / distance) * delta);
                         }
-                        segment.push(a + ((cursor + step) / distance) * delta);
+                        segment.push(a + (next / distance) * delta);
                     }
-                    cursor += step;
+                    cursor = next;
                     remaining -= step;
                     if remaining <= f32::EPSILON {
                         if on {
@@ -290,7 +293,7 @@ impl Outline {
         } else {
             paint(self.points.clone(), self.closed);
         }
-        pigment.shade(source, target, start)
+        pigment.shade(source, target, deadline)
     }
 }
 
@@ -344,7 +347,7 @@ pub(super) fn path(
     commands: &[PathCommand],
     transform: Transform,
     pixels: f32,
-    start: Instant,
+    deadline: Option<Instant>,
 ) -> Option<Vec<Outline>> {
     let mut outlines = Vec::new();
     let mut points = Vec::new();
@@ -353,7 +356,7 @@ pub(super) fn path(
     let tolerance = Some(0.35 / pixels);
     let point = |p: [f32; 2]| transform.xy(p[0], p[1]);
     for command in commands {
-        if start.elapsed() >= FRAME_BUDGET {
+        if deadline.is_some_and(|at| Instant::now() >= at) {
             return None;
         }
         match command {
@@ -419,7 +422,7 @@ pub(super) fn fill(
     target: &mut Mesh,
     contours: &[Outline],
     pigment: &Pigment,
-    start: Instant,
+    deadline: Option<Instant>,
 ) -> Option<()> {
     let contours: Vec<_> = contours
         .iter()
@@ -431,11 +434,11 @@ pub(super) fn fill(
             let shape =
                 PathShape::convex_polygon(outline.points.clone(), Color32::WHITE, Stroke::NONE);
             tess.tessellate_path(&shape, &mut source);
-            return pigment.shade(source, target, start);
+            return pigment.shade(source, target, deadline);
         }
     }
-    scan_fill(&mut source, &contours, start)?;
-    pigment.shade(source, target, start)
+    scan_fill(&mut source, &contours, deadline)?;
+    pigment.shade(source, target, deadline)
 }
 
 fn convex(points: &[Pos2]) -> bool {
@@ -456,7 +459,7 @@ fn convex(points: &[Pos2]) -> bool {
 }
 
 /// 用相邻顶点的水平分带填充凹形和带孔轮廓。绕向抵消时留下孔洞。
-fn scan_fill(mesh: &mut Mesh, contours: &[&Outline], start: Instant) -> Option<()> {
+fn scan_fill(mesh: &mut Mesh, contours: &[&Outline], deadline: Option<Instant>) -> Option<()> {
     let mut ys = Vec::new();
     let mut edges = Vec::new();
     for outline in contours {
@@ -474,7 +477,7 @@ fn scan_fill(mesh: &mut Mesh, contours: &[&Outline], start: Instant) -> Option<(
     ys.dedup();
     let mut crossings = Vec::new();
     for band in ys.windows(2) {
-        if start.elapsed() >= FRAME_BUDGET {
+        if deadline.is_some_and(|at| Instant::now() >= at) {
             return None;
         }
         let [top, bottom] = [band[0], band[1]];
@@ -579,7 +582,7 @@ impl Pigment {
         }
     }
 
-    fn shade(&self, mut source: Mesh, target: &mut Mesh, start: Instant) -> Option<()> {
+    fn shade(&self, mut source: Mesh, target: &mut Mesh, deadline: Option<Instant>) -> Option<()> {
         if let Self::Solid(color) = self {
             for vertex in &mut source.vertices {
                 vertex.color = color.gamma_multiply(f32::from(vertex.color.a()) / 255.0);
@@ -592,7 +595,7 @@ impl Pigment {
                 let vertex = source.vertices[i as usize];
                 (vertex.pos, f32::from(vertex.color.a()) / 255.0)
             });
-            if start.elapsed() >= FRAME_BUDGET {
+            if deadline.is_some_and(|at| Instant::now() >= at) {
                 return None;
             }
             match self {
@@ -619,7 +622,7 @@ impl Pigment {
                     self.paint_polygon(target, &polygon);
                 }
                 Self::Radial { center, radius, .. } => {
-                    self.radial_triangle(target, triangle, *center, *radius, 0, start)?;
+                    self.radial_triangle(target, triangle, *center, *radius, 0, deadline)?;
                 }
                 Self::Solid(_) => unreachable!(),
             }
@@ -650,9 +653,9 @@ impl Pigment {
         center: Pos2,
         radius: f32,
         depth: u8,
-        start: Instant,
+        deadline: Option<Instant>,
     ) -> Option<()> {
-        if start.elapsed() >= FRAME_BUDGET {
+        if deadline.is_some_and(|at| Instant::now() >= at) {
             return None;
         }
         let points = triangle.map(|(pos, _)| pos);
@@ -665,7 +668,7 @@ impl Pigment {
             let mid = |(p, alpha): (Pos2, f32), (q, beta)| (p.lerp(q, 0.5), (alpha + beta) * 0.5);
             let (ab, bc, ca) = (mid(a, b), mid(b, c), mid(c, a));
             for next in [[a, ab, ca], [b, bc, ab], [c, ca, bc], [ab, bc, ca]] {
-                self.radial_triangle(target, next, center, radius, depth + 1, start)?;
+                self.radial_triangle(target, next, center, radius, depth + 1, deadline)?;
             }
         } else {
             self.paint_polygon(target, &triangle);
@@ -778,7 +781,7 @@ mod tests {
             closed: true,
         };
         let mut mesh = Mesh::default();
-        scan_fill(&mut mesh, &[&outer, &hole], Instant::now()).unwrap();
+        scan_fill(&mut mesh, &[&outer, &hole], None).unwrap();
         let area: f32 = mesh
             .indices
             .chunks_exact(3)

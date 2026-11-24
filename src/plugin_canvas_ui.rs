@@ -232,19 +232,20 @@ fn draw_static(
             }
         }
     };
-    let start = Instant::now();
+    // 没有完整画面可回退时，必须完整绘制当前帧。
+    let deadline = cache.previous.is_some().then(|| Instant::now() + FRAME_BUDGET);
     let offset = (area.min.to_vec2() * pixels).round() / pixels;
     let clip = area.intersect(c.painter.clip_rect());
     let mut timed_out = cache.failures >= 2;
     if !timed_out {
         if cache.scene.is_none() {
             let previous = std::mem::take(&mut cache.geometry);
-            let (scene, geometry) = Builder::new(view, start, &fonts, previous).build(canvas);
+            let (scene, geometry) = Builder::new(view, deadline, &fonts, previous).build(canvas);
             cache.scene = scene.map(Arc::new);
             cache.geometry = geometry;
         }
         if let Some(scene) = &cache.scene {
-            timed_out = !scene.draw(c, offset, clip, Some(start), theme, pets, &mut image);
+            timed_out = !scene.draw(c, offset, clip, deadline, theme, pets, &mut image);
             if !timed_out {
                 cache.previous = Some(Arc::clone(scene));
                 cache.failures = 0;
@@ -288,7 +289,7 @@ impl Scene {
         c: &Card,
         offset: Vec2,
         area: Rect,
-        start: Option<Instant>,
+        deadline: Option<Instant>,
         theme: CanvasTheme,
         pets: &mut pet::DrawPets<'_>,
         mut image: impl FnMut(&str) -> Option<(egui::TextureId, Vec2)>,
@@ -303,7 +304,7 @@ impl Scene {
             if !clip.is_positive() {
                 continue;
             }
-            if start.is_some_and(|start| start.elapsed() >= FRAME_BUDGET) {
+            if deadline.is_some_and(|at| Instant::now() >= at) {
                 return false;
             }
             match item {
@@ -322,7 +323,7 @@ impl Scene {
                     clip: group_clip,
                 } => {
                     if let Some(shape) = text_shape(
-                        c, job, *base, *angle, pigment, offset, clip, group_clip, start,
+                        c, job, *base, *angle, pigment, offset, clip, group_clip, deadline,
                     ) {
                         shapes.push((shape.0, PaintItem::Shape(shape.1)));
                     }
@@ -337,7 +338,7 @@ impl Scene {
                 } => {
                     if let Some((id, size)) = image(name) {
                         let mut mesh = image_mesh(id, size, *rect, *transform, fit, *color);
-                        if group_clip.mesh(&mut mesh, |point| point, start).is_none() {
+                        if group_clip.mesh(&mut mesh, |point| point, deadline).is_none() {
                             return false;
                         }
                         for vertex in &mut mesh.vertices {
@@ -349,7 +350,7 @@ impl Scene {
                 Item::Pet(place) => shapes.push((clip, PaintItem::Pet(place))),
             }
         }
-        if start.is_some_and(|start| start.elapsed() >= FRAME_BUDGET) {
+        if deadline.is_some_and(|at| Instant::now() >= at) {
             return false;
         }
         let layer = c.painter.layer_id();
@@ -381,7 +382,7 @@ impl Scene {
 
 struct Builder<'a> {
     view: View,
-    start: Instant,
+    deadline: Option<Instant>,
     tessellator: Tessellator,
     scene: Scene,
     fonts: &'a [egui::FontFamily],
@@ -390,11 +391,11 @@ struct Builder<'a> {
 }
 
 impl<'a> Builder<'a> {
-    fn new(view: View, start: Instant, fonts: &'a [egui::FontFamily], previous: HashMap<egui::Id, CachedMesh>) -> Self {
+    fn new(view: View, deadline: Option<Instant>, fonts: &'a [egui::FontFamily], previous: HashMap<egui::Id, CachedMesh>) -> Self {
         let tessellator = Tessellator::new(view.pixels, Default::default(), [1; 2], Vec::new());
         Self {
             view,
-            start,
+            deadline,
             tessellator,
             fonts,
             scene: Scene::default(),
@@ -433,7 +434,7 @@ impl<'a> Builder<'a> {
             return Some(());
         }
         for (index, node) in nodes.iter().enumerate() {
-            if self.start.elapsed() >= FRAME_BUDGET {
+            if self.deadline.is_some_and(|at| Instant::now() >= at) {
                 return None;
             }
             self.node(
@@ -555,7 +556,7 @@ impl<'a> Builder<'a> {
                 if fill.is_none() && stroke.is_none() {
                     stroke = Some(Pigment::Solid(theme.token(&Token::Text).gamma_multiply(opacity)));
                 }
-                (path(commands, transform.child(&local, 0.0, scale), self.view.pixels, self.start)?, None)
+                (path(commands, transform.child(&local, 0.0, scale), self.view.pixels, self.deadline)?, None)
             }
             Kind::Pet {
                 at,
@@ -628,7 +629,7 @@ impl<'a> Builder<'a> {
                 (vec![line], area)
             }
             Kind::Path(commands) => (
-                path(commands, transform, self.view.pixels, self.start)?,
+                path(commands, transform, self.view.pixels, self.deadline)?,
                 None,
             ),
         };
@@ -676,7 +677,7 @@ impl<'a> Builder<'a> {
                         width + step * transform.scale,
                         &style.cap,
                         None,
-                        self.start,
+                        self.deadline,
                     )?;
                 }
                 pigment.multiply(1.35);
@@ -689,7 +690,7 @@ impl<'a> Builder<'a> {
                 &mut mesh,
                 area_fill,
                 fill,
-                self.start,
+                self.deadline,
             )?;
         }
         if let Some(stroke) = &stroke {
@@ -707,11 +708,11 @@ impl<'a> Builder<'a> {
                     width,
                     &style.cap,
                     dash,
-                    self.start,
+                    self.deadline,
                 )?;
             }
         }
-        clip.mesh(&mut mesh, |point| point, Some(self.start))?;
+        clip.mesh(&mut mesh, |point| point, self.deadline)?;
         let mesh = Arc::new(mesh);
         self.mesh(clip.rect, Arc::clone(&mesh));
         self.geometry.insert(
@@ -780,7 +781,7 @@ fn text_shape(
     offset: Vec2,
     clip: Rect,
     group_clip: &Clip,
-    start: Option<Instant>,
+    deadline: Option<Instant>,
 ) -> Option<(Rect, Shape)> {
     let mut galley = c.ui.fonts(|fonts| fonts.layout_job(job.clone()));
     let first_glyph = galley.rows.first()?.glyphs.first();
@@ -827,7 +828,7 @@ fn text_shape(
             local_clip.mesh(
                 &mut row.visuals.mesh,
                 |point| position + rotation * point.to_vec2(),
-                start,
+                deadline,
             )?;
             row.visuals.mesh_bounds = row.visuals.mesh.calc_bounds();
         }
@@ -865,6 +866,46 @@ fn image_mesh(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plugin_canvas_first_frame_finishes_and_later_timeout_reuses_it() {
+        let ctx = egui::Context::default();
+        theme::load_fonts(&ctx);
+        let frame = |text: &str| {
+            Arc::new(Canvas::parse(serde_json::json!({
+                "height": 40,
+                "nodes": [
+                    {"image": "probe.png", "rect": [0, 0, 8, 8]},
+                    {"text": text, "at": [12, 21], "size": 12}
+                ]
+            })).unwrap())
+        };
+        let area = Rect::from_min_size(Pos2::ZERO, vec2(200.0, 40.0));
+        let fallback = CanvasTheme { palette: None, accent: None, background: Color32::BLACK };
+        let texture = ctx.load_texture(
+            "首帧测试",
+            egui::ColorImage::new([1, 1], Color32::WHITE),
+            egui::TextureOptions::NEAREST,
+        );
+        for (text, expected) in [("首帧内容", false), ("后续内容", true)] {
+            let canvas = frame(text);
+            let output = ctx.run(
+                egui::RawInput { screen_rect: Some(area), ..Default::default() },
+                |ctx| {
+                    egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
+                        let card = Card::new(ui, Pos2::ZERO, area);
+                        assert_eq!(draw(&card, "first-frame", &canvas, area, fallback, |_| {
+                            std::thread::sleep(FRAME_BUDGET + Duration::from_millis(1));
+                            Some((texture.id(), texture.size_vec2()))
+                        }), expected);
+                    });
+                },
+            );
+            assert!(output.shapes.iter().any(|shape| matches!(&shape.shape,
+                Shape::Text(text) if text.galley.text() == "首帧内容")));
+            assert!(output.shapes.iter().any(|shape| shape.shape.texture_id() == texture.id()));
+        }
+    }
     use crate::skin_paint::{CREAM, GLASS_DARK, GLASS_LIGHT};
 
     #[test]

@@ -4,7 +4,7 @@ use eframe::egui;
 
 use crate::{
     paint::{self, Card, H},
-    plugin_status::{PluginStatus, StatusField, StatusItem},
+    plugin_status::{CanvasField, PluginStatus, StatusAction, StatusField, StatusItem, StatusLayout},
     theme::{self, size, W},
 };
 
@@ -32,9 +32,31 @@ pub(crate) fn extra_fields_height(status: &PluginStatus) -> f32 {
     }).sum()
 }
 
-pub(super) fn fields_height(status: Option<&PluginStatus>) -> f32 {
+/// 画布外单独显示的输入框总高度；多行输入按已有内容加高。
+pub(super) fn fields_height(status: Option<&PluginStatus>, layout: Option<&StatusLayout>) -> f32 {
     status.map_or(FIELD_HEIGHT * MAX_FIELDS as f32, |status| {
-        FIELD_HEIGHT * status.fields.len() as f32 + extra_fields_height(status)
+        standalone_fields(status, layout)
+            .map(|field| FIELD_HEIGHT + field_extra_height(field, field.value.as_deref().unwrap_or_default()))
+            .sum()
+    })
+}
+
+pub(super) fn standalone_fields<'a>(
+    status: &'a PluginStatus,
+    layout: Option<&'a StatusLayout>,
+) -> impl Iterator<Item = &'a StatusField> + 'a {
+    status.fields.iter().filter(move |field| {
+        layout.is_none_or(|layout| !layout.active_canvas_fields(status).any(|anchor| anchor.key == field.key))
+    })
+}
+
+pub(super) fn standalone_actions<'a>(
+    status: &'a PluginStatus,
+    layout: Option<&'a StatusLayout>,
+) -> impl Iterator<Item = (usize, &'a StatusAction)> + Clone + 'a {
+    status.actions.iter().enumerate().filter(move |(_, action)| {
+        layout.is_none_or(|layout| !layout.active_canvas_fields(status)
+            .any(|anchor| anchor.action.as_deref() == Some(action.id.as_str())))
     })
 }
 
@@ -85,11 +107,12 @@ impl<'a> Interaction<'a> {
         (self.response, self.clicked)
     }
 
-    pub(super) fn actions(&mut self, c: &Card, status: &PluginStatus, x: f32, y: f32, width: f32) {
+    pub(super) fn actions(&mut self, c: &Card, status: &PluginStatus, x: f32, y: f32, width: f32, layout: Option<&StatusLayout>) {
+        let actions = standalone_actions(status, layout);
         let gap = 6.0;
-        let width = ((width + gap) / status.actions.len().max(1) as f32 - gap).min(98.0);
-        for (index, action) in status.actions.iter().enumerate() {
-            let x = x + index as f32 * (width + gap);
+        let width = ((width + gap) / actions.clone().count().max(1) as f32 - gap).min(98.0);
+        for (column, (index, action)) in actions.enumerate() {
+            let x = x + column as f32 * (width + gap);
             let card = if self.enabled || action.open.is_some() || action.copy.is_some() {
                 c.clone()
             } else {
@@ -179,9 +202,9 @@ impl<'a> Interaction<'a> {
         body_width
     }
 
-    pub(super) fn fields(&mut self, c: &Card, status: &PluginStatus, x: f32, mut y: f32, width: f32) {
+    pub(super) fn fields(&mut self, c: &Card, status: &PluginStatus, x: f32, mut y: f32, width: f32, layout: Option<&StatusLayout>) {
         let label_width = 82.0;
-        for field in &status.fields {
+        for field in standalone_fields(status, layout) {
             let extra = field_extra_height(field, field.value.as_deref().unwrap_or_default());
             let top = y;
             y += FIELD_HEIGHT + extra;
@@ -195,63 +218,90 @@ impl<'a> Interaction<'a> {
                 theme::GRAY,
                 H::Left,
             );
-            let id = egui::Id::new((
-                "plugin-field",
-                self.plugin,
-                self.revision,
-                &field.key,
-                c.live,
-            ));
             let rect = c.rect(x + label_width, top, width - label_width, 24.0 + extra);
-            let mut ui = egui::Ui::new(
-                c.ui.ctx().clone(),
-                id,
-                egui::UiBuilder::new()
-                    .max_rect(rect)
-                    .layer_id(c.painter.layer_id())
-                    .style(c.ui.style().clone()),
-            );
-            ui.set_clip_rect(rect.intersect(c.painter.clip_rect()));
-            ui.multiply_opacity(c.painter.opacity());
-            let value = self.form.entry(field.key.clone()).or_default();
-            let input_id = id.with("value");
-            let submit = field.multiline && c.live && self.enabled
-                && ui.memory(|memory| memory.has_focus(input_id))
-                && ui.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, egui::Key::Enter));
-            let input = if field.multiline {
-                egui::TextEdit::multiline(value)
-            } else {
-                egui::TextEdit::singleline(value)
-            }
-                .id(input_id)
-                .font(c.font(size::BODY, W::Regular))
-                .text_color(theme::WHITE)
-                .desired_width(rect.width())
-                .desired_rows(1)
-                .char_limit(field.max)
-                .interactive(c.live && self.enabled);
-            let response = if field.multiline {
-                egui::ScrollArea::vertical().id_salt(id.with("scroll"))
-                    .max_height(rect.height()).auto_shrink([false, false])
-                    .show(&mut ui, |ui| ui.add(input)).inner
-            } else {
-                ui.put(rect, input.vertical_align(egui::Align::Center))
-            }.on_hover_text(&field.label);
-            if response.changed() {
-                value.retain(|ch| field.accepts_char(ch));
-                if field.multiline {
-                    ui.ctx().request_repaint();
-                }
-            }
-            if submit {
+            if self.field(c, field, rect, None).submitted {
                 if let Some(index) = status.actions.iter().position(|action| action.open.is_none() && action.copy.is_none()) {
                     self.clicked = Some(ClickTarget::Button(index));
                 }
             }
-            self.response.gained_focus |= response.gained_focus();
-            self.response.focused |= c.live && self.enabled && response.has_focus();
         }
     }
+
+    pub(super) fn canvas_fields(&mut self, c: &Card, status: &PluginStatus, layout: &StatusLayout, x: f32, y: f32) {
+        for anchor in layout.active_canvas_fields(status) {
+            let field = status.fields.iter().find(|field| field.key == anchor.key).unwrap();
+            let [left, top, width, height] = anchor.rect.map(f32::from);
+            let rect = c.rect(x + left, y + top, width, height);
+            let entry = self.field(c, field, rect, Some(anchor));
+            // 单行在回车时提交；多行回车换行，Ctrl+Enter 提交。
+            let enter = !field.multiline && c.live && self.enabled && entry.response.lost_focus()
+                && c.ui.input(|input| input.key_pressed(egui::Key::Enter));
+            if enter || entry.submitted {
+                self.clicked = status.actions.iter()
+                    .position(|action| Some(action.id.as_str()) == anchor.action.as_deref())
+                    .map(ClickTarget::Button);
+            }
+        }
+    }
+
+    fn field(&mut self, c: &Card, field: &StatusField, rect: egui::Rect, anchor: Option<&CanvasField>) -> FieldEntry {
+        let id = egui::Id::new(("plugin-field", self.plugin, self.revision, &field.key, c.live));
+        let mut ui = egui::Ui::new(
+            c.ui.ctx().clone(),
+            id,
+            egui::UiBuilder::new()
+                .max_rect(rect)
+                .layer_id(c.painter.layer_id())
+                .style(c.ui.style().clone()),
+        );
+        ui.set_clip_rect(rect.intersect(c.painter.clip_rect()));
+        ui.multiply_opacity(c.painter.opacity());
+        let value = self.form.entry(field.key.clone()).or_default();
+        let input_id = id.with("value");
+        let submitted = field.multiline && c.live && self.enabled
+            && ui.memory(|memory| memory.has_focus(input_id))
+            && ui.input_mut(|input| input.consume_key(egui::Modifiers::CTRL, egui::Key::Enter));
+        let mut input = if field.multiline {
+            egui::TextEdit::multiline(value)
+        } else {
+            egui::TextEdit::singleline(value).vertical_align(egui::Align::Center)
+        }
+            .id(input_id)
+            .font(c.font(size::BODY, W::Regular))
+            .text_color(theme::WHITE)
+            .desired_width(rect.width())
+            .desired_rows(1)
+            .char_limit(field.max)
+            .interactive(c.live && self.enabled);
+        if let Some(anchor) = anchor {
+            input = input.frame(false).margin(egui::Margin::symmetric((6.0 * c.s).round() as i8, 0));
+            if let Some(hint) = &anchor.placeholder {
+                input = input.hint_text(hint);
+            }
+        }
+        let response = if field.multiline {
+            egui::ScrollArea::vertical().id_salt(id.with("scroll"))
+                .max_height(rect.height()).auto_shrink([false, false])
+                .show(&mut ui, |ui| ui.add(input)).inner
+        } else {
+            ui.put(rect, input)
+        }.on_hover_text(&field.label);
+        if response.changed() {
+            value.retain(|ch| field.accepts_char(ch));
+            if field.multiline {
+                ui.ctx().request_repaint();
+            }
+        }
+        self.response.gained_focus |= response.gained_focus();
+        self.response.focused |= c.live && self.enabled && response.has_focus();
+        FieldEntry { response, submitted }
+    }
+}
+
+/// 一个输入框本帧的结果：多行输入用 Ctrl+Enter 提交。
+struct FieldEntry {
+    response: egui::Response,
+    submitted: bool,
 }
 
 #[cfg(test)]
