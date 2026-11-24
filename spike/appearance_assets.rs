@@ -1,5 +1,5 @@
 //! 外观资源包的校验、选择和宿主读取接口。
-use super::{bounded, fail, LocalPlugins, Manifest, Result};
+use super::{bounded, fail, font_assets, LocalPlugins, Manifest, Result};
 use crate::model::Skin;
 use crate::skin_paint::{Palette, CLASSIC, CREAM, GLASS_DARK, GLASS_LIGHT};
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -13,17 +13,19 @@ pub(crate) enum Kind {
     Skin,
     Icon,
     Pet,
+    Font,
 }
 
 impl Kind {
-    const ALL: [Self; 3] = [Self::Skin, Self::Icon, Self::Pet];
+    const SELECTABLE: [Self; 3] = [Self::Skin, Self::Icon, Self::Pet];
 
     pub(super) fn of(manifest: &Manifest) -> Option<Self> {
         if manifest.runtime != "assets" {
             return None;
         }
-        Self::ALL
+        Self::SELECTABLE
             .into_iter()
+            .chain([Self::Font])
             .find(|kind| manifest.capabilities.iter().any(|c| c == kind.capability()))
     }
 
@@ -32,6 +34,7 @@ impl Kind {
             Self::Skin => "appearance.skin",
             Self::Icon => "appearance.icon",
             Self::Pet => "appearance.pet",
+            Self::Font => "appearance.font",
         }
     }
 
@@ -40,6 +43,7 @@ impl Kind {
             Self::Skin => "theme.json",
             Self::Icon => "icons.json",
             Self::Pet => "expressions.json",
+            Self::Font => "fonts.json",
         }
     }
 
@@ -48,6 +52,7 @@ impl Kind {
             Self::Skin => "皮肤",
             Self::Icon => "功能图标",
             Self::Pet => "吉祥物表情",
+            Self::Font => "画布字体",
         }
     }
 
@@ -56,6 +61,7 @@ impl Kind {
             Self::Skin => 4096,
             Self::Icon => 128 * 1024,
             Self::Pet => 768 * 1024,
+            Self::Font => 4096,
         }
     }
 }
@@ -65,6 +71,7 @@ pub(super) enum Pack {
     Skin(SkinPack),
     Icon(BTreeMap<String, Icon>),
     Pet(Arc<crate::pet_expressions::ExpressionSheets>),
+    Font(font_assets::Entry),
 }
 
 impl Pack {
@@ -76,6 +83,7 @@ impl Pack {
             Kind::Skin => Self::Skin(SkinPack::decode(source)?),
             Kind::Icon => Self::Icon(parse_icons(source)?),
             Kind::Pet => Self::Pet(Arc::new(parse_expressions(source)?)),
+            Kind::Font => Self::Font(font_assets::Entry::decode(source)?),
         })
     }
 }
@@ -195,9 +203,14 @@ fn parse_icons(source: &str) -> Result<BTreeMap<String, Icon>> {
 }
 
 fn validate_svg(svg: &str) -> Result<()> {
+    load_static_svg(svg, 8 * 1024, 512)?;
+    Ok(())
+}
+
+pub(super) fn load_static_svg(svg: &str, bytes: usize, side: u32) -> Result<eframe::egui::ColorImage> {
     const SVG_NS: &str = "http://www.w3.org/2000/svg";
-    if svg.len() > 8 * 1024 {
-        return Err(fail("每个 SVG 功能图标最多 8 KiB"));
+    if svg.len() > bytes {
+        return Err(fail("SVG 超过大小限制"));
     }
     let doc = roxmltree::Document::parse(svg)?;
     let root = doc.root_element();
@@ -211,7 +224,7 @@ fn validate_svg(svg: &str) -> Result<()> {
     if root.tag_name().name() != "svg"
         || root.tag_name().namespace() != Some(SVG_NS)
         || view_box.len() != 4
-        || !view_box.iter().all(|v| v.abs() <= 512.0)
+        || !view_box.iter().all(|v| v.abs() <= f64::from(side))
         || view_box[2] < 1.0
         || view_box[3] < 1.0
     {
@@ -248,7 +261,7 @@ fn validate_svg(svg: &str) -> Result<()> {
                     .strip_suffix("px")
                     .unwrap_or(value)
                     .parse::<f64>()
-                    .is_ok_and(|n| (1.0..=512.0).contains(&n)),
+                    .is_ok_and(|n| (1.0..=f64::from(side)).contains(&n)),
                 "viewBox" | "version" if node == root => true,
                 "stroke-linecap" => matches!(value, "butt" | "round" | "square"),
                 "stroke-linejoin" => matches!(value, "miter" | "round" | "bevel"),
@@ -264,8 +277,7 @@ fn validate_svg(svg: &str) -> Result<()> {
         }
     }
     // 用宿主实际的 SVG 解码器验证作者提供的尺寸和画布。
-    egui_extras::image::load_svg_bytes(svg.as_bytes()).map_err(|e| fail(&e))?;
-    Ok(())
+    egui_extras::image::load_svg_bytes(svg.as_bytes()).map_err(|e| fail(&e))
 }
 
 #[cfg(test)]
@@ -333,20 +345,23 @@ impl Selection {
             .unwrap_or_default()
     }
 
-    fn get(&mut self, kind: Kind) -> &mut Option<String> {
+    fn get(&mut self, kind: Kind) -> Option<&mut Option<String>> {
         match kind {
-            Kind::Skin => &mut self.skin,
-            Kind::Icon => &mut self.icon,
-            Kind::Pet => &mut self.pet,
+            Kind::Skin => Some(&mut self.skin),
+            Kind::Icon => Some(&mut self.icon),
+            Kind::Pet => Some(&mut self.pet),
+            Kind::Font => None,
         }
     }
 }
 
 impl LocalPlugins {
     pub(super) fn retain_available_appearance(&mut self) {
-        for kind in Kind::ALL {
+        for kind in Kind::SELECTABLE {
             if self.appearance_id(kind).is_none() {
-                *self.appearance.get(kind) = None;
+                if let Some(slot) = self.appearance.get(kind) {
+                    *slot = None;
+                }
             }
         }
     }
@@ -354,9 +369,8 @@ impl LocalPlugins {
     pub(super) fn forget_appearance(&mut self, id: &str) -> Result<()> {
         let mut selection = self.appearance.clone();
         let mut changed = false;
-        for kind in Kind::ALL {
-            let slot = selection.get(kind);
-            if slot.as_deref() == Some(id) {
+        for kind in Kind::SELECTABLE {
+            if let Some(slot) = selection.get(kind).filter(|slot| slot.as_deref() == Some(id)) {
                 *slot = None;
                 changed = true;
             }
@@ -390,6 +404,7 @@ impl LocalPlugins {
             Kind::Skin => &self.appearance.skin,
             Kind::Icon => &self.appearance.icon,
             Kind::Pet => &self.appearance.pet,
+            Kind::Font => return None,
         }
         .as_deref()?;
         self.appearance_package(id, kind).map(|_| id)
@@ -407,7 +422,7 @@ impl LocalPlugins {
             return Err(fail("所选外观资源包未安装或未启用"));
         }
         let mut selection = self.appearance.clone();
-        let slot = selection.get(kind);
+        let slot = selection.get(kind).ok_or_else(|| fail("画布字体随字体包启用"))?;
         if slot.as_deref() == id {
             return Ok(());
         }

@@ -23,7 +23,7 @@ function refresh({ settings, today }) {
 | --- | --- | --- |
 | 文本、日期设置 · 已实现 | 清单的 settings 列出字段，在上例读取 settings.title 和 settings.target | 归属模块的插件设置 |
 | 材质数字参数 · 已实现 | 清单声明 `type: "number"`、`min`、`max`、`step` 和字符串形式的 `default`，可选 `unit` 和 `precision`。着色器按清单顺序用 `param(index)` 取值，最多 32 项 | 「设置 → 外观 → 材质」，拖动滑块实时应用 |
-| 脚本插件设置 · 实验 | text、date、switch、choice、number、time、weekdays、list。默认值和保存值均为字符串 | 所属设置页 |
+| 脚本插件设置 · 实验 | text、date、switch、choice、number、time、weekdays、timezone、list。默认值和保存值均为字符串 | 所属设置页 |
 | 文字卡、私有存储 · 已实现 | 上例返回 card 和 storage。首次的 storage 为 null，之后可用 `storage?.lastDays` 读回天数 | `owner: "tasks"` 显示在待办页 |
 | 日期标注 · 已实现 | 声明 `calendar.marker`，`refresh` 返回 `marker`，空字表示当天不标注。旧版 `owner: "calendar"` 加 `card` 的写法继续有效，`card` 即标注 | 展开「日程 → 日历」查看电脑当天日期下方的标注 |
 | 一个插件多处输出 · 测试版 | 在 capabilities 里同时列出几种输出，例如 `["card","calendar.marker","timer"]`，一次返回 `{card, marker}`。同时有多种输出时，某项返回空值表示这次不显示 | 每处输出只跟着自己所在模块的开关，关日程只撤日历标注；关掉插件归属的模块则整个插件暂停 |
@@ -31,8 +31,9 @@ function refresh({ settings, today }) {
 | 岛上常驻位 · 实验 | 声明 `island.pinned`，通过 `refresh` 返回 `pinned:{text:"今日金价",value:"850 元/克",icon:"coin"}` | 收起的岛，由用户选择并排序 |
 | 结构化状态卡和独立详情页 · 测试版 | 清单使用 `"owner":"status"` 和 `"capabilities":["status.page","timer"]`，`refresh` 返回 `status`。可用 `statusLayout` 选择组件、排序和样式。 | 在岛上翻页查看，在「设置 → 页面管理 → 状态详情」单独启停 |
 | 状态页组件与主题令牌 · 实验 | 在状态页布局中添加列表、迷你折线、多行说明和标签，可设强调色、强调程度及岛仔内置图标 | 在状态详情页查看 |
+| 自绘画布 · 实验 | 同时声明 `status.page` 和 `status.canvas`，脚本返回画布的图元与样式 | 可填满状态详情页或与标准组件混排 |
 | 实时状态组件与敏感值 · 实验 | 布局选择 `counter`、`clock`、`countdown`，由岛仔计算实时读数。金额等数据须标记 `sensitive:true`。 | 在状态详情页查看，点击暂时显示敏感值 |
-| 状态详情交互 · 实验 | 同时声明 `action` 和 `status.page`。可使用按钮、单行表单、可点的列表项，以及宿主的打开链接和复制动作 | 在状态详情输入内容或点击操作 |
+| 状态详情交互 · 实验 | 同时声明 `action` 和 `status.page`。可使用按钮、文本表单、可点的列表项，以及宿主的打开链接和复制动作 | 在状态详情输入内容或点击操作 |
 | 可编辑独立模块 · 待宿主实现 | 清单声明 module 与按钮 `actions:["save"]`。示意 `function action(i){return {page:{kind:"detail",text:i.form.text},storage:{note:i.form.text}}}` | 岛上功能栏查看、编辑，侧栏调偏好，页面管理启停 |
 | 日程来源 · 待宿主实现 | `function refresh(i){return {calendar:[{id:"anniversary",title:i.settings.title,date:i.settings.target}]}}` | 日程里的来源，按来源和条目 ID 更新 |
 | 歌词来源 · 待宿主实现 | `function refresh(i){return {lyrics:{trackId:i.track.id,lines:i.source.lines}}}`。换歌后宿主只接收当前曲目的结果 | 原音乐页 |
@@ -43,6 +44,7 @@ function refresh({ settings, today }) {
 | 皮肤 · 测试版 | `runtime: "assets"`、`owner: "appearance"`、`appearance.skin`，入口 `theme.json` | 设置 → 外观 → 皮肤 |
 | 功能图标 · 测试版 | `runtime: "assets"`、`owner: "appearance"`、`appearance.icon`，入口 `icons.json` | 设置 → 外观 → 功能图标，替换设置侧栏及功能标题卡图标 |
 | 吉祥物表情 · 测试版 | `runtime: "assets"`、`owner: "appearance"`、`appearance.pet`，入口 `expressions.json` | 设置 → 外观 → 吉祥物表情，沿用原动作的触发时机与帧速 |
+| 画布字体 · 测试版 | `runtime: "assets"`、`owner: "appearance"`、`appearance.font`，入口 `fonts.json` | 在已安装插件中启用，画布文字按名称引用 |
 | 底部快捷切换 · 已实现 | 声明 `runtime: "assets"`、`owner: "pages"` 和 `navigation.shortcuts`，在 `shortcuts.json` 配置选中配色 | 展开岛仔，点击底部图标直达已启用页面。设置归属「页面管理」 |
 | GPU 材质 · 已实现 | 清单用 `runtime: "material"`、`owner: "appearance"`、`appearance.material` 能力和 `screen.backdrop` 权限。WGSL 入口实现 `material()`，沿用[材质接口](gpu-material.md) | 「设置 → 外观 → 材质」，同一时间选用一个材质，需开启 Direct3D 12 兼容渲染 |
 
@@ -52,7 +54,9 @@ action 接收按钮 ID 和表单值，event 接收事件名和事件数据。两
 
 岛仔用一张能力表核对清单（[能力表](../../spike/capabilities.rs)）。每种能力写明需要的运行环境、落在哪里，以及能否和别的能力同时声明。`owner` 只决定插件设置放在哪个设置页，以及哪个模块关掉时整个插件暂停。脚本插件的归属可选 tasks、calendar、quota、status，并且至少要带上这个归属自己的输出：tasks 带 card，calendar 带 card 或 calendar.marker，quota 带 quota.source，status 带 status.page。材质、皮肤、图标、表情、快捷切换和无线设备兼容包各自独占一个包。外观资源包只声明一种能力，`permissions` 填 `{}`，`settings` 填 `[]`。
 
-外观资源包由 `plugin.json`、入口文件和 `cover.png` 组成，本地开发目录也可带说明文件。岛仔沿用集市的 ZIP 大小上限 576 KiB。各类入口的 UTF-8 JSON 格式如下。
+外观资源包由 `plugin.json`、入口文件和 `cover.png` 组成，本地开发目录也可带说明文件。皮肤、图标和表情的集市 ZIP 上限为 832 KiB，字体包另有文件限制。各类入口使用 UTF-8 JSON。
+
+- 画布字体包的 `fonts.json` 格式为 `{"fonts":[{"name":"站酷快乐体","file":"ZCOOLKuaiLe-Regular.ttf"}]}`。可列出 1 至 4 个名称和文件各不相同的字型，支持 TTF 与 OTF，单个最多 8 MiB，整包最多 16 MiB。包根目录须有 `LICENSE` 或 `OFL.txt`。启用后，画布文字可用 `font:"站酷快乐体"`，宿主以 `plugin:站酷快乐体` 注册。缺字、停用或卸载时沿用岛仔字体。 [站酷快乐体样例](../../spike/examples/font-zh/plugin.json) · [Google Fonts 字体许可](https://github.com/google/fonts/blob/main/ofl/zcoolkuaile/OFL.txt)
 
 - 皮肤包入口最多 4 KiB，例如 `{"base":"cream","colors":{"paper":"#F4F8F6","ink":"#20382F","accent":"#248161"}}`。经典 `classic` 和奶油 `cream` 开放 `paper`（底色）、`ink`（文字）和 `accent`（强调色）。毛玻璃 `glass_light`、`glass_dark` 和悬浮云 `fluid` 开放 `accent`，保留原来的透明度和纹理。至少提供一个 `#RRGGBB` 颜色。缺少的颜色沿用基础皮肤。可参考[青瓷皮肤样例](../../spike/examples/celadon-skin/plugin.json)。
 - 图标包入口最多 128 KiB，格式为 `{"icons":{"music":"<svg …>…</svg>"}}`。功能页键可用 `music`、`focus`、`health`、`shelf`、`tasks`、`mail`、`quota`、`calendar`、`weather`、`performance`、`wireless`。每个 SVG 最多 8 KiB，声明 SVG 命名空间与 `viewBox`，使用路径、基础形状和分组，可用十六进制颜色、`none` 或 `currentColor`。禁止脚本、样式表、外部资源和 `foreignObject`。
@@ -174,6 +178,8 @@ function refresh({ source }) {
 
 JS 清单使用 `"owner":"status"`，能力列出 `status.page`。可选的 `timer`、`settings` 和 `storage` 沿用现有约定。读取文件或本机接口时使用同一套 `source.read` 授权。宿主会用清单的显示名称和固定插件 ID 注册详情页，无需声明页面编号。
 
+清单可用 `titleAccent` 指定 `name` 中要着色的末尾文字。例如 `"name":"现货金价","titleAccent":"金价"`。颜色取 `statusLayout.style.accent`，省略时用当前皮肤的默认强调色。插件列表仍使用完整名称。
+
 返回 `{status: ...}`，`note` 支持多行，其余文字字段填单行可显示文字。
 
 | 字段 | 取值 |
@@ -212,6 +218,8 @@ JS 清单使用 `"owner":"status"`，能力列出 `status.page`。可选的 `tim
 
 选择 1 至 10 个组件，数组顺序就是展示顺序。普通组件每种最多一个，三种实时组件各可重复 4 次，每次计入布局上限。实时数据接受单个对象或数组，布局中第几个同类组件对应数组的第几项。有数据的组件按顺序显示，卡片内容溢出时可以在卡片内滚动。
 
+有 `canvas` 组件和 `action` 能力时，可用 `statusLayout.canvasFields` 把最多三个单行输入框放到画布内。例如 `[{"key":"note","rect":[4,207,130,22],"placeholder":"记一笔…","action":"add"}]`。坐标从画布左上角起算，使用逻辑像素整数。返回同名 `status.fields` 和对应的 `status.actions` 后，用户可直接在画布内录入，按回车提交。画布内的底色和边框由插件设置。锚点不可用时，仍可用布局中的标准输入框和按钮操作。
+
 | 组件 `type` | 数据与选项 |
 | --- | --- |
 | `state` | 显示 `state` 和 `label` |
@@ -225,8 +233,9 @@ JS 清单使用 `"owner":"status"`，能力列出 `status.page`。可选的 `tim
 | `alert` | 显示 `alert` |
 | `updated_at` | 显示 `observed_at` |
 | `actions` | 显示 `actions` 中的按钮，需要 `action` 能力 |
-| `fields` | 显示 `fields` 中的单行文本框，需要 `action` 能力 |
+| `fields` | 显示 `fields` 中的文本框，需要 `action` 能力 |
 | `counter`、`clock`、`countdown` | 用对应的字段在宿主计算读数。按秒或分钟的边界重绘，脚本按原周期刷新 |
+| `canvas` | 绘制返回值中与 `status` 同级的 `canvas`，需要 `status.canvas` 能力 |
 
 `style` 可以省略。强调色 `accent` 使用六位 `#RRGGBB`，岛仔按实际底色校正到至少 3:1，省略时沿用岛仔默认状态色。间距 `density` 可选 `comfortable`（默认）或 `compact`。紧凑模式最多显示 3 项列表、2 行说明、3 个标签。背景 `surface` 可选 `card`（默认）或 `plain`。强调程度 `emphasis` 可选 `normal`（默认）或 `strong`，作用于状态标题和折线。`icon` 可将岛仔内置的 `battery`、`cup`、`clock`、`chart`、`cloud` 或 `calendar` 图标放到状态标题旁。
 
@@ -238,6 +247,81 @@ JS 清单使用 `"owner":"status"`，能力列出 `status.page`。可选的 `tim
 
 全新的插件默认停用，首次启用后详情页默认出现。可在「页面管理 → 状态详情」保存这个页面自己的开关。关闭详情页后，岛体撤下对应页面和状态卡，后台停止读取该插件的数据源，正在进行的结果作废。再次启用按当前授权重新读取。
 
+#### 自绘画布
+
+JavaScript 插件在清单中同时声明 `status.page` 和 `status.canvas`。`refresh`、`action`、`event` 都可以返回 `canvas`。返回画布时，省略布局或只配置 `{"type":"canvas"}` 会让画布占满页内内容区。与标准组件混排时，在 `statusLayout` 中添加一次 `{"type":"canvas"}` 指定画布位置，并通过同一份结果的 `status` 为标准组件提供数据。
+
+```js
+function refresh() {
+    return {
+        canvas: {
+            height: 64,
+            nodes: [
+                { rect: [0, 0, 387, 64], r: 10, fill: "$card" },
+                { text: "从这里开始画", at: [16, 38], size: 16, fill: "$text" }
+            ]
+        }
+    };
+}
+```
+
+坐标单位为逻辑像素，原点在标题行下方的内容区左上角，宽 387。画布高度 `height` 为 40 至 360。宿主随渲染缩放绘制，静止画面复用缓存。
+
+| 图元 | 字段 |
+| --- | --- |
+| 矩形 | `rect:[x,y,w,h]`，可用 `r` 指定统一圆角或按左上、右上、右下、左下给出四个圆角 |
+| 圆 | `circle:[cx,cy,r]` |
+| 弧 | `arc:{c:[cx,cy],r,start,sweep}`，角度从水平向右开始，顺时针为正 |
+| 直线 | `line:[x1,y1,x2,y2]` |
+| 折线 | `points:[[x,y],…]`，加 `area:y` 可填充曲线与水平线间的区域 |
+| 路径 | `path:"M0 0 L10 10 Q12 4 18 6 Z"`，支持 M、L、H、V、Q、C、Z 及其小写相对命令 |
+| 文字 | `text:"文字",at:[x,y],size:14`。`at` 为基线位置，可加 `weight`、`align`（left、center、right）、`max_width`、`lines`、`font` |
+| 图片 | `image:"badge.svg",rect:[x,y,w,h]`，用 `fit` 选择 cover（裁切铺满）或 contain（完整显示） |
+| 分组 | `group:[…]`，可加 `clip:[x,y,w,h]`、`translate:[x,y]`、`rotate`（度）、`scale` |
+
+`fill` 和 `stroke` 可以用 `#RRGGBB`、`#RRGGBBAA` 或跟随皮肤的 `$accent`、`$text`、`$muted`、`$dim`、`$card`、`$track`、`$bg`。文字颜色也可以用 `color`。线性渐变写作 `{linear:[[x1,y1],[x2,y2]],stops:[[0,"#FFE58A"],[1,"#FFE58A00"]]}`，径向渐变将轴换成 `radial:[[cx,cy],r]`。渐变停靠位置按从 0 到 1 的顺序排列。线型用 `width` 设置线宽、`cap` 选择 round 或 butt、`dash:[实线长,间隔长]` 设置虚线。通用效果有 `opacity`（0 至 1）、`shadow`（sm、md、lg）和 `glow`（true 或一种颜色）。可用 `id` 为图元提供稳定名称。
+
+本地安装和 ZIP 都支持用包内相对路径引用 PNG 和静态 SVG，例如 `images/badge.svg`。资源随包放置，直接在图元中填写路径即可。`/` 分隔路径层级，宿主拒绝绝对路径、含 `..` 的路径和符号链接。SVG 需要有效的 `viewBox`，使用路径、矩形、圆等静态矢量图形。
+
+画布图片每张最大 1024 × 1024，文件合计最多 512 KiB。集市封面独立校验。封面尺寸合规且画布还有剩余图片额度时，可以用 `image:"cover.png"` 引用，并计入画布图片总量。
+
+内置图标节点写作 `{"icon":"heart","rect":[0,0,22,22]}`，图标名与列表设置的 `icon` 子项一致，可以指定填充和描边样式。
+
+常驻小画布同时需要 `island.pinned` 和 `status.canvas`，返回 `{"pinned":{"canvas":{"width":126,"nodes":[…]}}}`。高度固定为 22，宽度为 1–156，最多 60 个节点。可以使用绑定、数字翻动和横向滚动文字。横向滚动给 `text` 节点配置 `max_width` 与 `loop.kind:"flow"`，并放进带 `clip` 的分组。多种常驻内容可将 `canvas` 写成画布数组，随宿主每 8 秒的节奏轮换。[常驻画布样例](../../spike/examples/canvas-pinned-demo/plugin.json)
+
+具有 `storage` 能力的插件可从「已安装」的「···」菜单导出或导入数据。备份 JSON 保存 `id`、`dataVersion` 与 `storage`。导入会用备份替换当前数据，并核对插件 ID、数据版本及 256 KiB 的存储限额。
+
+坐标须为 -2000 至 2000 的有限数字，字号为 6 至 96，文字总计最多 2000 字。画布及其分组总计最多 1500 个图元，嵌套 8 层，路径命令合计最多 4000 个。画布或其中的图片引用不合规时，页面显示「插件画面有误」，开发者工具显示原因。宿主先画出完整首帧，后续绘制超过 4 毫秒预算时沿用缓存画面，并在开发者工具记录。
+
+`canvas` 为对象时，展示结果上限为 64 KiB，私有存储另计。宿主默认使用岛仔字体，画布隐私遵循岛仔的「截图和录屏中隐藏」设置。
+
+##### 实时绑定
+
+把实时值写在画布的 `binds` 中。岛仔计算值并按最近的可见变化安排重绘，脚本保持原有刷新周期。
+
+| 来源 | 声明与结果 |
+| --- | --- |
+| 计数 | `{counter:{start_value:0,per_second:0.02,start_at:1795400000,decimals:2}}`。同时提供数字和格式化文字，小数位为 0 至 4。开始前保持起始值，可用 `until` 指定停止时间 |
+| 倒计时 | `{countdown:{target_at:1795431600,format:"HH:mm:ss"}}`。数字为剩余秒数，也支持文字格式 `d天 HH:mm`。到点数字归零，文字显示「已结束」 |
+| 进度 | `{progress:[1795392000,1795424400]}`。在开始到结束之间从 0 到 1，区间外保持端点值 |
+| 指针 | `{clock_angle:{zone:"America/New_York",hand:"hour"}}`。分钟粒度，`hand` 选择 hour 或 minute，12 点为 0 度，顺时针增加 |
+| 现在 | `{now:"HH:mm",zone:"Asia/Shanghai"}`。提供时间文字，也支持 `HH:mm:ss`。省略 `zone` 时使用本机时区 |
+| 日夜 | `{daylight:{zone:"Asia/Shanghai",hours:[6,18]}}`。当地时间前闭后开，区间内为 1，区间外为 0。结束小时小于开始小时表示隔天结束 |
+
+时间戳用 Unix 秒，时区用 IANA 名称。文字用 `{名字}` 插入格式化值，原样保留未匹配的花括号内容。数字位置可用 `{bind:"work"}` 读取数字，也可用 `{bind:"work",map:[0,210]}` 将 0 至 1 映射到给定区间。颜色可用 `{bind:"day",pick:["#2E64B5","#FFC43D"]}`，数值达 0.5 时使用第二项。比如在 `rect` 的宽度绑定进度时，岛仔可以按显示像素精度更新，而 `now:"HH:mm"` 到下一分钟才更新。
+
+##### 动画与操作
+
+- 文字节点添加 `roll:true` 后，变化的数字在 220 毫秒内向上翻动。给节点添加稳定的 `id`，宿主可跨输出匹配同一节点。
+- `animate:{ms:300,ease:"spring"}` 可让位置、尺寸、角度、透明度和颜色平滑过渡，新增或移除节点会淡入淡出。时长 120 至 1200 毫秒，缓动支持 linear 和 spring。
+- `loop:{kind:"pulse",period_ms:1600}` 支持 pulse、flow、bob、spin。周期至少 800 毫秒，一个画布最多 8 个循环节点，循环最多 30 帧每秒。带 `id` 的节点可用 `burst:"confetti"` 播放一次彩纸。
+- `{"pet":{"at":[226,24],"size":28,"mood":"expressions","motion":"run","id":"runner"}}` 由宿主绘制并沿用用户的表情包。尺寸为 12 至 96，`at` 是角色中心并支持绑定。表情可选轮换（`expressions`）、睡觉（`sleeping`）、开心（`happy`）或现有表情名。动作为原地跑跳（`run`）、浮动（`bob`）或静止（`none`）。每个展开画布最多一只，活动时计入循环预算。
+- `hit:{action:"select"}`、`hit:{open:"https://example.com"}`、`hit:{copy:"复制这段"}` 三选一，复用标准组件交互规则。需要声明 `action` 能力，链接须在清单的 `network.hosts` 内，复制最多 2000 字。每画布最多 64 个点按区域，输出更新后旧点击失效。
+- 节点可用 `hover:{opacity:1,lift:2,fill:"$accent"}` 调节悬停外观。折线可用 `tips:[{x:140,label:"12:40",value:"4,106.2"}]` 声明宿主的悬停读数。
+- 带 `clip` 的分组可加 `scroll:{axis:"y",content:420}`。滚轮在区域内移动内容，插件刷新会保留滚动位置。
+
+[画布图元样例](../../spike/examples/canvas-demo/plugin.json)展示图元、渐变、包内图片，以及画布与标准组件混排的方式。脚本的 `canvas` 字段格式见[清单格式检查表的 `$defs.canvas`](sdk-v1.schema.json)。
+
 ## 6. 数据能留多久
 
 用户可以停用插件一段时间再回来。宿主根据插件 ID 分开保存设置和私有数据，每次成功调用只替换本插件的数据。保留数据卸载后，从原清单位置重装开发包，或从原测试集市目录重装同 ID 试用包，可以找回原值。
@@ -248,7 +332,7 @@ JS 清单使用 `"owner":"status"`，能力列出 `status.page`。可选的 `tim
 
 作者在清单填写间隔，宿主负责安排工作。当前定时卡支持 60 至 86400 秒，旧样例缺省为 60 秒。首次启用或修改设置会重新计算。界面读取最近结果，每个插件同时最多一次调用，全局最多两个后台计算。停用时画面立即撤下，稍后返回的结果作废。
 
-QuickJS 每次计算限时 30 毫秒，脚本可分配的内存上限为 4 MiB。单次展示输出最多 16 KiB，私有存储另计，最多 256 KiB。普通刷新周期至少 60 秒，实时前台内容按需开放 1 秒。HTTPS 每插件最多 3 个来源，每次请求最长 10 秒，响应最多 256 KiB。拟保留 3 个固定插件卡位置和 1 个临时位置，满时让用户选择替换。
+QuickJS 每次计算限时 30 毫秒，脚本可分配的内存上限为 4 MiB。单次展示输出最多 16 KiB，包含画布时为 64 KiB，私有存储另计，最多 256 KiB。普通刷新周期至少 60 秒，实时前台内容按需开放 1 秒。HTTPS 每插件最多 3 个来源，每次请求最长 10 秒，响应最多 256 KiB。拟保留 3 个固定插件卡位置和 1 个临时位置，满时让用户选择替换。
 
 连续三次脚本执行失败后暂停并提示重试，是待实现的正式版规则。监控程序没启动时应提示打开依赖，设备离线时显示上次更新时间并降低查询频率。两种情况均属于数据来源状态，由宿主另行处理。
 
@@ -264,15 +348,32 @@ version 是插件版本，api 是需要的接口主版本，dataVersion 是存�
 
 `switch` 保存为 `"true"` 或 `"false"`。`choice` 声明 2 至 6 个 `{value,label}`，保存所选 value。`number` 声明 min、max、step，可加 unit、precision。`time` 使用 24 小时制 `HH:MM`。`weekdays` 使用逗号分隔的 1 至 7，从星期一开始。空字符串表示未选择星期。
 
-`list` 声明 1 至 3 个子设置 `item` 和 `maxItems`（最多 8）。子设置支持 text、choice、number、date、time。保存为 JSON 数组字符串，每行对象的值仍为字符串，例如 `[{"city":"北京","zone":"Asia/Shanghai"}]`。脚本可用 `JSON.parse(settings.cities)` 读取。
+`text` 可声明 `multiline: true`。输入框随内容长高，最多显示 6 行，超出可滚动。Enter 换行，Ctrl+Enter 保存设置。
+
+`timezone` 设置用中文城市名、国家或地区名、IANA 时区代码搜索，例如「纽约」「美国」「America/New_York」。保存 IANA 时区名，例如 `America/New_York`。城市与地区数据沿用 Unicode CLDR 的中文名称和 IANA 时区数据库。
+
+`list` 声明 1 至 7 个子设置 `item`，用 `maxItems` 指定最多 20 行。子设置支持 text、choice、number、date、time、switch、timezone、icon、color。保存为 JSON 数组字符串，每行对象的值仍为字符串，例如 `[{"city":"北京","zone":"Asia/Shanghai"}]`。脚本可用 `JSON.parse(settings.cities)` 读取。
+
+`icon` 与 `color` 用于列表子项，保存名字字符串。`icon` 可选 `heart`（爱心）、`cake`（蛋糕）、`ring`（戒指）、`plane`（飞机）、`star`（星星）、`gift`（礼物）、`flag`（旗子）、`calendar`（日历）、`coffee`（咖啡）、`coin`（硬币）、`sun`（太阳）、`moon`（月亮）。
+
+| `color` 值 | 对应颜色 |
+| --- | --- |
+| red | `#E26663` |
+| orange | `#EF9A4F` |
+| yellow | `#EBC253` |
+| green | `#79AD67` |
+| teal | `#4DADA5` |
+| blue | `#6398E5` |
+| purple | `#A07CD4` |
+| pink | `#D880A6` |
 
 `input.now` 是 Unix 毫秒，`input.tz` 提供本机 `{offset_minutes,name}`。清单声明 `timezones:true` 后，`input.zones` 包含设置中出现的有效 IANA 时区，值为 `{offset_minutes,dst}`。SDK 复用项目原有的 `chrono-tz` 依赖，在本机换算偏移和夏令时。
 
 清单 `data` 可列出包根目录的 UTF-8 JSON，单个 64 KiB、合计 256 KiB。脚本通过 `input.data[文件名]` 读取。安装、测试集市和 `--plugin-pack` 都包含已声明的数据。节假日示例自带 2026 年数据，2027 年起由作者随新版本按年更新。
 
-带 `timer` 的插件可返回 Unix 秒 `next_refresh_at`。下一次刷新取正常周期和指定时刻里较早的时间，至少间隔 60 秒。`storage` 单独限 256 KiB，其余输出限 16 KiB。写入超限时保留原有数据，在插件详情提示错误。
+带 `timer` 的插件可返回 Unix 秒 `next_refresh_at`。下一次刷新取正常周期和指定时刻里较早的时间，至少间隔 60 秒。`storage` 单独限 256 KiB，其余输出限 16 KiB，包含画布时为 64 KiB。写入超限时保留原有数据，在插件详情提示错误。
 
-宿主检查字段、ID、默认值、版本、入口和封面，并拒绝越出包目录的文件。重启时重新检查安装快照，出现无效记录提示重新安装。测试集市 ZIP 包含包根的 `plugin.json`、`cover.png` 和清单指定的 JavaScript 或快捷切换 JSON 入口。宿主核对目录中的大小与 SHA-256，直接在内存中读取包内容。正式资源包和独立模块的字段见清单格式检查表。
+宿主检查字段、ID、默认值、版本、入口和封面，并拒绝越出包目录的文件。重启时重新检查安装快照，出现无效记录提示重新安装。测试集市 ZIP 包含包根的 `plugin.json`、`cover.png`、清单指定的入口和数据文件。声明 `status.canvas` 时，`--plugin-pack` 也会打包符合要求的 PNG 和 SVG，保留包内相对路径。普通 ZIP 上限为 832 KiB，画布版 ZIP 上限为 1376 KiB，画布图片仍须遵守 512 KiB 合计上限。宿主核对目录中的大小与 SHA-256，直接在内存中读取包内容。正式资源包和独立模块的字段见清单格式检查表。
 
 材质包包含 `plugin.json`、`cover.png`、一个大小不超过 64 KiB 的 `.wgsl` 入口，以及可选的文本说明文件。默认值必须是范围内的有限数字，步长为正且不大于范围宽度。`unit` 最多 4 个字符，仅显示在滑块数值后。`precision` 为 0 至 3 的整数，省略时按 `step` 的小数位数显示。显示格式不改变参数值。控件弹簧刚度范围为 0.2 至 3，阻尼范围为 0.1 至 1。
 
@@ -313,7 +414,9 @@ function refresh({settings}) {
 
 #### 状态页交互、专注事件和提醒
 
-在清单中同时声明 `action` 和 `status.page`。`status.actions` 最多 3 个按钮，每个按钮填写 `{id, label}`，标签 1 至 6 字。`status.fields` 最多 3 个单行输入框，每个填写 `{key, label, value?, max}`，标签 1 至 28 字，`max` 为 1 至 200 的整数，`value` 是可选初始值。每组的 ID 或键须唯一，由小写英文字母开头，最多 40 个字符，可用小写英文字母、数字、下划线和连字符。自定义布局用 `actions`、`fields` 选择控件位置，默认布局将控件放在读数下方。
+在清单中同时声明 `action` 和 `status.page`。`status.actions` 最多 3 个按钮，每个按钮填写 `{id, label}`，标签 1 至 6 字。`status.fields` 最多 3 个输入框，每个填写 `{key, label, value?, max, multiline?}`，标签 1 至 28 字，`max` 为 1 至 200 的整数，`value` 是可选初始值。每组的 ID 或键须唯一，由小写英文字母开头，最多 40 个字符，可用小写英文字母、数字、下划线和连字符。自定义布局用 `actions`、`fields` 选择控件位置，默认布局将控件放在读数下方。
+
+状态页字段默认单行。`multiline: true` 允许 Enter 换行，最多显示 6 行，超出可滚动。Ctrl+Enter 触发第一个交由脚本处理的 `status.actions` 按钮，表单会保留换行。
 
 列表最多 8 项，每项可写 `{label, detail?, state?, action?, open?, copy?}`。`action` 是脚本动作 ID。按钮与列表项都可加 `open` 或 `copy`，二者只能选一个。`open` 打开清单 `network.hosts` 声明的 HTTPS 域名下的链接。`copy` 将最多 2000 字写入剪贴板。当行既有脚本动作又有复制内容时，点正文由脚本处理，点行尾「复制」由宿主处理。
 
@@ -323,7 +426,7 @@ function refresh({settings}) {
 
 声明 `notice` 后，三个脚本入口都可返回 `notice:{id, title, body?}`。ID 为 1 至 128 字，标题为 1 至 40 字，正文可省略，最多 120 字。每个插件同一 ID 只显示一次，60 秒内最多发出一条。提醒显示和正文遵循岛仔现有的通知开关。
 
-三个脚本入口共用每插件单次运行的限制，以及 30 ms、4 MiB 和 16 KiB 输出上限。可在本地试装[便签样例](../../spike/examples/sticky-notes/plugin.json)。
+三个脚本入口共用每插件单次运行的限制，以及 30 ms、4 MiB 和 16 KiB 的展示输出上限，包含画布时展示上限为 64 KiB。可在本地试装[便签样例](../../spike/examples/sticky-notes/plugin.json)。
 
 ## 12. 投稿怎样进入集市
 

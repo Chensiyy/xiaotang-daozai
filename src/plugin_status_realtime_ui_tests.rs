@@ -52,6 +52,7 @@ impl Fixture {
                                 island: Color32::BLACK,
                             },
                             blocked,
+                            None,
                         );
                     });
             },
@@ -163,7 +164,7 @@ fn plugin_status_sensitive_list_requires_reveal_before_actions() {
                     let mut interaction = Interaction::new("test.status", 1, &mut form, true);
                     draw_interactive_status_page(
                         &card, "test.status", &fixture.status, Some(&fixture.layout),
-                        StatusBackdrop { palette: None, island: Color32::BLACK }, blocked, &mut interaction,
+                        StatusBackdrop { palette: None, island: Color32::BLACK }, blocked, &mut interaction, None,
                     );
                     clicked = interaction.finish().1;
                 });

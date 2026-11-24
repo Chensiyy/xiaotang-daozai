@@ -23,6 +23,8 @@ pub(super) enum Surface {
 pub(super) enum Role {
     /// 脚本插件的一种输出。
     Output(Surface),
+    /// 在同一个输出位置扩展数据格式。
+    CanvasOutput,
     /// 脚本插件的辅助能力：设置、定时刷新、私有存储。
     Helper,
     /// 独占一个包的能力，包里除了设置不再有其他能力，归属固定。
@@ -40,6 +42,7 @@ pub(super) const CAPABILITIES: &[Capability] = &[
     Capability { name: "calendar.marker", runtime: "js", role: Role::Output(Surface::CalendarMarker) },
     Capability { name: "quota.source", runtime: "js", role: Role::Output(Surface::Quota) },
     Capability { name: "status.page", runtime: "js", role: Role::Output(Surface::StatusPage) },
+    Capability { name: "status.canvas", runtime: "js", role: Role::CanvasOutput },
     Capability { name: "island.pinned", runtime: "js", role: Role::Output(Surface::IslandPinned) },
     Capability { name: "settings", runtime: "*", role: Role::Helper },
     Capability { name: "timer", runtime: "js", role: Role::Helper },
@@ -55,6 +58,7 @@ pub(super) const CAPABILITIES: &[Capability] = &[
     Capability { name: "appearance.skin", runtime: "assets", role: Role::Exclusive { owner: "appearance" } },
     Capability { name: "appearance.icon", runtime: "assets", role: Role::Exclusive { owner: "appearance" } },
     Capability { name: "appearance.pet", runtime: "assets", role: Role::Exclusive { owner: "appearance" } },
+    Capability { name: "appearance.font", runtime: "assets", role: Role::Exclusive { owner: "appearance" } },
     Capability {
         name: "navigation.shortcuts",
         runtime: "assets",
@@ -84,6 +88,7 @@ pub(super) fn surface_of(name: &str, owner: &str) -> Option<Surface> {
     match find(name)?.role {
         Role::Output(Surface::TasksCard) if owner == "calendar" => Some(Surface::CalendarMarker),
         Role::Output(surface) => Some(surface),
+        Role::CanvasOutput => Some(Surface::StatusPage),
         _ => None,
     }
 }
@@ -117,11 +122,14 @@ pub(super) fn check(runtime: &str, owner: &str, names: &[String]) -> Result<Vec<
                 }
                 surfaces.push(surface);
             }
-            Role::Helper => {}
+            Role::CanvasOutput | Role::Helper => {}
         }
     }
     if seen.contains("action") && !seen.contains("status.page") {
         return Err("按钮和表单需要同时声明 status.page".into());
+    }
+    if seen.contains("status.canvas") && !seen.contains("status.page") {
+        return Err("自绘画布需要同时声明 status.page".into());
     }
     if let Some(name) = exclusive {
         if names.iter().any(|other| other != name && other != "settings") {
@@ -161,6 +169,7 @@ mod tests {
             ("js", "calendar", &["card", "settings"]),
             ("js", "quota", &["quota.source", "settings", "timer"]),
             ("js", "status", &["status.page", "timer", "storage"]),
+            ("js", "status", &["status.page", "status.canvas"]),
             ("material", "appearance", &["appearance.material", "settings"]),
             ("assets", "pages", &["navigation.shortcuts"]),
             ("assets", "wireless", &["wireless.receivers"]),
@@ -189,6 +198,7 @@ mod tests {
     fn table_rejects_unknown_duplicate_and_mismatched_capabilities() {
         for (runtime, owner, list) in [
             ("js", "tasks", &["network", "card"][..]),
+            ("js", "status", &["status.canvas"]),
             ("js", "tasks", &["card", "card"]),
             ("js", "calendar", &["card", "calendar.marker"]),
             ("js", "tasks", &["calendar.marker"]),

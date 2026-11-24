@@ -1,4 +1,5 @@
 use super::{fail, Field, Result, Values};
+use crate::plugin_setting_catalog::{icon_path, setting_color};
 use chrono::{DateTime, Local, Offset, Utc};
 use chrono_tz::{OffsetComponents, Tz};
 use serde::{Deserialize, Serialize};
@@ -16,9 +17,14 @@ pub(super) struct Choice {
 }
 
 pub(super) fn valid_fields(fields: &[Field], material: bool) -> bool {
+    valid_field_group(fields, material, false)
+}
+
+fn valid_field_group(fields: &[Field], material: bool, list_children: bool) -> bool {
     let mut keys = BTreeSet::new();
     fields.iter().all(|field| {
         (!material || field.kind == "number")
+            && (list_children || !matches!(field.kind.as_str(), "icon" | "color"))
             && !field.label.trim().is_empty()
             && field.label.chars().count() <= 80
             && field.key.starts_with(|c: char| c.is_ascii_lowercase())
@@ -47,11 +53,17 @@ pub(super) fn valid_field(field: &Field, value: &str) -> bool {
         || field.kind != "number" && (field.unit.is_some() || field.precision.is_some())
         || field.kind != "choice" && field.choices.is_some()
         || field.kind != "list" && (field.item.is_some() || field.max_items.is_some())
+        || field.kind != "text" && field.multiline.is_some()
     {
         return false;
     }
     match field.kind.as_str() {
-        "text" => !value.trim().is_empty() && value.chars().count() <= 80,
+        "text" => {
+            !value.trim().is_empty()
+                && value.chars().count() <= 80
+                && (field.multiline != Some(true)
+                    || value.chars().all(|ch| ch == '\n' || !ch.is_control()))
+        }
         "date" => chrono::NaiveDate::parse_from_str(value, "%Y-%m-%d")
             .is_ok_and(|date| date.to_string() == value),
         "switch" => matches!(value, "true" | "false"),
@@ -86,6 +98,9 @@ pub(super) fn valid_field(field: &Field, value: &str) -> bool {
         }
         "time" => chrono::NaiveTime::parse_from_str(value, "%H:%M")
             .is_ok_and(|time| time.format("%H:%M").to_string() == value),
+        "timezone" => value.parse::<Tz>().is_ok(),
+        "icon" => icon_path(value).is_some(),
+        "color" => setting_color(value).is_some(),
         "weekdays" => {
             value.is_empty() || {
                 let mut days = BTreeSet::new();
@@ -98,15 +113,16 @@ pub(super) fn valid_field(field: &Field, value: &str) -> bool {
             let (Some(fields), Some(max)) = (&field.item, field.max_items) else {
                 return false;
             };
-            (1..=8).contains(&max)
-                && (1..=3).contains(&fields.len())
+            (1..=20).contains(&max)
+                && (1..=7).contains(&fields.len())
                 && fields.iter().all(|child| {
                     matches!(
                         child.kind.as_str(),
-                        "text" | "choice" | "number" | "date" | "time"
+                        "text" | "choice" | "number" | "date" | "time" | "switch" | "timezone"
+                            | "icon" | "color"
                     )
                 })
-                && valid_fields(fields, false)
+                && valid_field_group(fields, false, true)
                 && serde_json::from_str::<Vec<Values>>(value).is_ok_and(|rows| {
                     rows.len() <= max
                         && rows.iter().all(|row| {
@@ -179,8 +195,9 @@ pub(super) fn valid_storage(storage: &Value) -> bool {
 
 pub(super) fn split_output(raw: &str) -> Result<(Value, Value)> {
     const OUTPUT_LIMIT: usize = 16 * 1024;
-    if raw.len() > OUTPUT_LIMIT + STORAGE_LIMIT + 16 {
-        return Err(fail("插件输出或私有存储超过大小限制（16 KiB / 256 KiB）"));
+    const CANVAS_OUTPUT_LIMIT: usize = 64 * 1024;
+    if raw.len() > CANVAS_OUTPUT_LIMIT + STORAGE_LIMIT + 16 {
+        return Err(fail("插件输出或私有存储超过大小限制（画布 64 KiB / 私有存储 256 KiB）"));
     }
     let mut output: Value = serde_json::from_str(raw)?;
     let storage = output
@@ -191,8 +208,10 @@ pub(super) fn split_output(raw: &str) -> Result<(Value, Value)> {
     if !valid_storage(&storage) {
         return Err(fail("私有存储已满，上限为 256 KiB"));
     }
-    if serde_json::to_vec(&output)?.len() > OUTPUT_LIMIT {
-        return Err(fail("插件输出超过 16 KiB"));
+    let canvas = !output["canvas"].is_null() || !output["pinned"]["canvas"].is_null();
+    let limit = if canvas { CANVAS_OUTPUT_LIMIT } else { OUTPUT_LIMIT };
+    if serde_json::to_vec(&output)?.len() > limit {
+        return Err(fail(if canvas { "插件画面有误：插件输出超过 64 KiB" } else { "插件输出超过 16 KiB" }));
     }
     Ok((output, storage))
 }

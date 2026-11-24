@@ -373,6 +373,7 @@ mod tests {
                                     Some(&layout),
                                     backdrop,
                                     false,
+                                    None,
                                 );
                                 let to = skin_paint::shape_count(ctx, layer);
                                 if let Some(palette) = palette {

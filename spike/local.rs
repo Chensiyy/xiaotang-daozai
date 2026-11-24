@@ -3,8 +3,12 @@
 mod interactions;
 #[path = "appearance_assets.rs"]
 pub(crate) mod appearance_assets;
+#[path = "canvas_images.rs"]
+mod canvas_images;
 #[path = "capabilities.rs"]
 mod capabilities;
+#[path = "font_assets.rs"]
+mod font_assets;
 #[path = "plugin_devtools.rs"]
 mod devtools;
 #[path = "pinned.rs"]
@@ -30,10 +34,14 @@ mod source_read;
 mod script_settings;
 #[path = "package_data.rs"]
 mod package_data;
+#[cfg(windows)]
+#[path = "plugin_storage_backup.rs"]
+mod storage_backup;
 #[path = "local_ui.rs"]
 mod ui;
 use super::{fail, Result};
 use crate::plugin_status::{PluginStatus, StatusHealth, StatusLayout};
+use crate::plugin_canvas::Canvas;
 use crate::quota_plugin::PluginQuota;
 use capabilities::Surface;
 use cover::{CoverPng, COVER_FILE};
@@ -71,6 +79,8 @@ struct Field {
     #[serde(rename = "type")]
     kind: String,
     default: String,
+    #[serde(default, deserialize_with = "present_value", skip_serializing_if = "Option::is_none")]
+    multiline: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     min: Option<f32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -135,6 +145,8 @@ struct MaterialSpring {
 struct Manifest {
     id: String,
     name: String,
+    #[serde(default, deserialize_with = "present_value", skip_serializing_if = "Option::is_none")]
+    title_accent: Option<String>,
     author: String,
     version: String,
     api: u32,
@@ -190,6 +202,10 @@ struct Package {
     cover: Option<CoverPng>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     data: PackageData,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    canvas_images: canvas_images::CanvasImages,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    font_assets: font_assets::Bundle,
     #[serde(skip)]
     page_shortcut_colors: OnceLock<BTreeMap<String, [u8; 3]>>,
     #[serde(skip)]
@@ -283,8 +299,11 @@ impl Record {
                 && !package.source.trim().is_empty()
                 && package.source.len() as u64 <= manifest.source_limit()
                 && package_data::valid_snapshot(&manifest.data, &package.data)
+                && (package.canvas_images.is_empty()
+                    || manifest.has_capability("status.canvas") && canvas_images::valid_snapshot(&package.canvas_images))
                 && package.validate_page_shortcut_colors().is_ok()
                 && package.validate_appearance().is_ok()
+                && package.valid_font_assets()
                 && manifest.settings.iter().all(|field| {
                     self.values
                         .get(&field.key)
@@ -337,6 +356,8 @@ struct Output {
     quota: Option<PluginQuota>,
     #[serde(default)]
     status: Option<PluginStatus>,
+    #[serde(default)]
+    canvas: Option<Value>,
     #[serde(default)]
     notice: Option<ScriptNotice>,
     pinned: Option<pinned::Pinned>,
@@ -507,6 +528,13 @@ impl Manifest {
             return Err(fail("请核对插件 ID、作者、版本和 API 版本"));
         }
         capabilities::check(&m.runtime, &m.owner, &m.capabilities).map_err(|e| fail(&e))?;
+        if m.title_accent.as_deref().is_some_and(|suffix| {
+            !m.has_capability("status.page")
+                || !crate::plugin_status::valid_text(suffix, 80)
+                || !m.name.strip_suffix(suffix).is_some_and(|prefix| !prefix.trim().is_empty())
+        }) {
+            return Err(fail("titleAccent 必须是状态页插件名称的一段末尾文字"));
+        }
         if m.has_capability("event") != m.events.is_some() {
             return Err(fail("声明 event 时须在 events 中订阅一次 focus.finished"));
         }
@@ -520,6 +548,14 @@ impl Manifest {
                 return Err(fail("statusLayout 只适用于声明了 status.page 的插件"));
             }
             layout.validate().map_err(fail)?;
+            if !layout.canvas_fields.is_empty() && !m.has_capability("action") {
+                return Err(fail("画布输入框需要声明 action"));
+            }
+            if !m.has_capability("status.canvas") && layout.components.iter().any(|component| {
+                matches!(component, crate::plugin_status::StatusComponent::Canvas {})
+            }) {
+                return Err(fail("画布布局组件需要声明 status.canvas"));
+            }
             if !m.has_capability("action") && layout.components.iter().any(|component| {
                 matches!(component, crate::plugin_status::StatusComponent::Actions {} | crate::plugin_status::StatusComponent::Fields {})
             }) {
@@ -639,7 +675,9 @@ impl Manifest {
     }
 }
 
-fn validate_code_free_files(dir: &Path, manifest: &Path, entry: &Path, material: bool) -> Result<()> {
+fn validate_code_free_files(
+    dir: &Path, manifest: &Path, entry: &Path, material: bool, fonts: Option<&font_assets::Entry>,
+) -> Result<()> {
     let (package_type, entry_type) = if material { ("材质包", "WGSL") } else { ("外观资源包", "JSON") };
     let mut folders = vec![dir.to_path_buf()];
     while let Some(folder) = folders.pop() {
@@ -673,7 +711,8 @@ fn validate_code_free_files(dir: &Path, manifest: &Path, entry: &Path, material:
                 || (path != entry
                     && path != manifest
                     && path != dir.join(COVER_FILE)
-                    && !description)
+                    && !description
+                    && !fonts.is_some_and(|fonts| fonts.files().any(|file| path == dir.join(file))))
             {
                 return Err(fail(&format!(
                     "{package_type}只能包含 plugin.json、一个 {entry_type} 入口、cover.png 和说明文件",
@@ -706,6 +745,11 @@ impl Package {
         if !resolved.starts_with(&base) || !resolved.is_file() {
             return Err(fail("入口越出插件目录"));
         }
+        let source = bounded(&resolved, manifest.source_limit())?;
+        let data = package_data::read_data(&manifest.data, |name| package_data::read_file(&base, name))?;
+        let mut package = Self::from_entry(manifest, source, cover)?;
+        package.data = data;
+        let manifest = &package.manifest;
         if manifest.is_material() || manifest.appearance_kind().is_some() {
             if path.file_name().and_then(|name| name.to_str()) != Some("plugin.json") {
                 return Err(fail(if manifest.is_material() {
@@ -714,12 +758,14 @@ impl Package {
                     "外观资源包清单必须命名为 plugin.json"
                 }));
             }
-            validate_code_free_files(&base, &base.join("plugin.json"), &resolved, manifest.is_material())?;
+            validate_code_free_files(&base, &base.join("plugin.json"), &resolved, manifest.is_material(), package.font_entry())?;
         }
-        let source = bounded(&resolved, manifest.source_limit())?;
-        let data = package_data::read_data(&manifest.data, |name| package_data::read_file(&base, name))?;
-        let mut package = Self::from_entry(manifest, source, cover)?;
-        package.data = data;
+        if let Some(entry) = package.font_entry() {
+            package.font_assets = font_assets::read_local(entry, &base, package.font_base_size()?)?;
+        }
+        if package.manifest.has_capability("status.canvas") {
+            package.canvas_images = canvas_images::read(&base)?;
+        }
         Ok(package)
     }
 
@@ -732,6 +778,8 @@ impl Package {
             manifest,
             cover: Some(cover),
             data: BTreeMap::new(),
+            canvas_images: BTreeMap::new(),
+            font_assets: BTreeMap::new(),
             page_shortcut_colors: OnceLock::new(),
             appearance: OnceLock::new(),
         };
@@ -749,6 +797,25 @@ impl Package {
             let _ = self.appearance.set(appearance_assets::Pack::decode(kind, &self.source)?);
         }
         Ok(())
+    }
+
+    fn font_entry(&self) -> Option<&font_assets::Entry> {
+        match self.appearance.get()? {
+            appearance_assets::Pack::Font(entry) => Some(entry),
+            _ => None,
+        }
+    }
+
+    fn font_base_size(&self) -> Result<u64> {
+        font_assets::base_size(&self.manifest, &self.source, self.cover.as_ref().map_or(0, |cover| cover.bytes().len()))
+    }
+
+    fn valid_font_assets(&self) -> bool {
+        match self.font_entry() {
+            Some(entry) => self.font_base_size()
+                .is_ok_and(|used| font_assets::valid_snapshot(entry, &self.font_assets, used)),
+            None => self.font_assets.is_empty(),
+        }
     }
 
     fn validate_page_shortcut_colors(&self) -> Result<()> {
@@ -892,6 +959,30 @@ impl Package {
             }
             self.manifest.check_action_links(status)?;
         }
+        if let Some(canvas) = output.canvas.take() {
+            let invalid = |reason: &str| fail(&format!("插件画面有误：{reason}"));
+            if !self.manifest.has_capability("status.canvas") {
+                return Err(invalid("插件未声明 status.canvas"));
+            }
+            if self.manifest.status_layout.as_ref().is_some_and(|layout| {
+                !layout.components.iter().any(|component| {
+                    matches!(component, crate::plugin_status::StatusComponent::Canvas {})
+                })
+            }) {
+                return Err(invalid("有自定义布局时，需要在 statusLayout 中加入 canvas 组件"));
+            }
+            let canvas = Canvas::parse(canvas).map_err(|error| invalid(&error))?;
+            canvas.validate_images(|name| self.canvas_images.contains_key(name))
+                .map_err(|error| invalid(&error))?;
+            self.manifest.check_canvas_actions(&canvas.nodes)
+                .map_err(|error| invalid(&error.to_string()))?;
+            if output.status.is_none() {
+                output.status = Some(serde_json::from_value(json!({
+                    "state": "idle", "label": self.manifest.name
+                }))?);
+            }
+            output.status.as_mut().unwrap().canvas = Some(Arc::new(canvas));
+        }
         if let Some(quota) = &output.quota {
             if !has(Surface::Quota) {
                 return Err(fail("此插件未声明额度来源能力"));
@@ -907,6 +998,9 @@ impl Package {
         }
         if output.pinned.as_ref().is_some_and(|pinned| !has(Surface::IslandPinned) || !pinned.valid()) {
             return Err(fail("常驻位需要声明 island.pinned 并返回符合格式的 pinned"));
+        }
+        if let Some(pinned) = &output.pinned {
+            pinned.validate_canvas(self)?;
         }
         if !ready {
             output.status = None;
@@ -1053,9 +1147,14 @@ impl LocalPlugins {
                     continue;
                 }
                 // 快照中的脚本、包数据和设置字符串在 JSON 中还会转义。
-                let parsed = bounded(&p, 4 * 1024 * 1024)
+                let parsed = bounded(&p, font_assets::SNAPSHOT_LIMIT)
                     .ok()
-                    .and_then(|v| serde_json::from_str::<Record>(&v).ok());
+                    .and_then(|v| {
+                        let record = serde_json::from_str::<Record>(&v).ok()?;
+                        (v.len() <= 4 * 1024 * 1024 || record.package.as_ref().is_some_and(|package| {
+                            package.manifest.has_capability("appearance.font")
+                        })).then_some(record)
+                    });
                 let valid = parsed.as_ref().is_some_and(|r| r.valid(id));
                 if valid {
                     s.records.insert(id.into(), parsed.unwrap());
@@ -1767,6 +1866,12 @@ impl LocalPlugins {
                     return Err("读取已取消".into());
                 }
                 if !r.from_market {
+                    if let Err(error) = &output {
+                        let detail = error.to_string();
+                        if detail.starts_with("插件画面有误") {
+                            logs.push(detail);
+                        }
+                    }
                     script_logs.append(&plugin_id, logs);
                 }
                 let (output, _) = output.map_err(|error| error.to_string())?;
@@ -1867,6 +1972,13 @@ impl LocalPlugins {
             .as_ref()
     }
 
+    pub(crate) fn status_title_accent(&self, id: &str) -> Option<(&str, Option<[u8; 3]>)> {
+        let manifest = &self.records.get(id)?.package.as_ref()?.manifest;
+        let suffix = manifest.title_accent.as_deref()?;
+        let color = manifest.status_layout.as_ref().and_then(|layout| layout.style.accent_rgb());
+        Some((suffix, color))
+    }
+
     #[cfg(windows)]
     pub(crate) fn source_attribution(
         &self,
@@ -1894,6 +2006,9 @@ impl LocalPlugins {
             Some(Err(health)) => (None, *health),
             None if record.source_kind().is_some() && record.source_grant().is_none() => {
                 (None, StatusHealth::Unconfigured)
+            }
+            None if self.errors.get(id).is_some_and(|error| error.starts_with("插件画面有误")) => {
+                (None, StatusHealth::CanvasInvalid)
             }
             None if self.errors.contains_key(id) => (None, StatusHealth::Invalid),
             None => (None, StatusHealth::Waiting),

@@ -196,6 +196,55 @@ fn settled(h: &mut H, id: &str, expected: StatusHealth) {
 }
 
 #[test]
+fn plugin_canvas_demo_renders_with_mixed_layout() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let mut h = H::new();
+    let id = "example.canvas-demo";
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("spike/examples/canvas-demo/plugin.json");
+    h.app.plugins.install(&path).unwrap();
+    h.app.plugins.enable(id, true).unwrap();
+    settled(&mut h, id, StatusHealth::Ready);
+    assert_eq!(h.app.plugins.status_height(id), 42.0 + 172.0 + 26.0 + 16.0 + 6.0 + 16.0);
+    h.app.show_status_page(id);
+    let cursor = H::local(225.0, 85.0);
+    if let Some(dir) = std::env::var_os("DAOZAI_CANVAS_SCREENSHOT_DIR") {
+        let dir = std::path::PathBuf::from(dir);
+        fs::create_dir_all(&dir).unwrap();
+        shoot_feature(&mut h, &mut feature_raster(), &dir, "A-画布图元", 30, Some(cursor), "2026-11-24");
+    }
+    h.hover(cursor, 0.8);
+    assert!(has_text(&h, "这行是与画布混排的标准状态组件。"));
+    assert!(has_text(&h, "画布"));
+    assert!(h.shapes.iter().any(|shape| matches!(&shape.shape,
+        egui::Shape::Text(text) if text.galley.text() == "图元"
+            && text.fallback_color == egui::Color32::from_rgb(0x34, 0x7f, 0x69))));
+}
+
+#[test]
+fn plugin_canvas_scroll_consumes_wheel_without_turning_the_island_page() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let mut h = H::new();
+    let id = "example.canvas-live-demo";
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("spike/examples/canvas-live-demo/plugin.json");
+    h.app.plugins.install(&path).unwrap();
+    h.app.plugins.enable(id, true).unwrap();
+    settled(&mut h, id, StatusHealth::Ready);
+    h.app.show_status_page(id);
+    let cursor = H::local(294.0, 153.0);
+    h.hover(cursor, 0.8);
+    let page = h.app.page();
+    let last_visible = |h: &H| h.shapes.iter().any(|shape| {
+        matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == "记录 10"
+            && shape.clip_rect.contains_rect(text.visual_bounding_rect()))
+    });
+    assert!(!last_visible(&h));
+    h.wheel(-350.0);
+    h.hover(cursor, 0.5);
+    assert_eq!(h.app.page(), page);
+    assert!(last_visible(&h));
+}
+
+#[test]
 fn plugin_status_pages_render_from_authorized_data_and_keep_the_native_carousel() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let mut h = H::new();

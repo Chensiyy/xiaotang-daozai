@@ -53,6 +53,139 @@ fn example_skin() -> &'static Path {
     ))
 }
 
+fn example_font() -> &'static Path {
+    Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/spike/examples/font-zh/plugin.json"))
+}
+
+#[test]
+fn sdk_spike_canvas_font_pack_rejects_invalid_assets() -> Result<()> {
+    use super::super::font_assets::{self, Entry};
+
+    for path in ["../font.ttf", "/font.ttf", "C:/font.otf", "font.woff2"] {
+        let source = json!({"fonts":[{"name":"字型","file":path}]}).to_string();
+        assert!(Entry::decode(&source).is_err(), "{path}");
+    }
+    let assets = example_font().parent().unwrap();
+    let entry = Entry::decode(&fs::read_to_string(assets.join("fonts.json"))?)?;
+    let bytes = fs::read(assets.join("ZCOOLKuaiLe-Regular.ttf"))?;
+    let license = ["OFL.txt"];
+    assert!(font_assets::read(&entry, std::iter::empty(), 0, |_, _| Ok(Vec::new()))
+        .err().unwrap().to_string().contains("OFL.txt"));
+    assert!(font_assets::read(&entry, license.into_iter(), 0, |_, _| Ok(b"non-font".to_vec()))
+        .err().unwrap().to_string().contains("TTF"));
+    assert!(font_assets::read(&entry, license.into_iter(), 0, |_, limit| Ok(vec![0; limit as usize + 1]))
+        .err().unwrap().to_string().contains("8 MiB"));
+    assert!(font_assets::read(&entry, license.into_iter(), font_assets::PACKAGE_LIMIT, |_, _| Ok(bytes.clone()))
+        .err().unwrap().to_string().contains("16 MiB"));
+    Ok(())
+}
+
+#[test]
+fn sdk_spike_canvas_font_pack_registers_falls_back_and_survives_restart() -> Result<()> {
+    use ab_glyph::Font;
+    use crate::theme::{self, W};
+
+    let fixture = Fixtures::new()?;
+    let dir = fixture.0.join("installed");
+    let id = "example.zcool-kuaile";
+    let name = "站酷快乐体";
+    let family = egui::FontFamily::Name(format!("plugin:{name}").into());
+    let mut host = LocalPlugins::open(dir.clone());
+    host.install(example_font())?;
+    host.enable(id, true)?;
+    drop(host);
+    let mut host = LocalPlugins::open(dir);
+    let ctx = egui::Context::default();
+    theme::load_fonts(&ctx);
+    let fallback = theme::font(20.0, W::Regular);
+    let source = fs::read(example_font().with_file_name("ZCOOLKuaiLe-Regular.ttf"))?;
+    assert_eq!(ab_glyph::FontRef::try_from_slice(&source).unwrap().glyph_id('→').0, 0);
+    let _ = ctx.run(Default::default(), |ctx| host.sync_canvas_fonts(ctx));
+    let _ = ctx.run(Default::default(), |ctx| {
+        let installed = ctx.fonts(|fonts| fonts.families());
+        let font = theme::canvas_font(20.0, W::Regular, Some(name), &installed);
+        assert_eq!(font.family, family);
+        ctx.fonts(|fonts| {
+            assert!(fonts.has_glyph(&font, '岛'));
+            assert!(fonts.has_glyph(&font, '→'));
+            assert_eq!(fonts.glyph_width(&font, '→'), fonts.glyph_width(&fallback, '→'));
+            let galley = fonts.layout_no_wrap("岛→".into(), font, egui::Color32::WHITE);
+            assert_eq!(galley.text(), "岛→");
+        });
+    });
+    if let Some(dir) = std::env::var_os("DAOZAI_CANVAS_SCREENSHOTS") {
+        save_font_preview(&host, &PathBuf::from(dir))?;
+    }
+    host.enable(id, false)?;
+    let _ = ctx.run(Default::default(), |ctx| host.sync_canvas_fonts(ctx));
+    let _ = ctx.run(Default::default(), |ctx| {
+        let installed = ctx.fonts(|fonts| fonts.families());
+        assert!(!installed.contains(&family));
+        assert_eq!(theme::canvas_font(20.0, W::Regular, Some(name), &installed), fallback);
+    });
+    host.enable(id, true)?;
+    let _ = ctx.run(Default::default(), |ctx| host.sync_canvas_fonts(ctx));
+    host.uninstall(id, false)?;
+    let _ = ctx.run(Default::default(), |ctx| host.sync_canvas_fonts(ctx));
+    let _ = ctx.run(Default::default(), |ctx| assert!(!ctx.fonts(|fonts| fonts.families()).contains(&family)));
+    Ok(())
+}
+
+fn save_font_preview(host: &LocalPlugins, dir: &Path) -> Result<()> {
+    use crate::{paint::Card, plugin_canvas::Canvas, plugin_canvas_ui};
+
+    let ctx = egui::Context::default();
+    crate::theme::load_fonts(&ctx);
+    let width = 419;
+    let height = 230;
+    let bounds = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(width as f32, height as f32));
+    let canvas = Arc::new(Canvas::parse(json!({
+        "height":172,"nodes":[
+            {"rect":[0,0,387,172],"r":12,"fill":"#202A23"},
+            {"text":"站酷快乐体","at":[18,66],"size":36,"font":"站酷快乐体","fill":"#F7EACF"},
+            {"text":"岛仔画布 · 趋势与进度","at":[18,108],"size":24,"font":"站酷快乐体","fill":"#C8D97B"},
+            {"text":"中文至箭头 →","at":[18,145],"size":18,"font":"站酷快乐体","fill":"#F7EACF"}
+        ]
+    })).map_err(|error| fail(&error))?);
+    let first = ctx.run(Default::default(), |ctx| host.sync_canvas_fonts(ctx));
+    let output = ctx.run(egui::RawInput { screen_rect: Some(bounds), ..Default::default() }, |ctx| {
+        egui::CentralPanel::default().frame(egui::Frame::NONE).show(ctx, |ui| {
+            let card = Card::new(ui, bounds.min, bounds);
+            card.painter.rect_filled(bounds, 16.0, egui::Color32::from_rgb(15, 18, 15));
+            card.painter.text(egui::pos2(16.0, 21.0), egui::Align2::LEFT_CENTER, "画布字体",
+                crate::theme::font(15.0, crate::theme::W::Semibold), egui::Color32::WHITE);
+            plugin_canvas_ui::draw(&card, "font-preview", &canvas, card.rect(16.0, 42.0, 387.0, 172.0),
+                plugin_canvas_ui::CanvasTheme { palette: None, accent: None, background: egui::Color32::BLACK },
+                |_| None);
+        });
+    });
+    let mut raster = crate::preview_raster::Raster::new(width, height);
+    raster.update_textures(&first.textures_delta);
+    raster.update_textures(&output.textures_delta);
+    raster.draw(&ctx.tessellate(output.shapes, output.pixels_per_point), output.pixels_per_point);
+    let mut rgba = Vec::new();
+    raster.to_rgba8(&mut rgba);
+    fs::create_dir_all(dir)?;
+    image::save_buffer(dir.join("C-font-zh.png"), &rgba, width as u32, height as u32, image::ColorType::Rgba8)?;
+    Ok(())
+}
+
+#[cfg(windows)]
+#[test]
+fn sdk_spike_canvas_font_zip_preserves_assets_and_license() -> Result<()> {
+    use super::super::market;
+
+    let fixture = Fixtures::new()?;
+    let zip = fixture.0.join("font.zip");
+    market::pack(example_font(), &zip)?;
+    let mut archive = zip::ZipArchive::new(fs::File::open(&zip)?)?;
+    assert_eq!(archive.len(), 5);
+    assert!(archive.by_name("OFL.txt")?.size() > 0);
+    assert!(archive.by_name("ZCOOLKuaiLe-Regular.ttf")?.size() > 1024 * 1024);
+    market::submit(&zip, &fixture.0.join("catalog.json"))?;
+    Ok(())
+}
+
 #[test]
 fn appearance_theme_rejects_invalid_colors_fields_and_size() -> Result<()> {
     for invalid in [

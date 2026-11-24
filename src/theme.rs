@@ -119,6 +119,59 @@ pub fn load_fonts(ctx: &egui::Context) {
     ctx.set_fonts(shared_fonts().clone());
 }
 
+#[cfg(feature = "sdk-js")]
+pub(crate) fn sync_canvas_fonts(
+    ctx: &egui::Context,
+    active: std::collections::BTreeMap<String, Arc<FontData>>,
+) {
+    let changed = ctx.data_mut(|data| {
+        let previous = data.get_temp_mut_or_default::<std::collections::BTreeMap<String, Arc<FontData>>>(
+            egui::Id::new("canvas-fonts-active"),
+        );
+        if previous.len() == active.len() && active.iter().all(|(name, font)| {
+            previous.get(name).is_some_and(|installed| Arc::ptr_eq(installed, font))
+        }) {
+            return false;
+        }
+        *previous = active.clone();
+        true
+    });
+    if changed {
+        let mut definitions = ctx.fonts(|fonts| fonts.lock().fonts.definitions().clone());
+        definitions.font_data.retain(|name, _| !name.starts_with("plugin:"));
+        definitions.families.retain(|family, _| !canvas_font_family(family));
+        let fallback = definitions.families.get(&FontFamily::Proportional).cloned().unwrap_or_default();
+        for (name, font) in active {
+            let mut family = vec![name.clone()];
+            family.extend(fallback.iter().cloned());
+            definitions.families.insert(FontFamily::Name(name.clone().into()), family);
+            definitions.font_data.insert(name, font);
+        }
+        ctx.set_fonts(definitions);
+    }
+}
+
+#[cfg(feature = "sdk-js")]
+pub(crate) fn canvas_font_family(family: &FontFamily) -> bool {
+    matches!(family, FontFamily::Name(name) if name.starts_with("plugin:"))
+}
+
+#[cfg(feature = "sdk-js")]
+pub(crate) fn canvas_font(
+    size: f32,
+    weight: W,
+    name: Option<&str>,
+    installed: &[FontFamily],
+) -> FontId {
+    if let Some(name) = name {
+        let family = FontFamily::Name(format!("plugin:{name}").into());
+        if installed.contains(&family) {
+            return FontId::new(size, family);
+        }
+    }
+    font(size, weight)
+}
+
 /// 测试导出「修复前」对照图：去掉藏文字体后的字体表。
 #[cfg(test)]
 pub(crate) fn fonts_without_tibetan()->FontDefinitions {

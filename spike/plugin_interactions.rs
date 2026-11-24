@@ -3,11 +3,22 @@
 use super::*;
 use crate::{
     paint::Card,
+    plugin_canvas::{live::Hit, Kind, Node},
+    plugin_canvas_ui::{LiveOptions, LiveResult},
     plugin_status::valid_text,
     plugin_status_ui::{self, ClickTarget, Interaction, InteractionResponse},
 };
+use eframe::egui;
 use std::collections::{BTreeSet, VecDeque};
 use url::{Host, Url};
+
+fn apply_multiline_draft(status: &mut PluginStatus, form: &Values) {
+    for field in status.fields.iter_mut().filter(|field| field.multiline) {
+        if let Some(value) = form.get(&field.key) {
+            field.value = Some(value.clone());
+        }
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) enum EventName {
@@ -186,6 +197,25 @@ impl Manifest {
         }
         Ok(())
     }
+
+    pub(super) fn check_canvas_actions(&self, nodes: &[Node]) -> Result<()> {
+        for node in nodes {
+            if let Some(hit) = &node.hit {
+                if !self.has_capability("action") {
+                    return Err(fail("画布的点击区域需要声明 action"));
+                }
+                if let Hit::Open(url) = hit {
+                    if self.open_action_url(url).is_none() {
+                        return Err(fail("动作链接须为清单 network.hosts 中的 HTTPS 地址"));
+                    }
+                }
+            }
+            if let Kind::Group { group, .. } = &node.kind {
+                self.check_canvas_actions(group)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 impl Record {
@@ -254,15 +284,26 @@ impl LocalPlugins {
 
     pub(crate) fn status_height(&self, id: &str) -> f32 {
         let layout = self.status_layout(id);
+        let status = self.status_page(id).and_then(|(_, status, _)| status);
+        let draft = status
+            .zip(self.interactions.forms.get(id))
+            .filter(|(status, _)| status.fields.iter().any(|field| field.multiline))
+            .map(|(status, form)| {
+                let mut status = status.clone();
+                apply_multiline_draft(&mut status, form);
+                status
+            });
+        let status = draft.as_ref().or(status);
         let default_controls = layout.is_none()
+            && status.is_none_or(|status| status.canvas.is_none())
             && self
                 .records
                 .get(id)
                 .and_then(|record| record.package.as_ref())
                 .is_some_and(|package| package.manifest.has_capability("action"));
-        plugin_status_ui::status_page_height(layout)
+        plugin_status_ui::status_page_height(layout, status)
             + if default_controls {
-                plugin_status_ui::DEFAULT_FORM_HEIGHT
+                plugin_status_ui::DEFAULT_FORM_HEIGHT + status.map_or(0.0, plugin_status_ui::extra_fields_height)
             } else {
                 0.0
             }
@@ -279,39 +320,69 @@ impl LocalPlugins {
             return InteractionResponse::default();
         };
         let layout = self.status_layout(id);
-        let Some(controls) = status.filter(|status| {
-            health == crate::plugin_status::StatusHealth::Ready && status.has_interactions()
-        }) else {
-            plugin_status_ui::draw_status_page(c, id, status, health, layout, backdrop, privacy_blocked);
-            return InteractionResponse::default();
-        };
-        let status = controls.clone();
-        let layout = layout.cloned();
-        let revision = self.status[id].as_ref().unwrap().0;
+        let record = &self.records[id];
+        let package = record.package.as_ref().unwrap();
+        let logs = &self.devtools.logs;
+        let revision = self.status.get(id).and_then(|state| state.as_ref().ok()).map_or(0, |state| state.0);
         let enabled = self.action_available(id);
-        let form = self
-            .interactions
-            .forms
-            .entry(id.to_owned())
-            .or_insert_with(|| {
-                status
-                    .fields
-                    .iter()
-                    .map(|field| (field.key.clone(), field.value.clone().unwrap_or_default()))
-                    .collect()
+        let pet_sheets = self.appearance_pet();
+        let mut live = LiveResult::default();
+        let mut paint_canvas = |card: &Card<'_>, canvas: &Arc<Canvas>, area, theme| {
+            let ctx = card.ui.ctx();
+            let options = LiveOptions {
+                now: chrono::Utc::now(),
+                revision,
+                allow_action: enabled,
+                interactive: card.live,
+            };
+            live = crate::plugin_canvas_ui::draw_live_with_pet(card, id, canvas, area, theme, options, pet_sheets.clone(), |name| {
+                package.canvas_images.get(name)?.texture(ctx, name)
             });
-        let mut interaction = Interaction::new(id, revision, form, enabled);
-        plugin_status_ui::draw_interactive_status_page(
-            c,
-            id,
-            &status,
-            layout.as_ref(),
-            backdrop,
-            privacy_blocked,
-            &mut interaction,
-        );
-        let (response, action) = interaction.finish();
-        if let Some(action) = action {
+            if live.timed_out && !record.from_market {
+                let key = egui::Id::new(("plugin-canvas-budget-log", id));
+                let report = ctx.data_mut(|data| {
+                    let reported = data.get_temp::<bool>(key).unwrap_or(false);
+                    data.insert_temp(key, true);
+                    !reported
+                });
+                if report {
+                    logs.append(id, vec!["画布绘制超过 4 毫秒，已回退到缓存帧".to_owned()]);
+                }
+            }
+        };
+        let (mut response, action) = if let Some(controls) = status.filter(|status| {
+            health == crate::plugin_status::StatusHealth::Ready && status.has_interactions()
+        }) {
+            let mut status = controls.clone();
+            let layout = layout.cloned();
+            let form = self
+                .interactions
+                .forms
+                .entry(id.to_owned())
+                .or_insert_with(|| {
+                    status
+                        .fields
+                        .iter()
+                        .map(|field| (field.key.clone(), field.value.clone().unwrap_or_default()))
+                        .collect()
+                });
+            apply_multiline_draft(&mut status, form);
+            let mut interaction = Interaction::new(id, revision, form, enabled);
+            plugin_status_ui::draw_interactive_status_page(
+                c, id, &status, layout.as_ref(), backdrop, privacy_blocked, &mut interaction,
+                Some(&mut paint_canvas),
+            );
+            interaction.finish()
+        } else {
+            plugin_status_ui::draw_status_page(
+                c, id, status, health, layout, backdrop, privacy_blocked, Some(&mut paint_canvas),
+            );
+            (InteractionResponse::default(), None)
+        };
+        response.canvas_animating = live.animating;
+        response.canvas_scroll = live.scroll_area;
+        response.canvas_repaint = live.repaint_after;
+        if let Some(action) = action.or_else(|| live.hit.map(ClickTarget::Canvas)) {
             self.submit_action(c.ui.ctx(), id, revision, action);
         }
         response
@@ -350,6 +421,17 @@ impl LocalPlugins {
             }
             ClickTarget::CopyItem(index) => {
                 (None, None, status.items.get(index).filter(|item| item.action.is_some()).and_then(|item| item.copy.as_deref()))
+            }
+            ClickTarget::Canvas(ref hit) => {
+                let package = self.records[id].package.as_ref().unwrap();
+                if status.canvas.is_none() || !package.manifest.has_capability("action") {
+                    return false;
+                }
+                match hit {
+                    Hit::Action(action) => (Some(action.as_str()), None, None),
+                    Hit::Open(url) => (None, Some(url.as_str()), None),
+                    Hit::Copy(text) => (None, None, Some(text.as_str())),
+                }
             }
         };
         if let Some(raw) = open {

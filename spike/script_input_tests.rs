@@ -1,6 +1,15 @@
 use super::*;
 
 #[test]
+fn canvas_output_uses_a_larger_limit_only_when_present() {
+    let output = |canvas, length| json!({"canvas":canvas, "card":"x".repeat(length)}).to_string();
+    let canvas = json!({"height": 40, "nodes": []});
+    assert!(script_settings::split_output(&output(Value::Null, 20 * 1024)).is_err());
+    assert!(script_settings::split_output(&output(canvas.clone(), 20 * 1024)).is_ok());
+    assert!(script_settings::split_output(&output(canvas, 64 * 1024)).is_err());
+}
+
+#[test]
 fn settings_accept_declared_formats_and_reject_invalid_defaults() -> Result<()> {
     let cases = [
         (json!({"type":"text"}), "北京", " "),
@@ -40,6 +49,40 @@ fn settings_accept_declared_formats_and_reject_invalid_defaults() -> Result<()> 
     let settings = old.settings_values(&Values::from([("title".into(), "工资".into())]));
     assert_eq!(settings["title"], "工资");
     assert_eq!(settings["target"], "2026-12-25");
+    Ok(())
+}
+
+#[test]
+fn canvas_settings_search_chinese_timezones_and_validate_list_choices() -> Result<()> {
+    use crate::plugin_setting_catalog::timezone_cities;
+
+    let cities: Vec<_> = timezone_cities("").collect();
+    assert!(cities.len() >= 300);
+    assert!(cities.iter().all(|city| city.zone.parse::<chrono_tz::Tz>().is_ok()));
+    assert!(timezone_cities("纽约").any(|city| city.zone == "America/New_York"));
+    assert!(timezone_cities("美国").any(|city| city.zone == "America/Chicago"));
+    assert!(timezone_cities("europe/london").any(|city| city.city == "伦敦"));
+    assert!(timezone_cities("不存在的地方").next().is_none());
+
+    let spec = json!({
+        "key":"rows", "label":"项目", "type":"list", "default":"[]", "maxItems":20,
+        "item":[
+            {"key":"zone","label":"时区","type":"timezone","default":"Asia/Shanghai"},
+            {"key":"icon","label":"图标","type":"icon","default":"heart"},
+            {"key":"color","label":"颜色","type":"color","default":"red"},
+            {"key":"enabled","label":"启用","type":"switch","default":"true"}
+        ]
+    });
+    let field: Field = serde_json::from_value(spec)?;
+    assert!(valid_fields(std::slice::from_ref(&field), false));
+    let good = json!({"zone":"America/New_York","icon":"cake","color":"purple","enabled":"false"});
+    assert!(valid_field(&field, &json!([good.clone()]).to_string()));
+    for (key, value) in [("zone", "纽约"), ("icon", "missing"), ("color", "#ffffff"), ("enabled", "on")] {
+        let mut bad = good.clone();
+        bad[key] = json!(value);
+        assert!(!valid_field(&field, &json!([bad]).to_string()));
+    }
+    assert!(!valid_fields(field.item.as_deref().unwrap(), false));
     Ok(())
 }
 
