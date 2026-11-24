@@ -898,8 +898,9 @@ impl eframe::App for Shell {
         let mut out = out;
         #[cfg(windows)]
         // 页面自己驱动的动画（天气日出日落、性能详情、翻页后的页面缓动）靠 egui 立即重绘推进，
-        // 不在岛体的过渡清单里；兼容渲染下也按交互帧逐帧交付，否则读回和等待交替，只剩 30 帧。
-        let page_animating = self.app.render_compat_running && out.expanded && ctx.requested_repaint_last_pass();
+        // 兼容渲染下也按交互帧交付。插件状态页已经在 FrameOut 标记画布动画，截图回调的重绘只负责交付。
+        let page_animating = self.app.render_compat_running && out.expanded
+            && !self.app.is_plugin_status_page() && ctx.requested_repaint_last_pass();
         #[cfg(windows)]
         let interactive_transition = !self.hidden && (out.interactive_transition || page_animating);
         #[cfg(windows)]

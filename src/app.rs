@@ -1780,6 +1780,9 @@ impl App {
     pub fn page(&self) -> usize {
         self.page
     }
+    pub fn is_plugin_status_page(&self) -> bool {
+        self.page >= PAGE_NAMES.len()
+    }
     /// 打开健康提醒设置里的「提醒时段」二级页（演示录制用）。
     pub fn show_health_time(&mut self) { self.health_time = true; }
     /// 切到饮水页的久坐屏，并假定已连续久坐 minutes 分钟（演示录制用）。
