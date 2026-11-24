@@ -39,6 +39,7 @@ mod package_data;
 mod storage_backup;
 #[path = "local_ui.rs"]
 mod ui;
+pub(crate) use ui::{plugin_tag, SettingsNavigation};
 use super::{fail, Result};
 use crate::plugin_status::{PluginStatus, StatusHealth, StatusLayout};
 use crate::plugin_canvas::Canvas;

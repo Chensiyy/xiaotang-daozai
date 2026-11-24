@@ -923,6 +923,8 @@ pub struct App {
     horizontal_width: f32,
     pub(crate) settings_focus_requested:bool,
     pub(crate) settings_tab:usize,
+    #[cfg(feature="sdk-js")]
+    pub(crate) settings_plugin:Option<String>,
     pub(crate) settings_category:usize,
     pub messenger_statuses:std::collections::HashMap<Messenger,String>,
     pub(crate) notification_apps:model::NotificationApps,
@@ -1132,6 +1134,8 @@ impl App {
             media_anchor: (String::new(), 0.0, 0.0, false),
             media: NowPlaying::default(),
             music_artwork: None,
+            #[cfg(feature="sdk-js")]
+            settings_plugin:None,
             forced_open_until:0.0, settings_open:false, settings_window:std::sync::Arc::new(std::sync::Mutex::new(crate::settings_window::State::load())), displays:Vec::new(), browser_at_top:false, browser_minimal_active:false, glass_tint:0.0, fluid:Default::default(), fluid_origin:Pos2::ZERO, fluid_art:None, fluid_title:String::new(), screen:None, horizontal_width:WIN_W, settings_focus_requested:false, settings_tab:0, settings_category:0, messenger_statuses:Default::default(), notification_apps:model::NotificationApps::load(), subpage:None, task_dialog:None,
             listener_status: "尚未连接".into(),
             notification_bell_until: 0.0, notification_bell_at: -10.0, notice: None, hud_notice: None, hud_alpha: 0.0, notice_width:Spring::new(0.0,CLOSE.0,CLOSE.1), notice_details:false, pending_messengers:Vec::new(), messenger_scroll:0.0, alerts: Default::default(), history: Default::default(), pending: vec![],
@@ -1751,8 +1755,7 @@ impl App {
 
     pub fn show_page(&mut self,page:usize) {
         if !self.module_on(page) {
-            self.settings_tab=self.page_settings_tab(page);
-            self.open_settings();
+            self.open_page_settings(page);
             return;
         }
         self.notice=None;
@@ -1775,6 +1778,8 @@ impl App {
     }
 
     pub fn open_settings(&mut self){
+        #[cfg(feature="sdk-js")]
+        if self.settings_tab != crate::extras::SETTINGS_TAB_PLUGIN_DETAIL { self.settings_plugin = None; }
         self.settings_open=true;
         self.settings_focus_requested=true;
     }
@@ -1890,6 +1895,31 @@ impl App {
 
     fn page_settings_tab(&self, page: usize) -> usize {
         PAGE_SETTINGS_TABS.get(page).copied().unwrap_or(crate::extras::SETTINGS_TAB_PAGES)
+    }
+
+    fn open_page_settings(&mut self, page: usize) {
+        #[cfg(feature="sdk-js")]
+        if let Some(id) = page.checked_sub(PAGE_NAMES.len())
+            .and_then(|index| self.status_pages.get(index)).map(|(id, _)| id.clone())
+        {
+            self.open_plugin_settings(&id);
+            return;
+        }
+        self.settings_tab = self.page_settings_tab(page);
+        self.open_settings();
+    }
+
+    #[cfg(feature="sdk-js")]
+    pub(crate) fn open_plugin_settings(&mut self, id: &str) {
+        if self.plugins.standalone_settings_pages().any(|(plugin, _)| plugin == id) {
+            self.settings_plugin = Some(id.to_owned());
+            self.settings_tab = crate::extras::SETTINGS_TAB_PLUGIN_DETAIL;
+        } else {
+            self.settings_plugin = None;
+            self.settings_tab = self.plugins.settings_destination(id)
+                .unwrap_or(crate::extras::SETTINGS_TAB_PLUGINS);
+        }
+        self.open_settings();
     }
 
     #[cfg(feature="sdk-js")]
@@ -3924,7 +3954,7 @@ impl App {
                 c.circle(394.0,18.0,13.0,Color32::from_white_alpha((hover*24.0) as u8));
                 paint::gear(&c.scaled(394.0,18.0,0.8*(1.0-press*0.08)),394.0,18.0,paint::mix(theme::GRAY,theme::WHITE,hover));
             }
-            if settings.clicked(){self.settings_tab=self.page_settings_tab(self.page);self.open_settings();}
+            if settings.clicked(){self.open_page_settings(self.page);}
         }
         if self.subpage==Some(self.page) {
             c.text(15.0,25.0,"‹",19.0,W::Bold,theme::WHITE,H::Left);

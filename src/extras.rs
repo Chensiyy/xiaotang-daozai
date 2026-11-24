@@ -1653,6 +1653,8 @@ pub(crate) const SETTINGS_TAB_PAGES: usize = 10;
 pub(crate) const SETTINGS_TAB_WIRELESS: usize = 16;
 #[cfg_attr(not(feature="sdk-js"),allow(dead_code))]
 pub(crate) const SETTINGS_TAB_PLUGINS: usize = 17;
+#[cfg(feature="sdk-js")]
+pub(crate) const SETTINGS_TAB_PLUGIN_DETAIL: usize = 18;
 /// 侧栏：一项就是一页，不再有页内子标签。专注与健康（2、3）、待办与置物（4、5）各合成一页；
 /// 插件和关于固定在左下角，上方一条细线和功能页分开。
 /// 第四列是这一项之前的分组标题。
@@ -1662,9 +1664,7 @@ const SETTINGS_GROUPS: [(&str,usize,usize,&str);15 + cfg!(feature="sdk-js") as u
     #[cfg(feature="sdk-js")] ("插件",SETTINGS_TAB_PLUGINS,SETTINGS_TAB_PLUGINS,""),
     ("关于",9,9,""),
 ];
-/// 固定在侧栏底部的第一项。
-const SETTINGS_BOTTOM_START:usize=if cfg!(feature="sdk-js"){SETTINGS_TAB_PLUGINS}else{9};
-const SETTINGS_BOTTOM_ROWS:f32=if cfg!(feature="sdk-js"){2.0}else{1.0};
+const SETTINGS_BOTTOM_ROWS: usize = if cfg!(feature="sdk-js") { 2 } else { 1 };
 /// 分页标题；合并页（3→2、5→4）显示合并后的名字。
 fn settings_tab_title(tab:usize)->&'static str{
     SETTINGS_GROUPS.iter().find(|(_,start,end,_)|(*start..=*end).contains(&tab)).map_or("通用",|g|g.0)
@@ -1672,7 +1672,84 @@ fn settings_tab_title(tab:usize)->&'static str{
 #[cfg(test)]
 pub(crate) fn settings_tab_group_for_tests(tab:usize)->&'static str{settings_tab_title(tab)}
 
+fn settings_sidebar_row(
+    ui: &mut egui::Ui, name: &str, icon: egui::ImageSource<'static>, row_h: f32,
+    selected: bool, wireless: bool,
+) -> egui::Response {
+    let ctx = ui.ctx().clone();
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), row_h), egui::Sense::click());
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), name));
+    if selected || response.hovered() {
+        let fill = if selected {
+            settings_color(&ctx, Color32::from_rgb(43,43,46), Color32::from_rgb(214,221,232))
+        } else {
+            settings_color(&ctx, Color32::from_rgb(30,30,33), Color32::from_rgb(225,230,238))
+        };
+        ui.painter().rect_filled(rect, 7.0, fill);
+    }
+    let icon_bg = egui::Rect::from_center_size(egui::pos2(rect.left()+21.0,rect.center().y),egui::vec2(23.0,23.0));
+    if wireless { paint_wireless_settings_icon(ui, icon_bg, icon); }
+    else { egui::Image::new(icon).paint_at(ui, icon_bg); }
+    let color = if selected {
+        settings_color(&ctx, Color32::WHITE, Color32::from_rgb(30,34,41))
+    } else {
+        settings_color(&ctx, Color32::from_gray(225), Color32::from_gray(55))
+    };
+    ui.painter().with_clip_rect(rect.shrink2(egui::vec2(5.0,0.0))).text(
+        egui::pos2(rect.left()+40.0,rect.center().y), egui::Align2::LEFT_CENTER, name,
+        egui::FontId::proportional(13.0), color,
+    );
+    response
+}
+
 impl App {
+    fn settings_sidebar_builtin(
+        &mut self, ui: &mut egui::Ui, (name, start, end): (&str, usize, usize),
+        row_h: f32, row_gap: f32,
+    ) {
+        let icon = match start {
+            SETTINGS_TAB_WIRELESS=>egui::include_image!("../assets/device-icons/bluetooth-linear.svg"),
+            0=>egui::include_image!("../assets/settings-icons/system/general.svg"),
+            11=>egui::include_image!("../assets/settings-icons/system/quota.svg"),
+            10=>egui::include_image!("../assets/settings-icons/system/pages.svg"),
+            1=>egui::include_image!("../assets/settings-icons/system/music.svg"),
+            2=>egui::include_image!("../assets/settings-icons/system/focus.svg"),
+            4=>egui::include_image!("../assets/settings-icons/system/tasks.svg"),
+            6=>egui::include_image!("../assets/settings-icons/system/notifications.svg"),
+            15=>egui::include_image!("../assets/settings-icons/system/performance.svg"),
+            12=>egui::include_image!("../assets/settings-icons/system/weather.svg"),
+            7=>egui::include_image!("../assets/settings-icons/system/mail.svg"),
+            8=>egui::include_image!("../assets/settings-icons/system/calendar.svg"),
+            SETTINGS_TAB_APPEARANCE=>egui::include_image!("../assets/settings-icons/system/appearance.svg"),
+            SETTINGS_TAB_POSITION=>egui::include_image!("../assets/settings-icons/system/position.svg"),
+            #[cfg(feature="sdk-js")]
+            SETTINGS_TAB_PLUGINS=>egui::include_image!("../assets/settings-icons/system/shelf.svg"),
+            _=>egui::include_image!("../assets/settings-icons/system/about.svg"),
+        };
+        #[cfg(feature="sdk-js")]
+        let icon = settings_tab_module(start).and_then(|page|self.plugins.appearance_icon(page,true)).unwrap_or(icon);
+        let selected = (start..=end).contains(&self.settings_tab);
+        if settings_sidebar_row(ui, name, icon, row_h, selected, start == SETTINGS_TAB_WIRELESS).clicked() && !selected {
+            self.settings_tab = start;
+            #[cfg(feature="sdk-js")]
+            { self.settings_plugin = None; }
+        }
+        ui.add_space(row_gap);
+    }
+
+    #[cfg(feature="sdk-js")]
+    fn apply_settings_navigation(&mut self, route: crate::sdk_spike::local::SettingsNavigation) {
+        use crate::sdk_spike::local::SettingsNavigation;
+        match route {
+            SettingsNavigation::Tab(tab) => {
+                self.settings_tab = tab;
+                self.settings_plugin = None;
+            }
+            SettingsNavigation::Plugin(id) => self.open_plugin_settings(&id),
+            SettingsNavigation::OpenStatus(id) => self.show_status_page(&id),
+        }
+    }
+
     /// 功能页顶部卡片：名称、说明和开启状态。开关统一在「页面管理」；关闭时这里给出「开启」入口。
     /// 返回功能是否开启，调用方据此把下面的设置置灰。
     fn settings_feature_header(&mut self,ui:&mut egui::Ui,page:usize,description:&str,extra:impl FnOnce(&mut Self,&mut egui::Ui))->bool{
@@ -1753,65 +1830,97 @@ impl App {
             }
             if ctx.input(|i|i.viewport().close_requested()){self.settings_open=false;self.quota_close_connection();}
             let before=format!("{:?}",self.settings);
+            #[cfg(feature="sdk-js")]
+            let plugin_pages: Vec<_> = self.plugins.standalone_settings_pages()
+                .map(|(id, name)| (id.to_owned(), name.to_owned())).collect();
+            #[cfg(not(feature="sdk-js"))]
+            let plugin_pages: &[(&str, &str)] = &[];
+            #[cfg(feature="sdk-js")]
+            if self.settings_tab == SETTINGS_TAB_PLUGIN_DETAIL
+                && !plugin_pages.iter().any(|(id, _)| self.settings_plugin.as_ref() == Some(id))
+            {
+                self.settings_tab = SETTINGS_TAB_PLUGINS;
+                self.settings_plugin = None;
+            }
             egui::SidePanel::left("settings-sidebar").resizable(false).exact_width(180.0).frame(egui::Frame::new().fill(settings_color(ctx,Color32::from_rgb(29,29,32),Color32::from_rgb(237,239,243))).stroke(egui::Stroke::NONE).inner_margin(egui::Margin::symmetric(10,12))).show(ctx,|ui|{
                 ui.add_space(2.0);
-                // 窗口拉到最矮时按可用高度压缩行高，「关于」始终留在底部可见。
-                // 每项占 行高 + 控件间距(3) + 行后空隙；两个分组标题和「关于」上方预留约 80。
-                let per=(ui.available_height()-80.0)/SETTINGS_GROUPS.len() as f32;
+                let per=(ui.available_height()-80.0)/(SETTINGS_GROUPS.len()+plugin_pages.len()) as f32;
                 let row_h=(per-6.0).clamp(20.0,32.0);
                 let row_gap=(per-3.0-row_h).clamp(0.0,3.0);
-                for (name,start,end,section) in SETTINGS_GROUPS {
-                    if !section.is_empty() {
-                        ui.add_space(if start==0{2.0}else{8.0});
-                        ui.label(egui::RichText::new(section).size(11.0).color(settings_color(ctx,Color32::from_gray(150),Color32::from_gray(105))));
-                        ui.add_space(3.0);
-                    }
-                    if start==SETTINGS_BOTTOM_START {
-                        // 底部几项贴底，上方画一条细线和功能页分开。
-                        let bottom=SETTINGS_BOTTOM_ROWS*row_h+(SETTINGS_BOTTOM_ROWS-1.0)*(row_gap+3.0);
-                        ui.add_space((ui.available_height()-bottom-14.0).max(4.0));
-                        let y=ui.cursor().top();
-                        ui.painter().hline(ui.max_rect().x_range().shrink(4.0),y,egui::Stroke::new(1.0,settings_color(ctx,Color32::from_rgb(46,46,51),Color32::from_rgb(218,222,229))));
-                        ui.add_space(9.0);
-                    }
-                    let selected=(start..=end).contains(&self.settings_tab);
-                    let (rect,response)=ui.allocate_exact_size(egui::vec2(ui.available_width(),row_h),egui::Sense::click());
-                    if response.clicked() && !selected{self.settings_tab=start;}
-                    if selected || response.hovered(){
-                        ui.painter().rect_filled(rect,7.0,if selected{settings_color(ctx,Color32::from_rgb(43,43,46),Color32::from_rgb(214,221,232))}else{settings_color(ctx,Color32::from_rgb(30,30,33),Color32::from_rgb(225,230,238))});
-                    }
-                    let icon=match start {
-                        SETTINGS_TAB_WIRELESS=>egui::include_image!("../assets/device-icons/bluetooth-linear.svg"),
-                        0=>egui::include_image!("../assets/settings-icons/system/general.svg"),
-                        11=>egui::include_image!("../assets/settings-icons/system/quota.svg"),
-                        10=>egui::include_image!("../assets/settings-icons/system/pages.svg"),
-                        1=>egui::include_image!("../assets/settings-icons/system/music.svg"),
-                        2=>egui::include_image!("../assets/settings-icons/system/focus.svg"),
-                        4=>egui::include_image!("../assets/settings-icons/system/tasks.svg"),
-                        6=>egui::include_image!("../assets/settings-icons/system/notifications.svg"),
-                        15=>egui::include_image!("../assets/settings-icons/system/performance.svg"),
-                        12=>egui::include_image!("../assets/settings-icons/system/weather.svg"),
-                        7=>egui::include_image!("../assets/settings-icons/system/mail.svg"),
-                        8=>egui::include_image!("../assets/settings-icons/system/calendar.svg"),
-                        SETTINGS_TAB_APPEARANCE=>egui::include_image!("../assets/settings-icons/system/appearance.svg"),
-                        SETTINGS_TAB_POSITION=>egui::include_image!("../assets/settings-icons/system/position.svg"),
-                        #[cfg(feature="sdk-js")]
-                        SETTINGS_TAB_PLUGINS=>egui::include_image!("../assets/settings-icons/system/shelf.svg"),
-                        _=>egui::include_image!("../assets/settings-icons/system/about.svg"),
-                    };
-                    #[cfg(feature="sdk-js")]
-                    let icon=settings_tab_module(start).and_then(|page|self.plugins.appearance_icon(page,true)).unwrap_or(icon);
-                    let icon_bg=egui::Rect::from_center_size(egui::pos2(rect.left()+21.0,rect.center().y),egui::vec2(23.0,23.0));
-                    if start==SETTINGS_TAB_WIRELESS {paint_wireless_settings_icon(ui,icon_bg,icon);}
-                    else {egui::Image::new(icon).paint_at(ui,icon_bg);}
-                    ui.painter().text(egui::pos2(rect.left()+40.0,rect.center().y),egui::Align2::LEFT_CENTER,name,egui::FontId::proportional(13.0),if selected{settings_color(ctx,Color32::WHITE,Color32::from_rgb(30,34,41))}else{settings_color(ctx,Color32::from_gray(225),Color32::from_gray(55))});
-                    ui.add_space(row_gap);
+                let (main, bottom) = SETTINGS_GROUPS.split_at(SETTINGS_GROUPS.len()-SETTINGS_BOTTOM_ROWS);
+                let footer_height = bottom.len() as f32*(row_h+row_gap+ui.spacing().item_spacing.y)+17.0;
+                let main_height = (ui.available_height()-footer_height).max(0.0);
+                egui::ScrollArea::vertical().id_salt("settings-sidebar-scroll").max_height(main_height)
+                    .auto_shrink([false,false]).show(ui, |ui| {
+                        for &(name, start, end, section) in main {
+                            if !section.is_empty() {
+                                ui.add_space(if start == 0 { 2.0 } else { 8.0 });
+                                let color = settings_color(ui.ctx(), Color32::from_gray(150), Color32::from_gray(105));
+                                ui.label(egui::RichText::new(section).size(11.0).color(color));
+                                ui.add_space(3.0);
+                            }
+                            #[cfg(feature="sdk-js")]
+                            if section == "功能" {
+                                for (id, name) in &plugin_pages {
+                                    let selected = self.settings_tab == SETTINGS_TAB_PLUGIN_DETAIL
+                                        && self.settings_plugin.as_ref() == Some(id);
+                                    let icon = egui::include_image!("../assets/settings-icons/system/pages.svg");
+                                    let response = ui.push_id(("plugin-settings-sidebar", id), |ui| {
+                                        settings_sidebar_row(ui, name, icon, row_h, selected, false).on_hover_text(name)
+                                    }).inner;
+                                    if selected && focus_requested && !ui.clip_rect().contains_rect(response.rect) {
+                                        response.scroll_to_me(Some(egui::Align::Center));
+                                    }
+                                    if response.clicked() && !selected { self.open_plugin_settings(id); }
+                                    ui.add_space(row_gap);
+                                }
+                            }
+                            self.settings_sidebar_builtin(ui, (name, start, end), row_h, row_gap);
+                        }
+                    });
+                ui.add_space(4.0);
+                ui.painter().hline(ui.max_rect().x_range().shrink(4.0), ui.cursor().top(), egui::Stroke::new(1.0,
+                    settings_color(ctx, Color32::from_rgb(46,46,51), Color32::from_rgb(218,222,229))));
+                ui.add_space(9.0);
+                for &(name, start, end, _) in bottom {
+                    self.settings_sidebar_builtin(ui, (name, start, end), row_h, row_gap);
                 }
             });
             egui::CentralPanel::default().frame(egui::Frame::new().fill(settings_color(ctx,Color32::from_rgb(25,25,27),Color32::from_rgb(246,247,249))).inner_margin(egui::Margin::symmetric(22,16))).show(ctx,|ui|{
                 settings_apply_style(ui);
+                #[cfg(feature="sdk-js")]
+                let plugin = plugin_pages.iter().find(|(id, _)| {
+                    self.settings_tab == SETTINGS_TAB_PLUGIN_DETAIL && self.settings_plugin.as_ref() == Some(id)
+                });
+                let title = settings_tab_title(self.settings_tab);
+                #[cfg(feature="sdk-js")]
+                let title = plugin.map_or(title, |(_, name)| name.as_str());
                 ui.horizontal(|ui|{
-                    ui.label(egui::RichText::new(settings_tab_title(self.settings_tab)).size(18.0).strong().color(settings_color(ctx,Color32::WHITE,Color32::from_rgb(30,34,41))));
+                    let label = egui::RichText::new(title).size(18.0).strong()
+                        .color(settings_color(ctx,Color32::WHITE,Color32::from_rgb(30,34,41)));
+                    #[cfg(feature="sdk-js")]
+                    if let Some((id, _)) = plugin {
+                        let can_open = self.plugins.status_pages().any(|(page, _)| page == id);
+                        let title_width = (ui.available_width() - if can_open { 106.0 } else { 0.0 }).max(90.0);
+                        ui.allocate_ui_with_layout(egui::vec2(title_width, 24.0),
+                            egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                                ui.scope(|ui| {
+                                    ui.set_max_width((title_width - 58.0).max(20.0));
+                                    ui.add(egui::Label::new(label).truncate()).on_hover_text(title);
+                                });
+                                crate::sdk_spike::local::plugin_tag(ui);
+                            });
+                        if can_open {
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui.button("打开功能页").clicked() {
+                                    self.settings_open = false;
+                                    self.show_status_page(id);
+                                }
+                            });
+                        }
+                        return;
+                    }
+                    ui.label(label);
                     // 插件页：「集市 / 已安装」切换放在标题同一行的右侧。
                     #[cfg(feature="sdk-js")]
                     if self.settings_tab==SETTINGS_TAB_PLUGINS {
@@ -1822,9 +1931,20 @@ impl App {
                 // 合并页：健康（3）并入专注（2），置物（4→5）并入待办，旧序号仍能打开对应页面。
                 let tab=match self.settings_tab {3=>2,5=>4,t=>t};
                 if tab != 9 { release_support_images(ctx); }
-                egui::ScrollArea::vertical().id_salt(("settings-scroll",tab)).auto_shrink([false,false]).show(ui,|ui|{
+                let scroll = egui::ScrollArea::vertical().auto_shrink([false,false]);
+                #[cfg(feature="sdk-js")]
+                let scroll = if let Some((id, _)) = plugin { scroll.id_salt(("settings-plugin-scroll", id)) }
+                    else { scroll.id_salt(("settings-scroll",tab)) };
+                #[cfg(not(feature="sdk-js"))]
+                let scroll = scroll.id_salt(("settings-scroll",tab));
+                scroll.show(ui,|ui|{
                     // 右侧给滚动条留出空隙，卡片和开关不会被它压住。
                     ui.set_width((ui.available_width()-12.0).max(240.0));
+                    #[cfg(feature="sdk-js")]
+                    if let Some((id, _)) = plugin {
+                        self.plugins.standalone_settings(ui, id);
+                        return;
+                    }
                     #[cfg(any(feature="sdk-js",feature="sdk-wasm"))]
                     if tab==4 {crate::sdk_spike::live_settings(ui);}
                     match tab {
@@ -1856,9 +1976,9 @@ impl App {
                         let on=self.module_on(crate::app::TODO_PAGE);
                         let calendar_on=self.module_on(crate::app::CALENDAR_PAGE);
                         let quota_on=self.quota_active();
-                        if let Some(tab)=self.plugins.manage(ui,on,calendar_on,quota_on,
+                        if let Some(route)=self.plugins.manage(ui,on,calendar_on,quota_on,
                             #[cfg(all(windows,feature="sdk-material"))] self.material_active_id.as_deref().filter(|_| self.material_capture_forced),
-                        ){self.settings_tab=tab;}
+                        ){self.apply_settings_navigation(route);}
                     }
                     12=>{
                         let on=self.settings_feature_header(ui,crate::app::WEATHER_PAGE,"当地天气与七日预报",|_,_|{});
@@ -1951,7 +2071,7 @@ impl App {
                             }
                         });
                         #[cfg(feature="sdk-js")]
-                        if let Some(id)=self.plugins.status_page_settings(ui) {self.show_status_page(&id);}
+                        if let Some(route)=self.plugins.status_page_settings(ui) {self.apply_settings_navigation(route);}
                     }
                     0=>{
                         settings_label(ui,"设置页外观");

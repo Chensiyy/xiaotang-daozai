@@ -247,10 +247,9 @@ fn status_page_management_opens_and_switches_independently() -> Result<()> {
     package.manifest.id = ID.into();
     package.manifest.name = NAME.into();
     package.manifest.owner = "status".into();
-    package.manifest.capabilities = vec!["status.page".into()];
-    package.manifest.settings.clear();
+    package.manifest.capabilities = vec!["status.page".into(), "settings".into()];
     package.source = "function refresh() { return {status: null}; }".into();
-    record.values.clear();
+    record.values = package.settings_values(&Values::new());
     host.put(ID, record)?;
     let ctx = egui::Context::default();
     crate::theme::load_fonts(&ctx);
@@ -260,16 +259,22 @@ fn status_page_management_opens_and_switches_independently() -> Result<()> {
     let disabled = frame(&ctx, vec![], |ui| draw(ui, &mut host));
     assert!(has_text(&disabled, NAME));
     assert!(has_text(&disabled, "插件"));
+    assert!(!has_text(&disabled, "倒计时名称"));
     assert!(!has_text(&disabled, "打开"));
+    assert_eq!(host.standalone_settings_pages().next(), Some((ID, NAME)));
+    assert!(has_text(&frame(&ctx, vec![], |ui| host.standalone_settings(ui, ID)), "倒计时名称"));
 
     host.enable(ID, true)?;
     let mut opened = None;
     click(&ctx, "打开", |ui| {
-        if let Some(id) = host.status_page_settings(ui) {
-            opened = Some(id);
-        }
+        opened = host.status_page_settings(ui).or(opened.take());
     });
-    assert_eq!(opened.as_deref(), Some(ID));
+    assert_eq!(opened, Some(SettingsNavigation::OpenStatus(ID.into())));
+    let mut settings = None;
+    click(&ctx, "设置", |ui| {
+        settings = host.status_page_settings(ui).or(settings.take());
+    });
+    assert_eq!(settings, Some(SettingsNavigation::Plugin(ID.into())));
     let switch = ctx
         .read_response(egui::Id::new(("settings-plugin-switch", ID)))
         .expect("详情页开关")
@@ -279,6 +284,7 @@ fn status_page_management_opens_and_switches_independently() -> Result<()> {
     assert!(host.records[ID].enabled);
     assert!(host.status_pages().next().is_none());
     assert!(!has_text(&frame(&ctx, vec![], |ui| draw(ui, &mut host)), "打开"));
+    assert_eq!(host.standalone_settings_pages().next(), Some((ID, NAME)));
 
     drop(host);
     let mut host = LocalPlugins::open(dir.clone());
@@ -324,14 +330,17 @@ fn management_buttons_jump_disable_and_confirm_uninstall() -> Result<()> {
     let mut jumped = false;
     let mut click = |host: &mut LocalPlugins, label: &str| {
         click(&ctx, label, |ui| {
-            jumped |= host.manage(
+            let navigation = host.manage(
                 ui,
                 true,
                 true,
                 true,
                 #[cfg(all(windows, feature = "sdk-material"))]
                 None,
-            ) == Some(4);
+            );
+            if let Some(SettingsNavigation::Plugin(id)) = navigation {
+                jumped |= host.settings_destination(&id) == Some(4);
+            }
         });
     };
     click(&mut host, "启用");
@@ -392,9 +401,9 @@ fn management_module_pause_and_plugin_switch_keep_their_own_choices() -> Result<
     assert!(!has_text(&paused, "设置 › 待办与置物 ›"));
     let mut jump = None;
     click(&ctx, "页面管理 › 待办与置物 ›", |ui| {
-        jump = manage(&mut host, ui, false).or(jump);
+        jump = manage(&mut host, ui, false).or(jump.take());
     });
-    assert_eq!(jump, Some(crate::extras::SETTINGS_TAB_PAGES));
+    assert_eq!(jump, Some(SettingsNavigation::Tab(crate::extras::SETTINGS_TAB_PAGES)));
 
     click(&ctx, "停用", |ui| {
         let _ = manage(&mut host, ui, false);
@@ -831,7 +840,7 @@ fn material_management_waits_for_permission_and_offers_to_enable_compatibility()
     let manage_click = |host: &mut LocalPlugins, label: &str| {
         let mut jump = None;
         click(&ctx, label, |ui| {
-            jump = host.manage(ui, true, true, true, None).or(jump)
+            jump = host.manage(ui, true, true, true, None).or(jump.take())
         });
         jump
     };
@@ -844,7 +853,7 @@ fn material_management_waits_for_permission_and_offers_to_enable_compatibility()
     assert!(manage_click(&mut host, "启用").is_none());
     assert_eq!(
         manage_click(&mut host, "允许并启用"),
-        Some(crate::extras::SETTINGS_TAB_APPEARANCE)
+        Some(SettingsNavigation::Tab(crate::extras::SETTINGS_TAB_APPEARANCE))
     );
     assert_eq!(host.selected_material_id(), Some("example.material"));
 

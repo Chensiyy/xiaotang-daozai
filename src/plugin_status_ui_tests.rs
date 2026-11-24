@@ -71,6 +71,100 @@ fn text_y(h: &H, label: &str) -> f32 {
 }
 
 #[test]
+fn plugin_settings_pages_gear_routes_by_id_and_sidebar_fits() {
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
+    let mut h = H::new();
+    let profile = crate::model::config_dir();
+    let standalone = [
+        ("test.settings-alpha", "便签测试"),
+        ("test.settings-beta", "金价测试"),
+        ("test.settings-gamma", "工资测试"),
+        ("test.settings-delta", "时钟测试"),
+    ];
+    let task = ("test.settings-days", "日子测试");
+    for (id, name) in standalone.into_iter().chain([task]) {
+        let dir = profile.join(id);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("cover.png"), include_bytes!("../spike/examples/payday/cover.png")).unwrap();
+        let mut capabilities = vec!["status.page", "settings"];
+        let owner = if id == task.0 { capabilities.push("card"); "tasks" } else { "status" };
+        let mut output = json!({"status":{"state":"idle","label":name}});
+        if id == task.0 { output["card"] = json!(name); }
+        fs::write(dir.join("main.js"), format!("function refresh() {{ return {output}; }}")).unwrap();
+        let manifest = dir.join("plugin.json");
+        fs::write(&manifest, json!({
+            "id":id, "name":name, "author":"验收", "version":"1.0.0", "api":1,
+            "runtime":"js", "entry":"main.js", "cover":"cover.png", "owner":owner,
+            "capabilities":capabilities, "dataVersion":1, "permissions":{},
+            "settings":[{"key":"text","type":"text","label":format!("{name}专用参数"),"default":"值"}]
+        }).to_string()).unwrap();
+        h.app.plugins.install(&manifest).unwrap();
+        h.app.plugins.enable(id, true).unwrap();
+    }
+    h.app.set_page_visible(crate::app::TODO_PAGE, true);
+    let open_from_island = |h: &mut H, id: &str| {
+        h.app.settings_open = false;
+        h.app.show_status_page(id);
+        let gear = H::local(394.0, 18.0);
+        h.hover(gear, 0.8);
+        h.click(gear);
+        assert!(h.app.settings_open);
+    };
+    open_from_island(&mut h, standalone[1].0);
+    assert_eq!(h.app.settings_plugin.as_deref(), Some(standalone[1].0));
+    assert_eq!(h.app.settings_tab, crate::extras::SETTINGS_TAB_PLUGIN_DETAIL);
+
+    let render_settings = |h: &mut H, size: egui::Vec2| {
+        h.ctx.set_embed_viewports(false);
+        h.t += 1.0 / 60.0;
+        let time = Some(h.t);
+        let output = std::sync::Arc::new(Mutex::new(None));
+        let capture = output.clone();
+        egui::Context::set_immediate_viewport_renderer(move |ctx, mut viewport| {
+            let id = viewport.ids.this;
+            let raw = egui::RawInput {
+                viewport_id: id,
+                time,
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)),
+                viewports: [(id, egui::ViewportInfo { native_pixels_per_point: Some(1.0), ..Default::default() })].into_iter().collect(),
+                ..Default::default()
+            };
+            *capture.lock().unwrap() = Some(ctx.run(raw, |ctx| (viewport.viewport_ui_cb)(ctx)));
+        });
+        let _ = h.ctx.run(egui::RawInput { time, ..Default::default() }, |ctx| h.app.settings_ui(ctx, false));
+        let result = output.lock().unwrap().take().unwrap();
+        result
+    };
+    let visible = |output: &egui::FullOutput, label: &str, sidebar: bool| {
+        output.shapes.iter().any(|clipped| match &clipped.shape {
+            egui::Shape::Text(text) => {
+                let rect = text.visual_bounding_rect();
+                text.galley.text() == label && (rect.left() < 180.0) == sidebar
+                    && clipped.clip_rect.contains_rect(rect)
+            }
+            _ => false,
+        })
+    };
+    for size in [egui::vec2(690.0, 560.0), egui::vec2(600.0, 450.0)] {
+        let output = render_settings(&mut h, size);
+        for (_, name) in standalone { assert!(visible(&output, name, true), "侧栏未完整显示 {name}"); }
+        assert!(visible(&output, "插件", true));
+        assert!(visible(&output, "关于", true));
+        assert!(visible(&output, "打开功能页", false));
+        assert!(visible(&output, "金价测试专用参数", false));
+        assert!(!visible(&output, "便签测试专用参数", false));
+    }
+    h.app.plugins.set_status_page_enabled(standalone[1].0, false).unwrap();
+    let output = render_settings(&mut h, egui::vec2(690.0, 560.0));
+    assert!(!visible(&output, "打开功能页", false));
+    assert!(visible(&output, "金价测试专用参数", false));
+
+    open_from_island(&mut h, task.0);
+    assert!(h.app.settings_plugin.is_none());
+    assert_eq!(h.app.settings_tab, crate::app::PAGE_SETTINGS_TABS[crate::app::TODO_PAGE]);
+}
+
+#[test]
 fn plugin_status_layout_renders_author_ring_and_bar_from_the_same_snapshot() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let mut h = H::new();
