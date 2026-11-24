@@ -362,6 +362,7 @@ checksum = "a6139a8597ed92cf816dfb33f5dd6cf0bb93a6adc938f11039f371bc5bcd26c3"
 dependencies = [
  "chrono",
  "phf",
+ "serde",
 ]
 
 [[package]]
@@ -542,6 +543,7 @@ dependencies = [
  "rrule",
  "serde",
  "serde_json",
+ "svgtypes",
  "tungstenite",
  "ureq",
  "url",

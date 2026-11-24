@@ -21,13 +21,17 @@ pub(super) fn fields_height(count: usize) -> f32 {
 pub(crate) struct InteractionResponse {
     pub(crate) focused: bool,
     pub(crate) gained_focus: bool,
+    pub(crate) canvas_animating: bool,
+    pub(crate) canvas_scroll: Option<egui::Rect>,
+    pub(crate) canvas_repaint: Option<std::time::Duration>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) enum ClickTarget {
     Button(usize),
     Item(usize),
     CopyItem(usize),
+    Canvas(crate::plugin_canvas::live::Hit),
 }
 
 pub(crate) struct Interaction<'a> {

@@ -30,8 +30,10 @@ use crate::{
     theme::{self, size, W},
 };
 use eframe::egui::{self, Color32};
+use crate::{plugin_canvas::Canvas, plugin_canvas_ui::CanvasTheme};
 use std::{
     f32::consts::{FRAC_PI_2, TAU},
+    sync::Arc,
     time::Duration,
 };
 
@@ -48,6 +50,10 @@ const MIN_LAYOUT_HEIGHT: f32 = 156.0;
 const MAX_METRICS: usize = 6;
 const MAX_PAGE_HEIGHT: f32 = 348.0;
 const MAX_CARD_HEIGHT: f32 = MAX_PAGE_HEIGHT - CONTENT_TOP - PAGE_BOTTOM_SPACE;
+const CANVAS_LEFT: f32 = 16.0;
+const CANVAS_WIDTH: f32 = crate::app::PW - CANVAS_LEFT * 2.0;
+const MAX_CANVAS_CONTENT_HEIGHT: f32 = 360.0;
+pub(crate) type CanvasPaint<'a> = dyn FnMut(&Card<'_>, &Arc<Canvas>, egui::Rect, CanvasTheme) + 'a;
 
 #[derive(Clone, Copy)]
 pub(crate) struct StatusBackdrop {
@@ -122,10 +128,18 @@ fn readable_accent(color: Color32, background: Color32) -> Color32 {
     paint::mix(color, target, high)
 }
 
-pub(crate) fn status_page_height(layout: Option<&StatusLayout>) -> f32 {
+pub(crate) fn status_page_height(layout: Option<&StatusLayout>, status: Option<&PluginStatus>) -> f32 {
+    let canvas = status.and_then(|status| status.canvas.as_ref());
+    if let Some(canvas) = canvas.filter(|_| layout.is_none_or(canvas_only)) {
+        return CONTENT_TOP + canvas.height + PAGE_BOTTOM_SPACE;
+    }
     let Some(layout) = layout else {
         return STATUS_PAGE_H;
     };
+    if canvas.is_some() {
+        return CONTENT_TOP + layout_card_height(layout, status).min(MAX_CANVAS_CONTENT_HEIGHT)
+            + PAGE_BOTTOM_SPACE;
+    }
     // 给可出现的组件留足空间，读数缺失或断源时保留页面高度。
     (CONTENT_TOP + layout_card_height(layout, None) + PAGE_BOTTOM_SPACE)
         .clamp(MIN_LAYOUT_HEIGHT, MAX_PAGE_HEIGHT)
@@ -135,10 +149,11 @@ pub(crate) fn status_scroll_area(
     status: &PluginStatus,
     layout: &StatusLayout,
 ) -> Option<egui::Rect> {
-    (layout_card_height(layout, Some(status)) > MAX_CARD_HEIGHT).then(|| {
+    let (x, width, height) = layout_viewport(status.canvas.is_some());
+    (layout_card_height(layout, Some(status)) > height).then(|| {
         egui::Rect::from_min_size(
-            egui::pos2(LEFT, CONTENT_TOP),
-            egui::vec2(WIDTH, MAX_CARD_HEIGHT),
+            egui::pos2(x, CONTENT_TOP),
+            egui::vec2(width, height),
         )
     })
 }
@@ -151,14 +166,17 @@ pub(crate) fn draw_status_page(
     layout: Option<&StatusLayout>,
     backdrop: StatusBackdrop,
     privacy_blocked: bool,
+    paint_canvas: Option<&mut CanvasPaint<'_>>,
 ) {
     let Some(status) = status.filter(|_| health == StatusHealth::Ready) else {
         draw_unavailable(c, health);
         return;
     };
     let privacy = SensitiveValues::new(id, privacy_blocked);
-    if let Some(layout) = layout {
-        draw_layout(c, id, status, layout, backdrop, &privacy, None);
+    if layout.is_none_or(canvas_only) && status.canvas.is_some() {
+        draw_full_canvas(c, status, layout, backdrop, paint_canvas);
+    } else if let Some(layout) = layout {
+        draw_layout(c, id, status, layout, backdrop, &privacy, None, paint_canvas);
     } else {
         draw_default(c, status, &privacy);
     }
@@ -173,10 +191,13 @@ pub(crate) fn draw_interactive_status_page(
     backdrop: StatusBackdrop,
     privacy_blocked: bool,
     interaction: &mut Interaction<'_>,
+    paint_canvas: Option<&mut CanvasPaint<'_>>,
 ) {
     let privacy = SensitiveValues::new(id, privacy_blocked);
-    if let Some(layout) = layout {
-        draw_layout(c, id, status, layout, backdrop, &privacy, Some(interaction));
+    if layout.is_none_or(canvas_only) && status.canvas.is_some() {
+        draw_full_canvas(c, status, layout, backdrop, paint_canvas);
+    } else if let Some(layout) = layout {
+        draw_layout(c, id, status, layout, backdrop, &privacy, Some(interaction), paint_canvas);
     } else {
         draw_default(c, status, &privacy);
         let y = STATUS_PAGE_H - PAGE_BOTTOM_SPACE;
@@ -189,6 +210,36 @@ pub(crate) fn draw_interactive_status_page(
             TEXT_RIGHT - LEFT - 14.0,
         );
     }
+}
+
+fn canvas_only(layout: &StatusLayout) -> bool {
+    layout.components == [StatusComponent::Canvas {}]
+}
+
+fn draw_full_canvas(
+    c: &Card,
+    status: &PluginStatus,
+    layout: Option<&StatusLayout>,
+    backdrop: StatusBackdrop,
+    paint_canvas: Option<&mut CanvasPaint<'_>>,
+) {
+    if let (Some(draw), Some(canvas)) = (paint_canvas, &status.canvas) {
+        draw(c, canvas, c.rect(CANVAS_LEFT, CONTENT_TOP, CANVAS_WIDTH, canvas.height),
+            canvas_theme(layout, backdrop));
+    }
+}
+
+fn canvas_theme(layout: Option<&StatusLayout>, backdrop: StatusBackdrop) -> CanvasTheme {
+    let accent = layout.and_then(|layout| {
+        let [r, g, b] = layout.style.accent_rgb()?;
+        Some(readable_accent(Color32::from_rgb(r, g, b), backdrop.card_color(layout.style.surface)))
+    });
+    CanvasTheme { palette: backdrop.palette, accent, background: backdrop.island }
+}
+
+fn layout_viewport(canvas: bool) -> (f32, f32, f32) {
+    if canvas { (CANVAS_LEFT, CANVAS_WIDTH, MAX_CANVAS_CONTENT_HEIGHT) }
+    else { (LEFT, WIDTH, MAX_CARD_HEIGHT) }
 }
 
 #[cfg(windows)]
@@ -388,6 +439,8 @@ fn component_height(
         StatusComponent::Counter {} | StatusComponent::Clock {} | StatusComponent::Countdown {} => {
             metric_row_height(density)
         }
+        StatusComponent::Canvas {} => status.and_then(|status| status.canvas.as_ref())
+            .map_or(40.0, |canvas| canvas.height),
     }
 }
 
@@ -418,6 +471,7 @@ fn components_with_data<'a>(
                 StatusComponent::Counter {} => occurrence < status.counter.len(),
                 StatusComponent::Clock {} => occurrence < status.clock.len(),
                 StatusComponent::Countdown {} => occurrence < status.countdown.len(),
+                StatusComponent::Canvas {} => status.canvas.is_some(),
             });
             visible.then_some((component, occurrence))
         })
@@ -444,18 +498,20 @@ fn draw_layout(
     backdrop: StatusBackdrop,
     privacy: &SensitiveValues,
     mut interaction: Option<&mut Interaction<'_>>,
+    paint_canvas: Option<&mut CanvasPaint<'_>>,
 ) {
     let height = layout_card_height(layout, Some(status));
     if height == 0.0 {
         draw_message(c, "当前没有可显示的数据", None, theme::DIM);
         return;
     }
+    let (viewport_x, viewport_width, viewport_height) = layout_viewport(status.canvas.is_some());
     if layout.style.surface == StatusSurface::Card {
         c.fill(
             LEFT,
             CONTENT_TOP,
             WIDTH,
-            height.min(MAX_CARD_HEIGHT),
+            height.min(viewport_height),
             9.0,
             theme::CARD,
         );
@@ -470,12 +526,13 @@ fn draw_layout(
             fixed: backdrop.palette.is_some(),
         },
     );
-    if height <= MAX_CARD_HEIGHT {
-        draw_components(c, status, layout, accent, privacy, interaction);
+    let canvas_theme = canvas_theme(Some(layout), backdrop);
+    if height <= viewport_height {
+        draw_components(c, status, layout, accent, privacy, interaction, canvas_theme, paint_canvas);
         return;
     }
 
-    let viewport = c.rect(LEFT, CONTENT_TOP, WIDTH, MAX_CARD_HEIGHT);
+    let viewport = c.rect(viewport_x, CONTENT_TOP, viewport_width, viewport_height);
     let mut content = egui::Ui::new(
         c.ui.ctx().clone(),
         egui::Id::new(("plugin-status-scroll", id, c.live)),
@@ -495,12 +552,13 @@ fn draw_layout(
         .auto_shrink([false, false])
         .show(&mut content, |ui| {
             let (rect, _) =
-                ui.allocate_exact_size(egui::vec2(WIDTH * c.s, height * c.s), egui::Sense::hover());
-            let origin = rect.min - egui::vec2(LEFT, CONTENT_TOP) * c.s;
+                ui.allocate_exact_size(egui::vec2(viewport_width * c.s, height * c.s), egui::Sense::hover());
+            let origin = rect.min - egui::vec2(viewport_x, CONTENT_TOP) * c.s;
             let mut inner = Card::new(ui, origin, ui.clip_rect());
             inner.s = c.s;
             inner.live = c.live;
-            draw_components(&inner, status, layout, accent, privacy, interaction.as_deref_mut());
+            draw_components(&inner, status, layout, accent, privacy, interaction.as_deref_mut(),
+                canvas_theme, paint_canvas);
         });
 }
 
@@ -511,6 +569,8 @@ fn draw_components(
     accent: Accent,
     privacy: &SensitiveValues,
     mut interaction: Option<&mut Interaction<'_>>,
+    canvas_theme: CanvasTheme,
+    mut paint_canvas: Option<&mut CanvasPaint<'_>>,
 ) {
     let density = layout.style.density;
     let (padding, gap) = spacing(density);
@@ -637,6 +697,11 @@ fn draw_components(
                 let value = &status.countdown[index];
                 draw_realtime(c, x, center_y, Some(&value.label), &value.value_at(now));
                 repaint_realtime(c, [x, y, TEXT_RIGHT - x, height], clock, value.repaint_at(now));
+            }
+            StatusComponent::Canvas {} => {
+                if let (Some(draw), Some(canvas)) = (paint_canvas.as_deref_mut(), &status.canvas) {
+                    draw(c, canvas, c.rect(CANVAS_LEFT, y, CANVAS_WIDTH, height), canvas_theme);
+                }
             }
         }
         y += height + gap;
@@ -867,6 +932,7 @@ fn draw_unavailable(c: &Card, health: StatusHealth) {
         ),
         StatusHealth::Stale => ("状态已过期", None, theme::ORANGE),
         StatusHealth::Invalid => ("状态数据格式无效", None, theme::ORANGE),
+        StatusHealth::CanvasInvalid => ("插件画面有误", None, theme::ORANGE),
     };
     draw_message(c, name, hint, color);
 }

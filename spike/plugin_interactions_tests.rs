@@ -80,6 +80,24 @@ fn queue_note(host: &mut LocalPlugins, current: u64, note: &str) -> bool {
 }
 
 #[test]
+fn canvas_action_dispatch_discards_the_previous_revision() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let id = "example.canvas-live-demo";
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("spike/examples/canvas-live-demo/plugin.json");
+    let mut host = LocalPlugins::open(fixture.root.join("installed"));
+    host.install(&manifest)?;
+    host.enable(id, true)?;
+    settle(&mut host);
+    let current = host.status[id].as_ref().unwrap().0;
+    let ctx = egui::Context::default();
+    assert!(host.submit_action(&ctx, id, current, ClickTarget::Canvas(Hit::Action("pause".into()))));
+    settle(&mut host);
+    assert_eq!(host.records[id].storage["paused"], true);
+    assert!(!host.submit_action(&ctx, id, current, ClickTarget::Canvas(Hit::Action("resume".into()))));
+    Ok(())
+}
+
+#[test]
 fn invalid_manifest_combinations_and_interaction_fields_are_rejected() -> Result<()> {
     let manifest = Manifest::decode(MANIFEST)?;
     let layout = manifest.status_layout.unwrap();

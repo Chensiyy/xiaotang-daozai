@@ -139,7 +139,7 @@ pub(crate) struct StatusCountdown {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize)]
-enum CountdownFormat {
+pub(crate) enum CountdownFormat {
     #[serde(rename = "d天 HH:mm")]
     DayMinute,
     #[serde(rename = "HH:mm:ss")]
@@ -157,11 +157,21 @@ impl StatusCountdown {
     }
 
     pub(crate) fn value_at(&self, now: i64) -> String {
-        let left = self.target_at - now;
+        self.format
+            .value(self.target_at - now, self.done_label.as_deref())
+    }
+
+    pub(crate) fn repaint_at(&self, now: i64) -> Option<i64> {
+        self.format.repaint_at(now, self.target_at - now)
+    }
+}
+
+impl CountdownFormat {
+    pub(crate) fn value(self, left: i64, done_label: Option<&str>) -> String {
         if left <= 0 {
-            return self.done_label.as_deref().unwrap_or("已结束").into();
+            return done_label.unwrap_or("已结束").into();
         }
-        match self.format {
+        match self {
             CountdownFormat::DayMinute => {
                 // 分钟向上取整，目标时间到达时才显示完成。
                 let minutes = (left + 59) / 60;
@@ -178,12 +188,11 @@ impl StatusCountdown {
         }
     }
 
-    pub(crate) fn repaint_at(&self, now: i64) -> Option<i64> {
-        let left = self.target_at - now;
+    pub(crate) fn repaint_at(self, now: i64, left: i64) -> Option<i64> {
         if left <= 0 {
             return None;
         }
-        Some(match self.format {
+        Some(match self {
             CountdownFormat::DayMinute => now + 1 + (left - 1) % 60,
             CountdownFormat::Second => now + 1,
         })

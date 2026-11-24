@@ -3,6 +3,8 @@
 mod interactions;
 #[path = "appearance_assets.rs"]
 pub(crate) mod appearance_assets;
+#[path = "canvas_images.rs"]
+mod canvas_images;
 #[path = "capabilities.rs"]
 mod capabilities;
 #[path = "plugin_devtools.rs"]
@@ -34,6 +36,7 @@ mod package_data;
 mod ui;
 use super::{fail, Result};
 use crate::plugin_status::{PluginStatus, StatusHealth, StatusLayout};
+use crate::plugin_canvas::Canvas;
 use crate::quota_plugin::PluginQuota;
 use capabilities::Surface;
 use cover::{CoverPng, COVER_FILE};
@@ -190,6 +193,8 @@ struct Package {
     cover: Option<CoverPng>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     data: PackageData,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    canvas_images: canvas_images::CanvasImages,
     #[serde(skip)]
     page_shortcut_colors: OnceLock<BTreeMap<String, [u8; 3]>>,
     #[serde(skip)]
@@ -283,6 +288,8 @@ impl Record {
                 && !package.source.trim().is_empty()
                 && package.source.len() as u64 <= manifest.source_limit()
                 && package_data::valid_snapshot(&manifest.data, &package.data)
+                && (package.canvas_images.is_empty()
+                    || manifest.has_capability("status.canvas") && canvas_images::valid_snapshot(&package.canvas_images))
                 && package.validate_page_shortcut_colors().is_ok()
                 && package.validate_appearance().is_ok()
                 && manifest.settings.iter().all(|field| {
@@ -337,6 +344,8 @@ struct Output {
     quota: Option<PluginQuota>,
     #[serde(default)]
     status: Option<PluginStatus>,
+    #[serde(default)]
+    canvas: Option<Value>,
     #[serde(default)]
     notice: Option<ScriptNotice>,
     pinned: Option<pinned::Pinned>,
@@ -520,6 +529,11 @@ impl Manifest {
                 return Err(fail("statusLayout 只适用于声明了 status.page 的插件"));
             }
             layout.validate().map_err(fail)?;
+            if !m.has_capability("status.canvas") && layout.components.iter().any(|component| {
+                matches!(component, crate::plugin_status::StatusComponent::Canvas {})
+            }) {
+                return Err(fail("画布布局组件需要声明 status.canvas"));
+            }
             if !m.has_capability("action") && layout.components.iter().any(|component| {
                 matches!(component, crate::plugin_status::StatusComponent::Actions {} | crate::plugin_status::StatusComponent::Fields {})
             }) {
@@ -720,6 +734,9 @@ impl Package {
         let data = package_data::read_data(&manifest.data, |name| package_data::read_file(&base, name))?;
         let mut package = Self::from_entry(manifest, source, cover)?;
         package.data = data;
+        if package.manifest.has_capability("status.canvas") {
+            package.canvas_images = canvas_images::read(&base)?;
+        }
         Ok(package)
     }
 
@@ -732,6 +749,7 @@ impl Package {
             manifest,
             cover: Some(cover),
             data: BTreeMap::new(),
+            canvas_images: BTreeMap::new(),
             page_shortcut_colors: OnceLock::new(),
             appearance: OnceLock::new(),
         };
@@ -891,6 +909,30 @@ impl Package {
                 return Err(fail("状态页需要返回格式有效的 status 或 null"));
             }
             self.manifest.check_action_links(status)?;
+        }
+        if let Some(canvas) = output.canvas.take() {
+            let invalid = |reason: &str| fail(&format!("插件画面有误：{reason}"));
+            if !self.manifest.has_capability("status.canvas") {
+                return Err(invalid("插件未声明 status.canvas"));
+            }
+            if self.manifest.status_layout.as_ref().is_some_and(|layout| {
+                !layout.components.iter().any(|component| {
+                    matches!(component, crate::plugin_status::StatusComponent::Canvas {})
+                })
+            }) {
+                return Err(invalid("有自定义布局时，需要在 statusLayout 中加入 canvas 组件"));
+            }
+            let canvas = Canvas::parse(canvas).map_err(|error| invalid(&error))?;
+            canvas.validate_images(|name| self.canvas_images.contains_key(name))
+                .map_err(|error| invalid(&error))?;
+            self.manifest.check_canvas_actions(&canvas.nodes)
+                .map_err(|error| invalid(&error.to_string()))?;
+            if output.status.is_none() {
+                output.status = Some(serde_json::from_value(json!({
+                    "state": "idle", "label": self.manifest.name
+                }))?);
+            }
+            output.status.as_mut().unwrap().canvas = Some(Arc::new(canvas));
         }
         if let Some(quota) = &output.quota {
             if !has(Surface::Quota) {
@@ -1767,6 +1809,12 @@ impl LocalPlugins {
                     return Err("读取已取消".into());
                 }
                 if !r.from_market {
+                    if let Err(error) = &output {
+                        let detail = error.to_string();
+                        if detail.starts_with("插件画面有误") {
+                            logs.push(detail);
+                        }
+                    }
                     script_logs.append(&plugin_id, logs);
                 }
                 let (output, _) = output.map_err(|error| error.to_string())?;
@@ -1894,6 +1942,9 @@ impl LocalPlugins {
             Some(Err(health)) => (None, *health),
             None if record.source_kind().is_some() && record.source_grant().is_none() => {
                 (None, StatusHealth::Unconfigured)
+            }
+            None if self.errors.get(id).is_some_and(|error| error.starts_with("插件画面有误")) => {
+                (None, StatusHealth::CanvasInvalid)
             }
             None if self.errors.contains_key(id) => (None, StatusHealth::Invalid),
             None => (None, StatusHealth::Waiting),

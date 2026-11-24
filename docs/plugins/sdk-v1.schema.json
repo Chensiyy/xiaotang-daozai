@@ -71,6 +71,7 @@
           "lyrics.source",
           "quota.source",
           "status.page",
+          "status.canvas",
           "island.pinned",
           "appearance.skin",
           "appearance.material",
@@ -153,7 +154,7 @@
             "oneOf": [
               {
                 "type": "object",
-                "properties": {"type": {"enum": ["state", "summary", "alert", "updated_at", "actions", "fields", "list", "chart", "text", "badge", "counter", "clock", "countdown"]}},
+                "properties": {"type": {"enum": ["state", "summary", "alert", "updated_at", "actions", "fields", "list", "chart", "text", "badge", "counter", "clock", "countdown", "canvas"]}},
                 "required": ["type"],
                 "additionalProperties": false
               },
@@ -190,6 +191,7 @@
             {"contains": {"properties": {"type": {"const": "updated_at"}}}, "minContains": 0, "maxContains": 1},
             {"contains": {"properties": {"type": {"const": "actions"}}}, "minContains": 0, "maxContains": 1},
             {"contains": {"properties": {"type": {"const": "fields"}}}, "minContains": 0, "maxContains": 1},
+            {"contains": {"properties": {"type": {"const": "canvas"}}}, "minContains": 0, "maxContains": 1},
             {"contains": {"properties": {"type": {"const": "counter"}}}, "minContains": 0, "maxContains": 4},
             {"contains": {"properties": {"type": {"const": "clock"}}}, "minContains": 0, "maxContains": 4},
             {"contains": {"properties": {"type": {"const": "countdown"}}}, "minContains": 0, "maxContains": 4}
@@ -314,6 +316,294 @@
   ],
   "additionalProperties": false,
   "$defs": {
+    "canvas": {
+      "description": "脚本输出的 canvas 字段。全画布节点数、嵌套深度、文字总量、绑定关联和包内图片由宿主进一步校验。",
+      "type": "object",
+      "required": ["height", "nodes"],
+      "additionalProperties": false,
+      "properties": {
+        "height": {"type": "number", "minimum": 40, "maximum": 360},
+        "nodes": {"type": "array", "maxItems": 1500, "items": {"$ref": "#/$defs/canvasNode"}},
+        "binds": {"type": "object", "additionalProperties": {"$ref": "#/$defs/canvasBinding"}}
+      }
+    },
+    "canvasTimestamp": {"type": "integer", "minimum": 0, "maximum": 253402300799},
+    "canvasBinding": {
+      "type": "object",
+      "oneOf": [
+        {"required": ["counter"], "maxProperties": 1},
+        {"required": ["countdown"], "maxProperties": 1},
+        {"required": ["progress"], "maxProperties": 1},
+        {"required": ["clock_angle"], "maxProperties": 1},
+        {"required": ["now"], "propertyNames": {"enum": ["now", "zone"]}},
+        {"required": ["daylight"], "maxProperties": 1}
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "counter": {
+          "type": "object",
+          "required": ["start_value", "per_second", "start_at", "decimals"],
+          "additionalProperties": false,
+          "properties": {
+            "start_value": {"type": "number"},
+            "per_second": {"type": "number"},
+            "start_at": {"$ref": "#/$defs/canvasTimestamp"},
+            "until": {"$ref": "#/$defs/canvasTimestamp"},
+            "decimals": {"type": "integer", "minimum": 0, "maximum": 4}
+          }
+        },
+        "countdown": {
+          "type": "object",
+          "required": ["target_at", "format"],
+          "additionalProperties": false,
+          "properties": {
+            "target_at": {"$ref": "#/$defs/canvasTimestamp"},
+            "format": {"enum": ["HH:mm:ss", "d天 HH:mm"]}
+          }
+        },
+        "progress": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"$ref": "#/$defs/canvasTimestamp"}},
+        "clock_angle": {
+          "type": "object",
+          "required": ["zone", "hand"],
+          "additionalProperties": false,
+          "properties": {
+            "zone": {"type": "string", "minLength": 1},
+            "hand": {"enum": ["hour", "minute"]}
+          }
+        },
+        "now": {"enum": ["HH:mm", "HH:mm:ss"]},
+        "zone": {"type": "string", "minLength": 1},
+        "daylight": {
+          "type": "object",
+          "required": ["zone", "hours"],
+          "additionalProperties": false,
+          "properties": {
+            "zone": {"type": "string", "minLength": 1},
+            "hours": {
+              "type": "array",
+              "minItems": 2,
+              "maxItems": 2,
+              "prefixItems": [
+                {"type": "integer", "minimum": 0, "maximum": 23},
+                {"type": "integer", "minimum": 0, "maximum": 24}
+              ]
+            }
+          }
+        }
+      }
+    },
+    "canvasNumber": {
+      "oneOf": [
+        {"type": "number", "minimum": -2000, "maximum": 2000},
+        {
+          "type": "object",
+          "required": ["bind"],
+          "properties": {
+            "bind": {"type": "string", "minLength": 1},
+            "map": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "number", "minimum": -2000, "maximum": 2000}}
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "canvasPoint": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"$ref": "#/$defs/canvasNumber"}},
+    "canvasLine": {"type": "array", "minItems": 4, "maxItems": 4, "items": {"$ref": "#/$defs/canvasNumber"}},
+    "canvasBounds": {
+      "type": "array", "minItems": 4, "maxItems": 4,
+      "prefixItems": [
+        {"$ref": "#/$defs/canvasNumber"}, {"$ref": "#/$defs/canvasNumber"},
+        {"$ref": "#/$defs/canvasNumber", "minimum": 0}, {"$ref": "#/$defs/canvasNumber", "minimum": 0}
+      ]
+    },
+    "canvasColorName": {"type": "string", "pattern": "^(?:#[0-9A-Fa-f]{6}(?:[0-9A-Fa-f]{2})?|\\$(?:accent|text|muted|dim|card|track|bg))$"},
+    "canvasColor": {
+      "oneOf": [
+        {"$ref": "#/$defs/canvasColorName"},
+        {
+          "type": "object",
+          "required": ["bind", "pick"],
+          "properties": {
+            "bind": {"type": "string", "minLength": 1},
+            "pick": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"$ref": "#/$defs/canvasColorName"}}
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "canvasPaint": {
+      "oneOf": [
+        {"$ref": "#/$defs/canvasColor"},
+        {
+          "type": "object",
+          "required": ["stops"],
+          "oneOf": [{"required": ["linear"]}, {"required": ["radial"]}],
+          "properties": {
+            "linear": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"$ref": "#/$defs/canvasPoint"}},
+            "radial": {
+              "type": "array", "minItems": 2, "maxItems": 2,
+              "anyOf": [
+                {"prefixItems": [{"$ref": "#/$defs/canvasPoint"}, {"$ref": "#/$defs/canvasNumber", "exclusiveMinimum": 0}]},
+                {"items": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "number", "minimum": -2000, "maximum": 2000}}}
+              ]
+            },
+            "stops": {
+              "type": "array", "minItems": 2,
+              "items": {
+                "type": "array", "minItems": 2, "maxItems": 2,
+                "prefixItems": [{"type": "number", "minimum": 0, "maximum": 1}, {"$ref": "#/$defs/canvasColor"}]
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "canvasNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "oneOf": [
+        {"required": ["rect"], "not": {"required": ["image"]}},
+        {"required": ["circle"]},
+        {"required": ["arc"]},
+        {"required": ["line"]},
+        {"required": ["points"]},
+        {"required": ["path"]},
+        {"required": ["text"]},
+        {"required": ["image"]},
+        {"required": ["pet"]},
+        {"required": ["group"]}
+      ],
+      "dependentRequired": {
+        "text": ["at", "size"],
+        "color": ["text"],
+        "image": ["rect"],
+        "burst": ["id"],
+        "scroll": ["group", "clip"]
+      },
+      "not": {"required": ["fill", "color"]},
+      "properties": {
+        "rect": {"$ref": "#/$defs/canvasBounds"},
+        "r": {
+          "oneOf": [
+            {"$ref": "#/$defs/canvasNumber", "minimum": 0},
+            {"type": "array", "minItems": 4, "maxItems": 4, "items": {"$ref": "#/$defs/canvasNumber", "minimum": 0}}
+          ]
+        },
+        "circle": {
+          "type": "array", "minItems": 3, "maxItems": 3,
+          "prefixItems": [
+            {"$ref": "#/$defs/canvasNumber"}, {"$ref": "#/$defs/canvasNumber"}, {"$ref": "#/$defs/canvasNumber", "exclusiveMinimum": 0}
+          ]
+        },
+        "arc": {
+          "type": "object",
+          "required": ["c", "r", "start", "sweep"],
+          "properties": {
+            "c": {"$ref": "#/$defs/canvasPoint"},
+            "r": {"$ref": "#/$defs/canvasNumber", "exclusiveMinimum": 0},
+            "start": {"$ref": "#/$defs/canvasNumber"},
+            "sweep": {"$ref": "#/$defs/canvasNumber"}
+          },
+          "additionalProperties": false
+        },
+        "line": {"$ref": "#/$defs/canvasLine"},
+        "points": {"type": "array", "minItems": 2, "items": {"$ref": "#/$defs/canvasPoint"}},
+        "area": {"$ref": "#/$defs/canvasNumber"},
+        "path": {"type": "string", "pattern": "^\\s*[Mm][MmLlHhVvQqCcZz0-9eE+.,\\s-]+$"},
+        "text": {"type": "string", "maxLength": 2000},
+        "at": {"$ref": "#/$defs/canvasPoint"},
+        "size": {"$ref": "#/$defs/canvasNumber", "minimum": 6, "maximum": 96},
+        "weight": {"type": "integer", "minimum": 1, "maximum": 1000},
+        "align": {"enum": ["left", "center", "right"], "default": "left"},
+        "max_width": {"$ref": "#/$defs/canvasNumber", "exclusiveMinimum": 0},
+        "lines": {"type": "integer", "minimum": 1, "maximum": 255, "default": 1},
+        "font": {"type": "string", "minLength": 1},
+        "image": {
+          "type": "string",
+          "description": "包内相对路径，使用 / 分隔，单张最多 1024×1024。可引用尺寸合规的 cover.png。",
+          "pattern": "^(?!.*\\.\\.)(?!.*[. ]/)(?!.*[\\u0000-\\u001F\\u007F-\\u009F])[^/\\\\:<>\"|?*]+(?:/[^/\\\\:<>\"|?*]+)*\\.(?:[Pp][Nn][Gg]|[Ss][Vv][Gg])$"
+        },
+        "fit": {"enum": ["cover", "contain"], "default": "contain"},
+        "pet": {
+          "type": "object", "required": ["at", "size"], "additionalProperties": false,
+          "properties": {
+            "at": {"$ref": "#/$defs/canvasPoint"},
+            "size": {"$ref": "#/$defs/canvasNumber", "minimum": 12, "maximum": 96},
+            "mood": {"enum": ["expressions", "sleeping", "happy", "wink", "smug", "blush", "delighted", "side-glance", "praised", "heart", "giggle", "shy-peek", "scan", "peek", "search"], "default": "expressions"},
+            "motion": {"enum": ["none", "run", "bob"], "default": "none"},
+            "id": {"type": "string", "minLength": 1}
+          }
+        },
+        "group": {"type": "array", "maxItems": 1500, "items": {"$ref": "#/$defs/canvasNode"}},
+        "clip": {"$ref": "#/$defs/canvasBounds"},
+        "translate": {"$ref": "#/$defs/canvasPoint"},
+        "rotate": {"$ref": "#/$defs/canvasNumber"},
+        "scale": {"$ref": "#/$defs/canvasNumber", "exclusiveMinimum": 0},
+        "fill": {"$ref": "#/$defs/canvasPaint"},
+        "color": {"$ref": "#/$defs/canvasPaint"},
+        "stroke": {"$ref": "#/$defs/canvasPaint"},
+        "width": {"$ref": "#/$defs/canvasNumber", "minimum": 0},
+        "cap": {"enum": ["round", "butt"], "default": "butt"},
+        "dash": {
+          "type": "array", "minItems": 2, "maxItems": 2,
+          "items": {"$ref": "#/$defs/canvasNumber", "exclusiveMinimum": 0}
+        },
+        "opacity": {"$ref": "#/$defs/canvasNumber", "minimum": 0, "maximum": 1},
+        "shadow": {"enum": ["sm", "md", "lg"]},
+        "glow": {"oneOf": [{"const": true}, {"$ref": "#/$defs/canvasColor"}]},
+        "id": {"type": "string", "minLength": 1},
+        "roll": {"type": "boolean"},
+        "animate": {
+          "type": "object", "required": ["ms"], "additionalProperties": false,
+          "properties": {
+            "ms": {"type": "integer", "minimum": 120, "maximum": 1200},
+            "ease": {"enum": ["linear", "spring"], "default": "linear"}
+          }
+        },
+        "loop": {
+          "type": "object", "required": ["kind", "period_ms"], "additionalProperties": false,
+          "properties": {
+            "kind": {"enum": ["pulse", "flow", "bob", "spin"]},
+            "period_ms": {"type": "integer", "minimum": 800, "maximum": 4294967295}
+          }
+        },
+        "burst": {"const": "confetti"},
+        "hit": {
+          "type": "object", "minProperties": 1, "maxProperties": 1, "additionalProperties": false,
+          "properties": {
+            "action": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,39}$"},
+            "open": {"type": "string", "minLength": 1, "maxLength": 2048, "pattern": "^[Hh][Tt][Tt][Pp][Ss]://"},
+            "copy": {"type": "string", "maxLength": 2000}
+          }
+        },
+        "hover": {
+          "type": "object", "additionalProperties": false,
+          "properties": {
+            "opacity": {"$ref": "#/$defs/canvasNumber", "minimum": 0, "maximum": 1},
+            "lift": {"$ref": "#/$defs/canvasNumber"},
+            "fill": {"$ref": "#/$defs/canvasColor"}
+          }
+        },
+        "scroll": {
+          "type": "object", "required": ["axis", "content"], "additionalProperties": false,
+          "properties": {
+            "axis": {"const": "y"},
+            "content": {"type": "number", "exclusiveMinimum": 0}
+          }
+        },
+        "tips": {
+          "type": "array",
+          "items": {
+            "type": "object", "required": ["x", "label", "value"], "additionalProperties": false,
+            "properties": {
+              "x": {"type": "number", "minimum": -2000, "maximum": 2000},
+              "label": {"type": "string"},
+              "value": {"type": "string"}
+            }
+          }
+        }
+      }
+    },
     "setting": {
       "type": "object",
       "required": ["key", "label", "type", "default"],
@@ -399,6 +689,16 @@
     {
       "if": {"required": ["statusLayout"]},
       "then": {"properties": {"capabilities": {"contains": {"const": "status.page"}}}}
+    },
+    {
+      "if": {"properties": {"capabilities": {"contains": {"const": "status.canvas"}}}},
+      "then": {"properties": {
+        "runtime": {"const": "js"},
+        "capabilities": {"contains": {"const": "status.page"}}
+      }},
+      "else": {"properties": {"statusLayout": {"properties": {
+        "components": {"not": {"contains": {"properties": {"type": {"const": "canvas"}}}}}
+      }}}}
     },
     {
       "if": {"properties": {"capabilities": {"contains": {"const": "event"}}}},
@@ -563,7 +863,7 @@
           "dataVersion": {"const": 1},
           "entry": {"pattern": "^(?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_-]+\\.js$"},
           "capabilities": {
-            "items": {"enum": ["status.page", "card", "calendar.marker", "quota.source", "settings", "timer", "storage", "action", "event", "notice", "island.pinned"]},
+            "items": {"enum": ["status.page", "status.canvas", "card", "calendar.marker", "quota.source", "settings", "timer", "storage", "action", "event", "notice", "island.pinned"]},
             "contains": {"const": "status.page"}
           },
           "permissions": {
