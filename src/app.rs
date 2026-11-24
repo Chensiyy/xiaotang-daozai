@@ -467,6 +467,8 @@ pub struct FrameOut {
     /// 极简细条只感应悬停，鼠标点击交给下面的应用。
     pub click_through: bool,
     pub notice_hit: Option<Rect>,
+    /// 当前可点击的通知范围（相对 `win` 左上角），供顶部任务栏遮挡判断。
+    pub top_bar_notice: Option<Rect>,
     /// 文件拖入感应区；独立于普通鼠标命中区。
     pub file_drop_zone: Option<Rect>,
     /// 展开状态立即生效，不等待展开动画结束。
@@ -2579,6 +2581,7 @@ impl App {
         let base = Card::new(ui, origin, clip);
         self.cursor_local = env.cursor.map(|p| base.to_local(p));
 
+        let mut top_bar_notice=None;
         let banner=!self.compact_notices()&&self.notice.is_some()&&!self.open;
         let restoring_lyrics=!self.open&&self.notice.is_none()&&self.island_lyrics_active()&&self.hud_notice.as_ref().is_some_and(|a|a.meeting.is_some()||a.source!=crate::extras::AlertSource::Internal);
         let fading_hud=!self.compact_notices()&&!self.open&&self.hud_notice.as_ref().is_some_and(|a|a.is_hud())&&(banner||self.hud_alpha>0.003);
@@ -2589,12 +2592,19 @@ impl App {
                 else {(self.hud_alpha*smoothstep(0.20,0.60,width_progress),1.0-smoothstep(0.05,0.25,width_progress))};
             if !minimal_pill||pc>0.0 {self.resident_header(&base.faded(header_opacity),panel,cx,pc,reveal,env,resident_day.as_ref());}
             if let Some(a)=self.hud_notice.clone(){
-                let overlay=Card::new(ui,panel.min+Vec2::new(self.pet_space(),0.0),panel.intersect(ui.max_rect())).faded(opacity);
-                let overlay=if opacity<0.85||!banner{overlay.ghost()}else{overlay};
+                let clip=panel.intersect(ui.max_rect());
+                let interactive=opacity>=0.85 && banner;
+                let overlay=Card::new(ui,panel.min+Vec2::new(self.pet_space(),0.0),clip).faded(opacity);
+                let overlay=if interactive {overlay}else{overlay.ghost()};
+                if interactive && a.title=="系统音量" {top_bar_notice=Some(clip);}
                 self.draw_notice(&overlay,panel,&a,&mut cmds);
             }
         }else if banner {
-            if let Some(a)=self.notice.clone(){self.draw_notice(&Card::new(ui,panel.min+Vec2::new(self.pet_space(),0.0),panel.intersect(ui.max_rect())),panel,&a,&mut cmds);}
+            if let Some(a)=self.notice.clone(){
+                let clip=panel.intersect(ui.max_rect());
+                top_bar_notice=Some(clip);
+                self.draw_notice(&Card::new(ui,panel.min+Vec2::new(self.pet_space(),0.0),clip),panel,&a,&mut cmds);
+            }
         }else if !plugin_notice_detail && (!minimal_pill || pc > 0.0) {
             self.resident_header(&base, panel, cx, if restoring_lyrics{0.0}else{pc}, reveal, env, resident_day.as_ref());
         }
@@ -2602,17 +2612,23 @@ impl App {
             let c=Card::new(ui,rect.min,rect.intersect(ui.max_rect()));
             if let Some(a)=self.hud_notice.clone() {
                 let opacity=self.hud_alpha*smoothstep(0.45,0.95,self.notice_width.pos/44.0);
-                let c=c.faded(opacity);let c=if self.notice.is_none()||opacity<0.85 {c.ghost()}else{c};
+                let interactive=self.notice.is_some()&&opacity>=0.85;
+                let c=c.faded(opacity);let c=if interactive {c}else{c.ghost()};
                 if a.source!=crate::extras::AlertSource::Internal {
                     paint::bell(&c.scaled(18.0,15.0,0.85),18.0,15.0,theme::WHITE,paint::bell_swing(self.t-a.at));
                     c.circle(22.0,10.5,2.0,Color32::from_rgb(255,72,72));
                 }else{crate::extras::notice_badge(&c,18.0,15.0,&a);}
                 let button=crate::quota_ui::bar_tooltip(c.hit(0.0,0.0,36.0,BAR_H,"notice-badge"),format!("{}\n{}",a.title,a.body));
+                if interactive {top_bar_notice=Some(button.interact_rect);}
                 if button.clicked(){if let Some(kind)=a.health(){self.confirm_health_reminder(kind);}else{self.notice_details=!self.notice_details;}}
             }else if let Some(at)=self.notification_bell(){
                 paint::bell(&c.scaled(20.0,14.0,1.2),20.0,14.0,theme::WHITE,paint::bell_swing(self.t-at));
                 c.circle(24.0,9.5,2.0,Color32::from_rgb(255,72,72));
-                if self.module_on(MAIL_PAGE)&&c.hit(6.0,0.0,28.0,30.0,"bell-mail").clicked(){self.show_page(MAIL_PAGE);}
+                if self.module_on(MAIL_PAGE) {
+                    let button=c.hit(6.0,0.0,28.0,30.0,"bell-mail");
+                    top_bar_notice=Some(button.interact_rect);
+                    if button.clicked(){self.show_page(MAIL_PAGE);}
+                }
             }
         }
         if let Some(rect)=messenger_rect {
@@ -2834,6 +2850,7 @@ impl App {
             page_scroll_area:self.page_scroll_area.or(canvas_scroll).map(rel),
             click_through: minimal_strip && !self.open && self.position_drag.is_none(),
             notice_hit:notice_shape.into_iter().chain(notice_details).chain(messenger_rect).chain(self.shelf_menu_rect).reduce(|a,b|a.union(b)).map(rel),
+            top_bar_notice:top_bar_notice.into_iter().chain(notice_details.map(|r|r.intersect(ui.max_rect()))).filter(|r|r.is_positive()).reduce(|a,b|a.union(b)).map(rel),
             file_drop_zone:self.settings.visible_pages[3].then(||rel(if side {self.island_rect(win,PW,self.expanded_height()).translate(offset)} else {orient(Rect::from_min_size(Pos2::new(cx-PW/2.0,top),Vec2::new(PW,96.0)))})),
             expanded: self.open,
             editing: self.is_editing(),

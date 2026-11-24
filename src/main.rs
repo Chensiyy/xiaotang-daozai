@@ -984,9 +984,12 @@ impl eframe::App for Shell {
             native_cost=native_start.elapsed();
             _frame.root_window_offset=native.paint_offset();
             native.set_page_scroll_area(out.page_scroll_area.filter(|_|!self.hidden && out.expanded),ppp);
-            if !self.hidden && self.app.settings.avoids_top_bar() && self.app.settings.top_bar_on_top && self.app.settings.dock==daozai::model::Dock::Top {
-                if let Some(display)=daozai::display_layout::selected(&self.app.displays,&self.app.settings.display_id) {
-                    native.keep_above_top_bar(display.bounds);
+            if !self.hidden && self.app.settings.dock==daozai::model::Dock::Top {
+                let on_top=self.app.settings.avoid_top_bar && self.app.settings.top_bar_on_top;
+                if let Some(display)=daozai::display_layout::selected(&self.app.displays,&self.app.settings.display_id)
+                    .filter(|_|on_top || out.top_bar_notice.is_some()) {
+                    let notice=out.top_bar_notice.filter(|_|!on_top).map(|rect|(rect,ppp));
+                    native.keep_above_top_bar(display.bounds,notice);
                 }
             }
         }
