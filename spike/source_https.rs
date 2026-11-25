@@ -6,7 +6,7 @@ use super::{
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    io,
+    io::{self, Read},
     net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs},
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -206,11 +206,13 @@ impl Network {
             None => None,
         };
         let deadline = Instant::now() + TIMEOUT;
+        let gold = id == "daozai.gold" && url.host_str() == Some("xaus.com")
+            && url.path() == "/api/v1/spot" && self.credential.is_none();
         let agent = ureq::AgentBuilder::new()
             .try_proxy_from_env(false)
             .redirects(0)
             .timeout_connect(TIMEOUT)
-            .resolver(move |address: &str| resolve_public(address, deadline))
+            .resolver(move |address: &str| resolve_public(address, deadline, gold))
             .build();
         let mut request = agent
             .get(url.as_str())
@@ -463,7 +465,7 @@ fn public_addresses(addresses: impl Iterator<Item = SocketAddr>) -> io::Result<V
     Ok(addresses)
 }
 
-fn resolve_public(address: &str, deadline: Instant) -> io::Result<Vec<SocketAddr>> {
+fn resolve_public(address: &str, deadline: Instant, gold: bool) -> io::Result<Vec<SocketAddr>> {
     // 系统 DNS 是同步调用。最多保留一个查询线程，请求超时后立即结束等待。
     static RESOLVING: AtomicBool = AtomicBool::new(false);
     let (host, port) = address
@@ -480,7 +482,7 @@ fn resolve_public(address: &str, deadline: Instant) -> io::Result<Vec<SocketAddr
     if let Err(error) = std::thread::Builder::new()
         .name("daozai-plugin-dns".into())
         .spawn(move || {
-            let addresses = target.to_socket_addrs().and_then(public_addresses);
+            let addresses = target.to_socket_addrs().map(|items| items.collect::<Vec<_>>());
             RESOLVING.store(false, Ordering::Release);
             let _ = send.send(addresses);
         })
@@ -488,9 +490,37 @@ fn resolve_public(address: &str, deadline: Instant) -> io::Result<Vec<SocketAddr
         RESOLVING.store(false, Ordering::Release);
         return Err(error);
     }
-    receive
+    let addresses = receive
         .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "HTTPS 域名解析超时"))?
+        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "HTTPS 域名解析超时"))??;
+    if gold && host == "xaus.com" && !addresses.iter().any(|addr| public_ip(addr.ip()))
+        && addresses.iter().any(|addr| matches!(addr.ip(), IpAddr::V4(ip)
+            if matches!(ip.octets(), [198, 18 | 19, _, _])))
+    {
+        // 代理的虚拟地址无法通过公网校验。官方固定报价源可改查真实公网地址。
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let response = ureq::AgentBuilder::new().try_proxy_from_env(false).redirects(0).build()
+            .get("https://1.1.1.1/dns-query?name=xaus.com&type=A")
+            .timeout(remaining).set("Accept", "application/dns-json")
+            .call().map_err(|_| io::Error::other("无法查询金价源公网地址"))?;
+        if response.status() != 200 {
+            return Err(io::Error::other("无法查询金价源公网地址"));
+        }
+        return gold_dns_answers(response.into_reader());
+    }
+    public_addresses(addresses.into_iter())
+}
+
+fn gold_dns_answers(reader: impl Read) -> io::Result<Vec<SocketAddr>> {
+    let reply: serde_json::Value = serde_json::from_reader(reader.take(4096))?;
+    let answers = reply.get("Answer").and_then(serde_json::Value::as_array)
+        .filter(|_| reply["Status"].as_u64() == Some(0))
+        .ok_or_else(|| io::Error::other("无法查询金价源公网地址"))?;
+    public_addresses(answers.iter().filter_map(|answer| {
+        if answer["type"].as_u64() != Some(1) { return None; }
+        let ip: Ipv4Addr = answer["data"].as_str()?.parse().ok()?;
+        Some(SocketAddr::new(ip.into(), 443))
+    }))
 }
 
 fn response_text(response: ureq::Response, cancelled: &AtomicBool) -> io::Result<String> {
@@ -528,6 +558,16 @@ pub(super) fn delete_secret(id: &str) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gold_dns_answers_accept_only_public_ipv4_records() {
+        let json = br#"{"Status":0,"Answer":[{"type":1,"data":"198.18.2.124"},
+            {"type":1,"data":"127.0.0.1"},{"type":1,"data":"98.84.224.111"},
+            {"type":5,"data":"18.208.88.157"}]}"#;
+        assert_eq!(gold_dns_answers(&json[..]).unwrap(),
+            ["98.84.224.111:443".parse::<SocketAddr>().unwrap()]);
+        assert!(gold_dns_answers(&br#"{"Status":3,"Answer":[]}"#[..]).is_err());
+    }
 
     #[test]
     fn domains_and_addresses_must_match_the_https_grant() {
