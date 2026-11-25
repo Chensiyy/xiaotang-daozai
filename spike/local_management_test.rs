@@ -848,9 +848,17 @@ fn material_management_waits_for_permission_and_offers_to_enable_compatibility()
         }))?,
     )?;
     let mut host = LocalPlugins::open(dir.join("installed"));
-    host.install(&manifest)?;
     let ctx = egui::Context::default();
     crate::theme::load_fonts(&ctx);
+    let appearance = |host: &mut LocalPlugins| {
+        frame(&ctx, vec![], |ui| {
+            assert!(!host.material_settings(ui, None, false));
+        })
+    };
+    assert!(!has_text(&appearance(&mut host), "材质"));
+    host.install(&manifest)?;
+    assert!(!host.material_permission_granted("example.material"));
+    assert!(has_text(&appearance(&mut host), "材质"));
     let manage_click = |host: &mut LocalPlugins, label: &str| {
         let mut jump = None;
         click(&ctx, label, |ui| {
@@ -889,6 +897,8 @@ fn material_management_waits_for_permission_and_offers_to_enable_compatibility()
         );
     }
     assert_eq!(host.records["example.material"].values["strength"], "0.54");
+    host.uninstall("example.material", true)?;
+    assert!(!has_text(&appearance(&mut host), "材质"));
     fs::remove_dir_all(dir)?;
     Ok(())
 }
@@ -918,6 +928,72 @@ fn header_tabs_keep_market_on_the_left_in_a_right_aligned_title_row() {
     };
     assert!(x("集市") < x("已安装"));
     let _ = fs::remove_dir_all(dir);
+}
+
+#[cfg(windows)]
+#[test]
+fn market_channel_toolbar_keeps_categories_clickable_at_narrow_width() -> Result<()> {
+    let dir = std::env::temp_dir().join(format!("daozai-market-toolbar-{}", std::process::id()));
+    fs::create_dir_all(&dir)?;
+    let catalog = dir.join("catalog.json");
+    let entries = [
+        ("example.appearance", "外观样例", "appearance"),
+        ("example.pages", "页面样例", "pages"),
+        ("example.status", "功能样例", "status"),
+        ("example.calendar", "日程样例", "calendar"),
+        ("example.tasks", "待办样例", "tasks"),
+        ("example.quota", "额度样例", "quota"),
+        ("example.wireless", "无线样例", "wireless"),
+    ]
+    .map(|(id, name, owner)| {
+        serde_json::json!({
+            "id": id, "name": name, "author": "示例作者", "version": "1.0.0",
+            "owner": owner, "size": 1, "sha256": "0".repeat(64),
+        })
+    });
+    fs::write(&catalog, serde_json::to_vec(&serde_json::json!({
+        "format": 1, "plugins": entries,
+    }))?)?;
+
+    let mut host = LocalPlugins::open(dir.join("installed"));
+    host.set_market_catalog(&catalog)?;
+    let ctx = egui::Context::default();
+    crate::theme::load_fonts(&ctx);
+    let size = egui::vec2(370.0, 800.0);
+    let mut draw = |ui: &mut egui::Ui| {
+        host.manage(
+            ui,
+            true,
+            true,
+            true,
+            #[cfg(feature = "sdk-material")]
+            None,
+        );
+    };
+    click_in(&ctx, size, "本地测试", &mut draw);
+    let output = frame_in(&ctx, size, vec![], &mut draw);
+    let bounds = |label| {
+        output.shapes.iter().find_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) if text.galley.text() == label => {
+                let rect = text.visual_bounding_rect();
+                assert!(shape.clip_rect.contains_rect(rect), "{label} 被裁剪");
+                Some(rect)
+            }
+            _ => None,
+        }).unwrap_or_else(|| panic!("找不到 {label}"))
+    };
+    let online = if option_env!("DAOZAI_TEST_BUILD").is_some() { "预览集市" } else { "官方" };
+    let channel_bottom = bounds(online).bottom().max(bounds("本地测试").bottom());
+    for label in ["全部", "外观", "页面管理", "独立功能", "日程", "待办与置物", "AI 额度", "无线设备"] {
+        assert!(bounds(label).top() > channel_bottom, "{label} 与频道工具行重叠");
+    }
+
+    click_in(&ctx, size, "独立功能", &mut draw);
+    let filtered = frame_in(&ctx, size, vec![], &mut draw);
+    assert!(has_text(&filtered, "功能样例"));
+    assert!(!has_text(&filtered, "外观样例"));
+    fs::remove_dir_all(dir)?;
+    Ok(())
 }
 
 const WINDOW: egui::Vec2 = egui::vec2(940., 860.);

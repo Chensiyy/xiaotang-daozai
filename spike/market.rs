@@ -973,6 +973,7 @@ pub(super) fn submit(input: &Path, path: &Path) -> Result<()> {
     let package = decode_zip(&raw, true)?;
     smoke(&package)?;
     let manifest = package.manifest;
+    let updated_on = chrono::Local::now().date_naive().to_string();
     let mut entry = Entry {
         id: manifest.id,
         name: manifest.name,
@@ -981,7 +982,10 @@ pub(super) fn submit(input: &Path, path: &Path) -> Result<()> {
         size: raw.len() as u64,
         sha256: sha256(&raw),
         owner: Some(manifest.owner),
-        presentation: None,
+        presentation: Some(Presentation {
+            updated_on: Some(updated_on.clone()),
+            ..Presentation::default()
+        }),
         revoked: BTreeSet::new(),
     };
     let path = target_path(path)?;
@@ -1001,7 +1005,10 @@ pub(super) fn submit(input: &Path, path: &Path) -> Result<()> {
         if old.revokes(&entry.version) {
             return Err(fail("此插件版本已撤回"));
         }
-        entry.presentation = old.presentation.take();
+        if let Some(mut presentation) = old.presentation.take() {
+            presentation.updated_on = Some(updated_on);
+            entry.presentation = Some(presentation);
+        }
         entry.revoked = std::mem::take(&mut old.revoked);
         *old = entry;
     } else {

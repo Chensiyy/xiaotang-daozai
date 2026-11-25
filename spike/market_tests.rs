@@ -261,11 +261,19 @@ fn market_author_packages_and_submits_immutable_versions() -> Result<()> {
     let first = fixture.0.join("first.zip");
     pack(&fixture.project("1.2.9")?, &first)?;
     assert!(pack(&fixture.project("1.2.9")?, &first).is_err());
+    let submitted_on = chrono::Local::now().date_naive();
     submit(&first, &catalog_path)?;
 
     let catalog = Catalog::open(&catalog_path)?;
     let original = &catalog.entries[0];
-    assert!(original.presentation.is_none());
+    let first_presentation = original.presentation.as_ref().expect("提交应记录更新日期");
+    let first_date = first_presentation.updated_on.as_deref().expect("更新日期缺失");
+    let date = chrono::NaiveDate::parse_from_str(first_date, "%Y-%m-%d")?;
+    assert!((submitted_on..=chrono::Local::now().date_naive()).contains(&date));
+    assert_eq!(
+        serde_json::to_value(first_presentation)?,
+        json!({"updated_on": first_date})
+    );
     assert_eq!(catalog.load(original)?.manifest.version, "1.2.9");
     assert_eq!(
         catalog.cover_png(original)?.as_slice(),
@@ -273,10 +281,12 @@ fn market_author_packages_and_submits_immutable_versions() -> Result<()> {
     );
     let original_path = original.path_in(&catalog.path);
     let original_bytes = fs::read(&original_path)?;
+    let original_catalog = fs::read(&catalog_path)?;
     assert!(submit(&first, &catalog_path).is_err());
+    assert_eq!(fs::read(&catalog_path)?, original_catalog);
 
-    let mut index: Value = serde_json::from_slice(&fs::read(&catalog_path)?)?;
-    let presentation = json!({
+    let mut index: Value = serde_json::from_slice(&original_catalog)?;
+    let mut presentation = json!({
         "description": "发薪日提醒",
         "updated_on": "2026-11-21",
         "official": true,
@@ -292,6 +302,7 @@ fn market_author_packages_and_submits_immutable_versions() -> Result<()> {
     let second = fixture.0.join("second.zip");
     pack(&fixture.project("1.2.10")?, &second)?;
     fs::copy(&second, fixture.0.join("plugin-example.payday-1.2.10.zip"))?;
+    let submitted_on = chrono::Local::now().date_naive();
     submit(&second, &catalog_path)?;
     let catalog = Catalog::open(&catalog_path)?;
     assert_eq!(catalog.entries.len(), 1);
@@ -303,6 +314,14 @@ fn market_author_packages_and_submits_immutable_versions() -> Result<()> {
     assert!(submit(&first, &catalog_path).is_err());
 
     let entry = &catalog.entries[0];
+    let updated_date = entry
+        .presentation
+        .as_ref()
+        .and_then(|details| details.updated_on.as_deref())
+        .expect("新版本更新日期缺失");
+    let date = chrono::NaiveDate::parse_from_str(updated_date, "%Y-%m-%d")?;
+    assert!((submitted_on..=chrono::Local::now().date_naive()).contains(&date));
+    presentation["updated_on"] = json!(updated_date);
     assert_eq!(serde_json::to_value(&entry.presentation)?, presentation);
     let mut raw = fs::read(entry.path_in(&catalog.path))?;
     raw[0] ^= 1;

@@ -8,6 +8,42 @@ fn filter_id() -> egui::Id {
     egui::Id::new("plugin-market-filter")
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MarketSort {
+    Downloads,
+    Latest,
+}
+
+impl MarketSort {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Downloads => "下载量",
+            Self::Latest => "最新",
+        }
+    }
+}
+
+fn sort_entries(
+    entries: &mut [&market::Entry],
+    order: MarketSort,
+    downloads: impl Fn(&str) -> Option<u64>,
+) {
+    use std::cmp::Reverse;
+
+    entries.sort_by_cached_key(|entry| {
+        let count = if order == MarketSort::Downloads {
+            downloads(&entry.id)
+        } else {
+            None
+        };
+        let date = entry
+            .presentation
+            .as_ref()
+            .and_then(|details| details.updated_on.as_deref())
+            .and_then(|date| chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").ok());
+        (Reverse(count), Reverse(date))
+    });
+}
 
 pub(super) fn select_detail(ui: &egui::Ui, id: &str) {
     let now = ui.input(|input| input.time);
@@ -91,30 +127,48 @@ fn entry_description<'a>(entry: &'a market::Entry) -> &'a str {
 }
 
 fn compact(value: Option<u64>) -> String {
-    match value {
-        None => "—".into(),
-        Some(n) if n >= 10_000 => format!("{:.1}万", n as f64 / 10_000.0),
-        Some(n) => n.to_string(),
-    }
+    let Some(count) = value else { return "—".into() };
+    let (divisor, suffix) = match count {
+        0..=999 => return count.to_string(),
+        1_000..=999_949 => (1_000.0, "K"),
+        999_950..=999_949_999 => (1_000_000.0, "M"),
+        _ => (1_000_000_000.0, "B"),
+    };
+    let rounded = format!("{:.1}", count as f64 / divisor);
+    format!("{}{}", rounded.strip_suffix(".0").unwrap_or(&rounded), suffix)
 }
 
-/// 下载量：小箭头图标加数字。
+/// 下载量以托盘图标和简写数字展示。
 fn download_count(ui: &mut egui::Ui, value: &str) -> egui::Response {
     let tint = muted_color(ui);
     let galley = ui.fonts(|fonts| {
-        fonts.layout_no_wrap(value.to_owned(), egui::FontId::proportional(11.0), tint)
+        fonts.layout_no_wrap(value.to_owned(), egui::FontId::proportional(12.0), tint)
     });
-    let size = egui::vec2(14.0 + galley.size().x, galley.size().y.max(14.0));
+    let size = egui::vec2(17.0 + galley.size().x, galley.size().y.max(15.0));
     let (rect, response) = ui.allocate_exact_size(size, egui::Sense::hover());
-    let c = egui::pos2(rect.left() + 5.0, rect.center().y);
+    let c = egui::pos2(rect.left() + 6.0, rect.center().y);
     let stroke = egui::Stroke::new(1.3, tint);
     let painter = ui.painter();
-    painter.line_segment([c + egui::vec2(0.0, -4.5), c + egui::vec2(0.0, 1.5)], stroke);
-    painter.line_segment([c + egui::vec2(-3.0, -1.2), c + egui::vec2(0.0, 1.8)], stroke);
-    painter.line_segment([c + egui::vec2(3.0, -1.2), c + egui::vec2(0.0, 1.8)], stroke);
-    painter.line_segment([c + egui::vec2(-4.0, 4.5), c + egui::vec2(4.0, 4.5)], stroke);
+    painter.line_segment([c + egui::vec2(0.0, -5.0), c + egui::vec2(0.0, 1.4)], stroke);
+    painter.add(egui::Shape::line(
+        vec![
+            c + egui::vec2(-2.8, -1.4),
+            c + egui::vec2(0.0, 1.4),
+            c + egui::vec2(2.8, -1.4),
+        ],
+        stroke,
+    ));
+    painter.add(egui::Shape::line(
+        vec![
+            c + egui::vec2(-4.6, 2.6),
+            c + egui::vec2(-4.6, 5.0),
+            c + egui::vec2(4.6, 5.0),
+            c + egui::vec2(4.6, 2.6),
+        ],
+        stroke,
+    ));
     painter.galley(
-        egui::pos2(rect.left() + 14.0, rect.center().y - galley.size().y / 2.0),
+        egui::pos2(rect.left() + 17.0, rect.center().y - galley.size().y / 2.0),
         galley,
         tint,
     );
@@ -234,7 +288,7 @@ const AVATAR_TEXTURES: &str = "plugin-market-avatar-textures";
 type AvatarTextures = std::collections::VecDeque<(egui::Id, Option<egui::TextureHandle>)>;
 
 impl LocalPlugins {
-    /// 集市页：上方一行筛选和刷新，下面是插件卡片；点开卡片在右侧抽屉看详情。
+    /// 集市页包含目录、排序、分类和插件卡片。
     pub(super) fn market(&mut self, ui: &mut egui::Ui, official: bool) -> MarketNav {
         if official {
             self.ensure_official_catalog();
@@ -272,6 +326,10 @@ impl LocalPlugins {
                 (filter == "favorites" && official) || owners.iter().any(|(key, _)| key == filter)
             })
             .unwrap_or_else(|| "all".to_owned());
+        let sort_id = egui::Id::new(("plugin-market-sort", official));
+        let mut order = ui.data(|data| data.get_temp::<MarketSort>(sort_id)).unwrap_or(
+            if official { MarketSort::Downloads } else { MarketSort::Latest },
+        );
         let mut nav = MarketNav::Stay;
 
         if official {
@@ -281,6 +339,40 @@ impl LocalPlugins {
             }
             ui.add_space(14.0);
         }
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
+            let preview_build = market::IS_PREVIEW_BUILD;
+            let online = if preview_build { "预览集市" } else { "官方" };
+            if has_test {
+                let options = [online.to_owned(), "本地测试".to_owned()];
+                if let Some(index) = segmented(ui, "plugin-market-source", &options, usize::from(!official), &[false, false], 12.0) {
+                    nav = MarketNav::Source { official: index == 0 };
+                }
+            } else if official && preview_build {
+                ui.label(egui::RichText::new(online).strong());
+            }
+            if refresh_button(ui, !busy && !syncing, syncing, failure.as_deref()).clicked() {
+                forget_covers(ui);
+                ui.data_mut(|data| {
+                    data.remove::<AvatarTextures>(egui::Id::new((AVATAR_TEXTURES, official)));
+                });
+                if official {
+                    self.refresh_official_catalog();
+                } else if let Err(error) = self.refresh_market_catalog() {
+                    self.notice = error.to_string();
+                }
+            }
+            egui::ComboBox::from_id_salt(sort_id)
+                .width(72.0)
+                .selected_text(order.label())
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut order, MarketSort::Downloads, "按下载量");
+                    ui.selectable_value(&mut order, MarketSort::Latest, "按最新");
+                })
+                .response
+                .on_hover_text("排序方式");
+        });
+        ui.add_space(6.0);
         ui.horizontal_wrapped(|ui| {
             ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
             if !official {
@@ -299,28 +391,12 @@ impl LocalPlugins {
                     filter = (*key).to_owned();
                 }
             }
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if refresh_button(ui, !busy && !syncing, syncing, failure.as_deref()).clicked() {
-                    forget_covers(ui);
-                    ui.data_mut(|data| {
-                        data.remove::<AvatarTextures>(egui::Id::new((AVATAR_TEXTURES, official)));
-                    });
-                    if official {
-                        self.refresh_official_catalog();
-                    } else if let Err(error) = self.refresh_market_catalog() {
-                        self.notice = error.to_string();
-                    }
-                }
-                if has_test {
-                    let options = ["官方".to_owned(), "本地测试".to_owned()];
-                    if let Some(index) = segmented(ui, "plugin-market-source", &options, usize::from(!official), &[false, false], 12.0) {
-                        nav = MarketNav::Source { official: index == 0 };
-                    }
-                }
-            });
         });
         let favorites = filter == "favorites";
-        ui.data_mut(|data| data.insert_temp(filter_id(), filter.clone()));
+        ui.data_mut(|data| {
+            data.insert_temp(filter_id(), filter.clone());
+            data.insert_temp(sort_id, order);
+        });
         if nav != MarketNav::Stay {
             close_detail(ui);
             return nav;
@@ -346,7 +422,7 @@ impl LocalPlugins {
             });
         }
         if let Some(catalog) = &catalog {
-            let entries: Vec<_> = catalog
+            let mut entries: Vec<_> = catalog
                 .entries
                 .iter()
                 .filter(|entry| match filter.as_str() {
@@ -355,6 +431,13 @@ impl LocalPlugins {
                     owner => self.entry_owner(entry).as_deref() == Some(owner),
                 })
                 .collect();
+            sort_entries(&mut entries, order, |id| {
+                if official {
+                    self.market_counts(id).map(|counts| counts.downloads)
+                } else {
+                    None
+                }
+            });
             if entries.is_empty() && !favorites {
                 settings_card(ui, |ui| {
                     ui.strong("目录中暂无插件");
@@ -632,7 +715,10 @@ impl LocalPlugins {
                             if catalog.is_official() {
                                 let downloads = self.market_counts(&entry.id).map(|counts| counts.downloads);
                                 download_count(ui, &compact(downloads))
-                                    .on_hover_text(if downloads.is_some() { "下载次数" } else { "暂无统计数据" });
+                                    .on_hover_text(downloads.map_or_else(
+                                        || "暂无统计数据".to_owned(),
+                                        |count| format!("{count} 次下载"),
+                                    ));
                             }
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 let manage = self.market_action_button(ui, catalog, entry, cover.inner);
@@ -945,5 +1031,66 @@ impl LocalPlugins {
         let entry = catalog.entries.iter().find(|entry| entry.id == id)?;
         (self.market_status(&catalog, entry) == MarketStatus::Update)
             .then(|| (record.official_market, entry.version.clone()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn market_download_totals_use_compact_suffixes() {
+        for (count, expected) in [
+            (None, "—"),
+            (Some(0), "0"),
+            (Some(999), "999"),
+            (Some(1_000), "1K"),
+            (Some(2_400), "2.4K"),
+            (Some(999_950), "1M"),
+            (Some(1_240_000_000), "1.2B"),
+        ] {
+            assert_eq!(compact(count), expected);
+        }
+    }
+
+    #[test]
+    fn market_sort_orders_downloads_and_release_dates_with_stable_ties() {
+        let entry = |id: &str, date: Option<&str>| market::Entry {
+            id: id.to_owned(),
+            name: id.to_owned(),
+            author: "测试".to_owned(),
+            version: "1.0.0".to_owned(),
+            size: 1,
+            sha256: String::new(),
+            owner: None,
+            presentation: date.map(|date| market::Presentation {
+                updated_on: Some(date.to_owned()),
+                ..market::Presentation::default()
+            }),
+            revoked: Default::default(),
+        };
+        let popular = entry("popular", None);
+        let old = entry("old", Some("2026-11-20"));
+        let unknown = entry("unknown", Some("2026-11-25"));
+        let first = entry("first", Some("2026-11-24"));
+        let second = entry("second", Some("2026-11-24"));
+        let original = [&unknown, &popular, &old, &first, &second];
+        let counts = |id: &str| match id {
+            "popular" => Some(100),
+            "unknown" => None,
+            _ => Some(0),
+        };
+        let mut entries = original;
+        sort_entries(&mut entries, MarketSort::Downloads, counts);
+        assert_eq!(
+            entries.map(|entry| entry.id.as_str()),
+            ["popular", "first", "second", "old", "unknown"]
+        );
+        entries = original;
+        sort_entries(&mut entries, MarketSort::Latest, counts);
+        assert_eq!(
+            entries.map(|entry| entry.id.as_str()),
+            ["unknown", "first", "second", "old", "popular"]
+        );
     }
 }
