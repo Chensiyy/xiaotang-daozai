@@ -613,23 +613,46 @@ fn wait_for_catalog_action(host: &mut LocalPlugins) {
 }
 
 #[test]
-fn online_market_material_requires_preview_build_and_trusted_preview_index() -> Result<()> {
-    let preview = Url::parse(&format!(
-        "https://gitee.com/api/v5/repos/{GITEE_REPOSITORY}/contents/preview/catalog.json?ref=master"
-    ))?;
-    assert!(allows_market_material(None, false));
-    assert!(allows_market_material(Some(&preview), true));
-    assert!(!allows_market_material(Some(&preview), false));
+fn online_market_material_is_limited_to_preview_or_the_reviewed_stable_package() -> Result<()> {
+    let preview = Url::parse(&format!("https://gitee.com{}?ref=master", official_index_path("preview")))?;
+    let stable = Url::parse(&format!("https://gitee.com{}?ref=master", official_index_path("stable")))?;
+    let approved: Entry = serde_json::from_value(json!({
+        "id": "cayww.liquid-glass",
+        "name": "液态玻璃",
+        "author": "轻九九九（@cayww）",
+        "version": "1.0.2",
+        "size": 180301,
+        "sha256": "01619b45b3ba6cf0a71c8d952c8a2aada5fad25379ced21e481784d561d197d8",
+        "owner": "appearance"
+    }))?;
+    assert!(allows_market_material(None, false, &approved));
+    assert!(allows_market_material(Some(&preview), true, &approved));
+    assert!(!allows_market_material(Some(&preview), false, &approved));
+    assert!(allows_market_material(Some(&stable), false, &approved));
+    assert!(!allows_market_material(Some(&stable), true, &approved));
 
-    for untrusted in [
-        preview.as_str().replace("/preview/", "/stable/"),
-        preview.as_str().replace("ref=master", "ref=main"),
-        preview.as_str().replace("https://", "http://"),
-        preview.as_str().replace("gitee.com/", "example.com/"),
-        preview.as_str().replace(GITEE_REPOSITORY, "another/daozai-plugins"),
-        preview.as_str().replace("catalog.json", "alternate.json"),
+    for unreviewed in [
+        Entry { id: "example.other-material".into(), ..approved.clone() },
+        Entry { version: "1.0.3".into(), ..approved.clone() },
+        Entry { sha256: "0".repeat(64), ..approved.clone() },
+        Entry { size: approved.size + 1, ..approved.clone() },
     ] {
-        assert!(!allows_market_material(Some(&Url::parse(&untrusted)?), true), "{untrusted}");
+        assert!(allows_market_material(Some(&preview), true, &unreviewed));
+        assert!(!allows_market_material(Some(&stable), false, &unreviewed));
+    }
+
+    for (trusted, preview_build) in [(&preview, true), (&stable, false)] {
+        for untrusted in [
+            trusted.as_str().replace("ref=master", "ref=main"),
+            trusted.as_str().replace("https://", "http://"),
+            trusted.as_str().replace("gitee.com/", "example.com/"),
+            trusted.as_str().replace("gitee.com/", "gitee.com:8443/"),
+            trusted.as_str().replace(GITEE_REPOSITORY, "another/daozai-plugins"),
+            trusted.as_str().replace("catalog.json", "alternate.json"),
+        ] {
+            let index = Url::parse(&untrusted)?;
+            assert!(!allows_market_material(Some(&index), preview_build, &approved), "{untrusted}");
+        }
     }
     Ok(())
 }
@@ -645,13 +668,15 @@ fn market_material_packs_and_installs_liquid_glass_locally() -> Result<()> {
     let raw = fs::read(&bundle)?;
     assert!(decode_zip(&raw, false).is_err());
     let preview = Url::parse(&format!("https://gitee.com{}?ref=master", official_index_path("preview")))?;
-    let preview_package = decode_zip(&raw, allows_market_material(Some(&preview), true))?;
-    assert!(preview_package.manifest.is_material());
-    assert_eq!(preview_package.cover_png().as_deref(), Some(include_bytes!("examples/liquid-glass/cover.png").as_slice()));
     submit(&bundle, &catalog_path)?;
 
     let catalog = Catalog::open(&catalog_path)?;
     let entry = &catalog.entries[0];
+    let stable = Url::parse(&format!("https://gitee.com{}?ref=master", official_index_path("stable")))?;
+    let preview_package = decode_zip(&raw, allows_market_material(Some(&preview), true, entry))?;
+    assert!(preview_package.manifest.is_material());
+    assert_eq!(preview_package.cover_png().as_deref(), Some(include_bytes!("examples/liquid-glass/cover.png").as_slice()));
+    assert!(decode_zip(&raw, allows_market_material(Some(&stable), false, entry)).is_err());
     let id = "cayww.liquid-glass";
     assert_eq!(entry.id, id);
     assert_eq!(entry.author, "轻九九九（@cayww）");
