@@ -15,13 +15,16 @@ try {
         $env:CARGO_BUILD_JOBS = '1'
         # QuickJS 的 C 断言使用宽字符源文件名，MSVC 要单独去掉构建目录前缀。
         $originalCL = $env:CL
+        $originalTestBuild = $env:DAOZAI_TEST_BUILD
         try {
+            Remove-Item Env:DAOZAI_TEST_BUILD -ErrorAction SilentlyContinue
             $trimFlags = $privatePaths | ForEach-Object { '"/d1trimfile:' + $_ + '"' }
             $env:CL = (@($originalCL) + $trimFlags) -join ' '
-            cargo +stable-x86_64-pc-windows-msvc build --locked --release --bin daozai --target x86_64-pc-windows-msvc
+            cargo +stable-x86_64-pc-windows-msvc build --locked --release --features sdk-js,sdk-material --bin daozai --target x86_64-pc-windows-msvc
             if ($LASTEXITCODE -ne 0) { throw 'Release build failed' }
         } finally {
             $env:CL = $originalCL
+            $env:DAOZAI_TEST_BUILD = $originalTestBuild
         }
     }
     if (-not $Executable) {
