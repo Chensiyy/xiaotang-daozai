@@ -2039,9 +2039,9 @@ impl App {
     /// 换句、分段和展开高亮共用时间调整；正数延后，负数提前。
     pub(crate) fn lyric_position(&self)->f32 {(self.media.position-self.settings.lyric_delay_ms as f64/1000.0)as f32}
 
-    /// 当前播放器的版本读不到播放进度：歌词无法同步，岛上改显示歌名，不显示停住的歌词。
+    /// 当前歌曲没有进度采样且备用读取不可用时，岛上显示歌名。
     pub(crate) fn music_lyrics_limited(&self)->bool {
-        #[cfg(windows)] {crate::smtc::music_compat::lyrics_limited(&self.media.source)}
+        #[cfg(windows)] {self.media.sampled_at.is_none() && crate::smtc::music_compat::lyrics_limited(&self.media.source)}
         #[cfg(not(windows))] {false}
     }
 

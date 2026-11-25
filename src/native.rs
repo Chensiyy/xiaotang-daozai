@@ -112,14 +112,35 @@ impl DragCapture {
     }
 }
 
-/// 拖文件进岛：拖放感应区只在每帧的 `update` 里检查，而岛静止时（没有吉祥物动画、
-/// 没有播放音乐，例如侧边停靠）一秒才画一帧，拖到岛上往往来不及扩大接收区域。
-/// 这里用一个几乎不占资源的小线程：每 80 ms 看一次鼠标键，只有按住且光标在岛的画布内时
-/// 才请求重绘，让感应区及时生效；平时不触发任何绘制。
-fn watch_drag(hwnd:HWND,ctx:eframe::egui::Context,canvas:Arc<Mutex<Option<RECT>>>){
+#[derive(Clone,Copy,Default)]
+struct PointerWake {
+    canvas: Option<RECT>,
+    pill_edge: Option<RECT>,
+}
+
+impl PointerWake {
+    fn pill_edge_contains(self, cursor:POINT)->bool {
+        let Some((canvas,edge))=self.canvas.zip(self.pill_edge) else {return false;};
+        let (x,y)=(cursor.x-canvas.left,cursor.y-canvas.top);
+        x>=edge.left && x<edge.right && y>=edge.top && y<edge.bottom
+    }
+}
+
+fn collapsed_pill_edge(hit:eframe::egui::Rect,ppp:f32,dock:crate::model::Dock)->Option<RECT> {
+    if !hit.is_positive() || dock.is_side() {return None;}
+    let gap=crate::app::PILL_GAP.min(hit.height());
+    let (top,bottom)=if dock==crate::model::Dock::Bottom {(hit.bottom()-gap,hit.bottom())}
+        else {(hit.top(),hit.top()+gap)};
+    let px=|v:f32|(v*ppp).round() as i32;
+    Some(RECT{left:px(hit.left()),top:px(top),right:px(hit.right()),bottom:px(bottom)})
+}
+
+/// 每 80 ms 检查一次拖放感应区，以及收不到鼠标消息的极简细条和胶囊空隙。
+fn watch_drag(hwnd:HWND,ctx:eframe::egui::Context,wake:Arc<Mutex<PointerWake>>){
     let raw=hwnd.0 as isize;
     let mut was_down=false;
     let mut last_hover=None;
+    let mut was_over_pill_edge=false;
     let _=std::thread::Builder::new().name("daozai-drag-watch".into()).spawn(move||loop{
         std::thread::sleep(std::time::Duration::from_millis(80));
         unsafe {
@@ -130,12 +151,18 @@ fn watch_drag(hwnd:HWND,ctx:eframe::egui::Context,canvas:Arc<Mutex<Option<RECT>>
             if was_down && !down {ctx.request_repaint();}
             was_down=down;
             let passive=GetWindowLongPtrW(hwnd,GWL_EXSTYLE) & WS_EX_TRANSPARENT.0 as isize != 0;
+            let wake=*wake.lock().unwrap_or_else(|e|e.into_inner());
+            let mut cursor=POINT::default();
+            if (down || passive || wake.pill_edge.is_some()) && GetCursorPos(&mut cursor).is_err(){continue;}
+            let over_pill_edge=!down && wake.pill_edge_contains(cursor);
+            if over_pill_edge && !was_over_pill_edge {ctx.request_repaint_of(eframe::egui::ViewportId::ROOT);}
+            was_over_pill_edge=over_pill_edge;
             if !down && !passive {last_hover=None;continue;}
-            let mut cursor=POINT::default();let mut rect=RECT::default();
-            if GetCursorPos(&mut cursor).is_err() || GetWindowRect(hwnd,&mut rect).is_err(){continue;}
+            let mut rect=RECT::default();
+            if GetWindowRect(hwnd,&mut rect).is_err(){continue;}
             if down {
                 // 感应区允许从可见框外拖入，缩紧外框后仍按原画布唤醒。
-                if let Some(bounds)=*canvas.lock().unwrap_or_else(|e|e.into_inner()) {rect=bounds;}
+                if let Some(bounds)=wake.canvas {rect=bounds;}
             } else {
                 // 细条点穿后收不到鼠标移入事件，在它的可见区域内移动才唤醒绘制。
                 let pos=(cursor.x-rect.left,cursor.y-rect.top);
@@ -502,7 +529,7 @@ struct Crop {
     front_pixels: Vec<u8>,
     bridge: Option<crate::layered::Layered>,
     bridge_visible: bool,
-    drag_wake: Arc<Mutex<Option<RECT>>>,
+    drag_wake: Arc<Mutex<PointerWake>>,
 }
 
 pub struct Window {
@@ -715,7 +742,7 @@ impl Window {
             }
             self.crop.canvas_changed|=self.crop.full!=Some(full) && self.crop.applied.is_some();
             self.crop.full=Some(full);
-            *self.crop.drag_wake.lock().unwrap_or_else(|e|e.into_inner())=self.canvas_rect();
+            self.crop.drag_wake.lock().unwrap_or_else(|e|e.into_inner()).canvas=self.canvas_rect();
             true
         }
     }
@@ -735,6 +762,12 @@ impl Window {
             r.bottom=r.top+full.bottom;
         }
         Some(r)
+    }
+
+    pub fn watch_collapsed_pill_edge(&mut self,hit:Option<eframe::egui::Rect>,ppp:f32,dock:crate::model::Dock) {
+        // 空隙仅唤醒悬停，原生裁剪区域仍按可见轮廓处理点击。
+        self.crop.drag_wake.lock().unwrap_or_else(|e|e.into_inner()).pill_edge=
+            hit.and_then(|hit|collapsed_pill_edge(hit,ppp,dock));
     }
 
     pub fn request_crop(&mut self, bounds:Option<eframe::egui::Rect>, transitioning:bool) {
@@ -821,6 +854,21 @@ impl Window {
             }
             true
         }
+    }
+
+    fn restore_full_canvas(&mut self, canvas:RECT)->bool {
+        if self.crop.bridge_visible {
+            if let Some(layer)=&mut self.crop.bridge {layer.detach(self.hwnd);}
+            self.crop.bridge_visible=false;
+        }
+        // 前缓冲不可用时直接恢复外框，旧剪区和输入坐标在本帧重算。
+        if unsafe {SetWindowPos(self.hwnd,None,canvas.left,canvas.top,canvas.right-canvas.left,canvas.bottom-canvas.top,
+            SWP_NOACTIVATE|SWP_NOZORDER|SWP_NOCOPYBITS)}.is_err() {return false;}
+        self.crop.applied=None;
+        self.crop.canvas_changed=false;
+        self.region=(i32::MIN,0,0,0);
+        self.glass=None;
+        true
     }
 
     /// 系统背景模糊是否正在生效（毛玻璃皮肤据此选择着色深浅）。
@@ -962,11 +1010,14 @@ impl Window {
                     full
                 };
                 if target!=current {
-                    resized=self.resize_crop(canvas,current,target,frame);
-                    // 第一帧交付之后结束剪区交接。
-                    if resized {wait=Some(Duration::ZERO);} else {
+                    resized=self.crop.supported && self.resize_crop(canvas,current,target,frame);
+                    if !resized {
                         self.crop.supported=false;
                         self.crop.requested=None;
+                    }
+                    // 正常切换在下一帧结束交接，失败时本帧直接恢复固定外框。
+                    if resized || self.crop.applied.is_some() && self.restore_full_canvas(canvas) {
+                        wait=Some(Duration::ZERO);
                     }
                 }
                 if target==current || resized {self.crop.canvas_changed=false;}
@@ -1101,6 +1152,39 @@ impl Drop for Window {
 mod tests {
     use super::*;
     static NATIVE_STATE_LOCK:Mutex<()>=Mutex::new(());
+
+    #[test]
+    fn collapsed_pill_wakes_at_the_docked_edge_outside_the_native_outline() {
+        use crate::model::Dock;
+        use eframe::egui::{pos2,Rect};
+        use windows::Win32::Graphics::Gdi::PtInRegion;
+        let canvas=RECT{left:-900,top:-200,right:400,bottom:400};
+        for ppp in [1.0,1.25,1.5,2.0] {
+            let px=|v:f32|(v*ppp).round() as i32;
+            for (dock,hit,body,edge,past_edge) in [
+                (Dock::Top,Rect::from_min_max(pos2(200.0,0.0),pos2(400.0,40.0)),
+                    Rect::from_min_max(pos2(200.0,6.0),pos2(400.0,36.0)),0,-1),
+                (Dock::Bottom,Rect::from_min_max(pos2(200.0,160.0),pos2(400.0,200.0)),
+                    Rect::from_min_max(pos2(200.0,164.0),pos2(400.0,194.0)),px(200.0)-1,px(200.0)),
+            ] {
+                // 裁紧后的 HWND 可以挪到胶囊边框内，唤醒坐标仍使用原画布起点。
+                let wake=PointerWake{canvas:Some(canvas),pill_edge:collapsed_pill_edge(hit,ppp,dock)};
+                let point=POINT{x:canvas.left+px(300.0),y:canvas.top+edge};
+                assert!(wake.pill_edge_contains(point),"{dock:?} / {ppp}：屏幕边缘应唤醒");
+                assert!(!wake.pill_edge_contains(POINT{x:canvas.left+px(199.0),..point}));
+                assert!(!wake.pill_edge_contains(POINT{y:canvas.top+past_edge,..point}));
+                let disabled=PointerWake{pill_edge:None,..wake};
+                assert!(!disabled.pill_edge_contains(point));
+                let key=glass_key(&[crate::app::GlassShape::Round(body,15.0)],ppp);
+                unsafe {
+                    let native_outline=glass_region(&key).unwrap();
+                    let inside=PtInRegion(native_outline,px(300.0),edge).as_bool();
+                    let _=DeleteObject(native_outline);
+                    assert!(!inside,"唤醒区域没有扩大原生点击范围");
+                }
+            }
+        }
+    }
 
     #[test]
     fn page_wheel_forwards_only_until_click_or_departure(){unsafe{
@@ -1515,6 +1599,50 @@ mod tests {
         assert_eq!(file_drag_region(island,None,true),island,"关闭置物架或隐藏岛时不接收外围拖放");
         let expanded=(64,0,576,220);
         assert_eq!(file_drag_region(expanded,Some(zone),true),expanded,"展开后的文件区不应被感应区裁掉");
+    }
+
+    #[test]
+    fn crop_readback_failure_restores_full_canvas_and_hit_coordinates() {
+        use windows::Win32::Graphics::Gdi::GetWindowRgnBox;
+        let _guard=NATIVE_STATE_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+        let saved=hit().lock().unwrap_or_else(|e|e.into_inner()).clone();
+        unsafe {
+            let full=RECT{left:0,top:0,right:600,bottom:300};
+            let compact=RECT{left:135,top:9,right:225,bottom:54};
+            let canvas=RECT{left:-11000,top:-10000,right:-10400,bottom:-9700};
+            let hwnd=CreateWindowExW(WS_EX_TOOLWINDOW|WS_EX_NOACTIVATE,windows::core::w!("STATIC"),None,WS_POPUP,
+                canvas.left+compact.left,canvas.top+compact.top,compact.right-compact.left,compact.bottom-compact.top,
+                None,None,None,None).unwrap();
+            let clip=CreateRectRgn(0,0,90,45);
+            assert_ne!(SetWindowRgn(hwnd,clip,false),0);
+            let mut native=Window{hwnd,capture_exclusion:Default::default(),
+                crop:Crop{full:Some(full),applied:Some(compact),supported:true,managed_surface:true,front_ready:true,..Default::default()},
+                layering:Layering::Pending,region:(0,0,90,45),expanded:false,hook:HWINEVENTHOOK::default(),page_wheel_hook:None,
+                browser_state:(None,PollClock::now()),drag_capture:Default::default(),glass:None,backdrop:None,
+                blur:false,blur_unavailable:false,opaque_surface:false,outline:ShapeAlpha::default()};
+            let body=eframe::egui::Rect::from_min_max(eframe::egui::pos2(48.0,12.0),eframe::egui::pos2(248.0,138.0));
+            native.request_crop(Some(body),true);
+            // 没有可读的 OpenGL 前缓冲，展开时仍须恢复完整画布。
+            let bounds=(body.left(),body.top(),body.width(),body.height());
+            let repaint=native.update(bounds,bounds,None,None,None,false,1.5,false,true,None);
+            let mut actual=RECT::default();
+            GetWindowRect(hwnd,&mut actual).unwrap();
+            let mut region=RECT::default();
+            GetWindowRgnBox(hwnd,&mut region);
+            let hit_at_panel=inside_hit(360,190);
+            let offset=native.paint_offset();
+            let supported=native.supports_compact_bounds();
+            drop(native);
+            DestroyWindow(hwnd).unwrap();
+            *hit().lock().unwrap_or_else(|e|e.into_inner())=saved;
+
+            assert_eq!(actual,canvas);
+            assert_eq!(region,RECT{left:72,top:18,right:372,bottom:207});
+            assert!(hit_at_panel,"面板右下角应使用完整画布的物理坐标");
+            assert_eq!(offset,Some([0,0]));
+            assert!(!supported);
+            assert_eq!(repaint,Some(Duration::ZERO));
+        }
     }
 
     #[test]
