@@ -964,17 +964,23 @@ fn guide_opens_from_the_market_copies_a_prompt_and_stacks_the_template_form() {
 
     click_in(&ctx, WINDOW, capabilities_title, |ui| draw(&mut host, ui));
     let expanded = frame_in(&ctx, WINDOW, vec![], |ui| draw(&mut host, ui));
-    for expected in [
-        "卡片与标注", "AI 额度", "导航扩展",
-        #[cfg(windows)]
-        "授权取数",
-        #[cfg(windows)]
-        "本机接入",
-        #[cfg(all(windows, feature = "sdk-material"))]
-        "外观材质",
-    ] {
+    let text_rect = |label: &str| {
+        expanded.shapes.iter().find_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) if text.galley.text().starts_with(label) => {
+                Some(text.visual_bounding_rect())
+            }
+            _ => None,
+        }).unwrap_or_else(|| panic!("找不到教程文字 {label}"))
+    };
+    assert!(
+        text_rect("卡片与标注").bottom() <= text_rect("待办信息卡、日历日期标注").top(),
+        "能力说明应排在标题下方",
+    );
+    for expected in ["卡片与标注", "自绘画布", "岛上常驻", "交互与数据", "页面交互"] {
         assert!(has_text(&expanded, expected), "{expected}");
     }
+    assert!(text_rect("岛收起时轮流显示最多三个插件").left() >= text_rect("岛上常驻").left() - 1.0);
+    assert!(!has_text(&expanded, "收起时轮流显示至多三个插件的简短内容，可在岛设置里排序"));
     click_in(&ctx, WINDOW, capabilities_title, |ui| draw(&mut host, ui));
     let collapsed = frame_in(&ctx, WINDOW, vec![], |ui| draw(&mut host, ui));
     assert!(!has_text(&collapsed, "卡片与标注"));

@@ -222,61 +222,69 @@ pub(super) fn drawer_close(ui: &mut egui::Ui) -> bool {
 }
 
 fn sdk_capabilities(ui: &mut egui::Ui) {
-    let capabilities = [
-        ("设置与输入（实验）", "开关、选项、数字、时刻、星期和列表设置，支持时区、包内 JSON 和指定时间刷新"),
-        ("卡片与标注", "待办信息卡、日历日期标注，支持定时刷新"),
-        #[cfg(windows)]
-        ("授权取数", "只读用户选定的文件、本机 HTTP 或白名单内的 HTTPS 数据"),
-        ("HTTPS 多来源 · 实验", "最多 3 个 GET 来源，可调刷新间隔，凭据由 Windows 托管"),
-        ("AI 额度", "为 AI 额度面板添加自定义数据来源"),
-        ("状态详情", "展示进度、指标、列表、折线、说明、标签和告警，可配置布局、密度、强调色、强调程度与图标"),
-        ("实时状态 · 实验", "时钟、倒计时和跳动数字由岛仔计算，敏感值默认打码"),
-        ("状态页交互 · 实验", "在状态页提供按钮、单行输入和可点列表，可打开 HTTPS 链接或复制文字"),
-        ("专注事件 · 实验", "专注结束时执行订阅事件的脚本"),
-        #[cfg(windows)]
-        ("一次性提醒 · 实验", "脚本提醒由岛仔显示，遵循通知和正文开关"),
-        ("外观资源", "在外观中选用插件皮肤、功能图标或吉祥物表情"),
-        ("开发调试 · 实验", "开发者工具可监视本地文件、查看 console.log；--plugin-test 提供模拟输入、报错位置和能力自检"),
-        ("岛上常驻位 · 实验", "收起时轮流显示至多三个插件的简短内容，可在岛设置里排序"),
-        ("导航扩展", "为已启用的功能页提供导航入口，可配置选中颜色"),
-        #[cfg(all(windows, feature = "sdk-material"))]
-        ("外观材质", "本地安装自定义 GPU 材质，需开启 DX12 兼容渲染"),
-        #[cfg(windows)]
-        ("本机接入", "独立接入端可发通知、更新状态卡、接收点击操作"),
+    let groups: &[(&str, &[(&str, &str)])] = &[
+        ("岛上显示", &[
+            ("卡片与标注", "待办信息卡、日历日期标注，可在各自的功能页显示。"),
+            ("功能页", "可做独立状态页，支持指标、进度、列表、折线、标签、告警和双色标题。"),
+            ("自绘画布", "用文字、图形和图片自由排版，可铺满状态页，也可与标准组件混排。"),
+            ("岛上常驻", "岛收起时轮流显示最多三个插件的简短内容，可在「页面管理 › 岛上显示」排序。同一插件可提供多张轮播画布。"),
+        ]),
+        ("交互与数据", &[
+            ("设置与刷新", "支持文本、日期、开关、选项、数字、时刻、星期、时区与列表，可保存私有数据、读取包内 JSON 并定时刷新。"),
+            ("页面交互", "支持按钮、单行或多行输入、可点列表和画布交互，可打开 HTTPS 链接或复制文字。"),
+            ("实时组件", "岛仔计算时钟、倒计时和跳动数字，可将敏感值默认打码。"),
+            ("专注事件", "可订阅专注计时结束事件，由岛仔调用插件脚本。"),
+            #[cfg(windows)]
+            ("一次性提醒", "可发出提醒，由岛仔按用户的通知和正文设置显示。"),
+            #[cfg(windows)]
+            ("授权取数", "只读用户选定的文件、本机 HTTP 或白名单内的 HTTPS。HTTPS 最多 3 个 GET 来源，可调刷新间隔，密钥由 Windows 托管。"),
+            ("AI 额度", "为现有 AI 额度面板添加自定义数据来源。"),
+        ]),
+        ("资源与接入", &[
+            ("外观资源", "可提供皮肤、功能图标、吉祥物表情和画布字体。"),
+            ("快捷导航", "为已启用的功能页提供底部快捷入口，可配置选中颜色。"),
+            ("无线接收器", "可为兼容的 USB 无线接收器提供识别配置和电量读取规则。"),
+            #[cfg(all(windows, feature = "sdk-material"))]
+            ("GPU 材质", "可安装自定义材质，需开启 DX12 兼容渲染。"),
+            #[cfg(windows)]
+            ("本机接入", "独立接入端可发通知、更新状态卡，并接收用户点击发出的操作。"),
+        ]),
+        ("开发调试", &[
+            ("本地工具", "可从模板创建、安装、监听文件变化和查看脚本日志，并用模拟数据校验及本地打包。"),
+        ]),
     ];
     egui::Frame::new()
         .fill(card_color(ui))
         .stroke(egui::Stroke::new(1.0, line_color(ui)))
-        .corner_radius(8.0)
-        .inner_margin(egui::Margin::symmetric(12, 3))
+        .corner_radius(10.0)
+        .inner_margin(egui::Margin::symmetric(12, 6))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             let spacing = ui.spacing_mut();
             spacing.item_spacing.y = 4.0;
             spacing.button_padding.y = 2.0;
-            spacing.interact_size.y = 20.0;
+            spacing.interact_size.y = 24.0;
             egui::CollapsingHeader::new(egui::RichText::new("当前版本已开放的 SDK 能力").size(13.5).strong())
                 .id_salt("plugin-guide-sdk-capabilities")
                 .show_background(false)
                 .show(ui, |ui| {
-                    ui.add_space(2.0);
-                    for (label, description) in capabilities {
-                        ui.horizontal_top(|ui| {
-                            let (rect, _) = ui.allocate_exact_size(egui::vec2(76.0, 18.0), egui::Sense::hover());
-                            ui.painter().text(
-                                rect.left_center(),
-                                egui::Align2::LEFT_CENTER,
-                                label,
-                                egui::FontId::proportional(11.5),
-                                ui.visuals().text_color(),
-                            );
-                            ui.add(
-                                egui::Label::new(egui::RichText::new(description).size(12.0).color(muted_color(ui)))
-                                    .wrap(),
-                            );
-                        });
+                    let muted = muted_color(ui);
+                    let accent = plugin_accent(ui);
+                    for (index, (group, capabilities)) in groups.iter().enumerate() {
+                        if index > 0 {
+                            ui.separator();
+                        }
+                        ui.add_space(4.0);
+                        ui.label(egui::RichText::new(*group).size(11.5).strong().color(accent));
+                        for (label, description) in *capabilities {
+                            ui.scope(|ui| {
+                                ui.spacing_mut().item_spacing.y = 2.0;
+                                ui.add(egui::Label::new(egui::RichText::new(*label).size(12.5).strong()).wrap());
+                                ui.add(egui::Label::new(egui::RichText::new(*description).size(12.0).color(muted)).wrap());
+                            });
+                        }
                     }
-                    ui.add_space(3.0);
+                    ui.add_space(4.0);
                 });
         });
 }
@@ -347,15 +355,15 @@ fn steps(ui: &mut egui::Ui, items: &[(&str, &str)]) {
 }
 
 const NEW_STEPS: [(&str, &str); 5] = [
-    ("想好要显示什么", "用一句话写下来，比如「在待办里显示离下次还信用卡还有几天」。插件就是一张会自己刷新的卡片。"),
-    ("用模板生成插件", "到 `已安装 › 开发者工具 › 从模板创建`，填插件 ID、名称和作者，选一个文件夹。岛仔会生成可直接运行的样例。"),
-    ("改成你的内容", "用记事本或 VS Code 打开文件夹：`main.js` 决定卡片显示什么，`plugin.json` 写名称和让用户填的设置。把封面换成你的 `cover.png`（16:9，不超过 256 KB）。"),
+    ("想好要显示什么", "用一句话写下来，比如「收起时显示距离发薪还有几天」。先选好内容放在哪个功能页，或者是否要在岛上常驻。"),
+    ("用模板生成插件", "到 `开发者工具 › 从模板创建`，填插件 ID、名称和作者，选一个文件夹。岛仔会生成可直接运行的样例。"),
+    ("改成你的内容", "用记事本或 VS Code 打开文件夹。`main.js` 写显示逻辑，`plugin.json` 声明要用的能力与设置。把封面换成你的 `cover.png`（16:9，不超过 256 KB）。"),
     ("装到自己的岛仔上试", "在开发者工具点「安装本地插件…」，选 plugin.json，打开插件开关。勾选「监视文件变化」后保存本地文件即可重载，运行信息可在「脚本日志」里查看。"),
     ("校验并投稿到集市", "点「本地校验」通过后，按投稿指南提交到岛仔插件仓库。审核通过后，大家就能在集市里搜到并安装。"),
 ];
 
 const HAVE_STEPS: [(&str, &str); 5] = [
-    ("用模板生成插件外壳", "到 `已安装 › 开发者工具 › 从模板创建` 生成样例，它已经包含清单、入口和封面，结构都是对的。"),
+    ("用模板生成插件外壳", "到 `开发者工具 › 从模板创建` 生成样例，里面包含清单、入口和封面。"),
     ("把逻辑搬进 refresh", "打开 `main.js`，把你原来计算结果的部分放进 `refresh`：它拿到设置、今天日期和上次保存的数据，返回要显示的文字和要保存的数据。其他语言写的，可以让 AI 助手改写成 JavaScript。"),
     ("把要用户填的东西变成设置", "原来写死在代码里的名字、日期，改成 `plugin.json` 里的设置项。用户在设置页填，插件刷新时读到。"),
     ("配一张封面", "放一张 16:9 的 `cover.png`，不超过 256 KB、1920×1080。集市卡片和详情会原样显示它。"),
@@ -465,7 +473,7 @@ impl LocalPlugins {
                     small_tag(ui, "JS 卡片模板");
                 });
                 let hint = if state.have {
-                    "把原代码的文件夹位置也告诉 AI，请它对照当前 SDK 判断哪些逻辑适合迁移到卡片模板。"
+                    "把原代码的文件夹位置也告诉 AI，请它对照当前 SDK 判断哪些能力适合迁移到插件。"
                 } else {
                     "先点下方「从模板创建」生成插件文件夹，再把这段话发给 Claude Code、Cursor 等 AI 编程助手。模板位置和校验命令岛仔已经帮你填好。"
                 };
