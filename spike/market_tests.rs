@@ -408,11 +408,15 @@ fn publish_wireless(root: &Path, version: &str, data_version: &str) -> Result<()
         "permissions": {},
         "settings": []
     });
+    let mut receivers = vec![json!({"vid": "046D", "pid": "C542", "name": "罗技 Nano 接收器"})];
+    if version != "1.0.0" {
+        receivers.push(json!({"vid": "373B", "pid": "10C9", "name": "VXE 蜻蜓 R1 无线接收器"}));
+    }
     let data = json!({
         "id": WIRELESS_PLUGIN_ID,
         "api_version": 1,
         "version": data_version,
-        "receivers": [{"vid": "046D", "pid": "C542", "name": "罗技 Nano 接收器"}]
+        "receivers": receivers
     });
     fs::write(&manifest_path, serde_json::to_vec(&manifest)?)?;
     fs::write(root.join("wireless-receivers.json"), serde_json::to_vec(&data)?)?;
@@ -443,6 +447,13 @@ impl LocalPlugins {
 
     pub(crate) fn test_uninstall_wireless_compat(&mut self) -> Result<()> {
         self.uninstall(WIRELESS_PLUGIN_ID, true)
+    }
+
+    pub(crate) fn test_market_update_wireless_compat(&mut self) -> Result<()> {
+        let root = self.dir.join("test-wireless-market");
+        publish_wireless(&root, "1.0.1", "1.0.1")?;
+        self.refresh_market_catalog()?;
+        apply_wireless_market_action(self)
     }
 }
 

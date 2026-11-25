@@ -773,24 +773,54 @@ impl LocalPlugins {
         let enabled = record.enabled;
         let version = format!("{} v{}", package.manifest.name, package.manifest.version);
         let error_id = ui.id().with("wireless-compat-enable-error");
+        let mut toggle = false;
 
         crate::extras::settings_label(ui, "设备兼容");
         settings_card(ui, |ui| {
-            if plugin_setting_switch_row(ui, WIRELESS_PLUGIN_ID, "启用兼容包", &version, enabled, true) {
-                let error = self
-                    .enable(WIRELESS_PLUGIN_ID, !enabled)
-                    .err()
-                    .map(|error| error.to_string());
-                if error.is_none() {
-                    ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
-                }
-                ui.data_mut(|data| data.insert_temp(error_id, error));
-            }
+            toggle = plugin_setting_switch_row(
+                ui, WIRELESS_PLUGIN_ID, "启用兼容包", &version, enabled, true,
+            );
+            egui::CollapsingHeader::new(egui::RichText::new("兼容接收器").size(12.5))
+                .id_salt("wireless-compat-receivers")
+                .show(ui, |ui| {
+                    let Ok(table) = package.wireless_table() else {
+                        settings_hint(ui, "无法读取兼容接收器名单");
+                        return;
+                    };
+                    let receivers = table.receivers();
+                    settings_hint(
+                        ui,
+                        &format!("此包补充识别 {} 个 2.4G USB 接收器，可按 USB ID 核对。", receivers.len()),
+                    );
+                    egui::Grid::new("wireless-compat-receiver-list")
+                        .num_columns(2)
+                        .min_row_height(18.0)
+                        .max_col_width((ui.available_width() - 90.0).max(100.0))
+                        .spacing([16.0, 6.0])
+                        .show(ui, |ui| {
+                            for ((vid, pid), name) in receivers {
+                                ui.add(egui::Label::new(egui::RichText::new(name).size(12.5)).wrap());
+                                settings_hint(ui, &format!("{vid:04X}:{pid:04X}"));
+                                ui.end_row();
+                            }
+                        });
+                });
             ui.hyperlink_to("反馈设备适配", WIRELESS_FEEDBACK_URL);
             if let Some(error) = ui.data(|data| data.get_temp::<Option<String>>(error_id).flatten()) {
                 settings_hint(ui, &error);
             }
         });
+        if toggle {
+            let error = self
+                .enable(WIRELESS_PLUGIN_ID, !enabled)
+                .err()
+                .map(|error| error.to_string());
+            if error.is_none() {
+                ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
+            }
+            ui.data_mut(|data| data.insert_temp(error_id, error));
+            ui.ctx().request_repaint();
+        }
     }
 
     pub fn card(&mut self, c: &Card) -> bool {

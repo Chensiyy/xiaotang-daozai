@@ -55,6 +55,11 @@ impl Package {
         &self.version
     }
 
+    #[cfg(all(windows, feature = "sdk-js"))]
+    pub(crate) fn receivers(&self) -> impl ExactSizeIterator<Item = ((u16, u16), &str)> {
+        self.table.0.iter().map(|(&id, name)| (id, name.as_str()))
+    }
+
     pub(super) fn receiver_name(&self, hardware: &str) -> Option<&str> {
         self.table.receiver_name(hardware)
     }
