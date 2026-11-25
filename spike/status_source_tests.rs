@@ -523,7 +523,8 @@ fn realtime_examples_install_and_return_bounded_host_values() -> Result<()> {
     host.set_pinned("example.live-pay", true)?;
     settle(&mut host, false);
 
-    let (pin, _) = host.pinned_display(false).expect("工资样例应提供常驻倒计时");
+    let pin = host.pinned_displays(false).0.into_iter().next()
+        .expect("工资样例应提供常驻倒计时");
     let (_, snapshot, health) = host.status_page("example.live-pay").unwrap();
     assert_eq!(health, StatusHealth::Ready);
     let salary = snapshot.unwrap();

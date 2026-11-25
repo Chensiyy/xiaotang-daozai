@@ -9,7 +9,7 @@ mod motion;
 #[path = "plugin_canvas_pet.rs"]
 mod pet;
 
-pub(crate) use motion::{draw_live, draw_live_with_pet, LiveOptions, LiveResult};
+pub(crate) use motion::{draw_live_with_pet, LiveOptions, LiveResult};
 
 use crate::{
     paint::Card,
@@ -156,7 +156,7 @@ enum Item {
     Pet(pet::Placement),
 }
 
-/// 非交互画布用于常驻条，点击仍由常驻位处理。
+#[cfg(test)]
 pub(crate) fn draw(
     c: &Card,
     id: &str,
@@ -165,19 +165,62 @@ pub(crate) fn draw(
     theme: CanvasTheme,
     image: impl FnMut(&str) -> Option<(egui::TextureId, Vec2)>,
 ) -> bool {
+    draw_canvas(c, id, canvas, area, theme, None, image)
+}
+
+/// 常驻内容沿用画布原字号，点击由常驻位处理。
+pub(crate) fn draw_pinned(
+    c: &Card,
+    id: &str,
+    canvas: &Arc<Canvas>,
+    area: Rect,
+    theme: CanvasTheme,
+    elapsed: Duration,
+    image: impl FnMut(&str) -> Option<(egui::TextureId, Vec2)>,
+) -> bool {
+    draw_canvas(c, id, canvas, area, theme, Some(elapsed), image)
+}
+
+fn draw_canvas(
+    c: &Card,
+    id: &str,
+    canvas: &Arc<Canvas>,
+    area: Rect,
+    theme: CanvasTheme,
+    pinned_elapsed: Option<Duration>,
+    image: impl FnMut(&str) -> Option<(egui::TextureId, Vec2)>,
+) -> bool {
     let options = LiveOptions {
         now: chrono::Utc::now(),
         revision: 0,
         allow_action: false,
         interactive: false,
     };
-    let result = draw_live(c, id, canvas, area, theme, options, image);
+    let result = motion::draw_live_frame(c, id, canvas, area, theme, options, None, pinned_elapsed, image);
     if let Some(delay) = result.repaint_after {
         let dt = c.ui.input(|input| input.predicted_dt).max(0.0);
         c.ui.ctx()
             .request_repaint_after(delay + Duration::from_secs_f32(dt));
     }
     result.timed_out
+}
+
+pub(crate) fn has_pinned_text_flow(nodes: &[Node]) -> bool {
+    nodes.iter().any(|node| match &node.kind {
+        Kind::Text { max_width: Some(_), .. } => node.looping.as_ref()
+            .is_some_and(|effect| effect.kind == crate::plugin_canvas::live::LoopKind::Flow),
+        Kind::Group { group, .. } => has_pinned_text_flow(group),
+        _ => false,
+    })
+}
+
+pub(crate) fn pinned_content_width(ui: &egui::Ui, canvas: &Canvas, limit: f32) -> f32 {
+    let c = Card::new(ui, Pos2::ZERO, ui.clip_rect());
+    let (canvas, _) = canvas.evaluate(chrono::Utc::now(), ui.ctx().pixels_per_point());
+    let right = canvas.nodes.iter()
+        .map(|node| hit::bounds(&c, node, Transform::new(1.0)).right())
+        .fold(0.0, f32::max);
+    (right + 4.0).max(24.0).min(limit)
 }
 
 /// 返回是否超出绘制预算。错误或超时由插件宿主登记到开发调试页面。

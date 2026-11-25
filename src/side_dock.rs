@@ -18,7 +18,7 @@ pub const SIDE_H: f32 = 600.0;
 /// 收起时竖向胶囊的厚度。
 pub const SIDE_BAR_W: f32 = 36.0;
 #[cfg(feature="sdk-js")]
-pub(crate) const PINNED_HEIGHT: f32 = 42.0;
+const PINNED_HEIGHT: f32 = 42.0;
 /// 岛体中心能离开屏幕竖直中线的预留：展开面板（最高约 236）与肩部、阴影留在屏幕内。
 pub const SIDE_HALF_EXTENT: f32 = 150.0;
 
@@ -26,7 +26,7 @@ pub const SIDE_HALF_EXTENT: f32 = 150.0;
 pub(crate) enum SideItem {
     Clock, Date(f32), Weather, Battery, Music, Focus, Bell, Wireless, Performance(f32),
     #[cfg(feature="sdk-js")]
-    Pinned,
+    Pinned(usize),
     /// AI 额度：账号下标（None 为「+N」）与高度。
     Quota(usize, f32),
 }
@@ -35,7 +35,7 @@ impl SideItem {
     pub(crate) fn height(self, clock_seconds: bool) -> f32 {
         match self {
             #[cfg(feature="sdk-js")]
-            Self::Pinned => PINNED_HEIGHT,
+            Self::Pinned(_) => PINNED_HEIGHT,
             Self::Performance(h) | Self::Date(h) => h, Self::Clock => if clock_seconds {46.0}else{32.0}, Self::Weather => 40.0, Self::Wireless=>37.0, Self::Battery => 20.0, Self::Music => 18.0, Self::Focus => 22.0, Self::Bell => 22.0, Self::Quota(_, h) => h }
     }
 }
@@ -62,7 +62,7 @@ impl App {
         items.extend(self.quota_side_items().into_iter().map(|(index, h)| SideItem::Quota(index, h)));
         if self.notification_bell().is_some() { items.push(SideItem::Bell); }
         #[cfg(feature="sdk-js")]
-        if self.pinned_display.is_some() { items.push(SideItem::Pinned); }
+        items.extend((0..self.pinned_displays.len()).map(SideItem::Pinned));
         items
     }
 
@@ -115,10 +115,10 @@ impl App {
     }
 
     /// 毛玻璃取样点（画布坐标）：岛体外侧上下左右各取几处估计身后明暗。
-    pub fn backdrop_points(&self) -> Vec<(f32, f32)> {
+    pub fn backdrop_points(&self, horizontal_width: f32) -> Vec<(f32, f32)> {
         match self.dock() {
             Dock::Top | Dock::Bottom => {
-                let cx = crate::app::WIN_W / 2.0;
+                let cx = horizontal_width / 2.0;
                 let bottom = crate::app::WIN_H - 6.0;
                 let y=|v| if self.dock()==Dock::Bottom {crate::app::WIN_H-v} else {v};
                 vec![(cx - 270.0, y(6.0)), (cx - 270.0, y(26.0)), (cx + 270.0, y(6.0)), (cx + 270.0, y(26.0)), (cx - 130.0, y(bottom)), (cx, y(bottom)), (cx + 130.0, y(bottom))]
@@ -166,7 +166,7 @@ impl App {
                 SideItem::Performance(h) => self.side_performance(c,cx,mid,h),
                 SideItem::Quota(index, h) => self.draw_quota_side(c, cx, mid, h, index),
                 #[cfg(feature="sdk-js")]
-                SideItem::Pinned => if let Some(display) = &self.pinned_display {
+                SideItem::Pinned(index) => if let Some(display) = self.pinned_displays.get(index) {
                     if display.draw(c, cx, mid, display.width(width), true, self.pinned_canvas_theme()) {
                         let id=display.plugin.clone();
                         self.show_status_page(&id);

@@ -1358,7 +1358,7 @@ impl LocalPlugins {
         self.quota.remove(id);
         self.status.remove(id);
         self.interactions.forget(id);
-        self.pinned.output.remove(id);
+        self.pinned.set_output(id, None);
         self.next.remove(id);
         #[cfg(windows)]
         self.source_fetch.remove(id);
@@ -1614,7 +1614,7 @@ impl LocalPlugins {
         self.interactions.retain(|id| !belongs(id));
         #[cfg(windows)]
         self.source_fetch.retain(|id, _| !belongs(id));
-        self.pinned.output.retain(|id, _| !belongs(id));
+        self.pinned.retain_outputs(|id| !belongs(id));
         for (id, job) in &self.jobs {
             if belongs(id) {
                 job.cancelled.store(true, Ordering::Release);
@@ -1720,10 +1720,7 @@ impl LocalPlugins {
                         // 模块关着时这一位置的结果直接丢掉，重新打开时会补算。
                         let shown = surface == Surface::StatusPage || live.contains(&surface);
                         match surface {
-                            Surface::IslandPinned => match &pinned {
-                                Some(value) => { self.pinned.output.insert(id.clone(), value.clone()); }
-                                None => { self.pinned.output.remove(&id); }
-                            },
+                            Surface::IslandPinned => self.pinned.set_output(&id, pinned.as_ref()),
                             Surface::StatusPage => match &status {
                                 Some(status) => {
                                     self.interactions.revision += 1;
@@ -1761,7 +1758,7 @@ impl LocalPlugins {
                 Ok(None) => {
                     self.errors.remove(&id);
                     self.interactions.forms.remove(&id);
-                    self.pinned.output.remove(&id);
+                    self.pinned.set_output(&id, None);
                     self.status.insert(id, Err(StatusHealth::Offline));
                 }
                 Err(e) => {
@@ -1770,7 +1767,7 @@ impl LocalPlugins {
                     self.quota.remove(&id);
                     self.status.remove(&id);
                     self.interactions.forms.remove(&id);
-                    self.pinned.output.remove(&id);
+                    self.pinned.set_output(&id, None);
                     self.errors.insert(id, e);
                 }
             }

@@ -518,6 +518,7 @@ fn outline_test()->Option<bool> {
 #[derive(Default)]
 struct Crop {
     full: Option<RECT>,
+    wide_placement: Option<(f32, f32)>,
     applied: Option<RECT>,
     plan: WindowBounds,
     requested: Option<(eframe::egui::Rect,bool)>,
@@ -714,20 +715,24 @@ impl Window {
 
     /// 使用目标屏幕的物理坐标定位，并在缩放、岛体大小、水平位置或屏幕连接变化后重新校正。
     /// `scale` 是主窗口的实际像素比（系统 DPI × 岛体大小），画布按它同步调整物理尺寸。
-    /// `shift` 是 OLED 像素偏移的位移（物理像素），按展开面板的屏幕余量收窄后叠加在不贴边的一轴上。
-    pub fn place_on_display(&mut self, scale:f32, bounds:crate::display_layout::Bounds, offset:f32, dock:crate::model::Dock, shift:(i32,i32))->bool {
+    /// `shift` 是 OLED 像素偏移的位移（物理像素），按当前停靠画面的屏幕余量收窄后叠加。
+    pub fn place_on_display(&mut self, scale:f32, bounds:crate::display_layout::Bounds, offset:f32, dock:crate::model::Dock, shift:(i32,i32), horizontal_width:f32)->bool {
         unsafe {
+            let horizontal_width=horizontal_width.max(crate::app::WIN_W);
             // 顶部：水平居中 + 水平偏移；左右：贴边 + 竖直偏移，画布换成竖向的大小。
             let origin=if dock.is_side() {
                 crate::display_layout::side_origin(bounds,dock,(crate::side_dock::SIDE_W,crate::side_dock::SIDE_H),crate::side_dock::SIDE_HALF_EXTENT,scale,offset)
-            } else {crate::display_layout::horizontal_origin(bounds,dock,scale,offset)};
+            } else {crate::display_layout::horizontal_origin_for_width(bounds,dock,scale,offset,horizontal_width)};
             let Some((x,y))=origin else{return false;};
-            // OLED 像素偏移：只沿不贴边的一轴让开，并按展开面板的余量收窄——位置拉满或屏幕太窄时少挪、不挪，
+            // OLED 像素偏移只沿不贴边的一轴让开。位置拉满或屏幕太窄时少挪、不挪，
             // 贴边的一侧也保持严丝合缝，刘海不会和屏幕边缘裂开。
-            let (back,forth)=crate::display_layout::shift_slack(bounds,scale,if dock.is_side() {crate::side_dock::SIDE_HALF_EXTENT} else {crate::display_layout::ISLAND_HALF_EXTENT},offset,dock);
+            let half=if dock.is_side() {crate::side_dock::SIDE_HALF_EXTENT}
+                else {crate::display_layout::horizontal_half_extent(horizontal_width)};
+            let (back,forth)=crate::display_layout::shift_slack(bounds,scale,half,offset,dock);
             let (dx,dy)=(shift.0.clamp(-back,forth),shift.1.clamp(-back,forth));
             let (x,y)=if dock.is_side() {(x,y+dy)} else {(x+dx,y)};
-            let (canvas_w,canvas_h)=if dock.is_side() {(crate::side_dock::SIDE_W,crate::side_dock::SIDE_H)} else {(crate::app::CANVAS_W,crate::app::WIN_H)};
+            let (canvas_w,canvas_h)=if dock.is_side() {(crate::side_dock::SIDE_W,crate::side_dock::SIDE_H)}
+                else {(horizontal_width+crate::app::CANVAS_W-crate::app::WIN_W,crate::app::WIN_H)};
             let (w,h)=((canvas_w*scale).round() as i32,(canvas_h*scale).round() as i32);
             let full=RECT{left:0,top:0,right:w,bottom:h};
             let region=self.crop.applied.unwrap_or(full);
@@ -735,13 +740,23 @@ impl Window {
             let mut current=RECT::default();
             if GetWindowRect(self.hwnd,&mut current).is_err(){return false;}
             let moved=(current.left,current.top)!=(x,y);
-            let resized=(current.right-current.left,current.bottom-current.top)!=(w,h);
+            let old_size=(current.right-current.left,current.bottom-current.top);
+            let resized=old_size!=(w,h);
             if moved||resized {
                 let flags=SWP_NOACTIVATE|SWP_NOZORDER|if resized{SET_WINDOW_POS_FLAGS(0)}else{SWP_NOSIZE};
                 if SetWindowPos(self.hwnd,None,x,y,w,h,flags).is_err(){return false;}
+                if !dock.is_side() && offset == 0.0 && self.crop.applied.is_none()
+                    && w > old_size.0 && h == old_size.1 && current.top == y
+                    && ((current.left - x) - (w - old_size.0) / 2).abs() <= 1 {
+                    if let Layering::Active(layered) = &mut self.layering {
+                        layered.keep_frame_position_after_widening(x - current.left);
+                    }
+                }
             }
             self.crop.canvas_changed|=self.crop.full!=Some(full) && self.crop.applied.is_some();
             self.crop.full=Some(full);
+            self.crop.wide_placement=(!dock.is_side() && horizontal_width>crate::app::WIN_W)
+                .then_some((horizontal_width,scale));
             self.crop.drag_wake.lock().unwrap_or_else(|e|e.into_inner()).canvas=self.canvas_rect();
             true
         }
@@ -957,7 +972,15 @@ impl Window {
 
     pub fn browser_at_top(&mut self,settings:&crate::model::Settings)->Option<bool> {
         if self.browser_state.1.ready(Duration::from_millis(100)) {
-            self.browser_state=(self.canvas_rect().and_then(|r|crate::system::browser_at_top(r,settings)),PollClock::now());
+            let bounds=self.canvas_rect().map(|mut rect|{
+                if let Some((width,scale))=self.crop.wide_placement {
+                    // 浏览器避让以原有面板宽度为判断区间，保持实际屏幕中心和 DPI。
+                    rect.left+=((width-crate::app::WIN_W)*scale/2.0).round() as i32;
+                    rect.right=rect.left+(crate::app::CANVAS_W*scale).round() as i32;
+                }
+                rect
+            });
+            self.browser_state=(bounds.and_then(|r|crate::system::browser_at_top(r,settings)),PollClock::now());
         }
         self.browser_state.0
     }

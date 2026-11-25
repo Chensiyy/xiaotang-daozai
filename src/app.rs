@@ -776,7 +776,9 @@ pub struct App {
     #[cfg(feature="sdk-js")]
     plugin_form_focused: bool,
     #[cfg(feature="sdk-js")]
-    pub(crate) pinned_display: Option<crate::sdk_spike::local::PinnedDisplay>,
+    pub(crate) pinned_displays: Vec<crate::sdk_spike::local::PinnedDisplay>,
+    #[cfg(feature="sdk-js")]
+    pinned_horizontal_width: f32,
     pub opts: Options,
     pub settings: model::Settings,
     /// 由主程序应用原生截图保护后再保存。
@@ -918,6 +920,7 @@ pub struct App {
     fluid_art:Option<egui::TextureId>,
     fluid_title:String,
     screen:Option<Rect>,
+    horizontal_width: f32,
     pub(crate) settings_focus_requested:bool,
     pub(crate) settings_tab:usize,
     pub(crate) settings_category:usize,
@@ -1029,7 +1032,9 @@ impl App {
             #[cfg(feature="sdk-js")]
             plugin_form_focused: false,
             #[cfg(feature="sdk-js")]
-            pinned_display: None,
+            pinned_displays: Vec::new(),
+            #[cfg(feature="sdk-js")]
+            pinned_horizontal_width: WIN_W,
             opts,
             render_compat_running: settings.render_compat,
             settings,
@@ -1127,7 +1132,7 @@ impl App {
             media_anchor: (String::new(), 0.0, 0.0, false),
             media: NowPlaying::default(),
             music_artwork: None,
-            forced_open_until:0.0, settings_open:false, settings_window:std::sync::Arc::new(std::sync::Mutex::new(crate::settings_window::State::load())), displays:Vec::new(), browser_at_top:false, browser_minimal_active:false, glass_tint:0.0, fluid:Default::default(), fluid_origin:Pos2::ZERO, fluid_art:None, fluid_title:String::new(), screen:None, settings_focus_requested:false, settings_tab:0, settings_category:0, messenger_statuses:Default::default(), notification_apps:model::NotificationApps::load(), subpage:None, task_dialog:None,
+            forced_open_until:0.0, settings_open:false, settings_window:std::sync::Arc::new(std::sync::Mutex::new(crate::settings_window::State::load())), displays:Vec::new(), browser_at_top:false, browser_minimal_active:false, glass_tint:0.0, fluid:Default::default(), fluid_origin:Pos2::ZERO, fluid_art:None, fluid_title:String::new(), screen:None, horizontal_width:WIN_W, settings_focus_requested:false, settings_tab:0, settings_category:0, messenger_statuses:Default::default(), notification_apps:model::NotificationApps::load(), subpage:None, task_dialog:None,
             listener_status: "尚未连接".into(),
             notification_bell_until: 0.0, notification_bell_at: -10.0, notice: None, hud_notice: None, hud_alpha: 0.0, notice_width:Spring::new(0.0,CLOSE.0,CLOSE.1), notice_details:false, pending_messengers:Vec::new(), messenger_scroll:0.0, alerts: Default::default(), history: Default::default(), pending: vec![],
             #[cfg(windows)]
@@ -2140,6 +2145,20 @@ impl App {
         (self.w.pos/content.max(1.0)).clamp(0.5,1.0)
     }
 
+    fn resident_fit(&self) -> f32 {
+        #[cfg(feature = "sdk-js")]
+        if !self.pinned_displays.is_empty() { return 1.0; }
+        if self.island_lyrics_active() { return 1.0; }
+        (self.resident_limit() / self.resident.target.width).min(1.0) * self.resident_squeeze()
+    }
+
+    pub fn requested_horizontal_width(&self) -> f32 {
+        #[cfg(feature = "sdk-js")]
+        return self.pinned_horizontal_width;
+        #[cfg(not(feature = "sdk-js"))]
+        WIN_W
+    }
+
     /// 0 = 药丸，1 = 完整面板（展开时可略超过 1）。
     #[cfg(test)]
     pub(crate) fn current_width(&self) -> f32 { self.w.pos+self.notice_width.pos }
@@ -2222,6 +2241,7 @@ impl App {
         self.dt = dt;
         if let Some(at_top)=env.browser_at_top {self.browser_at_top=at_top;}
         self.screen=env.screen;
+        if !self.side() { self.horizontal_width = win.width(); }
         if self.effective_skin().is_glass() {
             let target=if self.effective_skin()==model::Skin::GlassLight {glass::light_tint(env.backdrop,env.glass_blur)}else{glass::glass_tint(env.backdrop,env.glass_blur)};
             self.glass_tint=if self.glass_tint<=0.0 {target}else{anim::approach(self.glass_tint,target,3.0,dt)};
@@ -2296,21 +2316,37 @@ impl App {
         let wireless=self.wireless_resident();
         // 放不下整组时不挤压其他常驻项，整组隐藏。
         let wireless_w=self.wireless_bar_width();
-        if !wireless.is_empty()&&wireless_w<=WIN_W-32.0-layout.width-12.0 {layout.append_bluetooth(wireless_w);}
+        if !wireless.is_empty()&&wireless_w<=self.resident_limit()-layout.width-12.0 {layout.append_bluetooth(wireless_w);}
         #[cfg(feature="sdk-js")]
         {
-            let width = (self.resident_limit() - layout.width - 12.0).min(156.0);
-            self.pinned_display = None;
-            let fits = if self.side() { self.side_bar_len() + crate::side_dock::PINNED_HEIGHT <= self.resident_limit() }
-                else { width >= 58.0 };
-            let suppress = self.open || self.effective_minimal() || self.notice.is_some() || self.hud_alpha > 0.003
-                || plugin_notice_detail || self.island_lyrics_active() || env.fullscreen_hidden || env.screen_locked
-                || !fits;
-            self.pinned_display = self.plugins.pinned_display(suppress).map(|(value, repaint)| {
-                if let Some(delay) = repaint { ctx.request_repaint_after(delay); }
-                if !self.side() { layout.append_slot(bar::PINNED, value.width(width)); }
-                value
-            });
+            let suppress = self.effective_minimal() || self.notice.is_some() || self.hud_alpha > 0.003
+                || plugin_notice_detail || self.island_lyrics_active() || env.fullscreen_hidden || env.screen_locked;
+            let (mut displays, repaint) = self.plugins.pinned_displays(self.open || suppress);
+            if let Some(delay) = repaint { ctx.request_repaint_after(delay); }
+            for display in &mut displays { display.measure_width(ui); }
+            let previous_pinned_width = self.pinned_horizontal_width;
+            self.pinned_horizontal_width = WIN_W;
+            if !self.side() {
+                let widths: Vec<_> = displays.iter().map(|display| display.width(156.0)).collect();
+                let pinned_width = if self.open && !suppress && self.render_compat_running
+                    && self.placement_offset() == 0.0 && self.position_drag.is_none()
+                    && self.drag_glide.is_none() && self.w.settled(PW) && self.h.settled(self.expanded_height()) {
+                    // 先扩背景交换链，收起时再按原节奏加入常驻项。
+                    self.plugins.pinned_reserved_width(ui)
+                } else {
+                    widths.iter().map(|width| width + 12.0).sum()
+                };
+                if pinned_width > 0.0 {
+                    self.pinned_horizontal_width =
+                        (layout.width + pinned_width + 32.0 + self.unread_stack_len(true)).max(WIN_W);
+                    if self.open && self.pinned_horizontal_width > previous_pinned_width
+                        && self.pinned_horizontal_width > self.horizontal_width {
+                        ctx.request_repaint();
+                    }
+                }
+                layout.append_pinned(&widths, self.resident_limit());
+            }
+            self.pinned_displays = displays;
         }
         if self.pet_enabled() {
             if let Some(a)=self.notice.as_ref().filter(|_|!self.compact_notices()&&!self.open){layout.x[bar::PET]=Some(22.0-(self.notice_size(a).0+self.pet_space())/2.0);}
@@ -2491,7 +2527,7 @@ impl App {
         let p = self.progress();
         let (sx, sy) = self.drag_scale();
         // 拿起放大不能超出透明画布，否则两端会被切掉。
-        let (max_w, max_h) = if side {(crate::side_dock::SIDE_W, crate::side_dock::SIDE_H)} else {(WIN_W, WIN_H)};
+        let (max_w, max_h) = if side {(crate::side_dock::SIDE_W, crate::side_dock::SIDE_H)} else {(win.width(), WIN_H)};
         let (w, h) = ((self.w.pos * sx).min((max_w - 24.0).max(self.w.pos)), (self.h.pos * sy).min((max_h - 24.0).max(self.h.pos)));
         let panel = self.island_rect(win, w, h);
         let (offset,messenger_rect,notice_rect)=self.bar_parts(win,panel);
@@ -2666,7 +2702,7 @@ impl App {
         if pet_alpha>0.004 && !minimal_pill {
             let y=(h.min(self.base_size().1)-BAR_H).max(0.0)/2.0;
             // 吉祥物跟随皮肤换色：浅色底上变成深色版本，保持清晰。
-            let fit=if self.island_lyrics_active()||self.notice.is_some(){1.0}else{(self.resident_limit()/self.resident.target.width).min(1.0)*self.resident_squeeze()};
+            let fit=if self.notice.is_some(){1.0}else{self.resident_fit()};
             self.pet.draw(&base.scaled(cx-origin.x,15.0,fit).shifted(0.0,y).faded(pet_alpha),cx-origin.x+self.resident.position(bar::PET),self.t,palette);
         }
         let previous_scroll=self.content_scroll.take();
@@ -2941,8 +2977,12 @@ impl App {
     }
 
     pub(crate) fn resident_limit(&self)->f32 {
-        let limit=if self.side(){crate::side_dock::SIDE_H-24.0}else{WIN_W-32.0};
-        limit-self.unread_stack_len(!self.side())
+        let limit = if self.side() {
+            crate::side_dock::SIDE_H - 24.0
+        } else {
+            self.screen.map_or(self.horizontal_width, |screen| screen.width().min(self.horizontal_width)) - 32.0
+        };
+        (limit - self.unread_stack_len(!self.side())).max(1.0)
     }
 
     /// 并入岛体的图标与主内容共用停靠中线；展开后独立显示的胶囊自行定位。
@@ -3342,7 +3382,7 @@ impl App {
                     seam_strength=(1.0-smoothstep(16.0,72.0,depth))*smoothstep(-16.0,0.0,depth);
                 }
                 let (position,length,extent,start)=if self.side() {(cursor.y,size.y,crate::side_dock::SIDE_HALF_EXTENT,drag.start.y)}
-                    else {(cursor.x,size.x,crate::display_layout::ISLAND_HALF_EXTENT,drag.start.x)};
+                    else {(cursor.x,size.x,crate::display_layout::horizontal_half_extent(self.horizontal_width),drag.start.x)};
                 let travel=(length/2.0-extent).max(0.0);
                 let raw=if travel<=0.0 {0.0}else if switch {(position-length/2.0)/travel*limit}
                     else {drag.offset+(position-start)/travel*limit};
@@ -3436,7 +3476,7 @@ impl App {
         // 中轴细线：屏幕中轴一条向外渐隐的细线，岛体中心一截短刻度，两者重合即居中；吸住后细线同样转绿。
         // 细线画在桌面上，底色未知：彩芯加淡黑描边，深浅壁纸都看得清。
         if let Some(screen)=screen.filter(|_|vis>0.004) {
-            let travel=if side {screen.height()/2.0-crate::side_dock::SIDE_HALF_EXTENT}else{screen.width()/2.0-crate::display_layout::ISLAND_HALF_EXTENT}.max(0.0);
+            let travel=if side {screen.height()/2.0-crate::side_dock::SIDE_HALF_EXTENT}else{screen.width()/2.0-crate::display_layout::horizontal_half_extent(self.horizontal_width)}.max(0.0);
             // 屏幕中轴相对岛体中心的位置（与窗口跟随同源，不会差一帧）。
             let off=self.placement_offset()*travel;
             let (out,edge)=match dock {
@@ -3610,7 +3650,7 @@ impl App {
     // ---------------------------------------------------------------
     fn shared_header(&mut self, base: &Card, cx: f32, p: f32, reveal: f32, env: &Env, resident_day: Option<&ResidentDay>) {
         let local_cx = cx - base.origin.x;
-        let fit=if self.island_lyrics_active(){1.0}else{(self.resident_limit()/self.resident.target.width).min(1.0)*self.resident_squeeze()};
+        let fit = self.resident_fit();
         let fitted=base.scaled(local_cx,15.0,lerp(fit,1.0,p));
         let base=&fitted;
         let lyric=self.island_lyric().map(|(index,_)|index);
@@ -3763,9 +3803,17 @@ impl App {
             self.draw_wireless_bar(&c,local_cx,&layout);
             if let Some(x)=layout.x[bar::WEATHER] { self.draw_pill_weather(&c,local_cx+x,&layout); }
             #[cfg(feature="sdk-js")]
-            if let (Some(x), Some(display)) = (layout.x[bar::PINNED], &self.pinned_display) {
-                if display.draw(&c, local_cx+x, 15.0, layout.widths[bar::PINNED], false, self.pinned_canvas_theme()) {
-                    let id=display.plugin.clone();
+            {
+                let theme = self.pinned_canvas_theme();
+                let mut clicked = None;
+                for (slot, display) in layout.pinned_slots().zip(&self.pinned_displays) {
+                    if let Some(x) = layout.x[slot] {
+                        if display.draw(&c, local_cx + x, 15.0, layout.widths[slot], false, theme) {
+                            clicked = Some(display.plugin.clone());
+                        }
+                    }
+                }
+                if let Some(id) = clicked {
                     self.show_status_page(&id);
                 }
             }

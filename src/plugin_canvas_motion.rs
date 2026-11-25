@@ -74,6 +74,7 @@ struct Roll {
     at: f64,
 }
 
+#[cfg(test)]
 pub(crate) fn draw_live(
     c: &Card<'_>,
     id: &str,
@@ -94,6 +95,21 @@ pub(crate) fn draw_live_with_pet(
     theme: CanvasTheme,
     options: LiveOptions,
     sheets: Option<Arc<ExpressionSheets>>,
+    image: impl FnMut(&str) -> Option<(egui::TextureId, Vec2)>,
+) -> LiveResult {
+    draw_live_frame(c, id, canvas, area, theme, options, sheets, None, image)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn draw_live_frame(
+    c: &Card<'_>,
+    id: &str,
+    canvas: &Arc<Canvas>,
+    area: Rect,
+    theme: CanvasTheme,
+    options: LiveOptions,
+    sheets: Option<Arc<ExpressionSheets>>,
+    pinned_elapsed: Option<Duration>,
     image: impl FnMut(&str) -> Option<(egui::TextureId, Vec2)>,
 ) -> LiveResult {
     let input = Input {
@@ -161,6 +177,9 @@ pub(crate) fn draw_live_with_pet(
         let frame_needs_work = needs_work(&prepared.nodes, options.interactive);
         let tip = if frame_needs_work {
             let nodes = &mut Arc::make_mut(&mut prepared).nodes;
+            if let Some(elapsed) = pinned_elapsed {
+                looping = pinned_text_flow(c, nodes, Transform::new(c.s), area.width(), elapsed);
+            }
             state.effects(
                 c,
                 nodes,
@@ -357,6 +376,76 @@ impl LiveState {
             }
         }
     }
+}
+
+fn pinned_text_flow(
+    c: &Card<'_>,
+    nodes: &mut [Node],
+    transform: Transform,
+    right: f32,
+    elapsed: Duration,
+) -> bool {
+    if !(0.0 < transform.scale && transform.scale <= 1024.0) {
+        return false;
+    }
+    let mut scrolling = false;
+    for node in nodes {
+        if let Kind::Group { group, clip, translate, rotate, scale } = &mut node.kind {
+            let child = transform.child(translate, rotate.initial(), scale.initial());
+            let right = clip.as_ref().map_or(right, |clip| right.min(child.bounds(clip).right()));
+            scrolling |= pinned_text_flow(c, group, child, right, elapsed);
+            continue;
+        }
+        let Some(effect) = node.looping.as_ref().filter(|effect| effect.kind == LoopKind::Flow) else {
+            continue;
+        };
+        let period = f64::from(effect.period_ms) / 1000.0;
+        let Kind::Text { text, at, size, weight, align, max_width, font, .. } = &mut node.kind else {
+            continue;
+        };
+        let Some(window) = max_width.as_ref().map(Num::initial) else {
+            continue;
+        };
+        let [x, y] = at.each_ref().map(Num::initial);
+        let size = size.initial();
+        let anchor = match align {
+            Align::Left => x,
+            Align::Center => x - window / 2.0,
+            Align::Right => x - window,
+        };
+        let window = if transform.angle == 0.0 {
+            window.min((right - transform.xy(anchor, y).x) / transform.scale)
+        } else {
+            window
+        };
+        node.looping = None;
+        if window <= 0.0 {
+            continue;
+        }
+        let max_font_size = 256.0 / c.ui.ctx().pixels_per_point();
+        let text_width = c.ui.fonts(|fonts| {
+            let job = super::text_job(
+                text, (size * transform.scale).min(max_font_size),
+                *weight, &Align::Left, None, 1, font.as_deref(), &fonts.families(),
+            );
+            fonts.layout_job(job).size().x / transform.scale
+        });
+        let overflow = text_width - window;
+        if overflow <= 0.5 {
+            continue;
+        }
+        let dwell = 0.65;
+        let travel = (period - dwell * 2.0).max(f64::from(overflow) / 48.0);
+        let phase = elapsed.as_secs_f64().rem_euclid(travel + dwell * 2.0);
+        let moved = overflow * ((phase - dwell) / travel).clamp(0.0, 1.0) as f32;
+        *align = Align::Left;
+        at[0] = num(anchor - moved);
+        *max_width = None;
+        *node = group(vec![node.clone()], [0.0, 0.0], 0.0,
+            Some([anchor, y - size * 1.5, window, size * 2.0].map(num)));
+        scrolling = true;
+    }
+    scrolling
 }
 
 fn flow(node: &mut Node, phase: f32) {

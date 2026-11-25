@@ -979,8 +979,9 @@ fn guide_opens_from_the_market_copies_a_prompt_and_stacks_the_template_form() {
     for expected in ["卡片与标注", "自绘画布", "岛上常驻", "交互与数据", "页面交互"] {
         assert!(has_text(&expanded, expected), "{expected}");
     }
-    assert!(text_rect("岛收起时轮流显示最多三个插件").left() >= text_rect("岛上常驻").left() - 1.0);
-    assert!(!has_text(&expanded, "收起时轮流显示至多三个插件的简短内容，可在岛设置里排序"));
+    let pinned_description = "开启常驻的插件在岛收起时一起显示，可在「页面管理 › 岛上显示」排序。同一插件可提供多张轮播画布。";
+    assert!(has_text(&expanded, pinned_description));
+    assert!(text_rect("岛上常驻").bottom() <= text_rect(pinned_description).top());
     click_in(&ctx, WINDOW, capabilities_title, |ui| draw(&mut host, ui));
     let collapsed = frame_in(&ctx, WINDOW, vec![], |ui| draw(&mut host, ui));
     assert!(!has_text(&collapsed, "卡片与标注"));

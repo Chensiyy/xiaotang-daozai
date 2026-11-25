@@ -37,6 +37,8 @@ struct Shell {
     placement_scale: f32,
     #[cfg(windows)]
     placed_bounds: Option<daozai::display_layout::Bounds>,
+    #[cfg(windows)]
+    horizontal_width: f32,
     /// 上次定位时的目标屏幕、水平位置与 OLED 像素偏移；变化后立即重新定位，不等下一次轮询。
     placement_key: (String, i32, daozai::model::Dock, bool, (i32, i32)),
     /// OLED 像素偏移当前实际使用的位移；展开、拖拽、隐藏时保持不变。
@@ -367,6 +369,7 @@ impl Shell {
             placement_at: PollClock::default(),
             placement_scale: 0.0,
             #[cfg(windows)] placed_bounds:None,
+            #[cfg(windows)] horizontal_width:app::WIN_W,
             placement_key: (String::new(), 0, daozai::model::Dock::Top, true, (0, 0)),
             #[cfg(windows)]
             oled_shift: (0, 0),
@@ -450,6 +453,16 @@ impl Shell {
         if let Some(t) = &self.tray {
             t.sync(tray::State { pet: self.app.settings.pet, minimal: self.app.settings.minimal, autostart: self.autostart });
         }
+    }
+
+    #[cfg(windows)]
+    fn next_horizontal_width(&self, scale: f32) -> f32 {
+        let available = self.placed_bounds.map_or(app::WIN_W, |bounds| {
+            ((bounds.right - bounds.left) as f32 / scale).floor().max(app::WIN_W)
+        });
+        let wanted = self.app.requested_horizontal_width().max(self.horizontal_width);
+        // 预留一小段余量，常驻数值更新时不必反复调整原生窗口。
+        ((wanted / 64.0).ceil() * 64.0).min(available)
     }
 
     fn env(&mut self, ctx: &egui::Context) -> Env {
@@ -557,11 +570,18 @@ impl eframe::App for Shell {
     }
 
     #[cfg(windows)]
-    fn raw_input_hook(&mut self, _ctx:&egui::Context, input:&mut egui::RawInput) {
+    fn raw_input_hook(&mut self, ctx:&egui::Context, input:&mut egui::RawInput) {
         if input.viewport_id != egui::ViewportId::ROOT || self.native.is_none() {return;}
         let size=if self.app.settings.dock.is_side() {
             egui::vec2(daozai::side_dock::SIDE_W,daozai::side_dock::SIDE_H)
-        } else {egui::vec2(app::CANVAS_W,app::WIN_H)};
+        } else {
+            let width = self.next_horizontal_width(ctx.pixels_per_point());
+            if self.horizontal_width != width {
+                self.horizontal_width = width;
+                self.placement_at = PollClock::default();
+            }
+            egui::vec2(width + app::CANVAS_W - app::WIN_W, app::WIN_H)
+        };
         input.screen_rect=Some(egui::Rect::from_min_size(Pos2::ZERO,size));
     }
 
@@ -655,7 +675,7 @@ impl eframe::App for Shell {
             let moving_display=self.placed && (self.app.dragging_position() || self.placement_key.0!=placement_key.0);
             self.placement_key=placement_key;
             let scale=display.filter(|_|moving_display).map_or(self.placement_scale,|d|d.scale(self.app.settings.island_scale()*ctx.zoom_factor()));
-            if bounds.is_some_and(|b|self.native.as_mut().is_some_and(|w|w.place_on_display(scale,b,offset,self.app.settings.dock,shift))) {
+            if bounds.is_some_and(|b|self.native.as_mut().is_some_and(|w|w.place_on_display(scale,b,offset,self.app.settings.dock,shift,self.horizontal_width))) {
                 self.placed_bounds=bounds;
                 if !self.placed {
                     diagnostics::startup("目标屏幕物理坐标定位完成，已请求显示");
@@ -705,7 +725,7 @@ impl eframe::App for Shell {
                 let sampler=self.backdrop.get_or_insert_with(daozai::backdrop::Sampler::start);
                 let ppp=ctx.pixels_per_point();
                 if let Some(origin)=self.native.as_ref().and_then(|w|w.logical_origin(ppp)) {
-                    let points=self.app.backdrop_points();
+                    let points=self.app.backdrop_points(self.horizontal_width);
                     sampler.set_points(points.iter().map(|&(x,y)|(((origin.x+x)*ppp).round() as i32,((origin.y+y)*ppp).round() as i32)).collect());
                 }
             } else {
@@ -880,7 +900,11 @@ impl eframe::App for Shell {
             .frame(egui::Frame::new().fill(Color32::TRANSPARENT))
             .show(ctx, |ui| {
                 // 左右停靠时画布是竖向的 SIDE_W × SIDE_H。
-                let size=if self.app.settings.dock.is_side() {egui::vec2(daozai::side_dock::SIDE_W,daozai::side_dock::SIDE_H)} else {egui::vec2(app::WIN_W,app::WIN_H)};
+                #[cfg(windows)]
+                let width = self.horizontal_width;
+                #[cfg(not(windows))]
+                let width = app::WIN_W;
+                let size=if self.app.settings.dock.is_side() {egui::vec2(daozai::side_dock::SIDE_W,daozai::side_dock::SIDE_H)} else {egui::vec2(width,app::WIN_H)};
                 let win = egui::Rect::from_min_size(ui.max_rect().min,size);
                 let mut draw = || self.app.frame(ui, win, &env);
                 #[cfg(all(windows, feature = "sdk-material"))]
@@ -891,6 +915,10 @@ impl eframe::App for Shell {
                 out = Some(draw());
             });
         let Some(out) = out else { return };
+        #[cfg(windows)]
+        if !self.app.settings.dock.is_side() && self.next_horizontal_width(ctx.pixels_per_point()) != self.horizontal_width {
+            ctx.request_repaint();
+        }
         let draw_cost=frame_start.elapsed()-pre_cost;
         #[allow(unused_mut)]
         let mut native_cost=Duration::ZERO;
@@ -919,7 +947,7 @@ impl eframe::App for Shell {
             if shift!=self.oled_shift {
                 self.oled_shift=shift;
                 let display=daozai::display_layout::selected(&self.app.displays,&self.app.settings.display_id);
-                if display.is_some_and(|d|self.native.as_mut().is_some_and(|w|w.place_on_display(ctx.pixels_per_point(),d.dock_bounds(self.app.settings.dock,self.app.settings.avoids_top_bar()),self.app.placement_offset(),self.app.settings.dock,shift))) {
+                if display.is_some_and(|d|self.native.as_mut().is_some_and(|w|w.place_on_display(ctx.pixels_per_point(),d.dock_bounds(self.app.settings.dock,self.app.settings.avoids_top_bar()),self.app.placement_offset(),self.app.settings.dock,shift,self.horizontal_width))) {
                     self.placement_key.4=shift;
                 }
                 ctx.request_repaint();

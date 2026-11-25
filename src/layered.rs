@@ -173,6 +173,7 @@ pub struct Layered {
     bits: *mut u8,
     size: (i32, i32),
     last: Option<u64>,
+    owner_offset_x: i32,
 }
 
 impl Layered {
@@ -183,7 +184,7 @@ impl Layered {
             unsafe { let _ = DestroyWindow(display); }
             return Err(windows::core::Error::from_win32());
         }
-        Ok(Self { display, dc, bitmap: HBITMAP::default(), old: HGDIOBJ::default(), bits: std::ptr::null_mut(), size: (0, 0), last: None })
+        Ok(Self { display, dc, bitmap: HBITMAP::default(), old: HGDIOBJ::default(), bits: std::ptr::null_mut(), size: (0, 0), last: None, owner_offset_x: 0 })
     }
 
     pub(crate) fn display(&self) -> HWND { self.display }
@@ -242,7 +243,7 @@ impl Layered {
         unsafe { GetWindowRect(owner, &mut rect)?; }
         if (rect.right - rect.left, rect.bottom - rect.top) != (w, h) || rgba.len() != size[0] * size[1] * 4 { return Ok(false); }
         let hash = image_hash(size, rgba);
-        if self.last == Some(hash) { return Ok(false); }
+        if self.last == Some(hash) && self.owner_offset_x == 0 { return Ok(false); }
         if !self.ensure_bitmap(w, h) { return Err(windows::core::Error::from_win32()); }
         unsafe {
             let dst = std::slice::from_raw_parts_mut(self.bits, rgba.len());
@@ -261,8 +262,14 @@ impl Layered {
             hide_owner(owner, self.last.is_none())?;
         }
         self.last = Some(hash);
+        self.owner_offset_x = 0;
         if !cover {self.sync(owner, false);}
         Ok(true)
+    }
+
+    /// 背景画布加宽时，旧画面留在原位置，等新尺寸的帧接管。
+    pub(crate) fn keep_frame_position_after_widening(&mut self, owner_shift_x: i32) {
+        self.owner_offset_x -= owner_shift_x;
     }
 
     /// 每帧跟随岛仔窗口：可见性、位置，以及紧贴在它正上方的层级。
@@ -279,8 +286,9 @@ impl Layered {
             let (mut o, mut d) = (RECT::default(), RECT::default());
             if GetWindowRect(owner, &mut o).is_err() || GetWindowRect(self.display, &mut d).is_err() { return; }
             let flags = SWP_NOACTIVATE | SWP_NOSIZE;
-            if (o.left, o.top) != (d.left, d.top) || !display_visible || raise {
-                let _ = SetWindowPos(self.display, HWND_TOPMOST, o.left, o.top, 0, 0, flags | SWP_SHOWWINDOW);
+            let x = o.left + self.owner_offset_x;
+            if (x, o.top) != (d.left, d.top) || !display_visible || raise {
+                let _ = SetWindowPos(self.display, HWND_TOPMOST, x, o.top, 0, 0, flags | SWP_SHOWWINDOW);
             }
             // 岛仔窗口紧贴在显示窗口下面：别的置顶窗口不会夹在两者之间。
             if next_visible(self.display) != Some(owner) {
@@ -297,6 +305,7 @@ impl Layered {
             let _ = ShowWindow(self.display, SW_HIDE);
         }
         self.last = None;
+        self.owner_offset_x = 0;
     }
 }
 
@@ -466,6 +475,16 @@ mod tests {
             let mut d = RECT::default();
             GetWindowRect(layered.display(), &mut d).unwrap();
             assert_eq!((d.left, d.top), (-9000, -9000), "窗口移动后显示窗口跟随");
+            SetWindowPos(owner, None, -9002, -9000, 8, 2, SWP_NOZORDER | SWP_NOACTIVATE).unwrap();
+            layered.keep_frame_position_after_widening(-2);
+            assert!(!layered.present(owner, [4, 2], &px).unwrap(), "加宽后跳过上一尺寸的帧");
+            layered.sync(owner, false);
+            GetWindowRect(layered.display(), &mut d).unwrap();
+            assert_eq!(d.left, -9000, "加宽画布时旧画面留在原位");
+            assert!(layered.present(owner, [8, 2], &[0; 64]).unwrap());
+            GetWindowRect(layered.display(), &mut d).unwrap();
+            assert_eq!(d.left, -9002, "新一帧改用新的画布坐标");
+            SetWindowPos(owner, None, -9000, -9000, 4, 2, SWP_NOZORDER | SWP_NOACTIVATE).unwrap();
             // 全屏隐藏保留主窗口的事件循环，仅清空它的窗口区域。
             assert_ne!(SetWindowRgn(owner, CreateRectRgn(0, 0, 0, 0), true), 0);
             assert!(IsWindowVisible(owner).as_bool());

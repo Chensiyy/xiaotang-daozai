@@ -2041,22 +2041,9 @@ impl LocalPlugins {
 
     fn pinned_toggle(&mut self, ui: &mut egui::Ui, id: &str) {
         let enabled = self.pinned.order.iter().any(|item| item == id);
-        if plugin_setting_switch_row(ui, &format!("{id}:pinned"), "在岛上常驻显示", "岛收起时轮流显示", enabled) {
+        if plugin_setting_switch_row(ui, &format!("{id}:pinned"), "在岛上常驻显示", "岛收起时显示", enabled) {
             if let Err(error) = self.set_pinned(id, !enabled) { self.notice = error.to_string(); }
             ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
-        }
-        if self.pinned.replacement.as_deref() == Some(id) {
-            ui.label("已设置 3 个插件，选择要替换的常驻位。");
-            let order = self.pinned.order.clone();
-            ui.horizontal_wrapped(|ui| {
-                for old in order {
-                    if ui.button(self.pinned_name(&old).unwrap_or(&old)).clicked() {
-                        if let Err(error) = self.replace_pinned(&old) { self.notice = error.to_string(); }
-                        ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
-                    }
-                }
-                if ui.button("取消").clicked() { self.pinned.replacement = None; }
-            });
         }
     }
 

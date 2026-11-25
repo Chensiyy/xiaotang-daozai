@@ -146,6 +146,10 @@ pub fn island_origin(m:Bounds, island_width:f32, scale:f32)->Option<(i32,i32)> {
 /// 水平偏移以此为界，保证展开后面板仍完整留在屏幕内。
 pub const ISLAND_HALF_EXTENT: f32 = 240.0;
 
+pub fn horizontal_half_extent(width: f32) -> f32 {
+    if width > crate::app::WIN_W { width / 2.0 } else { ISLAND_HALF_EXTENT }
+}
+
 /// 岛体中心能离开屏幕中线的最大距离（物理像素）。屏幕太窄时为 0，只能居中。
 pub fn island_travel(m:Bounds, scale:f32)->f64 {
     if m.right<=m.left || !scale.is_finite() || scale<=0.0 {return 0.0;}
@@ -162,7 +166,23 @@ pub fn island_origin_offset(m:Bounds, island_width:f32, scale:f32, offset:f32)->
 }
 
 pub fn horizontal_origin(m:Bounds,dock:crate::model::Dock,scale:f32,offset:f32)->Option<(i32,i32)> {
-    let (x,y)=island_origin_offset(m,crate::app::WIN_W,scale,offset)?;
+    horizontal_origin_for_width(m,dock,scale,offset,crate::app::WIN_W)
+}
+
+pub fn horizontal_origin_for_width(
+    m: Bounds, dock: crate::model::Dock, scale: f32, offset: f32, horizontal_width: f32,
+) -> Option<(i32, i32)> {
+    let (x,y)=if horizontal_width > crate::app::WIN_W {
+        if m.right<=m.left || m.bottom<=m.top || !scale.is_finite() || scale<=0.0
+            || !horizontal_width.is_finite() {return None;}
+        let span=(m.right as f64-m.left as f64)/2.0;
+        let half=horizontal_half_extent(horizontal_width) as f64*scale as f64;
+        let offset=if offset.is_finite(){offset.clamp(-1.0,1.0)}else{0.0};
+        let x=m.left as f64+span+(span-half).max(0.0)*offset as f64-half;
+        (x.round() as i32,m.top)
+    } else {
+        island_origin_offset(m,crate::app::WIN_W,scale,offset)?
+    };
     let y=if dock==crate::model::Dock::Bottom {m.bottom-(crate::app::WIN_H*scale).round() as i32}else{y};
     Some((x,y))
 }
@@ -420,6 +440,38 @@ mod offset_tests {
             assert!(left<center && center<right);
             assert!(((center-left)-(right-center)).abs()<=1,"左右对称");
         }
+    }
+    #[test]
+    fn wider_horizontal_island_and_oled_shift_fit_mixed_dpi_monitors() {
+        use crate::model::Dock;
+        for (bounds, scale) in [
+            (Bounds {left:-2501,top:-400,right:-1,bottom:1040}, 1.25),
+            (Bounds {left:-1,top:200,right:1920,bottom:1280}, 1.75),
+        ] {
+            let width = 931.0_f32;
+            let physical_width = (width * scale).round() as i32;
+            for dock in [Dock::Top, Dock::Bottom] {
+                let left = horizontal_origin_for_width(bounds, dock, scale, -1.0, width).unwrap();
+                let right = horizontal_origin_for_width(bounds, dock, scale, 1.0, width).unwrap();
+                assert_eq!(left.0, bounds.left);
+                assert_eq!(right.0 + physical_width, bounds.right);
+                assert_eq!(left.1, right.1);
+                assert_eq!(left.1, horizontal_origin(bounds, dock, scale, 0.0).unwrap().1);
+                let centered = horizontal_origin_for_width(bounds, dock, scale, 0.0, width).unwrap().0;
+                assert!(((centered-left.0)-(right.0-centered)).abs() <= 1);
+                let half = horizontal_half_extent(width);
+                assert_eq!(shift_slack(bounds, scale, half, -1.0, dock).0, 0);
+                assert_eq!(shift_slack(bounds, scale, half, 1.0, dock).1, 0);
+                let original_x = island_origin_offset(bounds, crate::app::WIN_W, scale, 1.0).unwrap().0;
+                assert_eq!(horizontal_origin_for_width(bounds, dock, scale, 1.0, crate::app::WIN_W),
+                           Some((original_x, left.1)));
+            }
+        }
+        let narrow = Bounds {left:-500,top:0,right:0,bottom:900};
+        assert_eq!(
+            horizontal_origin_for_width(narrow, Dock::Top, 1.5, -1.0, 931.0),
+            horizontal_origin_for_width(narrow, Dock::Top, 1.5, 1.0, 931.0),
+        );
     }
     #[test]
     fn narrow_screens_and_bad_values_stay_centered(){
