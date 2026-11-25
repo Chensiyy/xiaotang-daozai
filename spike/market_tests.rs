@@ -18,6 +18,86 @@ use super::super::{LocalPlugins, WIRELESS_PLUGIN_ID};
 use serde_json::json;
 
 #[test]
+fn navigation_icon_rejects_invalid_manifest_values() -> Result<()> {
+    let old = include_str!("examples/world-clock/plugin.json");
+    let mut manifest: Value = serde_json::from_str(old)?;
+    assert!(Manifest::decode(old)?.navigation_icon.is_none());
+    let valid = json!({"path": "M0 0 H24 V24 Z M8 8 Q12 4 16 8", "background": "#C45848"});
+    manifest["navigationIcon"] = valid.clone();
+    assert!(Manifest::decode(&manifest.to_string()).is_ok());
+
+    for invalid in [
+        Value::Null,
+        json!({"path": "M0 0 H24"}),
+        json!({"path": "M0 0 H24", "background": "#fff"}),
+        json!({"path": "M0 0 H24", "background": "#C45848", "extra": true}),
+        json!({"path": "M0 0 Z", "background": "#C45848"}),
+        json!({"path": "M0 0 H25", "background": "#C45848"}),
+        json!({"path": "M0 0 h-1", "background": "#C45848"}),
+        json!({"path": "M0 0 Q25 3 8 8", "background": "#C45848"}),
+        json!({"path": "M0 0 C1 1 2 -1 8 8", "background": "#C45848"}),
+        json!({"path": "M0 0 A1 1 0 0 0 8 8", "background": "#C45848"}),
+        json!({"path": "M0 0 H24　", "background": "#C45848"}),
+        json!({"path": format!("M0 0{}", " L1 1".repeat(64)), "background": "#C45848"}),
+        json!({"path": format!("M0 0 H24{}", " ".repeat(1024)), "background": "#C45848"}),
+    ] {
+        manifest["navigationIcon"] = invalid;
+        assert!(Manifest::decode(&manifest.to_string()).is_err(), "{manifest}");
+    }
+    manifest["navigationIcon"] = valid;
+    manifest["owner"] = json!("tasks");
+    manifest["capabilities"].as_array_mut().unwrap().push(json!("card"));
+    assert!(Manifest::decode(&manifest.to_string()).is_err());
+    Ok(())
+}
+
+#[test]
+fn navigation_icon_survives_local_install_market_zip_and_restart() -> Result<()> {
+    const ID: &str = "example.world-clock";
+    let fixture = Fixture::new()?;
+    let manifest = fixture.0.join("plugin.json");
+    let mut body: Value = serde_json::from_str(include_str!("examples/world-clock/plugin.json"))?;
+    let declaration = json!({"path": "M3 3 H21 V21 H3 Z", "background": "#C45848"});
+    body["navigationIcon"] = declaration.clone();
+    fs::write(&manifest, serde_json::to_vec(&body)?)?;
+    fs::write(fixture.0.join("main.js"), include_str!("examples/world-clock/main.js"))?;
+    fs::write(fixture.0.join(COVER_FILE), include_bytes!("examples/world-clock/cover.png"))?;
+
+    let local = fixture.0.join("local-install");
+    let mut host = LocalPlugins::open(local.clone());
+    host.install(&manifest)?;
+    let icon = host.navigation_icon(ID).expect("开发包保留图标");
+    assert_eq!(icon.background(), [196, 88, 72]);
+    let commands = icon.commands().to_vec();
+    assert_eq!(commands.len(), 5);
+    let reopened = LocalPlugins::open(local);
+    assert_eq!(reopened.navigation_icon(ID).unwrap().commands(), commands);
+
+    let archive = fixture.0.join("bundle.zip");
+    let index = fixture.0.join("catalog.json");
+    pack(&manifest, &archive)?;
+    submit(&archive, &index)?;
+
+    let storage = fixture.0.join("market-install");
+    let mut host = LocalPlugins::open(storage.clone());
+    host.set_market_catalog(&index)?;
+    host.market_action(false, ID)?;
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while host.market_busy() {
+        host.poll_market();
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    assert_eq!(host.navigation_icon(ID).unwrap().commands(), commands);
+    let installed = &host.records[ID].package.as_ref().unwrap().manifest;
+    assert_eq!(serde_json::to_value(installed)?["navigationIcon"], declaration);
+    let reopened = LocalPlugins::open(storage);
+    assert_eq!(reopened.navigation_icon(ID).unwrap().background(), [196, 88, 72]);
+    assert_eq!(reopened.navigation_icon(ID).unwrap().commands(), commands);
+    Ok(())
+}
+
+#[test]
 fn gitee_contents_accepts_only_the_requested_bounded_file() -> Result<()> {
     let path = "stable/catalog.json";
     let valid = json!({

@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub(crate) mod live;
 mod path;
 use live::{Animation, Binding, Burst, Hit, Hover, Loop, Scroll, Tip};
-pub(crate) use path::PathCommand;
+pub(crate) use path::{parse as parse_path, PathCommand};
 
 const MAX_NODES: usize = 1500;
 const MAX_DEPTH: usize = 8;

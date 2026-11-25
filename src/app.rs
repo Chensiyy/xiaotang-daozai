@@ -4106,9 +4106,26 @@ impl App {
                 if page<PAGE_NAMES.len() {
                     paint::page_shortcut_icon(&icon, page, center, dot_y, ink);
                 } else {
-                    icon.seg((center-5.0,dot_y+4.0),(center-5.0,dot_y+1.0),1.7,ink);
-                    icon.seg((center,dot_y+4.0),(center,dot_y-4.0),1.7,ink);
-                    icon.seg((center+5.0,dot_y+4.0),(center+5.0,dot_y-1.0),1.7,ink);
+                    #[cfg(feature="sdk-js")]
+                    let custom_icon = self.status_pages.get(page-PAGE_NAMES.len())
+                        .and_then(|(id, _)| self.plugins.navigation_icon(id));
+                    #[cfg(feature="sdk-js")]
+                    let use_default_icon = if let Some(custom_icon) = custom_icon {
+                        crate::plugin_canvas_ui::draw_navigation_icon(
+                            &icon.painter, icon.rect(center-9.0,dot_y-9.0,18.0,18.0),
+                            custom_icon.commands(), ink,
+                        );
+                        false
+                    } else {
+                        true
+                    };
+                    #[cfg(not(feature="sdk-js"))]
+                    let use_default_icon = true;
+                    if use_default_icon {
+                        icon.seg((center-5.0,dot_y+4.0),(center-5.0,dot_y+1.0),1.7,ink);
+                        icon.seg((center,dot_y+4.0),(center,dot_y-4.0),1.7,ink);
+                        icon.seg((center+5.0,dot_y+4.0),(center+5.0,dot_y-1.0),1.7,ink);
+                    }
                 }
                 if button.clicked() { clicked = Some(page); }
                 x += shortcut_slot;

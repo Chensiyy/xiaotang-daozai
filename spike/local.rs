@@ -11,6 +11,9 @@ mod capabilities;
 mod font_assets;
 #[path = "plugin_devtools.rs"]
 mod devtools;
+#[path = "navigation_icon.rs"]
+mod navigation_icon;
+pub(crate) use navigation_icon::NavigationIcon;
 #[path = "pinned.rs"]
 mod pinned;
 pub(crate) use pinned::PinnedDisplay;
@@ -180,6 +183,8 @@ struct Manifest {
         skip_serializing_if = "Option::is_none"
     )]
     status_layout: Option<StatusLayout>,
+    #[serde(default, deserialize_with = "present_value", skip_serializing_if = "Option::is_none")]
+    navigation_icon: Option<NavigationIcon>,
     #[serde(
         default,
         deserialize_with = "present_value",
@@ -533,6 +538,9 @@ impl Manifest {
             return Err(fail("请核对插件 ID、作者、版本和 API 版本"));
         }
         capabilities::check(&m.runtime, &m.owner, &m.capabilities).map_err(|e| fail(&e))?;
+        if m.navigation_icon.is_some() && (m.owner != "status" || !m.has_capability("status.page")) {
+            return Err(fail("navigationIcon 只适用于声明了 status.page 的独立功能插件"));
+        }
         if m.title_accent.as_deref().is_some_and(|suffix| {
             !m.has_capability("status.page")
                 || !crate::plugin_status::valid_text(suffix, 80)
@@ -1976,6 +1984,10 @@ impl LocalPlugins {
             .manifest
             .status_layout
             .as_ref()
+    }
+
+    pub(crate) fn navigation_icon(&self, id: &str) -> Option<&NavigationIcon> {
+        self.records.get(id)?.package.as_ref()?.manifest.navigation_icon.as_ref()
     }
 
     pub(crate) fn status_title_accent(&self, id: &str) -> Option<(&str, Option<[u8; 3]>)> {

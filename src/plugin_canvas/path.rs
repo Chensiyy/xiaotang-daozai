@@ -10,7 +10,7 @@ pub(crate) enum PathCommand {
     Close,
 }
 
-pub(super) fn parse(path: &str, budget: usize) -> Result<Vec<PathCommand>, String> {
+pub(crate) fn parse(path: &str, budget: usize) -> Result<Vec<PathCommand>, String> {
     let mut current = [0.0, 0.0];
     let mut origin = current;
     let mut commands = Vec::new();

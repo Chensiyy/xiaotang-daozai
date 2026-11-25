@@ -182,6 +182,19 @@ JS 清单使用 `"owner":"status"`，能力列出 `status.page`。可选的 `tim
 
 清单可用 `titleAccent` 指定 `name` 中要着色的末尾文字。例如 `"name":"现货金价","titleAccent":"金价"`。颜色取 `statusLayout.style.accent`，省略时用当前皮肤的默认强调色。插件列表仍使用完整名称。
 
+独立状态页插件可在 `plugin.json` 中声明 `navigationIcon`。宿主在设置侧栏和岛上快捷导航绘制同一轮廓。侧栏使用 `background` 的底色和白色描边，快捷导航沿用当前的选中与悬停色。省略此字段时显示宿主图标。
+
+```json
+{
+  "navigationIcon": {
+    "path": "M5 6H19V18H5Z M8 10H16 M8 14H13",
+    "background": "#587CA8"
+  }
+}
+```
+
+`path` 使用 24×24 坐标，端点和控制点都在 0 至 24 之间。支持 `M/L/H/V/Q/C/Z` 及其小写相对命令，必须包含可绘制的线段或曲线，最多 64 条命令和 1024 字节。`background` 使用 `#RRGGBB` 格式。
+
 返回 `{status: ...}`，`note` 支持多行，其余文字字段填单行可显示文字。
 
 | 字段 | 取值 |

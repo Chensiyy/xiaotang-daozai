@@ -1675,6 +1675,7 @@ pub(crate) fn settings_tab_group_for_tests(tab:usize)->&'static str{settings_tab
 fn settings_sidebar_row(
     ui: &mut egui::Ui, name: &str, icon: egui::ImageSource<'static>, row_h: f32,
     selected: bool, wireless: bool,
+    #[cfg(feature="sdk-js")] navigation_icon: Option<&crate::sdk_spike::local::NavigationIcon>,
 ) -> egui::Response {
     let ctx = ui.ctx().clone();
     let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), row_h), egui::Sense::click());
@@ -1688,8 +1689,24 @@ fn settings_sidebar_row(
         ui.painter().rect_filled(rect, 7.0, fill);
     }
     let icon_bg = egui::Rect::from_center_size(egui::pos2(rect.left()+21.0,rect.center().y),egui::vec2(23.0,23.0));
-    if wireless { paint_wireless_settings_icon(ui, icon_bg, icon); }
-    else { egui::Image::new(icon).paint_at(ui, icon_bg); }
+    #[cfg(feature="sdk-js")]
+    let use_default_icon = if let Some(navigation_icon) = navigation_icon {
+        let painter = ui.painter();
+        let [r, g, b] = navigation_icon.background();
+        painter.rect_filled(icon_bg, 6.0, Color32::from_rgb(r, g, b));
+        crate::plugin_canvas_ui::draw_navigation_icon(
+            painter, icon_bg, navigation_icon.commands(), Color32::WHITE,
+        );
+        false
+    } else {
+        true
+    };
+    #[cfg(not(feature="sdk-js"))]
+    let use_default_icon = true;
+    if use_default_icon {
+        if wireless { paint_wireless_settings_icon(ui, icon_bg, icon); }
+        else { egui::Image::new(icon).paint_at(ui, icon_bg); }
+    }
     let color = if selected {
         settings_color(&ctx, Color32::WHITE, Color32::from_rgb(30,34,41))
     } else {
@@ -1729,7 +1746,11 @@ impl App {
         #[cfg(feature="sdk-js")]
         let icon = settings_tab_module(start).and_then(|page|self.plugins.appearance_icon(page,true)).unwrap_or(icon);
         let selected = (start..=end).contains(&self.settings_tab);
-        if settings_sidebar_row(ui, name, icon, row_h, selected, start == SETTINGS_TAB_WIRELESS).clicked() && !selected {
+        if settings_sidebar_row(
+            ui, name, icon, row_h, selected, start == SETTINGS_TAB_WIRELESS,
+            #[cfg(feature="sdk-js")]
+            None,
+        ).clicked() && !selected {
             self.settings_tab = start;
             #[cfg(feature="sdk-js")]
             { self.settings_plugin = None; }
@@ -1866,7 +1887,10 @@ impl App {
                                         && self.settings_plugin.as_ref() == Some(id);
                                     let icon = egui::include_image!("../assets/settings-icons/system/pages.svg");
                                     let response = ui.push_id(("plugin-settings-sidebar", id), |ui| {
-                                        settings_sidebar_row(ui, name, icon, row_h, selected, false).on_hover_text(name)
+                                        settings_sidebar_row(
+                                            ui, name, icon, row_h, selected, false,
+                                            self.plugins.navigation_icon(id),
+                                        ).on_hover_text(name)
                                     }).inner;
                                     if selected && focus_requested && !ui.clip_rect().contains_rect(response.rect) {
                                         response.scroll_to_me(Some(egui::Align::Center));

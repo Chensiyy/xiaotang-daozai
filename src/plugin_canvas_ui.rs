@@ -13,7 +13,7 @@ pub(crate) use motion::{draw_live_with_pet, LiveOptions, LiveResult};
 
 use crate::{
     paint::Card,
-    plugin_canvas::{Align, Canvas, Color, Fit, Glow, Kind, Node, Paint, Shadow, Style, Token},
+    plugin_canvas::{Align, Canvas, Color, Fit, Glow, Kind, Node, Paint, PathCommand, Shadow, Style, Token},
     skin_paint::{self, Palette},
     theme::{self, W},
 };
@@ -154,6 +154,33 @@ enum Item {
         clip: Clip,
     },
     Pet(pet::Placement),
+}
+
+/// 侧栏和快捷导航共用 24×24 的矢量路径，各自传入前景色。
+pub(crate) fn draw_navigation_icon(
+    painter: &egui::Painter,
+    area: Rect,
+    commands: &[PathCommand],
+    color: Color32,
+) {
+    let side = area.width().min(area.height());
+    let scale = side / 24.0;
+    let transform = Transform::at(scale, area.center() - Vec2::splat(side / 2.0));
+    let Some(outlines) = path(commands, transform, painter.pixels_per_point(), None) else {
+        return;
+    };
+    let painter = painter.with_clip_rect(area);
+    let stroke = egui::Stroke::new(1.35 * scale, color);
+    for Outline { points, closed } in outlines {
+        if points.len() < 2 {
+            continue;
+        }
+        painter.add(if closed {
+            Shape::closed_line(points, stroke)
+        } else {
+            Shape::line(points, stroke)
+        });
+    }
 }
 
 #[cfg(test)]

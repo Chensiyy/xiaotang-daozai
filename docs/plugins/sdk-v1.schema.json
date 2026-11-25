@@ -19,6 +19,26 @@
       "maxLength": 80,
       "description": "状态页标题要着色的末尾文字，必须是 name 的一部分。颜色使用 statusLayout.style.accent。"
     },
+    "navigationIcon": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "background"],
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024,
+          "pattern": "^[ \\t\\n\\r]*[Mm][-MmLlHhVvQqCcZz0-9Ee+., \\t\\n\\r]*$",
+          "description": "24×24 坐标内的描边轮廓，包含可绘制的线段或曲线，最多 64 条路径命令。"
+        },
+        "background": {
+          "type": "string",
+          "pattern": "^#[0-9a-fA-F]{6}$",
+          "description": "设置侧栏图标的背景色。"
+        }
+      },
+      "description": "独立插件功能在设置侧栏和岛上快捷导航使用的图标。"
+    },
     "author": {
       "type": "string",
       "minLength": 1,
@@ -790,6 +810,13 @@
     {
       "if": {"anyOf": [{"required": ["statusLayout"]}, {"required": ["titleAccent"]}]},
       "then": {"properties": {"capabilities": {"contains": {"const": "status.page"}}}}
+    },
+    {
+      "if": {"required": ["navigationIcon"]},
+      "then": {"properties": {
+        "owner": {"const": "status"},
+        "capabilities": {"contains": {"const": "status.page"}}
+      }}
     },
     {
       "if": {
