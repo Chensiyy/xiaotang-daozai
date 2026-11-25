@@ -1,8 +1,9 @@
 //! 插件集市的目录读取、作者工具与包校验。
 
 use super::{
-    bounded, cover::COVER_LIMIT, devtools, fail, valid_id, CoverPng, Manifest, Package, Result,
-    SourceInput, Values, COVER_FILE,
+    bounded,
+    cover::{open_plain_file, COVER_LIMIT},
+    devtools, fail, valid_id, CoverPng, Manifest, Package, Result, SourceInput, Values, COVER_FILE,
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
 use ring::digest::{digest, SHA256};
@@ -137,16 +138,17 @@ impl Presentation {
         }) && self.updated_on.as_deref().is_none_or(|date| {
             chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d")
                 .is_ok_and(|parsed| parsed.to_string() == date)
-        }) && self.maintainer.as_deref().is_none_or(|login| {
-            (1..=39).contains(&login.len())
-                && login.starts_with(|c: char| c.is_ascii_alphanumeric())
-                && login.ends_with(|c: char| c.is_ascii_alphanumeric())
-                && !login.contains("--")
-                && login
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b == b'-')
-        }) && self.author_avatar.as_deref().is_none_or(valid_avatar_name)
+        }) && self.maintainer.as_deref().is_none_or(valid_github_login)
+            && self.author_avatar.as_deref().is_none_or(valid_avatar_name)
     }
+}
+
+fn valid_github_login(login: &str) -> bool {
+    (1..=39).contains(&login.len())
+        && login.starts_with(|c: char| c.is_ascii_alphanumeric())
+        && login.ends_with(|c: char| c.is_ascii_alphanumeric())
+        && !login.contains("--")
+        && login.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
 }
 
 fn valid_avatar_name(name: &str) -> bool {
@@ -263,11 +265,14 @@ impl Catalog {
     }
 
     pub(super) fn avatar_png(&self, name: &str) -> Option<CoverPng> {
-        let source = self.official_index.as_ref()?;
         if !valid_avatar_name(name) {
             return None;
         }
-        let bytes = download_catalog_asset(source, name, AVATAR_LIMIT).ok()?;
+        let bytes = match &self.official_index {
+            Some(source) => download_catalog_asset(source, name, AVATAR_LIMIT),
+            None => read_local_avatar(&self.path.with_file_name(name)),
+        }
+        .ok()?;
         CoverPng::decode(bytes).ok()
     }
 
@@ -377,6 +382,75 @@ fn is_https_host(url: &Url, host: &str) -> bool {
         && url.username().is_empty()
         && url.password().is_none()
         && url.fragment().is_none()
+}
+
+fn read_local_avatar(path: &Path) -> Result<Vec<u8>> {
+    let file = open_plain_file(path, "插件头像必须是测试集市同目录中的普通文件")?;
+    read_limited(file, AVATAR_LIMIT)
+}
+
+fn github_avatar_url(profile: &[u8], username: &str) -> Result<Url> {
+    #[derive(Deserialize)]
+    struct Profile {
+        login: String,
+        avatar_url: String,
+    }
+    let Profile { login, avatar_url } = serde_json::from_slice(profile)
+        .map_err(|_| fail("GitHub 未返回有效的作者头像信息"))?;
+    let mut avatar_url = Url::parse(&avatar_url)
+        .map_err(|_| fail("GitHub 返回的头像地址无效"))?;
+    if !login.eq_ignore_ascii_case(username)
+        || !is_https_host(&avatar_url, "avatars.githubusercontent.com")
+    {
+        return Err(fail("GitHub 返回的账号或头像地址与请求不符"));
+    }
+    avatar_url.set_query(Some("s=64"));
+    Ok(avatar_url)
+}
+
+fn github_file(agent: &ureq::Agent, url: &Url, accept: &str, limit: u64) -> Result<Vec<u8>> {
+    let response = match market_request(agent, url, accept).call() {
+        Ok(response) => response,
+        Err(ureq::Error::Status(status, response)) => {
+            if status == 429
+                || (status == 403 && response.header("X-RateLimit-Remaining") == Some("0"))
+            {
+                return Err(fail("GitHub 请求次数已达上限，请稍后重试"));
+            }
+            return Err(fail(&format!("GitHub 返回 HTTP {status}")));
+        }
+        Err(_) => return Err(fail("无法连接 GitHub，请检查网络后重试")),
+    };
+    if response.status() != 200 {
+        return Err(fail("GitHub 头像请求发生非预期跳转"));
+    }
+    read_limited(response.into_reader(), limit)
+}
+
+fn sync_author_avatar(path: &Path, id: &str, username: &str) -> Result<()> {
+    if !valid_id(id) || !valid_github_login(username) {
+        return Err(fail("请填写有效的插件 ID 和 GitHub 用户名"));
+    }
+    let agent = ureq::AgentBuilder::new()
+        .try_proxy_from_env(true)
+        .redirects(0)
+        .timeout_connect(Duration::from_secs(6))
+        .timeout(Duration::from_secs(15))
+        .build();
+    let endpoint = Url::parse(&format!("https://api.github.com/users/{username}"))?;
+    let profile = github_file(&agent, &endpoint, "application/vnd.github+json", 16 * 1024)?;
+    let url = github_avatar_url(&profile, username)?;
+    let raw = github_file(&agent, &url, "image/png,image/jpeg,image/webp", AVATAR_LIMIT)?;
+    let mut reader = image::ImageReader::new(Cursor::new(raw)).with_guessed_format()?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(512);
+    limits.max_image_height = Some(512);
+    limits.max_alloc = Some(8 * 1024 * 1024);
+    reader.limits(limits);
+    let avatar = reader.decode()?.thumbnail(64, 64).into_rgba8();
+    let mut png = Cursor::new(Vec::new());
+    avatar.write_to(&mut png, image::ImageFormat::Png)?;
+    set_author_avatar(path, id, png.get_ref())
 }
 
 fn gitee_raw_url(source: &Url) -> Option<Url> {
@@ -746,6 +820,17 @@ fn target_path(path: &Path) -> io::Result<PathBuf> {
     Ok(directory.join(filename))
 }
 
+fn lock_catalog(path: &Path) -> io::Result<File> {
+    let lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path.with_file_name(".daozai-test-market.lock"))?;
+    lock.lock()?;
+    Ok(lock)
+}
+
 fn temporary_sibling(path: &Path) -> PathBuf {
     use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
@@ -808,6 +893,49 @@ fn write_new(path: &Path, bytes: &[u8]) -> io::Result<()> {
     result
 }
 
+fn set_author_avatar(path: &Path, id: &str, raw: &[u8]) -> Result<()> {
+    if raw.len() as u64 > AVATAR_LIMIT {
+        return Err(fail("作者头像不能超过 64 KiB"));
+    }
+    CoverPng::decode(raw.to_vec()).map_err(|_| fail("作者头像必须是完整的 PNG 图片"))?;
+    let path = target_path(path)?;
+    let _lock = lock_catalog(&path)?;
+    let file = open_plain_file(&path, "测试集市目录必须是普通文件")?;
+    let mut catalog = Catalog::parse(path.clone(), None, &read_limited(file, CATALOG_LIMIT)?)?;
+    let entry = catalog
+        .entries
+        .iter_mut()
+        .find(|entry| entry.id == id)
+        .ok_or_else(|| fail("测试集市没有这个插件"))?;
+    let name = format!("avatar-{}.png", sha256(raw));
+    let avatar_path = path.with_file_name(&name);
+    entry.presentation.get_or_insert_with(Presentation::default).author_avatar = Some(name);
+    let updated = serde_json::to_vec_pretty(&CatalogFile {
+        format: CATALOG_FORMAT,
+        plugins: catalog.entries,
+    })?;
+    if updated.len() as u64 > CATALOG_LIMIT {
+        return Err(fail("测试集市目录超过大小限制"));
+    }
+    let created = match write_new(&avatar_path, raw) {
+        Ok(()) => true,
+        Err(error)
+            if error.kind() == io::ErrorKind::AlreadyExists
+                && read_local_avatar(&avatar_path).is_ok_and(|existing| existing == raw) =>
+        {
+            false
+        }
+        Err(error) => return Err(fail(&format!("无法保存作者头像：{error}"))),
+    };
+    if let Err(error) = crate::model::atomic_write(&path, &updated) {
+        if created {
+            let _ = fs::remove_file(&avatar_path);
+        }
+        return Err(fail(&format!("测试集市目录更新失败：{error}")));
+    }
+    Ok(())
+}
+
 pub(super) fn pack(manifest_path: &Path, output: &Path) -> Result<()> {
     let package = checked_project(manifest_path)?;
     let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
@@ -857,14 +985,8 @@ pub(super) fn submit(input: &Path, path: &Path) -> Result<()> {
         revoked: BTreeSet::new(),
     };
     let path = target_path(path)?;
-    let lock = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .create(true)
-        .truncate(false)
-        .open(path.with_file_name(".daozai-test-market.lock"))?;
     // 操作系统在作者进程退出时释放锁，目录里的版本更新串行提交。
-    lock.lock()?;
+    let _lock = lock_catalog(&path)?;
     let mut plugins = match fs::symlink_metadata(&path) {
         Ok(metadata) if metadata.is_file() => Catalog::open(&path)?.entries,
         Ok(_) => return Err(fail("测试集市目录必须是普通文件")),
@@ -917,7 +1039,7 @@ pub(in crate::sdk_spike) fn author_command(args: &[OsString]) -> Option<ExitCode
     let operation = args.get(1)?.to_str()?;
     if !matches!(
         operation,
-        "--plugin-test" | "--plugin-pack" | "--plugin-submit"
+        "--plugin-test" | "--plugin-pack" | "--plugin-submit" | "--plugin-avatar"
     ) {
         return None;
     }
@@ -937,9 +1059,16 @@ pub(in crate::sdk_spike) fn author_command(args: &[OsString]) -> Option<ExitCode
             .map(|_| format!("已生成插件包 {}", Path::new(output).display())),
         ("--plugin-submit", [zip, catalog]) => submit(Path::new(zip), Path::new(catalog))
             .map(|_| format!("已提交到测试集市 {}", Path::new(catalog).display())),
+        ("--plugin-avatar", [catalog, id, username]) => sync_author_avatar(
+            Path::new(catalog),
+            id.to_str().unwrap_or_default(),
+            username.to_str().unwrap_or_default(),
+        )
+        .map(|_| "已更新测试集市作者头像".into()),
         _ => Err(fail(match operation {
             "--plugin-test" => "用法：--plugin-test <plugin.json> [--input <mock.json>]",
             "--plugin-pack" => "用法：--plugin-pack <plugin.json> <输出 ZIP>",
+            "--plugin-avatar" => "用法：--plugin-avatar <catalog.json> <插件 ID> <GitHub 用户名>",
             _ => "用法：--plugin-submit <插件 ZIP> <catalog.json>",
         })),
     };

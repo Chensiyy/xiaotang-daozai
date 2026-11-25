@@ -317,6 +317,57 @@ fn market_author_packages_and_submits_immutable_versions() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn local_market_author_avatar_preserves_the_plugin_package() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let catalog_path = fixture.0.join("catalog.json");
+    let bundle = fixture.0.join("first.zip");
+    pack(&fixture.project("1.0.0")?, &bundle)?;
+    submit(&bundle, &catalog_path)?;
+    let mut index: Value = serde_json::from_slice(&fs::read(&catalog_path)?)?;
+    index["plugins"][0]["presentation"] = json!({"description": "发薪日提醒"});
+    fs::write(&catalog_path, serde_json::to_vec(&index)?)?;
+
+    let avatar = image::DynamicImage::ImageRgba8(image::RgbaImage::from_pixel(
+        16, 16, image::Rgba([46, 101, 170, 255]),
+    ));
+    let mut png = Cursor::new(Vec::new());
+    avatar.write_to(&mut png, image::ImageFormat::Png)?;
+    let bytes = png.into_inner();
+    set_author_avatar(&catalog_path, "example.payday", &bytes)?;
+
+    let catalog = Catalog::open(&catalog_path)?;
+    let entry = &catalog.entries[0];
+    assert_eq!(entry.sha256, sha256(&fs::read(&bundle)?));
+    assert_eq!(catalog.load(entry)?.manifest.version, "1.0.0");
+    assert_eq!(entry.presentation.as_ref().unwrap().description.as_deref(), Some("发薪日提醒"));
+    let name = entry.avatar_name().expect("目录写入作者头像");
+    assert_eq!(catalog.avatar_png(name).unwrap().bytes(), bytes.as_slice());
+    let saved = fs::read(&catalog_path)?;
+    assert!(set_author_avatar(&catalog_path, "example.missing", &bytes).is_err());
+    assert!(set_author_avatar(&catalog_path, "example.payday", b"invalid png").is_err());
+    assert_eq!(fs::read(&catalog_path)?, saved);
+    fs::remove_file(fixture.0.join(name))?;
+    assert!(catalog.avatar_png(name).is_none());
+    assert!(catalog.avatar_png("../avatar-test.png").is_none());
+    Ok(())
+}
+
+#[test]
+fn avatar_profile_must_match_the_requested_github_account() -> Result<()> {
+    let profile = |login, url| {
+        serde_json::to_vec(&json!({"login": login, "id": 42, "avatar_url": url})).unwrap()
+    };
+    let avatar = "https://avatars.githubusercontent.com/u/42?v=4";
+    let url = github_avatar_url(&profile("cayww", avatar), "CayWW")?;
+    assert_eq!(url.host_str(), Some("avatars.githubusercontent.com"));
+    assert!(url.query_pairs().any(|(name, _)| name == "s"));
+    assert!(github_avatar_url(&profile("other", avatar), "cayww").is_err());
+    assert!(github_avatar_url(&profile("cayww", "http://avatars.githubusercontent.com/u/42"), "cayww").is_err());
+    assert!(github_avatar_url(&profile("cayww", "https://avatars.githubusercontent.com.example.com/u/42"), "cayww").is_err());
+    Ok(())
+}
+
 fn publish_wireless(root: &Path, version: &str, data_version: &str) -> Result<()> {
     let manifest_path = root.join("plugin.json");
     fs::write(
