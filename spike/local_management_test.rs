@@ -265,6 +265,8 @@ fn status_page_management_opens_and_switches_independently() -> Result<()> {
     assert!(has_text(&frame(&ctx, vec![], |ui| host.standalone_settings(ui, ID)), "倒计时名称"));
 
     host.enable(ID, true)?;
+    let standalone = frame(&ctx, vec![], |ui| host.standalone_settings(ui, ID));
+    assert!(has_text(&standalone, &format!("启用{NAME}")));
     let mut opened = None;
     click(&ctx, "打开", |ui| {
         opened = host.status_page_settings(ui).or(opened.take());
@@ -275,14 +277,17 @@ fn status_page_management_opens_and_switches_independently() -> Result<()> {
         settings = host.status_page_settings(ui).or(settings.take());
     });
     assert_eq!(settings, Some(SettingsNavigation::Plugin(ID.into())));
+    frame(&ctx, vec![], |ui| host.standalone_settings(ui, ID));
+    host.drafts.get_mut(ID).unwrap().insert("title".into(), "未保存的设置".into());
     let switch = ctx
-        .read_response(egui::Id::new(("settings-plugin-switch", ID)))
-        .expect("详情页开关")
+        .read_response(egui::Id::new(("settings-plugin-switch", format!("{ID}:status-page"))))
+        .expect("独立设置页开关")
         .rect
         .center();
-    click_at(&ctx, switch, |ui| draw(ui, &mut host));
+    click_at(&ctx, switch, |ui| host.standalone_settings(ui, ID));
     assert!(host.records[ID].enabled);
     assert!(host.status_pages().next().is_none());
+    assert_eq!(host.drafts[ID]["title"], "未保存的设置");
     assert!(!has_text(&frame(&ctx, vec![], |ui| draw(ui, &mut host)), "打开"));
     assert_eq!(host.standalone_settings_pages().next(), Some((ID, NAME)));
 
@@ -291,6 +296,15 @@ fn status_page_management_opens_and_switches_independently() -> Result<()> {
     host.enable(ID, false)?;
     host.enable(ID, true)?;
     assert_eq!(host.status_page_preferences().next(), Some((ID, NAME, true, false)));
+    let mut record = host.records[ID].clone();
+    record.package.as_mut().unwrap().manifest.name = "独立功能模块".repeat(13);
+    host.put(ID, record)?;
+    let size = egui::vec2(310.0, 550.0);
+    frame_in(&ctx, size, vec![], |ui| host.standalone_settings(ui, ID));
+    let switch = ctx
+        .read_response(egui::Id::new(("settings-plugin-switch", format!("{ID}:status-page"))))
+        .expect("长名称的独立设置页开关");
+    assert!(switch.rect.right() <= size.x, "插件名不能把开关挤出页面");
     drop(host);
     let _ = fs::remove_dir_all(dir);
     Ok(())

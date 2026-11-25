@@ -397,9 +397,11 @@ fn chip(ui: &mut egui::Ui, text: &str, on: bool) -> egui::Response {
     response
 }
 
+const PLUGIN_SWITCH_WIDTH: f32 = 38.0;
+
 /// 插件开关统一用紫色表示开启、灰色表示关闭。
 fn plugin_switch(ui: &mut egui::Ui, id: &str, on: bool, label: &str) -> bool {
-    let (_, rect) = ui.allocate_space(egui::vec2(38.0, 22.0));
+    let (_, rect) = ui.allocate_space(egui::vec2(PLUGIN_SWITCH_WIDTH, 22.0));
     let response = ui.interact(
         rect,
         egui::Id::new(("settings-plugin-switch", id)),
@@ -439,9 +441,15 @@ fn plugin_setting_switch_row(
     on: bool,
 ) -> bool {
     ui.horizontal(|ui| {
+        let text_width =
+            (ui.available_width() - PLUGIN_SWITCH_WIDTH - ui.spacing().item_spacing.x).max(0.0);
         ui.vertical(|ui| {
+            ui.set_max_width(text_width);
             ui.horizontal(|ui| {
-                ui.label(title);
+                ui.scope(|ui| {
+                    ui.set_max_width((ui.available_width() - 44.0).max(0.0));
+                    ui.add(egui::Label::new(title).truncate()).on_hover_text(title);
+                });
                 plugin_tag(ui);
             });
             settings_hint(ui, description);
@@ -1917,11 +1925,38 @@ impl LocalPlugins {
     }
 
     pub(crate) fn standalone_settings(&mut self, ui: &mut egui::Ui, id: &str) {
-        let Some(record) = self.records.get(id).filter(|record| record.package.is_some()) else {
+        let Some(record) = self.records.get(id) else {
+            return;
+        };
+        let Some(manifest) = record.package.as_ref().map(|package| &package.manifest) else {
             return;
         };
         if !record.enabled {
             settings_hint(ui, "插件已停用，可在「插件 → 已安装」启用");
+        } else if standalone_settings_page(manifest) {
+            let on = !record.status_page_disabled;
+            let switch_id = format!("{id}:status-page");
+            let title = format!("启用{}", manifest.name);
+            let mut switched = false;
+            settings_card(ui, |ui| {
+                switched = plugin_setting_switch_row(
+                    ui,
+                    &switch_id,
+                    &title,
+                    "关闭后隐藏岛上功能页并暂停后台",
+                    on,
+                );
+            });
+            if switched {
+                let draft = self.drafts.remove(id);
+                if let Err(error) = self.set_status_page_enabled(id, !on) {
+                    self.notice = error.to_string();
+                }
+                if let Some(draft) = draft {
+                    self.drafts.insert(id.to_owned(), draft);
+                }
+                ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
+            }
         } else if record.status_page_disabled {
             settings_hint(ui, "岛上功能页已关闭，可在「页面管理」开启");
         }
