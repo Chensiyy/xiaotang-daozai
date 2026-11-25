@@ -267,15 +267,19 @@ fn status_page_management_opens_and_switches_independently() -> Result<()> {
         )
     };
     let toggle_installed = |host: &mut LocalPlugins| {
-        frame(&ctx, vec![], |ui| {
-            let _ = installed(ui, host);
-        });
-        let switch = ctx
+        let installed_ctx = egui::Context::default();
+        crate::theme::load_fonts(&installed_ctx);
+        for _ in 0..2 {
+            frame(&installed_ctx, vec![], |ui| {
+                let _ = installed(ui, host);
+            });
+        }
+        let switch = installed_ctx
             .read_response(egui::Id::new(("settings-plugin-switch", ID)))
             .expect("已安装中的插件开关")
             .rect
             .center();
-        click_at(&ctx, switch, |ui| {
+        click_at(&installed_ctx, switch, |ui| {
             let _ = installed(ui, host);
         });
     };
