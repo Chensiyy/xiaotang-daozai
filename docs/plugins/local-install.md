@@ -63,6 +63,8 @@ New-Item -ItemType Directory -Force (Split-Path $catalog) | Out-Null
 
 支持 GPU 材质的 Windows 版也可以按同样步骤打包[液态玻璃样例](../../spike/examples/liquid-glass)。`.wgsl` 入口须在包根目录并通过着色器校验。安装后保持停用，首次启用时需要确认屏幕底片权限，并开启 Direct3D 12 兼容渲染。
 
+提交到本地测试目录后，可以用 `--plugin-avatar <目录索引> <插件 ID> <GitHub 用户名>` 同步作者头像。例如 `& $island --plugin-avatar $catalog cayww.liquid-glass cayww`。同步后刷新测试集市目录即可查看，插件沿用原版本和 ZIP。
+
 要试更新，把样例副本的 `version` 从 `1.0.0` 改成 `1.0.1`，同时给卡片文案加一处能看出版本差异的改动。保持插件 ID、设置键和数据版本。用新清单、新 ZIP 文件路径再次校验和打包，然后提交到同一个 `catalog.json`。
 
 ### 用户安装和更新

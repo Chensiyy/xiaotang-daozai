@@ -231,7 +231,7 @@ fn refresh_button(ui: &mut egui::Ui, enabled: bool, spinning: bool, failure: Opt
 }
 
 const AVATAR_TEXTURES: &str = "plugin-market-avatar-textures";
-type AvatarTextures = std::collections::VecDeque<(egui::Id, egui::TextureHandle)>;
+type AvatarTextures = std::collections::VecDeque<(egui::Id, Option<egui::TextureHandle>)>;
 
 impl LocalPlugins {
     /// 集市页：上方一行筛选和刷新，下面是插件卡片；点开卡片在右侧抽屉看详情。
@@ -302,10 +302,10 @@ impl LocalPlugins {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if refresh_button(ui, !busy && !syncing, syncing, failure.as_deref()).clicked() {
                     forget_covers(ui);
+                    ui.data_mut(|data| {
+                        data.remove::<AvatarTextures>(egui::Id::new((AVATAR_TEXTURES, official)));
+                    });
                     if official {
-                        ui.data_mut(|data| {
-                            data.remove::<AvatarTextures>(egui::Id::new(AVATAR_TEXTURES));
-                        });
                         self.refresh_official_catalog();
                     } else if let Err(error) = self.refresh_market_catalog() {
                         self.notice = error.to_string();
@@ -452,13 +452,9 @@ impl LocalPlugins {
         if !ui.is_rect_visible(rect) {
             return;
         }
-        let avatar = entry
-            .presentation
-            .as_ref()
-            .filter(|_| catalog.is_official())
-            .and_then(|details| details.author_avatar.as_deref());
-        let texture = avatar.and_then(|filename| {
-            let cache_id = egui::Id::new(AVATAR_TEXTURES);
+        let official = catalog.is_official();
+        let texture = entry.avatar_name().and_then(|filename| {
+            let cache_id = egui::Id::new((AVATAR_TEXTURES, official));
             let key = egui::Id::new((&catalog.path, filename));
             if let Some(texture) = ui.data_mut(|data| {
                 let cache = data.get_temp_mut_or_default::<AvatarTextures>(cache_id);
@@ -468,34 +464,41 @@ impl LocalPlugins {
                 cache.push_front(entry);
                 Some(texture)
             }) {
-                return Some(texture);
+                return texture;
             }
-            let png = self.official_avatar(catalog, entry)?.ok()?;
-            let image =
-                image::load_from_memory_with_format(png.bytes(), image::ImageFormat::Png).ok()?;
-            let edge = image.width().min(image.height());
-            let pixels = image
-                .crop_imm(
-                    (image.width() - edge) / 2,
-                    (image.height() - edge) / 2,
-                    edge,
-                    edge,
-                )
-                .thumbnail(96, 96)
-                .to_rgba8();
-            let image = egui::ColorImage::from_rgba_unmultiplied(
-                [pixels.width() as usize, pixels.height() as usize],
-                pixels.as_raw(),
-            );
-            let texture =
-                ui.ctx()
-                    .load_texture("插件作者头像", image, egui::TextureOptions::LINEAR);
+            let png = if official {
+                Some(self.official_avatar(catalog, entry)?.ok()?)
+            } else {
+                catalog.avatar_png(filename)
+            };
+            let texture = png
+                .and_then(|png| {
+                    image::load_from_memory_with_format(png.bytes(), image::ImageFormat::Png).ok()
+                })
+                .map(|image| {
+                    let edge = image.width().min(image.height());
+                    let pixels = image
+                        .crop_imm(
+                            (image.width() - edge) / 2,
+                            (image.height() - edge) / 2,
+                            edge,
+                            edge,
+                        )
+                        .thumbnail(96, 96)
+                        .to_rgba8();
+                    let image = egui::ColorImage::from_rgba_unmultiplied(
+                        [pixels.width() as usize, pixels.height() as usize],
+                        pixels.as_raw(),
+                    );
+                    ui.ctx()
+                        .load_texture("插件作者头像", image, egui::TextureOptions::LINEAR)
+                });
             ui.data_mut(|data| {
                 let cache = data.get_temp_mut_or_default::<AvatarTextures>(cache_id);
                 cache.push_front((key, texture.clone()));
                 cache.truncate(24);
             });
-            Some(texture)
+            texture
         });
         if let Some(texture) = texture {
             egui::Image::new(&texture)
