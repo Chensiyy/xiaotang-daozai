@@ -165,7 +165,9 @@ mod archive {
     }
 
     fn settings(text: &str) -> (Vec<&str>, Vec<&str>) {
+        use crate::app::BLUETOOTH_PAGE;
         use crate::model::{Dock, IslandShape, Skin};
+        const PAGE_COUNT: usize = BLUETOOTH_PAGE + 1;
         let mut display = Vec::new();
         let mut features = Vec::new();
         for line in text.lines() {
@@ -198,13 +200,16 @@ mod archive {
                 | "calendar_auto_sync"
                 | "mail_enabled" => flag,
                 "visible_pages" => {
-                    value.len() <= 9 && value.bytes().all(|byte| matches!(byte, b'0' | b'1'))
+                    value.len() <= PAGE_COUNT
+                        && value.bytes().all(|byte| matches!(byte, b'0' | b'1'))
                 }
                 "page_order" => {
-                    value.len() <= 17
-                        && value
-                            .split(',')
-                            .all(|index| matches!(index.as_bytes(), [b'0'..=b'8']))
+                    let mut order = value.split(',');
+                    order.clone().count() <= PAGE_COUNT
+                        && order.all(|index| {
+                            index.bytes().all(|byte| byte.is_ascii_digit())
+                                && index.parse::<usize>().is_ok_and(|page| page < PAGE_COUNT)
+                        })
                 }
                 _ => false,
             };
@@ -337,7 +342,7 @@ mod archive {
             fs::write(diag.join("frames.previous.log"), "previous").unwrap();
             fs::write(diag.join("music-gaps.log"), "missing album").unwrap();
             fs::write(diag.join("credentials.json"), "synthetic-oauth-token").unwrap();
-            fs::write(root.join("settings.txt"), "dock=left\nlyrics_enabled=1\nnotifications=some-secret\nemail=private@example.test").unwrap();
+            fs::write(root.join("settings.txt"), "dock=left\nlyrics_enabled=1\nnotifications=some-secret\nemail=private@example.test\nvisible_pages=11111111101\npage_order=10,0,1,2,3,4,5,6,7,8,9\npage_order=11\nvisible_pages=111111111111").unwrap();
 
             let snapshot = Map::from_iter([("Path".into(), json!(raw_path))]);
             let masks = [("USERPROFILE", account_dir.into())];
@@ -363,7 +368,14 @@ mod archive {
                 let environment: Value = serde_json::from_str(&text("environment.json")).unwrap();
                 assert_eq!(environment["Path"], r"%USERPROFILE%\Player\player.exe");
                 assert_eq!(environment["DisplaySettings"], json!(["dock=left"]));
-                assert_eq!(environment["FeatureSettings"], json!(["lyrics_enabled=1"]));
+                assert_eq!(
+                    environment["FeatureSettings"],
+                    json!([
+                        "lyrics_enabled=1",
+                        "visible_pages=11111111101",
+                        "page_order=10,0,1,2,3,4,5,6,7,8,9"
+                    ])
+                );
                 assert!(environment["MissingLogs"]
                     .as_array()
                     .unwrap()
