@@ -439,6 +439,7 @@ fn plugin_setting_switch_row(
     title: &str,
     description: &str,
     on: bool,
+    tagged: bool,
 ) -> bool {
     ui.horizontal(|ui| {
         let text_width =
@@ -447,10 +448,12 @@ fn plugin_setting_switch_row(
             ui.set_max_width(text_width);
             ui.horizontal(|ui| {
                 ui.scope(|ui| {
-                    ui.set_max_width((ui.available_width() - 44.0).max(0.0));
+                    if tagged {
+                        ui.set_max_width((ui.available_width() - 44.0).max(0.0));
+                    }
                     ui.add(egui::Label::new(title).truncate()).on_hover_text(title);
                 });
-                plugin_tag(ui);
+                if tagged { plugin_tag(ui); }
             });
             settings_hint(ui, description);
         });
@@ -747,6 +750,7 @@ impl LocalPlugins {
             "快捷切换图标",
             "在岛仔展开后的底部与页码点同排显示",
             *show,
+            true,
         ) {
             *show = !*show;
             ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
@@ -772,7 +776,7 @@ impl LocalPlugins {
 
         crate::extras::settings_label(ui, "设备兼容");
         settings_card(ui, |ui| {
-            if plugin_setting_switch_row(ui, WIRELESS_PLUGIN_ID, "启用兼容包", &version, enabled) {
+            if plugin_setting_switch_row(ui, WIRELESS_PLUGIN_ID, "启用兼容包", &version, enabled, true) {
                 let error = self
                     .enable(WIRELESS_PLUGIN_ID, !enabled)
                     .err()
@@ -1945,6 +1949,7 @@ impl LocalPlugins {
                     &title,
                     "关闭后隐藏岛上功能页并暂停后台",
                     on,
+                    false,
                 );
             });
             if switched {
@@ -2112,7 +2117,8 @@ impl LocalPlugins {
         let manifest = &record.package.as_ref().unwrap().manifest;
         let has_settings = manifest.has_settings();
         let supports_pinned = self.pinned_name(id).is_some();
-        let grouped = id == "daozai.days" || standalone_settings_page(manifest);
+        let standalone = standalone_settings_page(manifest);
+        let grouped = id == "daozai.days" || standalone;
         let mut sections = std::collections::BTreeMap::<_, Vec<_>>::new();
         for field in &manifest.settings {
             sections.entry(settings_section(id, &field.key)).or_default().push(field);
@@ -2181,7 +2187,7 @@ impl LocalPlugins {
         }
         if supports_pinned {
             settings_label(ui, "岛上常驻");
-            settings_card(ui, |ui| self.pinned_toggle(ui, id));
+            settings_card(ui, |ui| self.pinned_toggle(ui, id, !standalone));
         }
         if has_settings {
             ui.add_space(4.0);
@@ -2210,9 +2216,9 @@ impl LocalPlugins {
         }
     }
 
-    fn pinned_toggle(&mut self, ui: &mut egui::Ui, id: &str) {
+    fn pinned_toggle(&mut self, ui: &mut egui::Ui, id: &str, tagged: bool) {
         let enabled = self.pinned.order.iter().any(|item| item == id);
-        if plugin_setting_switch_row(ui, &format!("{id}:pinned"), "在岛上常驻显示", "岛收起时显示", enabled) {
+        if plugin_setting_switch_row(ui, &format!("{id}:pinned"), "在岛上常驻显示", "岛收起时显示", enabled, tagged) {
             if let Err(error) = self.set_pinned(id, !enabled) { self.notice = error.to_string(); }
             ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
         }

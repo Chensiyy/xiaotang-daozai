@@ -136,22 +136,28 @@ fn plugin_settings_pages_gear_routes_by_id_and_sidebar_fits() {
         let result = output.lock().unwrap().take().unwrap();
         result
     };
-    let visible = |output: &egui::FullOutput, label: &str, sidebar: bool| {
-        output.shapes.iter().any(|clipped| match &clipped.shape {
+    let visible_rows = |output: &egui::FullOutput, label: &str, sidebar: bool| {
+        let mut rows: Vec<_> = output.shapes.iter().filter_map(|clipped| match &clipped.shape {
             egui::Shape::Text(text) => {
                 let rect = text.visual_bounding_rect();
-                text.galley.text() == label && (rect.left() < 180.0) == sidebar
-                    && clipped.clip_rect.contains_rect(rect)
+                (text.galley.text() == label && (rect.left() < 180.0) == sidebar
+                    && clipped.clip_rect.contains_rect(rect)).then_some(rect.center().y)
             }
-            _ => false,
-        })
+            _ => None,
+        }).collect();
+        rows.sort_by(f32::total_cmp);
+        rows.dedup_by(|left, right| (*left - *right).abs() < 3.0);
+        rows.len()
     };
+    let visible = |output: &egui::FullOutput, label: &str, sidebar: bool| visible_rows(output, label, sidebar) > 0;
     for size in [egui::vec2(690.0, 560.0), egui::vec2(600.0, 450.0)] {
         let output = render_settings(&mut h, size);
         for (_, name) in standalone { assert!(visible(&output, name, true), "侧栏未完整显示 {name}"); }
         assert!(visible(&output, "插件", true));
+        assert_eq!(visible_rows(&output, "插件", false), 1, "独立详情只在标题标记插件来源");
         assert!(visible(&output, "关于", true));
         assert!(visible(&output, "打开功能页", false));
+        assert!(visible(&output, "启用金价测试", false));
         assert!(visible(&output, "金价测试专用参数", false));
         assert!(visible(&output, "在岛上常驻显示", false));
         assert!(visible(&output, "保存设置", false));
