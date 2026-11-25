@@ -646,11 +646,13 @@ mod test_market {
             .unwrap();
         assert_eq!(image.bytes(), avatar.as_slice());
         assert!(host.official_cover(&remote, &remote.entries[0]).is_none());
+        assert_eq!(host.official_cover_is_material(&remote.entries[0]), None);
         settle_market(&mut host);
         assert!(matches!(
             host.official_cover(&remote, &remote.entries[0]),
             Some(Ok(_))
         ));
+        assert_eq!(host.official_cover_is_material(&remote.entries[0]), Some(false));
         host.market_action(true, ID)?;
         settle_market(&mut host);
         assert!(host.records[ID].official_market);

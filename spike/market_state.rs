@@ -21,14 +21,20 @@ pub(super) struct MarketJob {
     result: JoinHandle<(Option<String>, std::result::Result<Record, String>)>,
 }
 
+#[derive(Clone)]
+struct OfficialImage {
+    png: CoverPng,
+    is_material: bool,
+}
+
 #[derive(Default)]
 pub(super) struct OfficialMarket {
     catalog: Option<Arc<market::Catalog>>,
     initialized: bool,
     sync_job: Option<JoinHandle<std::result::Result<market::Catalog, String>>>,
     error: Option<String>,
-    image_job: Option<(String, JoinHandle<Option<CoverPng>>)>,
-    images: BTreeMap<String, Option<CoverPng>>,
+    image_job: Option<(String, JoinHandle<Option<OfficialImage>>)>,
+    images: BTreeMap<String, Option<OfficialImage>>,
     #[cfg(test)]
     test_index: Option<url::Url>,
 }
@@ -259,8 +265,16 @@ impl LocalPlugins {
         entry: &market::Entry,
     ) -> Option<std::result::Result<CoverPng, ()>> {
         self.official_image(&entry.sha256, catalog, entry, |catalog, entry| {
-            catalog.load(entry).ok()?.cover
+            let package = catalog.load(entry).ok()?;
+            let is_material = package.manifest.is_material();
+            Some(OfficialImage { png: package.cover?, is_material })
         })
+        .map(|result| result.map(|image| image.png))
+    }
+
+    pub(super) fn official_cover_is_material(&self, entry: &market::Entry) -> Option<bool> {
+        let image = self.official_market.images.get(&entry.sha256)?.as_ref()?;
+        Some(image.is_material)
     }
 
     pub(super) fn official_avatar(
@@ -272,8 +286,10 @@ impl LocalPlugins {
             return Some(Err(()));
         };
         self.official_image(name, catalog, entry, |catalog, entry| {
-            catalog.avatar_png(entry.avatar_name()?)
+            let png = catalog.avatar_png(entry.avatar_name()?)?;
+            Some(OfficialImage { png, is_material: false })
         })
+        .map(|result| result.map(|image| image.png))
     }
 
     fn official_image(
@@ -281,8 +297,8 @@ impl LocalPlugins {
         key: &str,
         catalog: &Arc<market::Catalog>,
         entry: &market::Entry,
-        load: fn(&market::Catalog, &market::Entry) -> Option<CoverPng>,
-    ) -> Option<std::result::Result<CoverPng, ()>> {
+        load: fn(&market::Catalog, &market::Entry) -> Option<OfficialImage>,
+    ) -> Option<std::result::Result<OfficialImage, ()>> {
         let official = &mut self.official_market;
         if let Some(image) = official.images.get(key) {
             return Some(image.clone().ok_or(()));

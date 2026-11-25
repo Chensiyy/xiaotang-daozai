@@ -29,17 +29,28 @@ const CATALOG_LIMIT: u64 = 64 * 1024;
 const AVATAR_LIMIT: u64 = 64 * 1024;
 const CATALOG_FORMAT: u32 = 1;
 const GITEE_REPOSITORY: &str = "xiaotangtoken/xiaotang-daozai-plugins";
+pub(super) const IS_PREVIEW_BUILD: bool = option_env!("DAOZAI_TEST_BUILD").is_some();
+
+fn official_index_path(channel: &str) -> String {
+    format!("/api/v5/repos/{GITEE_REPOSITORY}/contents/{channel}/catalog.json")
+}
 
 #[cfg(not(test))]
 pub(super) fn official_index_url() -> Result<Url> {
-    let channel = if option_env!("DAOZAI_TEST_BUILD").is_some() {
-        "preview"
-    } else {
-        "stable"
-    };
+    let channel = if IS_PREVIEW_BUILD { "preview" } else { "stable" };
     Ok(Url::parse(&format!(
-        "https://gitee.com/api/v5/repos/{GITEE_REPOSITORY}/contents/{channel}/catalog.json?ref=master"
+        "https://gitee.com{}?ref=master",
+        official_index_path(channel)
     ))?)
+}
+
+fn allows_market_material(index: Option<&Url>, preview_build: bool) -> bool {
+    index.is_none_or(|index| {
+        preview_build
+            && is_https_host(index, "gitee.com")
+            && index.query() == Some("ref=master")
+            && index.path() == official_index_path("preview")
+    })
 }
 
 pub(super) fn official_cache_path(dir: &Path, index: &Url) -> PathBuf {
@@ -186,6 +197,10 @@ impl Catalog {
         self.official_index.is_some()
     }
 
+    pub(super) fn allows_material(&self) -> bool {
+        allows_market_material(self.official_index.as_ref(), IS_PREVIEW_BUILD)
+    }
+
     fn parse(path: PathBuf, official_index: Option<Url>, bytes: &[u8]) -> Result<Self> {
         let file: CatalogFile = serde_json::from_slice(bytes)
             .map_err(|error| fail(&format!("集市目录格式无效：{error}")))?;
@@ -234,7 +249,7 @@ impl Catalog {
         if raw.len() as u64 != entry.size || sha256(&raw) != entry.sha256 {
             return Err(fail("插件包大小或 SHA-256 与集市目录不一致"));
         }
-        let package = decode_zip(&raw, self.is_official())?;
+        let package = decode_zip(&raw, self.allows_material())?;
         if !entry.matches(&package.manifest) {
             return Err(fail("插件清单与集市目录不一致"));
         }
@@ -467,10 +482,10 @@ fn read_catalog_zip(path: &Path) -> Result<Vec<u8>> {
     read_limited(File::open(path)?, FONT_ZIP_LIMIT)
 }
 
-fn supported(manifest: &Manifest, official: bool) -> Result<()> {
-    let local_material = manifest.is_material() && !official;
+fn supported(manifest: &Manifest, allow_material: bool) -> Result<()> {
+    let material = manifest.is_material() && allow_material;
     if (manifest.runtime != "js" && !manifest.is_page_shortcuts() && !manifest.is_wireless()
-        && manifest.appearance_kind().is_none() && !local_material)
+        && manifest.appearance_kind().is_none() && !material)
         || manifest.entry.contains('/')
     {
         return Err(fail("集市支持入口在包根目录的脚本插件、外观资源包、快捷切换插件和无线设备兼容包"));
@@ -478,7 +493,7 @@ fn supported(manifest: &Manifest, official: bool) -> Result<()> {
     Ok(())
 }
 
-fn decode_zip(raw: &[u8], official: bool) -> Result<Package> {
+fn decode_zip(raw: &[u8], allow_material: bool) -> Result<Package> {
     if raw.len() as u64 > FONT_ZIP_LIMIT {
         return Err(fail("插件 ZIP 超过大小限制"));
     }
@@ -491,7 +506,7 @@ fn decode_zip(raw: &[u8], official: bool) -> Result<Package> {
         return Err(fail("插件 ZIP 包含重复或无效文件"));
     }
     let manifest = Manifest::decode(&zip_text(&mut zip, "plugin.json", MANIFEST_LIMIT)?)?;
-    supported(&manifest, official)?;
+    supported(&manifest, allow_material)?;
     let canvas = manifest.has_capability("status.canvas");
     let font = manifest.has_capability("appearance.font");
     if canvas && raw.len() as u64 > CANVAS_ZIP_LIMIT {
@@ -599,7 +614,7 @@ fn checked_project(path: &Path) -> Result<Package> {
     }
     let package =
         Package::read(path).map_err(|error| fail(&format!("{}：{error}", path.display())))?;
-    supported(&package.manifest, false)?;
+    supported(&package.manifest, true)?;
     smoke(&package)?;
     Ok(package)
 }
@@ -819,7 +834,7 @@ pub(super) fn pack(manifest_path: &Path, output: &Path) -> Result<()> {
         zip.write_all(font.bytes())?;
     }
     let raw = zip.finish()?.into_inner();
-    decode_zip(&raw, false)?;
+    decode_zip(&raw, true)?;
     write_new(output, &raw)
         .map_err(|error| fail(&format!("无法创建 ZIP {}：{error}", output.display())))?;
     Ok(())
@@ -827,7 +842,7 @@ pub(super) fn pack(manifest_path: &Path, output: &Path) -> Result<()> {
 
 pub(super) fn submit(input: &Path, path: &Path) -> Result<()> {
     let raw = read_limited(File::open(input)?, FONT_ZIP_LIMIT)?;
-    let package = decode_zip(&raw, false)?;
+    let package = decode_zip(&raw, true)?;
     smoke(&package)?;
     let manifest = package.manifest;
     let mut entry = Entry {
