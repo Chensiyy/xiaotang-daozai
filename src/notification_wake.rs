@@ -55,10 +55,13 @@ impl NotificationLog {
         if subscription == 0 {
             return Err(Error::from_win32());
         }
-        Ok(Self {
+        let log = Self {
             subscription,
             ready,
-        })
+        };
+        // EvtNext 读到队列为空后，Windows 才会为后续事件置位通知信号。
+        log.drain()?;
+        Ok(log)
     }
 
     pub(super) fn event(&self) -> HANDLE {
