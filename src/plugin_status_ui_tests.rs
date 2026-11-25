@@ -100,7 +100,9 @@ fn plugin_settings_pages_gear_routes_by_id_and_sidebar_fits() {
             "settings":[{"key":"text","type":"text","label":format!("{name}专用参数"),"default":"值"}]
         }).to_string()).unwrap();
         h.app.plugins.install(&manifest).unwrap();
-        h.app.plugins.enable(id, true).unwrap();
+        if id != standalone[0].0 {
+            h.app.plugins.enable(id, true).unwrap();
+        }
     }
     h.app.set_page_visible(crate::app::TODO_PAGE, true);
     let open_from_island = |h: &mut H, id: &str| {
@@ -150,6 +152,15 @@ fn plugin_settings_pages_gear_routes_by_id_and_sidebar_fits() {
         rows.len()
     };
     let visible = |output: &egui::FullOutput, label: &str, sidebar: bool| visible_rows(output, label, sidebar) > 0;
+    let (id, name) = standalone[0];
+    let size = egui::vec2(690.0, 560.0);
+    let installed = render_settings(&mut h, size);
+    assert!(!visible(&installed, name, true));
+    let other_page = h.app.page;
+    h.app.show_status_page(id);
+    assert_eq!(h.app.page, other_page);
+    h.app.plugins.enable(id, true).unwrap();
+
     for size in [egui::vec2(690.0, 560.0), egui::vec2(600.0, 450.0)] {
         let output = render_settings(&mut h, size);
         for (_, name) in standalone { assert!(visible(&output, name, true), "侧栏未完整显示 {name}"); }
@@ -164,9 +175,30 @@ fn plugin_settings_pages_gear_routes_by_id_and_sidebar_fits() {
         assert!(!visible(&output, "便签测试专用参数", false));
     }
     h.app.plugins.set_status_page_enabled(standalone[1].0, false).unwrap();
-    let output = render_settings(&mut h, egui::vec2(690.0, 560.0));
+    let output = render_settings(&mut h, size);
     assert!(!visible(&output, "打开功能页", false));
+    assert!(visible(&output, standalone[1].1, true));
     assert!(visible(&output, "金价测试专用参数", false));
+
+    h.app.show_status_page(id);
+    assert!(h.app.page >= crate::app::PAGE_NAMES.len());
+    h.app.open_plugin_settings(id);
+    assert_eq!(h.app.settings_plugin.as_deref(), Some(id));
+    h.app.plugins.enable(id, false).unwrap();
+    let stopped = render_settings(&mut h, size);
+    assert!(!visible(&stopped, name, true));
+    assert!(h.app.settings_plugin.is_none());
+    assert_eq!(h.app.settings_tab, crate::extras::SETTINGS_TAB_PLUGINS);
+
+    h.app.settings_open = false;
+    h.frame(vec![]);
+    let fallback = h.app.page;
+    assert!(fallback < crate::app::PAGE_NAMES.len());
+    h.app.show_status_page(id);
+    assert_eq!(h.app.page, fallback);
+    h.app.open_plugin_settings(id);
+    assert!(h.app.settings_plugin.is_none());
+    assert_eq!(h.app.settings_tab, crate::extras::SETTINGS_TAB_PLUGINS);
 
     open_from_island(&mut h, task.0);
     assert!(h.app.settings_plugin.is_none());
