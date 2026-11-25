@@ -61,6 +61,8 @@ New-Item -ItemType Directory -Force (Split-Path $catalog) | Out-Null
 
 `--plugin-test` 检查清单、入口和封面。JavaScript 插件还会用默认设置试跑一张卡片。`--plugin-pack` 导出含封面的 ZIP。`--plugin-submit` 将已验证的包放进测试目录，随后更新索引。命令失败时查看输出，并在修正后重新执行。
 
+支持 GPU 材质的 Windows 版也可以按同样步骤打包[液态玻璃样例](../../spike/examples/liquid-glass)。`.wgsl` 入口须在包根目录并通过着色器校验。安装后保持停用，首次启用时需要确认屏幕底片权限，并开启 Direct3D 12 兼容渲染。
+
 要试更新，把样例副本的 `version` 从 `1.0.0` 改成 `1.0.1`，同时给卡片文案加一处能看出版本差异的改动。保持插件 ID、设置键和数据版本。用新清单、新 ZIP 文件路径再次校验和打包，然后提交到同一个 `catalog.json`。
 
 ### 用户安装和更新

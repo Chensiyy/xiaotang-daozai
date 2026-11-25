@@ -442,6 +442,13 @@ impl LocalPlugins {
             }) {
                 return Err("此插件版本已撤回".into());
             }
+            // 撤回后更新时，等待用户重新启用材质。
+            #[cfg(feature = "sdk-material")]
+            if self.selected_material.as_deref() == Some(job.id.as_str())
+                && self.records.get(&job.id).is_some_and(|current| current.market_revoked)
+            {
+                self.activate_material(None, false).map_err(|error| error.to_string())?;
+            }
             record.market_revoked = false;
             let mut previous_secret = None;
             // 校验期间，旧插件可能完成一次后台刷新，保留该次已保存的数据。

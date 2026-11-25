@@ -328,6 +328,10 @@ impl Record {
 
     #[cfg(feature = "sdk-material")]
     fn material_package(&self) -> Option<&Package> {
+        #[cfg(windows)]
+        if self.market_revoked {
+            return None;
+        }
         self.package
             .as_ref()
             .filter(|package| package.manifest.is_material())
@@ -1283,6 +1287,10 @@ impl LocalPlugins {
     pub fn activate_material(&mut self, id: Option<&str>, grant: bool) -> Result<()> {
         if let Some(id) = id {
             let mut record = self.installed(id)?;
+            #[cfg(windows)]
+            if record.market_revoked {
+                return Err(fail("当前插件版本已撤回，请更新后启用"));
+            }
             if record.material_package().is_none() {
                 return Err(fail("所选插件不提供 GPU 材质"));
             }

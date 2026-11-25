@@ -234,7 +234,7 @@ impl Catalog {
         if raw.len() as u64 != entry.size || sha256(&raw) != entry.sha256 {
             return Err(fail("插件包大小或 SHA-256 与集市目录不一致"));
         }
-        let package = decode_zip(&raw)?;
+        let package = decode_zip(&raw, self.is_official())?;
         if !entry.matches(&package.manifest) {
             return Err(fail("插件清单与集市目录不一致"));
         }
@@ -467,9 +467,10 @@ fn read_catalog_zip(path: &Path) -> Result<Vec<u8>> {
     read_limited(File::open(path)?, FONT_ZIP_LIMIT)
 }
 
-fn supported(manifest: &Manifest) -> Result<()> {
+fn supported(manifest: &Manifest, official: bool) -> Result<()> {
+    let local_material = manifest.is_material() && !official;
     if (manifest.runtime != "js" && !manifest.is_page_shortcuts() && !manifest.is_wireless()
-        && manifest.appearance_kind().is_none())
+        && manifest.appearance_kind().is_none() && !local_material)
         || manifest.entry.contains('/')
     {
         return Err(fail("集市支持入口在包根目录的脚本插件、外观资源包、快捷切换插件和无线设备兼容包"));
@@ -477,7 +478,7 @@ fn supported(manifest: &Manifest) -> Result<()> {
     Ok(())
 }
 
-fn decode_zip(raw: &[u8]) -> Result<Package> {
+fn decode_zip(raw: &[u8], official: bool) -> Result<Package> {
     if raw.len() as u64 > FONT_ZIP_LIMIT {
         return Err(fail("插件 ZIP 超过大小限制"));
     }
@@ -490,7 +491,7 @@ fn decode_zip(raw: &[u8]) -> Result<Package> {
         return Err(fail("插件 ZIP 包含重复或无效文件"));
     }
     let manifest = Manifest::decode(&zip_text(&mut zip, "plugin.json", MANIFEST_LIMIT)?)?;
-    supported(&manifest)?;
+    supported(&manifest, official)?;
     let canvas = manifest.has_capability("status.canvas");
     let font = manifest.has_capability("appearance.font");
     if canvas && raw.len() as u64 > CANVAS_ZIP_LIMIT {
@@ -533,7 +534,18 @@ fn decode_zip(raw: &[u8]) -> Result<Package> {
             zip_bytes(&mut zip, name, limit)
         })?;
     }
+    validate_material(&package)?;
     Ok(package)
+}
+
+fn validate_material(package: &Package) -> Result<()> {
+    if package.manifest.is_material() {
+        #[cfg(all(windows, feature = "sdk-material"))]
+        crate::material::validate_plugin_shader(&package.source).map_err(|error| fail(&error))?;
+        #[cfg(not(all(windows, feature = "sdk-material")))]
+        return Err(fail("当前版本未启用 GPU 材质支持"));
+    }
+    Ok(())
 }
 
 fn zip_text(zip: &mut ZipArchive<Cursor<&[u8]>>, name: &str, limit: u64) -> Result<String> {
@@ -560,7 +572,7 @@ fn zip_bytes(zip: &mut ZipArchive<Cursor<&[u8]>>, name: &str, limit: u64) -> Res
 }
 
 fn smoke(package: &Package) -> Result<()> {
-    if package.manifest.runtime == "assets" {
+    if package.manifest.runtime != "js" {
         return Ok(());
     }
     let values: Values = package
@@ -587,13 +599,14 @@ fn checked_project(path: &Path) -> Result<Package> {
     }
     let package =
         Package::read(path).map_err(|error| fail(&format!("{}：{error}", path.display())))?;
-    supported(&package.manifest)?;
+    supported(&package.manifest, false)?;
     smoke(&package)?;
     Ok(package)
 }
 
 pub(super) fn validate_project(path: &Path) -> Result<String> {
     let package = checked_project(path)?;
+    validate_material(&package)?;
     Ok(format!(
         "{} v{} 校验通过",
         package.manifest.id, package.manifest.version
@@ -614,9 +627,8 @@ pub(super) fn test_project(path: &Path, mock_path: Option<&Path>) -> Result<Stri
         if mock_path.is_some() {
             return Err(fail("模拟输入只适用于 JavaScript 插件"));
         }
-        if manifest.is_material() && !cfg!(feature = "sdk-material") {
-            return Err(fail(&format!("当前版本未启用 GPU 材质支持\n{report}")));
-        }
+        validate_material(&package)
+            .map_err(|error| fail(&format!("{}：{error}\n{report}", path.display())))?;
         return Ok(heading);
     }
     let mut mock = mock_path
@@ -807,7 +819,7 @@ pub(super) fn pack(manifest_path: &Path, output: &Path) -> Result<()> {
         zip.write_all(font.bytes())?;
     }
     let raw = zip.finish()?.into_inner();
-    decode_zip(&raw)?;
+    decode_zip(&raw, false)?;
     write_new(output, &raw)
         .map_err(|error| fail(&format!("无法创建 ZIP {}：{error}", output.display())))?;
     Ok(())
@@ -815,7 +827,7 @@ pub(super) fn pack(manifest_path: &Path, output: &Path) -> Result<()> {
 
 pub(super) fn submit(input: &Path, path: &Path) -> Result<()> {
     let raw = read_limited(File::open(input)?, FONT_ZIP_LIMIT)?;
-    let package = decode_zip(&raw)?;
+    let package = decode_zip(&raw, false)?;
     smoke(&package)?;
     let manifest = package.manifest;
     let mut entry = Entry {
