@@ -982,6 +982,9 @@ impl eframe::App for Shell {
             if let Some(wait)=native.update(region, hit, if self.hidden{None}else{out.notice_hit.map(r)},if self.hidden{None}else{out.file_drop_zone.map(r)},glass,out.blur,ppp, out.editing && !self.hidden, !self.hidden && out.expanded,if self.hidden {None}else{out.resident_clip.as_deref()}) {
                 ctx.request_repaint_after(wait);
             }
+            let pill_hover=(!self.hidden && out.resident_clip.is_some()
+                && self.app.settings.island_shape==daozai::model::IslandShape::Pill).then_some(out.hit);
+            native.watch_collapsed_pill_edge(pill_hover,ppp,self.app.settings.dock);
             native_cost=native_start.elapsed();
             _frame.root_window_offset=native.paint_offset();
             native.set_page_scroll_area(out.page_scroll_area.filter(|_|!self.hidden && out.expanded),ppp);

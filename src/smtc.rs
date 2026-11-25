@@ -121,7 +121,7 @@ struct ArtworkCache {
     system:Option<(NowPlaying,std::time::Instant)>,
     #[cfg(windows)]
     manager:Option<windows::Media::Control::GlobalSystemMediaTransportControlsSessionManager>,
-    /// 系统事件通知：已登记的事件（登记失败时为空，退回纯定时检查）。
+    /// 系统事件通知与当前登记状态。
     #[cfg(windows)]
     events:Option<MediaEvents>,
     key: String,
@@ -137,10 +137,10 @@ struct ArtworkCache {
 impl ArtworkCache {
     fn clear(&mut self,keep_manager:bool){
         let worker=self.worker.take();let pending=self.pending;
-        #[cfg(windows)] let manager=if keep_manager{self.manager.take()}else{None};
+        #[cfg(windows)] let (manager,events)=if keep_manager{(self.manager.take(),self.events.take())}else{(None,None)};
         #[cfg(not(windows))] let _=keep_manager;
         *self=Self{worker,pending,..Default::default()};
-        #[cfg(windows)] {self.manager=manager;}
+        #[cfg(windows)] {self.manager=manager;self.events=events;}
     }
     #[cfg(windows)]
     fn system_result(&mut self,result:Result<Option<NowPlaying>,()>,now:std::time::Instant)->Option<NowPlaying>{
@@ -303,32 +303,54 @@ fn choose_media_for_source(system:Option<NowPlaying>,native:Option<NowPlaying>,p
     choose_media(system,native)
 }
 
-/// 系统媒体会话的变化通知：切歌、暂停、跳转、播放器开关时立即唤醒采样线程，不必等下一次定时检查。
-/// 登记失败时退回纯定时检查；事件只负责「提前醒来」，读到的数据与定时检查完全相同，
-/// 偶尔漏发也只是等下一次定时检查（最多 1 秒）。
+#[cfg(windows)]
+type EventToken=windows::Foundation::EventRegistrationToken;
+#[cfg(windows)]
+type EventRegistration<'a>=(&'a dyn Fn()->windows::core::Result<EventToken>,&'a dyn Fn(EventToken)->windows::core::Result<()>);
+
+/// 同组事件全部成功才保留；中途失败时注销已登记的回调。
+#[cfg(windows)]
+fn register_media_events<const N:usize>(events:[EventRegistration<'_>;N])->windows::core::Result<[EventToken;N]>{
+    let mut tokens=[EventToken::default();N];
+    for (index,(register,_)) in events.iter().enumerate() {
+        match register() {
+            Ok(token)=>tokens[index]=token,
+            Err(error)=>{
+                for ((_,remove),token) in events.iter().zip(&tokens[..index]) {let _=remove(*token);}
+                return Err(error);
+            }
+        }
+    }
+    Ok(tokens)
+}
+
+/// 系统媒体会话切歌、暂停或跳转时提前唤醒采样线程。
 #[cfg(windows)]
 struct MediaEvents {
     wake:std::thread::Thread,
-    manager:Option<(windows::Media::Control::GlobalSystemMediaTransportControlsSessionManager,[windows::Foundation::EventRegistrationToken;2])>,
-    sessions:Vec<(windows::Media::Control::GlobalSystemMediaTransportControlsSession,[windows::Foundation::EventRegistrationToken;3])>,
-    failed:bool,
+    manager:Option<(windows::Media::Control::GlobalSystemMediaTransportControlsSessionManager,[EventToken;2])>,
+    sessions:Vec<(windows::Media::Control::GlobalSystemMediaTransportControlsSession,[EventToken;3])>,
+    manager_failed:bool,
+    sessions_complete:bool,
 }
 #[cfg(windows)]
 impl MediaEvents {
-    fn new()->Self {Self{wake:std::thread::current(),manager:None,sessions:Vec::new(),failed:false}}
+    fn new()->Self {Self{wake:std::thread::current(),manager:None,sessions:Vec::new(),manager_failed:false,sessions_complete:false}}
     /// 事件已正常登记，可以放慢定时检查。
-    fn active(&self)->bool {self.manager.is_some() && !self.failed}
+    fn active(&self)->bool {self.manager.is_some() && self.sessions_complete}
     fn sync(&mut self,manager:&windows::Media::Control::GlobalSystemMediaTransportControlsSessionManager,sessions:&[windows::Media::Control::GlobalSystemMediaTransportControlsSession]) {
         use windows::Foundation::TypedEventHandler;
-        if self.failed {return;}
+        if self.manager_failed {return;}
         if self.manager.as_ref().is_some_and(|(m,_)|m!=manager) {self.release();}
         if self.manager.is_none() {
             let (a,b)=(self.wake.clone(),self.wake.clone());
-            let tokens=(||->windows::core::Result<_>{Ok([
-                manager.SessionsChanged(&TypedEventHandler::new(move|_,_|{a.unpark();Ok(())}))?,
-                manager.CurrentSessionChanged(&TypedEventHandler::new(move|_,_|{b.unpark();Ok(())}))?,
-            ])})();
-            match tokens {Ok(tokens)=>self.manager=Some((manager.clone(),tokens)),Err(_)=>{self.failed=true;return;}}
+            let a=TypedEventHandler::new(move|_,_|{a.unpark();Ok(())});
+            let b=TypedEventHandler::new(move|_,_|{b.unpark();Ok(())});
+            let tokens=register_media_events([
+                (&||manager.SessionsChanged(&a),&|token|manager.RemoveSessionsChanged(token)),
+                (&||manager.CurrentSessionChanged(&b),&|token|manager.RemoveCurrentSessionChanged(token)),
+            ]);
+            match tokens {Ok(tokens)=>self.manager=Some((manager.clone(),tokens)),Err(_)=>{self.manager_failed=true;return;}}
         }
         // 已退出的会话注销事件；新出现的会话登记。
         self.sessions.retain(|(session,tokens)|{
@@ -339,19 +361,25 @@ impl MediaEvents {
         for session in sessions {
             if self.sessions.iter().any(|(known,_)|known==session) {continue;}
             let (a,b,c)=(self.wake.clone(),self.wake.clone(),self.wake.clone());
-            let tokens=(||->windows::core::Result<_>{Ok([
-                session.MediaPropertiesChanged(&TypedEventHandler::new(move|_,_|{a.unpark();Ok(())}))?,
-                session.PlaybackInfoChanged(&TypedEventHandler::new(move|_,_|{b.unpark();Ok(())}))?,
-                session.TimelinePropertiesChanged(&TypedEventHandler::new(move|_,_|{c.unpark();Ok(())}))?,
-            ])})();
+            let a=TypedEventHandler::new(move|_,_|{a.unpark();Ok(())});
+            let b=TypedEventHandler::new(move|_,_|{b.unpark();Ok(())});
+            let c=TypedEventHandler::new(move|_,_|{c.unpark();Ok(())});
+            let tokens=register_media_events([
+                (&||session.MediaPropertiesChanged(&a),&|token|session.RemoveMediaPropertiesChanged(token)),
+                (&||session.PlaybackInfoChanged(&b),&|token|session.RemovePlaybackInfoChanged(token)),
+                (&||session.TimelinePropertiesChanged(&c),&|token|session.RemoveTimelinePropertiesChanged(token)),
+            ]);
             if let Ok(tokens)=tokens {self.sessions.push((session.clone(),tokens));}
         }
+        // 会话登记不完整时沿用原定时间隔，并在下一轮补登记。
+        self.sessions_complete=self.sessions.len()==sessions.len();
     }
     fn release(&mut self) {
         for (session,tokens) in self.sessions.drain(..) {
             let _=session.RemoveMediaPropertiesChanged(tokens[0]);let _=session.RemovePlaybackInfoChanged(tokens[1]);let _=session.RemoveTimelinePropertiesChanged(tokens[2]);
         }
         if let Some((manager,tokens))=self.manager.take() {let _=manager.RemoveSessionsChanged(tokens[0]);let _=manager.RemoveCurrentSessionChanged(tokens[1]);}
+        self.sessions_complete=false;
     }
 }
 #[cfg(windows)]
@@ -961,6 +989,7 @@ pub fn spawn_poller(state: Shared,ctx:eframe::egui::Context)->Poller {
             if let Ok(mut cur) = state.lock() {
                 let changed=cur.title!=np.title || cur.artist!=np.artist || cur.playing!=np.playing
                     || cur.source!=np.source || cur.song_id!=np.song_id || cur.duration!=np.duration || cur.volume!=np.volume
+                    || cur.sampled_at.is_some()!=np.sampled_at.is_some()
                     || cur.artwork.as_ref().zip(np.artwork.as_ref()).map_or(cur.artwork.is_some()!=np.artwork.is_some(),|(old,new)|!Arc::ptr_eq(old,new));
                 *cur = np;
                 if changed{ctx.request_repaint();}
@@ -1172,6 +1201,28 @@ mod tests {
         assert_eq!(idle_interval(POLL_LYRICS.as_millis() as u32),2000);
         assert_eq!(idle_interval(POLL_BACKGROUND.as_millis() as u32),2000);
         assert_eq!(idle_interval(u32::MAX),2000);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn idle_cover_reset_preserves_media_events_until_sampling_stops(){
+        let mut cache=ArtworkCache{events:Some(MediaEvents::new()),key:"旧封面".into(),..Default::default()};
+        cache.clear(true);
+        assert!(cache.key.is_empty());
+        assert!(cache.events.is_some(),"空闲时要保留事件监听，才能唤醒采样线程");
+        cache.clear(false);
+        assert!(cache.events.is_none(),"停用采样时应注销事件监听");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn failed_event_registration_removes_preceding_tokens(){
+        let removed=std::cell::RefCell::new(Vec::new());
+        let register=|value|move ||Ok(EventToken{Value:value});
+        let remove=|token:EventToken|{removed.borrow_mut().push(token.Value);Ok(())};
+        let fail=||Err(windows::core::Error::from_hresult(windows::Win32::Foundation::E_FAIL));
+        assert!(register_media_events([(&register(1),&remove),(&register(2),&remove),(&fail,&remove)]).is_err());
+        assert_eq!(*removed.borrow(),[1,2]);
     }
 
     #[test]

@@ -143,6 +143,26 @@ fn player_version_without_progress_shows_the_title_instead_of_frozen_lyrics(){
 
 #[test]
 #[cfg(windows)]
+fn song_with_system_position_keeps_lyrics_after_player_fallback_fails(){
+    use crate::smtc::music_compat::{self as compat,Item,Support};
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=H::new();lyrics_on(&mut h);
+    let (release,_)=busy(&mut h);
+    compat::set("cloudmusic.exe",Item::Progress,Support::Unavailable("备用进度读取失败".into()));
+    showing(&mut h,&song("cloudmusic.exe","缺少进度的歌","歌手",0.0),"[00:01]旧歌词");
+    let without_position=h.app.island_lyric().is_none();
+    let mut next=song("cloudmusic.exe","带系统进度的歌","歌手",220.0);
+    next.sampled_at=Some(std::time::Instant::now());
+    showing(&mut h,&next,"[00:01]新歌词");
+    let with_position=h.app.island_lyric().map(|(_,line)|line.to_owned());
+    compat::clear("cloudmusic.exe",Item::Progress);
+    finish(&mut h,release);
+    assert!(without_position,"读不到当前歌曲进度时应显示歌名");
+    assert_eq!(with_position.as_deref(),Some("新歌词"));
+}
+
+#[test]
+#[cfg(windows)]
 #[ignore="按需导出：设置音乐页、收起时读不到进度的歌名，以及播放器版本较旧时的更新提醒"]
 fn music_compat_gallery(){
     use crate::smtc::music_compat::{self as compat,Item,Support};
