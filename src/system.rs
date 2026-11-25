@@ -2,8 +2,10 @@
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::sync::mpsc::{self, Receiver};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 use windows::core::{Result, HSTRING, PWSTR};
-use windows::Win32::Foundation::{CloseHandle, HWND, RECT};
+use windows::Win32::Foundation::{CloseHandle, HWND, RECT, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
 };
@@ -20,7 +22,12 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::UI::Notifications::Management::{
     UserNotificationListener, UserNotificationListenerAccessStatus,
 };
-use windows::UI::Notifications::{NotificationKinds, UserNotification};
+use windows::UI::Notifications::{NotificationKinds, UserNotification, UserNotificationChangedEventArgs};
+use windows::Foundation::{EventRegistrationToken, TypedEventHandler};
+
+#[path="notification_wake.rs"]
+mod notification_wake;
+use notification_wake::{NotificationEvent, NotificationLog};
 
 #[derive(Clone, Default, PartialEq, Eq)]
 pub struct Snapshot {
@@ -613,14 +620,67 @@ fn notification_body(n: &UserNotification) -> Result<String> {
 /// 停止信号独立于消息队列，断开后结束等待，不再读取通知。
 pub struct Notifications {
     incoming: Receiver<Incoming>,
-    stop: mpsc::Sender<()>,
-    taskbar_mask:std::sync::Arc<std::sync::atomic::AtomicU8>,
+    stop: Arc<NotificationEvent>,
+    taskbar_mask:Arc<std::sync::atomic::AtomicU8>,
 }
 impl Notifications {
     pub fn try_recv(&self)->std::result::Result<Incoming,mpsc::TryRecvError>{self.incoming.try_recv()}
     pub fn taskbar_settings(&self,settings:&crate::model::Settings){self.taskbar_mask.store(crate::messenger::toast_suppression(settings),std::sync::atomic::Ordering::Relaxed);}
 }
-impl Drop for Notifications {fn drop(&mut self){let _=self.stop.send(());}}
+impl Drop for Notifications {fn drop(&mut self){self.stop.signal();}}
+
+struct NotificationSubscription<'a>(&'a UserNotificationListener, EventRegistrationToken);
+impl Drop for NotificationSubscription<'_> {
+    fn drop(&mut self) { let _ = self.0.RemoveNotificationChanged(self.1); }
+}
+
+// 事件合并后再取快照，兜底补读静默更新及事件通道未报告的通知。
+const NOTIFICATION_RECONCILE: Duration = Duration::from_secs(20);
+const NOTIFICATION_POLL_FALLBACK: Duration = Duration::from_secs(5);
+const NOTIFICATION_BATCH: Duration = Duration::from_millis(200);
+const NOTIFICATION_MIN_GAP: Duration = Duration::from_millis(750);
+const NOTIFICATION_ACCOUNT_SAMPLE: Duration = Duration::from_secs(1);
+
+fn wait_for_notification_refresh(
+    stop: &NotificationEvent, change: &NotificationEvent, native: bool,
+    log: &mut Option<NotificationLog>, retry: bool, mut sample_accounts: impl FnMut(),
+) -> Result<bool> {
+    use windows::Win32::System::Threading::WaitForMultipleObjects;
+
+    let start = Instant::now();
+    let fallback = start + NOTIFICATION_POLL_FALLBACK;
+    let mut sample_at = start + NOTIFICATION_ACCOUNT_SAMPLE;
+    let mut deadline = if native || log.is_some() { start + NOTIFICATION_RECONCILE } else { fallback };
+    if retry { deadline = fallback; }
+    loop {
+        if stop.is_signaled() { return Ok(false); }
+        let now = Instant::now();
+        if now >= deadline { return Ok(true); }
+        if now >= sample_at {
+            // QQ 归属需要连续的账号样本，只枚举进程和窗口，无须读取通知列表。
+            sample_accounts();
+            sample_at = Instant::now() + NOTIFICATION_ACCOUNT_SAMPLE;
+        }
+        let remaining = deadline.min(sample_at).saturating_duration_since(Instant::now());
+        let mut handles = [stop.handle(), change.handle(), stop.handle()];
+        let count = if let Some(log) = log.as_ref() { handles[2] = log.event(); 3 } else { 2 };
+        let wait = unsafe { WaitForMultipleObjects(&handles[..count], false, remaining.as_millis().max(1) as u32) };
+        let dirty = match wait {
+            WAIT_OBJECT_0 => return Ok(false),
+            WAIT_TIMEOUT => continue,
+            wait if wait.0 == WAIT_OBJECT_0.0 + 1 => true,
+            wait if wait.0 == WAIT_OBJECT_0.0 + 2 => match log.as_ref().unwrap().drain() {
+                Ok(received) => received,
+                Err(_) => { *log = None; deadline = deadline.min(fallback); false }
+            },
+            _ => return Err(windows::core::Error::from_win32()),
+        };
+        if dirty {
+            let ready = (Instant::now() + NOTIFICATION_BATCH).max(start + NOTIFICATION_MIN_GAP);
+            deadline = deadline.min(ready);
+        }
+    }
+}
 
 #[derive(Clone,Copy,PartialEq,Eq)]
 enum ToastBody {Skipped,Unavailable,Read(u64)}
@@ -695,8 +755,10 @@ fn connect_inner(ctx:eframe::egui::Context,filter:crate::messenger::Notification
     let listener = UserNotificationListener::Current()?;
     let request = listener.RequestAccessAsync()?;
     let (tx, rx) = mpsc::sync_channel(32);
-    let (stop, stopped)=mpsc::channel();
-    let taskbar_mask=std::sync::Arc::new(std::sync::atomic::AtomicU8::new(mask));let worker_mask=taskbar_mask.clone();
+    let stop = Arc::new(NotificationEvent::new(true)?);
+    let stopped = stop.clone();
+    let change = Arc::new(NotificationEvent::new(false)?);
+    let taskbar_mask=Arc::new(std::sync::atomic::AtomicU8::new(mask));let worker_mask=taskbar_mask.clone();
     std::thread::Builder::new().name("daozai-notifications".into()).spawn(move || {
         let send=|event|{
             let result=tx.send(event);
@@ -714,13 +776,21 @@ fn connect_inner(ctx:eframe::egui::Context,filter:crate::messenger::Notification
                 return Ok(());
             }
             let listener = UserNotificationListener::Current()?;
+            let handler = {
+                let change = change.clone();
+                TypedEventHandler::<UserNotificationListener, UserNotificationChangedEventArgs>::new(move |_, _| { change.signal(); Ok(()) })
+            };
+            let subscription = listener.NotificationChanged(&handler).ok().map(|token| NotificationSubscription(&listener, token));
+            let mut log = None;
             let channels=crate::messenger::Messenger::ALL.into_iter().filter(|client|client.adapter().capture==crate::messenger::Capture::SystemToast)
                 .filter(|client|filter.allows(client.adapter().notification_id)).map(channel_status).collect::<Vec<_>>().join("\n");
             let mut baseline=baseline;
             let mut accounts=crate::messenger::ToastAccounts::default();accounts.sample();
             let mut last_status=String::new();
             loop {
-                if stopped.try_recv()!=Err(mpsc::TryRecvError::Empty){return Ok(());}
+                if stopped.is_signaled(){return Ok(());}
+                // 常规桌面安装没有 MSIX 包身份，Windows 可能拒绝注册 WinRT 回调。
+                if subscription.is_none() && log.is_none(){log=NotificationLog::subscribe().ok();}
                 let (items,count)=match listener.GetAccessStatus().and_then(|access|{
                     if access!=UserNotificationListenerAccessStatus::Allowed{return Ok(None);}
                     let items=listener.GetNotificationsAsync(NotificationKinds::Toast)?.get()?;let count=items.Size()?;
@@ -731,7 +801,7 @@ fn connect_inner(ctx:eframe::egui::Context,filter:crate::messenger::Notification
                     Err(error)=>{
                         let status=format!("Windows 通知暂时读取失败：{} · 将自动重试",error.code());
                         if status!=last_status{send(Incoming::Status(status.clone()));last_status=status;}
-                        if stopped.recv_timeout(std::time::Duration::from_secs(2))!=Err(mpsc::RecvTimeoutError::Timeout){return Ok(());}
+                        if !wait_for_notification_refresh(&stopped,&change,subscription.is_some(),&mut log,true,||accounts.sample())?{return Ok(());}
                         continue;
                     }
                 };
@@ -774,7 +844,7 @@ fn connect_inner(ctx:eframe::egui::Context,filter:crate::messenger::Notification
                     if !send(Incoming::Status(status.clone())){return Ok(());}
                     last_status=status;
                 }
-                if stopped.recv_timeout(std::time::Duration::from_secs(1))!=Err(mpsc::RecvTimeoutError::Timeout){return Ok(());}
+                if !wait_for_notification_refresh(&stopped,&change,subscription.is_some(),&mut log,!complete,||accounts.sample())?{return Ok(());}
             }
         };
         if let Err(e) = run() {
@@ -932,9 +1002,31 @@ mod tests {
     }
     #[test]
     fn notifications_disconnect_signals_stop_without_waiting_for_new_messages(){
-        let (_tx,incoming)=mpsc::sync_channel(32);let (stop,stopped)=mpsc::channel();
-        drop(Notifications{incoming,stop,taskbar_mask:std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0))});
-        assert_eq!(stopped.try_recv(),Ok(()));
+        let (_tx,incoming)=mpsc::sync_channel(32);
+        let stopped=Arc::new(NotificationEvent::new(true).unwrap());
+        let notifications=Notifications{incoming,stop:stopped.clone(),taskbar_mask:Arc::new(std::sync::atomic::AtomicU8::new(0))};
+        let (sender,receiver)=mpsc::channel();let (sampled,samples)=mpsc::channel();
+        std::thread::spawn(move || {
+            let change=NotificationEvent::new(false).unwrap();
+            let result=wait_for_notification_refresh(&stopped,&change,true,&mut None,false,||{let _=sampled.send(());});
+            sender.send(result.unwrap()).unwrap();
+        });
+        assert_eq!(samples.recv_timeout(Duration::from_secs(3)),Ok(()));
+        assert_eq!(receiver.try_recv(),Err(mpsc::TryRecvError::Empty));
+        drop(notifications);
+        assert_eq!(receiver.recv_timeout(Duration::from_secs(2)),Ok(false));
+    }
+    #[test]
+    fn notifications_wake_on_changes_and_coalesce_a_burst(){
+        let stop=NotificationEvent::new(true).unwrap();
+        let change=NotificationEvent::new(false).unwrap();
+        change.signal();
+        change.signal();
+        let started=Instant::now();
+        assert!(wait_for_notification_refresh(&stop,&change,true,&mut None,false,||{}).unwrap());
+        assert!(started.elapsed()>=NOTIFICATION_MIN_GAP);
+        assert!(started.elapsed()<NOTIFICATION_POLL_FALLBACK);
+        assert!(!change.is_signaled());
     }
     #[test]
     fn browser_minimal_recognizes_browsers_without_matching_electron_apps(){
