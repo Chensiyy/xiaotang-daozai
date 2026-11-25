@@ -6,7 +6,7 @@ fn market_package_preserves_declared_data() -> Result<()> {
     let zip = std::env::temp_dir().join(format!("daozai-package-data-{}.zip", std::process::id()));
     let result = (|| -> Result<()> {
         pack(&manifest, &zip)?;
-        let package = decode_zip(&fs::read(&zip)?, false)?;
+        let package = decode_zip(&fs::read(&zip)?, true)?;
         assert!(package.data.contains_key("holidays-2026.json"));
         assert_eq!(package.render(&Values::new(), &Value::Null, "2026-06-19")?.marker, "端午节放假");
         Ok(())
@@ -433,7 +433,7 @@ fn market_rejects_invalid_archives_and_catalogs() -> Result<()> {
     zip.add_symlink("main.js", "outside.js", SimpleFileOptions::default())?;
     zip.start_file(COVER_FILE, SimpleFileOptions::default())?;
     zip.write_all(include_bytes!("examples/payday/cover.png"))?;
-    assert!(decode_zip(&zip.finish()?.into_inner(), false).is_err());
+    assert!(decode_zip(&zip.finish()?.into_inner(), true).is_err());
 
     let archive = |add_cover: bool, link: bool| -> Result<Vec<u8>> {
         let options = SimpleFileOptions::default();
@@ -451,7 +451,7 @@ fn market_rejects_invalid_archives_and_catalogs() -> Result<()> {
         Ok(zip.finish()?.into_inner())
     };
     for (add_cover, link) in [(false, false), (true, false), (true, true)] {
-        assert!(decode_zip(&archive(add_cover, link)?, false).is_err());
+        assert!(decode_zip(&archive(add_cover, link)?, true).is_err());
     }
 
     let bundle = fixture.0.join("package.zip");
@@ -542,6 +542,28 @@ fn wait_for_catalog_action(host: &mut LocalPlugins) {
     }
 }
 
+#[test]
+fn online_market_material_requires_preview_build_and_trusted_preview_index() -> Result<()> {
+    let preview = Url::parse(&format!(
+        "https://gitee.com/api/v5/repos/{GITEE_REPOSITORY}/contents/preview/catalog.json?ref=master"
+    ))?;
+    assert!(allows_market_material(None, false));
+    assert!(allows_market_material(Some(&preview), true));
+    assert!(!allows_market_material(Some(&preview), false));
+
+    for untrusted in [
+        preview.as_str().replace("/preview/", "/stable/"),
+        preview.as_str().replace("ref=master", "ref=main"),
+        preview.as_str().replace("https://", "http://"),
+        preview.as_str().replace("gitee.com/", "example.com/"),
+        preview.as_str().replace(GITEE_REPOSITORY, "another/daozai-plugins"),
+        preview.as_str().replace("catalog.json", "alternate.json"),
+    ] {
+        assert!(!allows_market_material(Some(&Url::parse(&untrusted)?), true), "{untrusted}");
+    }
+    Ok(())
+}
+
 #[cfg(all(windows, feature = "sdk-material"))]
 #[test]
 fn market_material_packs_and_installs_liquid_glass_locally() -> Result<()> {
@@ -551,7 +573,11 @@ fn market_material_packs_and_installs_liquid_glass_locally() -> Result<()> {
     let catalog_path = fixture.0.join("catalog.json");
     pack(&project, &bundle)?;
     let raw = fs::read(&bundle)?;
-    assert!(decode_zip(&raw, true).is_err());
+    assert!(decode_zip(&raw, false).is_err());
+    let preview = Url::parse(&format!("https://gitee.com{}?ref=master", official_index_path("preview")))?;
+    let preview_package = decode_zip(&raw, allows_market_material(Some(&preview), true))?;
+    assert!(preview_package.manifest.is_material());
+    assert_eq!(preview_package.cover_png().as_deref(), Some(include_bytes!("examples/liquid-glass/cover.png").as_slice()));
     submit(&bundle, &catalog_path)?;
 
     let catalog = Catalog::open(&catalog_path)?;

@@ -737,17 +737,20 @@ impl LocalPlugins {
         entry: &market::Entry,
     ) -> bool {
         let has_cover = self.market_cover(ui, catalog, entry, egui::CornerRadius::same(9));
-        let is_material = !catalog.is_official()
-            && has_cover
-            && entry.owner().is_none_or(|owner| owner == "appearance")
-            && {
-                let key = egui::Id::new(("local-market-material", &catalog.path, &entry.sha256));
-                ui.data_mut(|data| {
-                    *data.get_temp_mut_or_insert_with(key, || {
-                        catalog.load(entry).is_ok_and(|package| package.manifest.is_material())
-                    })
+        let is_material = if !catalog.allows_material()
+            || entry.owner().is_some_and(|owner| owner != "appearance")
+        {
+            Some(false)
+        } else if catalog.is_official() {
+            self.official_cover_is_material(entry)
+        } else {
+            let key = egui::Id::new(("local-market-material", &catalog.path, &entry.sha256));
+            Some(has_cover && ui.data_mut(|data| {
+                *data.get_temp_mut_or_insert_with(key, || {
+                    catalog.load(entry).is_ok_and(|package| package.manifest.is_material())
                 })
-            };
+            }))
+        };
         ui.horizontal_wrapped(|ui| {
             ui.label(egui::RichText::new(&entry.name).size(19.0).strong());
             entry_badge(ui, catalog, entry);
@@ -773,16 +776,20 @@ impl LocalPlugins {
             }
             ui.label(egui::RichText::new(meta).size(11.5).color(muted_color(ui)));
         });
-        ui.label(if is_material {
+        ui.label(if is_material == Some(true)
+            && entry.presentation.as_ref().and_then(|details| details.description.as_ref()).is_none()
+        {
             "为主岛应用 GPU 材质。"
         } else {
             entry_description(entry)
         });
-        let permissions = if is_material {
-            "首次启用时授权读取岛体背后的屏幕画面"
-        } else {
-            "无需外部权限"
-        };
+        let permissions = is_material.map(|is_material| {
+            if is_material {
+                "首次启用时授权读取岛体背后的屏幕画面"
+            } else {
+                "无需外部权限"
+            }
+        });
         egui::Frame::new()
             .fill(color(ui.ctx(), Color32::from_rgb(38, 38, 43), Color32::from_rgb(245, 246, 249)))
             .corner_radius(9.0)
@@ -801,7 +808,7 @@ impl LocalPlugins {
                     ("设置在", place.as_deref()),
                     ("管理在", management),
                     ("新增页面", Some("不会")),
-                    ("权限", Some(permissions)),
+                    ("权限", permissions),
                 ]
                 .into_iter()
                 .filter_map(|(label, value)| value.map(|value| (label, value)))
