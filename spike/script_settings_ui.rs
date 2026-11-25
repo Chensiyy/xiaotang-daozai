@@ -384,7 +384,7 @@ fn list_field(ui: &mut egui::Ui, plugin: &str, field: &Field, value: &mut String
         ui.push_id(i, |ui| {
             if add_label.is_some() {
                 let selected = open == Some(i);
-                let marker = if selected { "▾" } else { "▸" };
+                let marker = if selected { "−" } else { "›" };
                 let title = format!("{marker}  {}", list_item_title(plugin, row));
                 if ui.add(egui::Button::new(title).selected(selected).wrap()).clicked() {
                     open = (!selected).then_some(i);

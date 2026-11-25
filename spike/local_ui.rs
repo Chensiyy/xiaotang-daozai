@@ -2075,6 +2075,7 @@ impl LocalPlugins {
     fn settings_form(&mut self, ui: &mut egui::Ui, id: &str) {
         let record = &self.records[id];
         let manifest = &record.package.as_ref().unwrap().manifest;
+        let has_settings = manifest.has_settings();
         let supports_pinned = self.pinned_name(id).is_some();
         let grouped = id == "daozai.days" || standalone_settings_page(manifest);
         let mut sections = std::collections::BTreeMap::<_, Vec<_>>::new();
@@ -2139,19 +2140,29 @@ impl LocalPlugins {
                 }
             });
         }
-        if manifest.has_settings() {
+        #[cfg(windows)]
+        if authorize {
+            self.open_source_dialog(ui, id);
+        }
+        if supports_pinned {
+            settings_label(ui, "岛上常驻");
+            settings_card(ui, |ui| self.pinned_toggle(ui, id));
+        }
+        if has_settings {
             ui.add_space(4.0);
             let notice_id = ui.make_persistent_id("plugin-save-result");
-            let save = ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let save = ui.add(egui::Button::new(egui::RichText::new("保存设置").color(Color32::WHITE))
-                    .fill(plugin_accent(ui)).min_size(egui::vec2(86.0, 30.0)));
-                if let Some(notice) = ui.data(|data| data.get_temp::<String>(notice_id)) {
-                    settings_hint(ui, &notice);
-                }
-                save.clicked()
+            let save = ui.horizontal(|ui| {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let save = ui.add(egui::Button::new(egui::RichText::new("保存设置").color(Color32::WHITE))
+                        .fill(plugin_accent(ui)).min_size(egui::vec2(86.0, 30.0)));
+                    if let Some(notice) = ui.data(|data| data.get_temp::<String>(notice_id)) {
+                        settings_hint(ui, &notice);
+                    }
+                    save.clicked()
+                }).inner
             }).inner;
             if save || submit {
-                let values = drafts.clone();
+                let values = self.drafts[id].clone();
                 let notice = match self.save(id, values) {
                     Ok(()) => {
                         ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
@@ -2161,14 +2172,6 @@ impl LocalPlugins {
                 };
                 ui.data_mut(|data| data.insert_temp(notice_id, notice));
             }
-        }
-        #[cfg(windows)]
-        if authorize {
-            self.open_source_dialog(ui, id);
-        }
-        if supports_pinned {
-            settings_label(ui, "岛上常驻");
-            settings_card(ui, |ui| self.pinned_toggle(ui, id));
         }
     }
 

@@ -87,6 +87,7 @@ fn plugin_settings_pages_gear_routes_by_id_and_sidebar_fits() {
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("cover.png"), include_bytes!("../spike/examples/payday/cover.png")).unwrap();
         let mut capabilities = vec!["status.page", "settings"];
+        if id == standalone[1].0 { capabilities.push("island.pinned"); }
         let owner = if id == task.0 { capabilities.push("card"); "tasks" } else { "status" };
         let mut output = json!({"status":{"state":"idle","label":name}});
         if id == task.0 { output["card"] = json!(name); }
@@ -152,6 +153,8 @@ fn plugin_settings_pages_gear_routes_by_id_and_sidebar_fits() {
         assert!(visible(&output, "关于", true));
         assert!(visible(&output, "打开功能页", false));
         assert!(visible(&output, "金价测试专用参数", false));
+        assert!(visible(&output, "在岛上常驻显示", false));
+        assert!(visible(&output, "保存设置", false));
         assert!(!visible(&output, "便签测试专用参数", false));
     }
     h.app.plugins.set_status_page_enabled(standalone[1].0, false).unwrap();
