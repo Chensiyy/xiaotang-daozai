@@ -2205,7 +2205,6 @@ impl App {
                             }
                             #[cfg(all(windows,feature="sdk-js",feature="sdk-material"))]
                             {
-                                ui.separator();
                                 let active=self.material_active_id.as_deref().filter(|_| self.material_capture_forced);
                                 if self.plugins.material_settings(ui,active,self.settings.render_compat) {
                                     self.settings.render_compat=true;

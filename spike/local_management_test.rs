@@ -848,9 +848,17 @@ fn material_management_waits_for_permission_and_offers_to_enable_compatibility()
         }))?,
     )?;
     let mut host = LocalPlugins::open(dir.join("installed"));
-    host.install(&manifest)?;
     let ctx = egui::Context::default();
     crate::theme::load_fonts(&ctx);
+    let appearance = |host: &mut LocalPlugins| {
+        frame(&ctx, vec![], |ui| {
+            assert!(!host.material_settings(ui, None, false));
+        })
+    };
+    assert!(!has_text(&appearance(&mut host), "材质"));
+    host.install(&manifest)?;
+    assert!(!host.material_permission_granted("example.material"));
+    assert!(has_text(&appearance(&mut host), "材质"));
     let manage_click = |host: &mut LocalPlugins, label: &str| {
         let mut jump = None;
         click(&ctx, label, |ui| {
@@ -889,6 +897,8 @@ fn material_management_waits_for_permission_and_offers_to_enable_compatibility()
         );
     }
     assert_eq!(host.records["example.material"].values["strength"], "0.54");
+    host.uninstall("example.material", true)?;
+    assert!(!has_text(&appearance(&mut host), "材质"));
     fs::remove_dir_all(dir)?;
     Ok(())
 }

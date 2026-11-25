@@ -1791,6 +1791,11 @@ impl LocalPlugins {
         active: Option<&str>,
         compatibility_enabled: bool,
     ) -> bool {
+        if !self.records.values().any(|record| record.material_package().is_some()) {
+            self.confirm_material_permission(ui);
+            return false;
+        }
+        ui.separator();
         let selected = self.selected_material_id().map(str::to_owned);
         let mut choice = selected.clone();
         let title = selected.as_deref().map_or_else(
