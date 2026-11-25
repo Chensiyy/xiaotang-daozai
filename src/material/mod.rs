@@ -5,6 +5,8 @@ mod controls;
 mod pipeline;
 pub use backdrop::{Backdrop, CleanPlate, Geometry, ScreenRect};
 pub(crate) use controls::{control, control_scale, ControlRole};
+#[cfg(feature = "sdk-js")]
+pub(crate) use pipeline::validate_plugin_shader;
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};

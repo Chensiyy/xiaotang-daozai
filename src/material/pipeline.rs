@@ -278,6 +278,11 @@ fn dock_code(dock: Dock) -> u32 {
     }
 }
 
+#[cfg(feature = "sdk-js")]
+pub(crate) fn validate_plugin_shader(shader: &str) -> Result<(), String> {
+    validate_shader(&format!("{PRELUDE}\n{shader}")).map(|_| ())
+}
+
 fn validate_shader(source: &str) -> Result<wgpu::naga::Module, String> {
     use wgpu::naga::{front::wgsl, valid};
 

@@ -6,7 +6,7 @@ fn market_package_preserves_declared_data() -> Result<()> {
     let zip = std::env::temp_dir().join(format!("daozai-package-data-{}.zip", std::process::id()));
     let result = (|| -> Result<()> {
         pack(&manifest, &zip)?;
-        let package = decode_zip(&fs::read(&zip)?)?;
+        let package = decode_zip(&fs::read(&zip)?, false)?;
         assert!(package.data.contains_key("holidays-2026.json"));
         assert_eq!(package.render(&Values::new(), &Value::Null, "2026-06-19")?.marker, "端午节放假");
         Ok(())
@@ -353,7 +353,7 @@ fn market_rejects_invalid_archives_and_catalogs() -> Result<()> {
     zip.add_symlink("main.js", "outside.js", SimpleFileOptions::default())?;
     zip.start_file(COVER_FILE, SimpleFileOptions::default())?;
     zip.write_all(include_bytes!("examples/payday/cover.png"))?;
-    assert!(decode_zip(&zip.finish()?.into_inner()).is_err());
+    assert!(decode_zip(&zip.finish()?.into_inner(), false).is_err());
 
     let archive = |add_cover: bool, link: bool| -> Result<Vec<u8>> {
         let options = SimpleFileOptions::default();
@@ -371,7 +371,7 @@ fn market_rejects_invalid_archives_and_catalogs() -> Result<()> {
         Ok(zip.finish()?.into_inner())
     };
     for (add_cover, link) in [(false, false), (true, false), (true, true)] {
-        assert!(decode_zip(&archive(add_cover, link)?).is_err());
+        assert!(decode_zip(&archive(add_cover, link)?, false).is_err());
     }
 
     let bundle = fixture.0.join("package.zip");
@@ -460,6 +460,96 @@ fn wait_for_catalog_action(host: &mut LocalPlugins) {
         host.poll_market();
         std::thread::sleep(Duration::from_millis(2));
     }
+}
+
+#[cfg(all(windows, feature = "sdk-material"))]
+#[test]
+fn market_material_packs_and_installs_liquid_glass_locally() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let project = Path::new(env!("CARGO_MANIFEST_DIR")).join("spike/examples/liquid-glass/plugin.json");
+    let bundle = fixture.0.join("liquid-glass.zip");
+    let catalog_path = fixture.0.join("catalog.json");
+    pack(&project, &bundle)?;
+    let raw = fs::read(&bundle)?;
+    assert!(decode_zip(&raw, true).is_err());
+    submit(&bundle, &catalog_path)?;
+
+    let catalog = Catalog::open(&catalog_path)?;
+    let entry = &catalog.entries[0];
+    let id = "cayww.liquid-glass";
+    assert_eq!(entry.id, id);
+    assert_eq!(entry.author, "轻九九九（@cayww）");
+    assert_eq!(catalog.cover_png(entry)?, include_bytes!("examples/liquid-glass/cover.png"));
+
+    let storage = fixture.0.join("installed");
+    let mut host = LocalPlugins::open(storage.clone());
+    host.set_market_catalog(&catalog_path)?;
+    host.market_action(false, id)?;
+    wait_for_catalog_action(&mut host);
+    let installed = &host.records[id];
+    assert!(installed.from_market && !installed.official_market);
+    assert!(!installed.enabled && !host.material_permission_granted(id));
+    assert!(host.activate_material(Some(id), false).is_err());
+
+    host.activate_material(Some(id), true)?;
+    assert_eq!(host.selected_material_id(), Some(id));
+    assert!(LocalPlugins::startup_material(&storage));
+    let mut index: Value = serde_json::from_slice(&fs::read(&catalog_path)?)?;
+    index["plugins"][0]["revoked"] = json!([entry.version]);
+    fs::write(&catalog_path, serde_json::to_vec(&index)?)?;
+    host.refresh_market_catalog()?;
+    assert!(host.selected_material_id().is_none());
+    assert!(host.activate_material(Some(id), true).is_err());
+    assert!(!LocalPlugins::startup_material(&storage));
+
+    let update_dir = fixture.0.join("update");
+    fs::create_dir(&update_dir)?;
+    let mut manifest: Value = serde_json::from_slice(&fs::read(&project)?)?;
+    manifest["version"] = json!("1.0.3");
+    let update = update_dir.join("plugin.json");
+    fs::write(&update, serde_json::to_vec(&manifest)?)?;
+    for name in [COVER_FILE, "material.wgsl"] {
+        fs::copy(project.with_file_name(name), update_dir.join(name))?;
+    }
+    let next = fixture.0.join("next.zip");
+    pack(&update, &next)?;
+    submit(&next, &catalog_path)?;
+    host.refresh_market_catalog()?;
+    host.market_action(false, id)?;
+    wait_for_catalog_action(&mut host);
+    assert!(!host.records[id].market_revoked);
+    assert!(host.selected_material_id().is_none());
+    assert!(!LocalPlugins::startup_material(&storage));
+    Ok(())
+}
+
+#[cfg(all(windows, feature = "sdk-material"))]
+#[test]
+fn market_material_rejects_invalid_wgsl_in_source_and_zip() -> Result<()> {
+    let fixture = Fixture::new()?;
+    let manifest = include_str!("examples/liquid-glass/plugin.json");
+    let cover = include_bytes!("examples/liquid-glass/cover.png");
+    let invalid = "fn material() { 123 }";
+    let project = fixture.0.join("plugin.json");
+    fs::write(&project, manifest)?;
+    fs::write(fixture.0.join(COVER_FILE), cover)?;
+    fs::write(fixture.0.join("material.wgsl"), invalid)?;
+    let bundle = fixture.0.join("invalid.zip");
+    assert!(validate_project(&project).is_err());
+    assert!(pack(&project, &bundle).is_err());
+    assert!(!bundle.exists());
+
+    let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
+    for (name, bytes) in [("plugin.json", manifest.as_bytes()), (COVER_FILE, cover.as_slice()),
+        ("material.wgsl", invalid.as_bytes())] {
+        zip.start_file(name, SimpleFileOptions::default())?;
+        zip.write_all(bytes)?;
+    }
+    fs::write(&bundle, zip.finish()?.into_inner())?;
+    let catalog = fixture.0.join("catalog.json");
+    assert!(submit(&bundle, &catalog).is_err());
+    assert!(!catalog.exists());
+    Ok(())
 }
 
 #[test]
