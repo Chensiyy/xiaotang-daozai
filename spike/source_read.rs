@@ -304,6 +304,7 @@ mod tests {
                     Err(error) => panic!("{error}"),
                 }
             };
+            stream.set_nonblocking(false).unwrap();
             stream.set_read_timeout(Some(HTTP_TIMEOUT)).unwrap();
             let mut lines = io::BufRead::lines(io::BufReader::new(&mut stream));
             assert_eq!(lines.next().unwrap().unwrap(), "GET /status HTTP/1.1");
@@ -314,8 +315,9 @@ mod tests {
             }
             write!(stream, "HTTP/1.1 302 Found\r\nLocation: http://{location}/other\r\nContent-Length: 0\r\n\r\n").unwrap();
         });
-        assert!(grant.read(&AtomicBool::new(false)).is_err());
+        let result = grant.read(&AtomicBool::new(false));
         responder.join().unwrap();
+        assert_eq!(result.unwrap_err().to_string(), "本机数据源没有直接返回数据");
         assert!(
             matches!(redirected.accept(), Err(error) if error.kind() == io::ErrorKind::WouldBlock)
         );
