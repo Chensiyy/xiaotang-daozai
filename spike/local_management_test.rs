@@ -951,9 +951,16 @@ fn market_channel_toolbar_keeps_categories_clickable_at_narrow_width() -> Result
     crate::theme::load_fonts(&ctx);
     let size = egui::vec2(370.0, 800.0);
     let mut draw = |ui: &mut egui::Ui| {
-        host.market(ui, false);
+        host.manage(
+            ui,
+            true,
+            true,
+            true,
+            #[cfg(feature = "sdk-material")]
+            None,
+        );
     };
-    let _ = frame_in(&ctx, size, vec![], &mut draw);
+    click_in(&ctx, size, "本地测试", &mut draw);
     let output = frame_in(&ctx, size, vec![], &mut draw);
     let bounds = |label| {
         output.shapes.iter().find_map(|shape| match &shape.shape {
