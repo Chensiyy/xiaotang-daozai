@@ -256,15 +256,75 @@ fn status_page_management_opens_and_switches_independently() -> Result<()> {
     let draw = |ui: &mut egui::Ui, host: &mut LocalPlugins| {
         let _ = host.status_page_settings(ui);
     };
-    let disabled = frame(&ctx, vec![], |ui| draw(ui, &mut host));
-    assert!(has_text(&disabled, NAME));
-    assert!(has_text(&disabled, "插件"));
-    assert!(!has_text(&disabled, "倒计时名称"));
-    assert!(!has_text(&disabled, "打开"));
-    assert_eq!(host.standalone_settings_pages().next(), Some((ID, NAME)));
-    assert!(has_text(&frame(&ctx, vec![], |ui| host.standalone_settings(ui, ID)), "倒计时名称"));
+    let installed = |ui: &mut egui::Ui, host: &mut LocalPlugins| {
+        host.manage(
+            ui,
+            true,
+            true,
+            true,
+            #[cfg(all(windows, feature = "sdk-material"))]
+            None,
+        )
+    };
+    let toggle_installed = |host: &mut LocalPlugins| {
+        let installed_ctx = egui::Context::default();
+        crate::theme::load_fonts(&installed_ctx);
+        for _ in 0..2 {
+            frame(&installed_ctx, vec![], |ui| {
+                let _ = installed(ui, host);
+            });
+        }
+        let switch = installed_ctx
+            .read_response(egui::Id::new(("settings-plugin-switch", ID)))
+            .expect("已安装中的插件开关")
+            .rect
+            .center();
+        click_at(&installed_ctx, switch, |ui| {
+            let _ = installed(ui, host);
+        });
+    };
 
-    host.enable(ID, true)?;
+    assert!(!host.records[ID].enabled);
+    let disabled = frame(&ctx, vec![], |ui| draw(ui, &mut host));
+    assert!(!has_text(&disabled, NAME));
+    assert!(!has_text(&disabled, "独立插件功能"));
+    assert!(!has_text(&disabled, "打开"));
+    assert!(host.standalone_settings_pages().next().is_none());
+    assert!(host.status_pages().next().is_none());
+    assert!(host.settings_destination(ID).is_none());
+    let direct = frame(&ctx, vec![], |ui| host.standalone_settings(ui, ID));
+    assert!(!has_text(&direct, "倒计时名称"));
+
+    let settings_link = format!("设置 › {NAME} ›");
+    let mut route = None;
+    let mut draw_installed = |ui: &mut egui::Ui| {
+        route = installed(ui, &mut host).or(route.take());
+    };
+    frame(&ctx, vec![], &mut draw_installed);
+    let listing = frame(&ctx, vec![], &mut draw_installed);
+    assert!(has_text(&listing, NAME));
+    assert!(!has_text(&listing, &settings_link));
+    let hint = listing
+        .shapes
+        .iter()
+        .find_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) if text.galley.text() == "启用后显示功能页" => {
+                Some(text.visual_bounding_rect().center())
+            }
+            _ => None,
+        })
+        .expect("停用的插件应提示启用后显示功能页");
+    click_at(&ctx, hint, draw_installed);
+    assert_eq!(route, None);
+
+    toggle_installed(&mut host);
+    assert!(host.records[ID].enabled);
+    assert_eq!(host.standalone_settings_pages().next(), Some((ID, NAME)));
+    assert_eq!(host.status_pages().next(), Some((ID, NAME)));
+    click(&ctx, &settings_link, |ui| {
+        route = installed(ui, &mut host).or(route.take());
+    });
+    assert_eq!(route, Some(SettingsNavigation::Plugin(ID.into())));
     let standalone = frame(&ctx, vec![], |ui| host.standalone_settings(ui, ID));
     assert!(has_text(&standalone, &format!("启用{NAME}")));
     let mut opened = None;
@@ -290,10 +350,18 @@ fn status_page_management_opens_and_switches_independently() -> Result<()> {
     assert_eq!(host.drafts[ID]["title"], "未保存的设置");
     assert!(!has_text(&frame(&ctx, vec![], |ui| draw(ui, &mut host)), "打开"));
     assert_eq!(host.standalone_settings_pages().next(), Some((ID, NAME)));
+    assert!(has_text(&frame(&ctx, vec![], |ui| draw(ui, &mut host)), NAME));
+
+    toggle_installed(&mut host);
+    assert!(!host.records[ID].enabled);
+    assert!(host.standalone_settings_pages().next().is_none());
+    assert!(host.status_pages().next().is_none());
+    assert!(host.settings_destination(ID).is_none());
+    assert!(!has_text(&frame(&ctx, vec![], |ui| draw(ui, &mut host)), NAME));
 
     drop(host);
     let mut host = LocalPlugins::open(dir.clone());
-    host.enable(ID, false)?;
+    assert!(host.standalone_settings_pages().next().is_none());
     host.enable(ID, true)?;
     assert_eq!(host.status_page_preferences().next(), Some((ID, NAME, true, false)));
     let mut record = host.records[ID].clone();

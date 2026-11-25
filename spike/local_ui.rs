@@ -1249,6 +1249,14 @@ impl LocalPlugins {
                     } else if !revoked && appearance.is_some() && !on {
                         settings_hint(ui, "启用后可在外观设置中选用");
                     } else if !revoked {
+                        let show_path = |ui: &mut egui::Ui| {
+                            if owner_key == "status" && !on {
+                                settings_hint(ui, "启用后显示功能页");
+                                false
+                            } else {
+                                path_button(ui, &path, paused, &tip)
+                            }
+                        };
                         #[cfg(windows)]
                         let navigate = if has_source {
                             ui.horizontal(|ui| {
@@ -1256,14 +1264,13 @@ impl LocalPlugins {
                                 if path_button(ui, label, false, "管理这个插件可读取的数据源") {
                                     self.open_source_dialog(ui, id);
                                 }
-                                (has_settings || owner_key == "status")
-                                    && path_button(ui, &path, paused, &tip)
+                                (has_settings || owner_key == "status") && show_path(ui)
                             }).inner
                         } else {
-                            path_button(ui, &path, paused, &tip)
+                            show_path(ui)
                         };
                         #[cfg(not(windows))]
-                        let navigate = path_button(ui, &path, paused, &tip);
+                        let navigate = show_path(ui);
                         #[cfg(windows)]
                         if let Some((label, url, time)) = self.source_attribution(id) {
                             ui.horizontal_wrapped(|ui| {
@@ -1920,7 +1927,8 @@ impl LocalPlugins {
     pub(crate) fn standalone_settings_pages(&self) -> impl Iterator<Item = (&str, &str)> {
         self.records.iter().filter_map(|(id, record)| {
             let manifest = &record.package.as_ref()?.manifest;
-            standalone_settings_page(manifest).then_some((id.as_str(), manifest.name.as_str()))
+            (record.enabled && standalone_settings_page(manifest))
+                .then_some((id.as_str(), manifest.name.as_str()))
         })
     }
 
@@ -1930,7 +1938,7 @@ impl LocalPlugins {
         self.focus = (record.enabled
             && (manifest.has_settings() || manifest.has_surface(Surface::IslandPinned)))
             .then(|| id.to_owned());
-        Some(owner_settings_tab(&manifest.owner))
+        (record.enabled || manifest.owner != "status").then(|| owner_settings_tab(&manifest.owner))
     }
 
     pub(crate) fn standalone_settings(&mut self, ui: &mut egui::Ui, id: &str) {
@@ -1942,7 +1950,9 @@ impl LocalPlugins {
         };
         if !record.enabled {
             settings_hint(ui, "插件已停用，可在「插件 → 已安装」启用");
-        } else if standalone_settings_page(manifest) {
+            return;
+        }
+        if standalone_settings_page(manifest) {
             let on = !record.status_page_disabled;
             let switch_id = format!("{id}:status-page");
             let title = format!("启用{}", manifest.name);
@@ -1979,7 +1989,9 @@ impl LocalPlugins {
     }
 
     pub(crate) fn status_page_settings(&mut self, ui: &mut egui::Ui) -> Option<SettingsNavigation> {
-        let mut preferences = self.status_page_preferences().peekable();
+        let mut preferences = self.status_page_preferences()
+            .filter(|(_, _, enabled, _)| *enabled)
+            .peekable();
         preferences.peek()?;
 
         ui.add_space(12.0);
@@ -1987,20 +1999,18 @@ impl LocalPlugins {
         let mut change = None;
         let mut navigation = None;
         plugin_list(ui, |ui| {
-            for (index, (id, name, enabled, page_on)) in preferences.enumerate() {
+            for (index, (id, name, _, page_on)) in preferences.enumerate() {
                 if index > 0 {
                     row_separator(ui);
                 }
                 let manifest = &self.records[id].package.as_ref().unwrap().manifest;
                 let status_only = manifest.owner == "status";
-                let configurable = standalone_settings_page(manifest) || (!status_only && enabled
+                let configurable = standalone_settings_page(manifest) || (!status_only
                     && (manifest.has_settings() || manifest.has_surface(Surface::IslandPinned)));
-                let description = if enabled && status_only {
+                let description = if status_only {
                     "关闭后暂停这个插件的数据读取"
-                } else if enabled {
-                    "控制这个功能页在岛上显示"
                 } else {
-                    "在「已安装」启用插件后生效"
+                    "控制这个功能页在岛上显示"
                 };
                 let row = ui.push_id(("status-page-preference", id), |ui| {
                     ui.horizontal(|ui| {
@@ -2018,7 +2028,7 @@ impl LocalPlugins {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             let switched = plugin_switch(ui, id, page_on, name);
                             let settings = configurable && ui.button("设置").clicked();
-                            let jumped = enabled && page_on && ui.button("打开").clicked();
+                            let jumped = page_on && ui.button("打开").clicked();
                             (switched, jumped, settings)
                         })
                         .inner
