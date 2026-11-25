@@ -896,6 +896,15 @@ impl Budget<'_> {
             if let Some(fill) = &hover.fill {
                 self.color(fill)?;
             }
+            if let Some(hint) = &hover.hint {
+                if !crate::plugin_status::valid_text(hint, 40) {
+                    return Err("画布悬停提示需要 1 至 40 字的单行文字".into());
+                }
+                self.text += hint.chars().count();
+                if self.text > MAX_TEXT {
+                    return Err("画布文字最多 2000 字".into());
+                }
+            }
         }
         if let Some(scroll) = &raw.scroll {
             if !matches!(kind, Kind::Group { clip: Some(_), .. }) || !scroll.valid() {

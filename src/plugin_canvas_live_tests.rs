@@ -90,6 +90,31 @@ fn plugin_canvas_text_inside_clickable_group_keeps_rendering() {
 }
 
 #[test]
+fn plugin_canvas_hover_hint_stays_inside_the_canvas() {
+    let canvas = Arc::new(Canvas::parse(json!({
+        "height": 80,
+        "nodes": [{"rect":[364,0,23,25], "fill":"$card", "hit":{"action":"copy-note"},
+            "hover":{"hint":"复制当前便签"}}]
+    })).unwrap());
+    let ctx = egui::Context::default();
+    theme::load_fonts(&ctx);
+    let (output, result) = frame(&ctx, &canvas, 1.0, 1, vec![Event::PointerMoved(pos2(397.0, 50.0))], true);
+    let hint = output.shapes.iter().find_map(|shape| match &shape.shape {
+        egui::Shape::Text(text) if text.galley.text() == "复制当前便签" => Some((shape.clip_rect, text.visual_bounding_rect())),
+        _ => None,
+    }).expect("按钮的单行提示应可见");
+    let area = Rect::from_min_max(pos2(16.0, 42.0), pos2(403.0, 122.0));
+    assert!(area.contains_rect(hint.0) && hint.0.contains_rect(hint.1));
+    assert!(result.hit.is_none());
+    let (output, _) = frame(&ctx, &canvas, 1.1, 1, vec![Event::PointerMoved(pos2(411.0, 50.0))], true);
+    assert!(!output.shapes.iter().any(|shape| matches!(&shape.shape,
+        egui::Shape::Text(text) if text.galley.text() == "复制当前便签")));
+    for hint in ["", "换\n行", &"字".repeat(41)] {
+        assert!(Canvas::parse(json!({"height":80,"nodes":[{"rect":[0,0,10,10],"hover":{"hint":hint}}]})).is_err());
+    }
+}
+
+#[test]
 fn plugin_canvas_live_demo_shows_rolling_digits_and_scrolls_inside_the_group() {
     let runtime = rquickjs::Runtime::new().unwrap();
     let js = rquickjs::Context::full(&runtime).unwrap();

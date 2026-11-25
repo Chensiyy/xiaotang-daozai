@@ -163,6 +163,7 @@ pub(crate) struct Hover {
     pub opacity: Option<Num>,
     pub lift: Option<Num>,
     pub fill: Option<Color>,
+    pub hint: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]

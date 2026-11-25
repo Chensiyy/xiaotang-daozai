@@ -8,8 +8,8 @@ use super::{
 use crate::{
     paint::{Card, H},
     plugin_canvas::{
-        live::{Hit, Tip},
-        Kind, Node, Paint,
+        live::{Hit, Hover, Tip},
+        Kind, Node, Paint, Token,
     },
     skin_paint, theme,
 };
@@ -58,12 +58,53 @@ struct Region<'a> {
     bounds: Rect,
     clip: Clip,
     hit: Option<&'a Hit>,
-    hover: bool,
+    hover: Option<&'a Hover>,
     scroll_end: Option<f32>,
     scroll_scale: f32,
     tip: Option<TipAt>,
 }
 
+pub(super) enum HoverOverlay {
+    Chart(TipAt),
+    Hint { text: String, anchor: Rect },
+}
+
+impl HoverOverlay {
+    pub fn draw(self, input: &Input<'_, '_>) {
+        let (text, anchor) = match self {
+            Self::Chart(tip) => return tip.draw(input),
+            Self::Hint { text, anchor } => (text, anchor),
+        };
+        let c = input.c;
+        let area = input.area.intersect(c.painter.clip_rect());
+        let min = c.to_local(area.min);
+        let max = c.to_local(area.max);
+        let height = 22.0;
+        let available = max.x - min.x;
+        if available < 24.0 || max.y - min.y < height {
+            return;
+        }
+        let width = (c.text_w(&text, 11.0, theme::W::Semibold) + 16.0).min(available);
+        let x = (c.to_local(anchor.center()).x - width / 2.0).clamp(min.x, (max.x - width).max(min.x));
+        let above = c.to_local(anchor.min).y - height - 4.0;
+        let below = c.to_local(anchor.max).y + 4.0;
+        let y = if above >= min.y { above } else { below }.clamp(min.y, (max.y - height).max(min.y));
+        let layer = c.painter.layer_id();
+        let first = skin_paint::shape_count(c.ui.ctx(), layer);
+        let clipped = c.clipped(min.x, min.y, available, max.y - min.y);
+        let background = crate::paint::mix(input.theme.background, input.theme.token(&Token::Card), 0.75);
+        clipped.fill(x, y, width, height, 6.0, background);
+        clipped.stroke(x, y, width, height, 6.0, 1.0, input.theme.token(&Token::Dim).gamma_multiply(0.5));
+        clipped.centered_text(
+            x + width / 2.0, y + height / 2.0,
+            &clipped.fit(&text, 11.0, theme::W::Semibold, width - 16.0),
+            11.0, theme::W::Semibold, input.theme.token(&Token::Text), H::Center,
+        );
+        skin_paint::tone_since(c.ui.ctx(), layer, first, |color, _| color);
+    }
+}
+
+#[derive(Clone)]
 pub(super) struct TipAt {
     tip: Tip,
     x: f32,
@@ -131,7 +172,7 @@ impl InputState {
         nodes: &mut [Node],
         time: f64,
         result: &mut LiveResult,
-    ) -> Option<TipAt> {
+    ) -> Option<HoverOverlay> {
         if !input.options.interactive {
             return None;
         }
@@ -148,17 +189,17 @@ impl InputState {
             .iter()
             .rev()
             .filter(under_pointer)
-            .find(|r| r.hover)
+            .find(|r| r.hover.is_some())
             .map(|r| r.key);
         let tip = regions
             .iter()
             .rev()
             .filter(under_pointer)
-            .find_map(|r| r.tip.as_ref())
-            .map(|tip| TipAt {
-                tip: tip.tip.clone(),
-                x: tip.x,
-                chart: tip.chart,
+            .find_map(|r| {
+                r.hover.and_then(|hover| hover.hint.as_ref()).map(|hint| HoverOverlay::Hint {
+                    text: hint.clone(),
+                    anchor: r.bounds,
+                }).or_else(|| r.tip.clone().map(HoverOverlay::Chart))
             });
         if let Some(scroll) = regions
             .iter()
@@ -258,7 +299,7 @@ impl InputState {
                         bounds,
                         clip: clip.clone(),
                         hit: node.hit.as_ref(),
-                        hover: node.hover.is_some(),
+                        hover: node.hover.as_ref(),
                         scroll_end,
                         scroll_scale: scale,
                         tip,

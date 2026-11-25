@@ -534,6 +534,7 @@
       "additionalProperties": false,
       "properties": {
         "width": {"type": "number", "minimum": 1, "maximum": 156},
+        "fit_width": {"type": "boolean"},
         "height": {"const": 22},
         "nodes": {"type": "array", "maxItems": 60, "items": {"$ref": "#/$defs/canvasNode"}},
         "binds": {"$ref": "#/$defs/canvas/properties/binds"}
@@ -683,7 +684,8 @@
           "properties": {
             "opacity": {"$ref": "#/$defs/canvasNumber", "minimum": 0, "maximum": 1},
             "lift": {"$ref": "#/$defs/canvasNumber"},
-            "fill": {"$ref": "#/$defs/canvasColor"}
+            "fill": {"$ref": "#/$defs/canvasColor"},
+            "hint": {"type": "string", "minLength": 1, "maxLength": 40}
           }
         },
         "scroll": {

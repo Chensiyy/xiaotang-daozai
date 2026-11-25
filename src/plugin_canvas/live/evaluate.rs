@@ -430,10 +430,14 @@ impl Frame<'_> {
 fn text_count(nodes: &[Node]) -> usize {
     nodes
         .iter()
-        .map(|node| match &node.kind {
-            Kind::Text { text, .. } => text.chars().count(),
-            Kind::Group { group, .. } => text_count(group),
-            _ => 0,
+        .map(|node| {
+            let hint = node.hover.as_ref().and_then(|hover| hover.hint.as_ref())
+                .map_or(0, |hint| hint.chars().count());
+            hint + match &node.kind {
+                Kind::Text { text, .. } => text.chars().count(),
+                Kind::Group { group, .. } => text_count(group),
+                _ => 0,
+            }
         })
         .sum()
 }
