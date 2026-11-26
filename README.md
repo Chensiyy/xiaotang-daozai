@@ -6,7 +6,7 @@
 
 **一座小岛，装下桌面日常。**
 
-Windows 桌面伙伴，把消息、音乐、日程、天气和 AI 额度放到手边。
+Windows 桌面信息岛，抬眼就能看消息、歌词、日程、天气、系统性能、蓝牙电量和 AI 额度。
 
 [![最新版本](https://img.shields.io/github/v/release/Renly1994/xiaotang-daozai?color=7955b8&label=最新版本)](https://github.com/Renly1994/xiaotang-daozai/releases/latest)
 [![Windows](https://img.shields.io/badge/Windows-10%20%2F%2011-0078D4)](#下载安装)
@@ -118,9 +118,14 @@ Windows 桌面伙伴，把消息、音乐、日程、天气和 AI 额度放到�
 - 结果缓存在本机：断网时继续显示上次的数据，并用橙色标出更新时间。
 - 岛收起时常驻栏默认在时间后面显示天气图标和当前温度（如 `🌧 9°`），点它直接进天气页；可在「页面管理 → 常驻排列」中独立拖动天气，在「状态组件」中单独关闭常驻天气，天气页仍可使用。
 
+## 系统性能和蓝牙电量，抬眼就能看
+
+- 在「设置 → **系统性能**」选择要常驻岛上的指标，包括 CPU、显卡、内存、网速和磁盘读写。点击岛上的指标可展开查看详情。
+- 在「设置 → **无线设备**」查看蓝牙设备的连接状态和电量，可选最多两台设备常驻岛上。设备未上报电量时会显示连接状态。
+
 ## 还有这些顺手的小功能
 
-电源与电量、网络变化、音量、大写锁定、输入语言、蓝牙设备状态，都能在小岛上提示。通知、蓝牙监听与不常用的功能页可以按需关闭。
+电源状态、电脑电量、网络变化、音量、大写锁定和输入语言，都能在小岛上提示。通知、蓝牙监听与不常用的功能页可以按需关闭。
 
 ## 下载安装
 
@@ -203,3 +208,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\package.ps1
 ![感谢支持岛仔的朋友们](https://raw.githubusercontent.com/Renly1994/xiaotang-daozai/refs/heads/supporters-data/supporters/v1/wall.webp)
 
 喜欢岛仔的话，欢迎点一个 **Star**，也可以在 **设置 → 关于 → 支持作者** 请岛仔喝杯咖啡。
+
+## 星标增长曲线
+
+<a href="https://www.star-history.com/?repos=Renly1994%2Fxiaotang-daozai&amp;type=date">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=Renly1994/xiaotang-daozai&amp;type=date&amp;theme=dark" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=Renly1994/xiaotang-daozai&amp;type=date" />
+    <img alt="岛仔 GitHub 星标增长曲线" src="https://api.star-history.com/chart?repos=Renly1994/xiaotang-daozai&amp;type=date" />
+  </picture>
+</a>
