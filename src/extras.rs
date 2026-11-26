@@ -2538,7 +2538,31 @@ impl App {
                             ui.add_enabled_ui(master,|ui|{
                                 setting_row(ui,"微信","根据任务栏闪动提醒，不读取联系人或聊天正文",&mut self.settings.wechat_notifications);
                                 if self.settings.wechat_notifications {
-                                    sub(ui,"托盘一键唤起","微信缩在托盘时，点提醒直接唤起微信",&mut self.settings.wechat_tray_open);
+                                    use crate::model::{WechatWakeMethod,WechatWakeShortcut};
+                                    ui.horizontal(|ui|{ui.add_space(22.0);ui.vertical(|ui|{
+                                        setting_row(ui,"托盘一键唤起","微信缩在托盘时，点提醒直接唤起微信",&mut self.settings.wechat_tray_open);
+                                        if !self.settings.wechat_tray_open {return;}
+                                        settings_control_row_right(ui,"托盘唤起方式",|ui|{
+                                            settings_segmented(ui,&mut self.settings.wechat_wake_method,&[
+                                                (WechatWakeMethod::Tray,"系统托盘"),
+                                                (WechatWakeMethod::Shortcut,"快捷键优先"),
+                                            ],72.0);
+                                        });
+                                        settings_hint(ui,match self.settings.wechat_wake_method {
+                                            WechatWakeMethod::Tray=>"适合微信缩进托盘或同时使用多个账号。Windows 可能会展开隐藏图标。",
+                                            WechatWakeMethod::Shortcut=>"适合微信单开且缩进托盘。点击提醒时模拟一次按键，未能唤起时改用系统托盘。",
+                                        });
+                                        if self.settings.wechat_wake_method==WechatWakeMethod::Shortcut {
+                                            settings_control_row(ui,"组合键",SETTINGS_LABEL_W,|ui|{
+                                                ui.add(egui::TextEdit::singleline(&mut self.settings.wechat_wake_shortcut)
+                                                    .desired_width(160.0).char_limit(48).hint_text("例如 Ctrl+Alt+W"))
+                                            });
+                                            settings_hint(ui,"填入微信「设置 → 快捷键」里的「显示/隐藏窗口」组合键。微信改键后，请在这里同步更新。");
+                                            if !self.settings.wechat_wake_shortcut.trim().is_empty() && WechatWakeShortcut::parse(&self.settings.wechat_wake_shortcut).is_none() {
+                                                ui.add(egui::Label::new(egui::RichText::new("当前使用系统托盘。组合键需用 Ctrl、Alt 或 Shift 搭配字母、数字或 F1–F12。").size(11.5).color(Color32::from_rgb(230,150,40))).wrap());
+                                            }
+                                        }
+                                    });});
                                 }
                                 if master && !self.messenger_status(crate::app::Messenger::Wechat).is_empty(){settings_hint(ui,&self.messenger_status(crate::app::Messenger::Wechat));}
                                 ui.separator();

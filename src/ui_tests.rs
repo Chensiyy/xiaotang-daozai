@@ -9885,6 +9885,12 @@ fn settings_gallery(){
             let mut h=H::new();h.app.open_settings();h.ctx.set_embed_viewports(false);
             h.quota_accounts(2);
             h.app.settings.settings_theme=mode;h.app.settings_tab=tab;
+            if tab==6 {
+                h.app.settings.wechat_notifications=true;
+                h.app.settings.wechat_tray_open=true;
+                h.app.settings.wechat_wake_method=crate::model::WechatWakeMethod::Shortcut;
+                h.app.settings.wechat_wake_shortcut="Ctrl+Alt+W".into();
+            }
             let output=std::sync::Arc::new(std::sync::Mutex::new(None));let capture=output.clone();
             egui::Context::set_immediate_viewport_renderer(move|ctx,mut viewport|{
                 let id=viewport.ids.this;
