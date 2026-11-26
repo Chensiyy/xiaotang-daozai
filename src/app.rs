@@ -464,6 +464,8 @@ pub struct FrameOut {
     pub hit: Rect,
     /// 切到较矮页面时，原页边缘临时保留的续滚范围，不参与绘制或点击命中。
     pub page_scroll_area: Option<Rect>,
+    /// 光标停在原触发区的岛外部分时，由原生监视线程检测移动。
+    pub watch_outside_hover: bool,
     /// 极简细条只感应悬停，鼠标点击交给下面的应用。
     pub click_through: bool,
     pub notice_hit: Option<Rect>,
@@ -808,6 +810,8 @@ pub struct App {
     pub(crate) hold_slot: f32,
     hover_since: Option<f64>,
     leave_since: Option<f64>,
+    /// 本次展开前的悬停范围，以画布中心为原点。
+    hover_open_area: Option<Rect>,
     /// 前台切换导致的强制收起：光标离开前不再自动展开。
     pub hover_lock: bool,
     pub(crate) reveal: f32,
@@ -1057,6 +1061,7 @@ impl App {
             open: false,
             hover_since: None,
             leave_since: None,
+            hover_open_area: None,
             hover_lock: false,
             hold_open: false,
             hold_slot: 0.0,
@@ -2282,6 +2287,7 @@ impl App {
             self.hover_lock=true;
             self.hover_since=None;
             self.leave_since=None;
+            self.hover_open_area=None;
             self.forced_open_until=0.0;
         }
         self.browser_minimal_active=browser_minimal;
@@ -2430,6 +2436,13 @@ impl App {
         let page_before=self.page;
         let previous_menu=self.shelf_menu_rect.take();
         let inside = env.cursor.is_some_and(|c| hit.contains(c) || previous_menu.is_some_and(|r|r.contains(c)));
+        let can_keep_hover = !env.fullscreen_hidden && !env.screen_locked && self.position_drag.is_none();
+        if !can_keep_hover || !self.open && !self.hover_lock {
+            self.hover_open_area = None;
+        }
+        let cursor_from_center = env.cursor.map(|c| c - win.center().to_vec2());
+        let opening_area_hovered = self.hover_open_area.zip(cursor_from_center)
+            .is_some_and(|(area, cursor)| area.contains(cursor));
         self.page_scroll_area=self.page_scroll_area.filter(|area|self.open && !self.hover_lock
             && !env.fullscreen_hidden && !env.screen_locked && env.cursor.is_some_and(|c|area.contains(c))
             && !ctx.input(|i|i.pointer.any_pressed() || i.key_pressed(egui::Key::Escape)));
@@ -2442,7 +2455,7 @@ impl App {
             }
             r.contains(c)
         }) || self.notice_details_rect(notice).is_some_and(|r|r.contains(c)));
-        if !inside {
+        if !inside && !opening_area_hovered {
             self.hover_lock = false;
         }
         if env.cursor != self.last_cursor || ctx.input(|i| !i.events.is_empty()) {
@@ -2534,8 +2547,18 @@ impl App {
             }
         } else {self.wheel_delta=0.0;}
         let volume_dragging=self.music_volume_open && ctx.is_being_dragged(egui::Id::new(("card-drag",true,"m-volume-track")));
-        let want = plugin_notice_detail || self.hold_open || (page_hover && !self.hover_lock && (self.compact_notices()||self.notice.is_none()||self.open)) || self.open && on_notice || (self.open && self.t<self.forced_open_until) || self.drag_hot || volume_dragging || (self.is_editing() && self.open);
+        if opening_area_hovered && !page_hover && ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            self.hover_lock = true;
+        }
+        let hover_wants_open = (page_hover || self.open && opening_area_hovered) && !self.hover_lock
+            && (self.compact_notices() || self.notice.is_none() || self.open);
+        let want = plugin_notice_detail || self.hold_open || hover_wants_open || self.open && on_notice || (self.open && self.t<self.forced_open_until) || self.drag_hot || volume_dragging || (self.is_editing() && self.open);
+        let was_open = self.open;
         self.morph(want, inside, env.t, dt);
+        // 长条收窄后仍认原来的悬停位置，实际点击和滚轮继续按展开面板命中。
+        if can_keep_hover && !was_open && self.open && hover_wants_open && !self.drag_hot {
+            self.hover_open_area = Some(hit.translate(-win.center().to_vec2()));
+        }
         let staying_open = self.open && want;
         if !self.drag_departing || staying_open {
             self.drag_a = anim::approach(self.drag_a, if self.drag_hot { 1.0 } else { 0.0 }, 16.0, dt);
@@ -2919,6 +2942,7 @@ impl App {
             resident_clip,
             hit: rel(next_hit),
             page_scroll_area:self.page_scroll_area.or(canvas_scroll).map(rel),
+            watch_outside_hover:opening_area_hovered && !inside,
             click_through: minimal_strip && !self.open && self.position_drag.is_none(),
             notice_hit:notice_shape.into_iter().chain(notice_details).chain(messenger_rect).chain(self.shelf_menu_rect).reduce(|a,b|a.union(b)).map(rel),
             top_bar_notice:top_bar_notice.into_iter().chain(notice_details.map(|r|r.intersect(ui.max_rect()))).filter(|r|r.is_positive()).reduce(|a,b|a.union(b)).map(rel),
