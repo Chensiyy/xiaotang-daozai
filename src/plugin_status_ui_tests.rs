@@ -140,7 +140,21 @@ fn plugin_settings_pages_gear_routes_by_id_and_sidebar_fits() {
     assert_eq!(h.app.settings_plugin.as_deref(), Some(standalone[1].0));
     assert_eq!(h.app.settings_tab, crate::extras::SETTINGS_TAB_PLUGIN_DETAIL);
 
-    let render_settings = |h: &mut H, size| render_settings(h, size, vec![]);
+    let render_settings = |h: &mut H, size| {
+        let _ = render_settings(h, size, vec![
+            egui::Event::PointerMoved(egui::pos2(80.0, 220.0)),
+            egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0.0, -800.0),
+                modifiers: Default::default(),
+            },
+        ]);
+        // 插件可以排在侧栏末尾，窄窗口中应能滚动到所有入口。
+        for _ in 0..12 {
+            let _ = render_settings(h, size, vec![]);
+        }
+        render_settings(h, size, vec![])
+    };
     let visible_rows = |output: &egui::FullOutput, label: &str, sidebar: bool| {
         let mut rows: Vec<_> = output.shapes.iter().filter_map(|clipped| match &clipped.shape {
             egui::Shape::Text(text) => {
