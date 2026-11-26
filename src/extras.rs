@@ -1230,18 +1230,22 @@ pub(crate) const SETTINGS_LABEL_W: f32 = 80.0;
 const SETTINGS_SWITCH_W: f32 = 34.0;
 const SETTINGS_ROW_GAP: f32 = 16.0;
 
+fn setting_row_text(ui:&mut egui::Ui,title:&str,description:&str,width:f32){
+    let ctx=&ui.ctx().clone();
+    ui.vertical(|ui|{
+        ui.set_width(width);
+        ui.spacing_mut().item_spacing.y=2.0;
+        ui.add(egui::Label::new(egui::RichText::new(title).size(13.0).color(settings_color(ctx,Color32::WHITE,Color32::from_rgb(30,34,41)))).wrap());
+        if !description.is_empty(){ui.add(egui::Label::new(egui::RichText::new(description).size(11.5).color(settings_color(ctx,Color32::from_gray(185),Color32::from_gray(82)))).wrap());}
+    });
+}
+
 /// 开关行：左侧标题 + 说明（宽度固定、自动换行），右侧开关，长说明也不会把开关挤出卡片。
 pub(crate) fn setting_row(ui:&mut egui::Ui,title:&str,description:&str,value:&mut bool){
-    let ctx=&ui.ctx().clone();
     ui.add_space(2.0);
     ui.horizontal(|ui|{
         let text_w=(ui.available_width()-SETTINGS_SWITCH_W-SETTINGS_ROW_GAP).max(120.0);
-        ui.vertical(|ui|{
-            ui.set_width(text_w);
-            ui.spacing_mut().item_spacing.y=2.0;
-            ui.add(egui::Label::new(egui::RichText::new(title).size(13.0).color(settings_color(ctx,Color32::WHITE,Color32::from_rgb(30,34,41)))).wrap());
-            if !description.is_empty(){ui.add(egui::Label::new(egui::RichText::new(description).size(11.5).color(settings_color(ctx,Color32::from_gray(185),Color32::from_gray(82)))).wrap());}
-        });
+        setting_row_text(ui,title,description,text_w);
         // add_space 之后还会再插入一次 item_spacing.x，这里一并扣掉，开关才不会每行往外挤一点。
         ui.add_space((ui.available_width()-SETTINGS_SWITCH_W-ui.spacing().item_spacing.x).max(0.0));
         switch(ui,value);
@@ -1254,6 +1258,17 @@ fn resident_setting_row(ui:&mut egui::Ui,title:&str,description:&str,module_on:b
     ui.add_enabled_ui(module_on,|ui|{
         setting_row(ui,title,if module_on {description}else{"功能页已关闭"},value);
     });
+}
+
+pub(crate) const PAGE_VISIBILITY_ACTION_WIDTH: f32 = 92.0;
+
+pub(crate) fn page_visibility_action(ui:&mut egui::Ui,on:bool,hidden:bool,can_disable:bool)->bool{
+    let label=if hidden {"显示入口"} else if on {"关闭并隐藏"} else {"隐藏入口"};
+    let response=ui.add_enabled_ui(can_disable,|ui|{
+        ui.add_sized([PAGE_VISIBILITY_ACTION_WIDTH,26.0],egui::Button::new(egui::RichText::new(label).size(12.0)).frame(false))
+    }).inner.on_disabled_hover_text("至少保留一个页面");
+    if response.clicked() {ui.ctx().request_repaint();}
+    response.clicked()
 }
 
 /// 设置页统一的分段选择器（灰色底框 + 选中块）。返回值为是否发生了切换。
@@ -1428,7 +1443,6 @@ fn paint_wireless_settings_icon(ui:&egui::Ui,rect:egui::Rect,icon:egui::ImageSou
 }
 
 /// 设置分页对应的功能模块（页面序号）；通用、外观、位置、消息提醒、关于、页面管理不属于任何模块。
-#[cfg_attr(not(test),allow(dead_code))]
 pub(crate) fn settings_tab_module(tab:usize)->Option<usize>{
     use crate::app::*;
     match tab {1=>Some(MUSIC_PAGE),2=>Some(FOCUS_PAGE),3=>Some(WATER_PAGE),4=>Some(TODO_PAGE),5=>Some(SHELF_PAGE),7=>Some(MAIL_PAGE),8=>Some(CALENDAR_PAGE),11=>Some(QUOTA_PAGE),12=>Some(WEATHER_PAGE),15=>Some(PERFORMANCE_PAGE),SETTINGS_TAB_WIRELESS=>Some(BLUETOOTH_PAGE),_=>None}
@@ -1720,6 +1734,10 @@ fn settings_sidebar_row(
 }
 
 impl App {
+    fn settings_group_visible(&self,start:usize,end:usize)->bool{
+        (start..=end).any(|tab|settings_tab_module(tab).is_none_or(|page|!self.settings.hidden_settings_pages[page]))
+    }
+
     fn settings_sidebar_builtin(
         &mut self, ui: &mut egui::Ui, (name, start, end): (&str, usize, usize),
         row_h: f32, row_gap: f32,
@@ -1854,8 +1872,6 @@ impl App {
             #[cfg(feature="sdk-js")]
             let plugin_pages: Vec<_> = self.plugins.standalone_settings_pages()
                 .map(|(id, name)| (id.to_owned(), name.to_owned())).collect();
-            #[cfg(not(feature="sdk-js"))]
-            let plugin_pages: &[(&str, &str)] = &[];
             #[cfg(feature="sdk-js")]
             if self.settings_tab == SETTINGS_TAB_PLUGIN_DETAIL
                 && !plugin_pages.iter().any(|(id, _)| self.settings_plugin.as_ref() == Some(id))
@@ -1865,7 +1881,12 @@ impl App {
             }
             egui::SidePanel::left("settings-sidebar").resizable(false).exact_width(180.0).frame(egui::Frame::new().fill(settings_color(ctx,Color32::from_rgb(29,29,32),Color32::from_rgb(237,239,243))).stroke(egui::Stroke::NONE).inner_margin(egui::Margin::symmetric(10,12))).show(ctx,|ui|{
                 ui.add_space(2.0);
-                let per=(ui.available_height()-80.0)/(SETTINGS_GROUPS.len()+plugin_pages.len()) as f32;
+                let builtin_rows=SETTINGS_GROUPS.iter().filter(|&&(_,start,end,_)|self.settings_group_visible(start,end)).count();
+                #[cfg(feature="sdk-js")]
+                let plugin_rows=plugin_pages.iter().filter(|(id,_)|!self.plugins.status_page_settings_hidden(id)).count();
+                #[cfg(not(feature="sdk-js"))]
+                let plugin_rows=0;
+                let per=(ui.available_height()-80.0)/(builtin_rows+plugin_rows) as f32;
                 let row_h=(per-6.0).clamp(20.0,32.0);
                 let row_gap=(per-3.0-row_h).clamp(0.0,3.0);
                 let (main, bottom) = SETTINGS_GROUPS.split_at(SETTINGS_GROUPS.len()-SETTINGS_BOTTOM_ROWS);
@@ -1883,6 +1904,7 @@ impl App {
                             #[cfg(feature="sdk-js")]
                             if section == "功能" {
                                 for (id, name) in &plugin_pages {
+                                    if self.plugins.status_page_settings_hidden(id) {continue;}
                                     let selected = self.settings_tab == SETTINGS_TAB_PLUGIN_DETAIL
                                         && self.settings_plugin.as_ref() == Some(id);
                                     let icon = egui::include_image!("../assets/settings-icons/system/pages.svg");
@@ -1899,7 +1921,9 @@ impl App {
                                     ui.add_space(row_gap);
                                 }
                             }
-                            self.settings_sidebar_builtin(ui, (name, start, end), row_h, row_gap);
+                            if self.settings_group_visible(start,end) {
+                                self.settings_sidebar_builtin(ui, (name, start, end), row_h, row_gap);
+                            }
                         }
                     });
                 ui.add_space(4.0);
@@ -2049,7 +2073,7 @@ impl App {
                                 ui.separator();
                             }
                             let descriptions=["播放控制与同步歌词","番茄钟与休息计时","喝水与久坐提醒","临时收纳文件位置","任务清单与到期提醒","邮件摘要与验证码","Agent 剩余额度和账号切换","月历、邮件邀请与工作日程","当地天气与七日预报","处理器、显卡、内存、网络与磁盘","蓝牙设备连接状态与多来源电量"];
-                            ui.label(egui::RichText::new("拖动左侧手柄调整顺序；关闭的功能不在后台运行，不同步也不提醒，已有数据保留。").size(11.5).color(settings_color(ctx,Color32::from_gray(180),Color32::from_gray(75))));
+                            settings_hint(ui,"拖动左侧手柄调整顺序。关闭后暂停后台运行，保留已有数据。选择「关闭并隐藏」可从设置左栏收起入口，合并入口需隐藏组内所有功能。");
                             #[derive(Clone)]
                             struct PageDrag(usize);
                             let mut movement=None;
@@ -2058,7 +2082,9 @@ impl App {
                             for (index,page) in self.settings.page_order.into_iter().enumerate() {
                                 if index>0 {ui.separator();}
                                 let mut visible=self.settings.visible_pages[page];
-                                let can_change=!visible || self.settings.visible_pages.iter().filter(|enabled|**enabled).count()>1;
+                                let hidden=self.settings.hidden_settings_pages[page];
+                                let can_disable=!visible || self.settings.visible_pages.iter().filter(|enabled|**enabled).count()>1;
+                                let mut change_hidden=false;
                                 let row=ui.push_id(("page-order",page),|ui|ui.horizontal(|ui|{
                                     ui.set_max_width(row_w);
                                     let (rect,handle)=ui.allocate_exact_size(egui::vec2(20.0,40.0),egui::Sense::drag());
@@ -2066,11 +2092,11 @@ impl App {
                                         ui.painter().circle_filled(rect.center()+egui::vec2(x,y),1.4,settings_color(ctx,Color32::from_gray(155),Color32::from_gray(100)));
                                     }}
                                     handle.on_hover_cursor(egui::CursorIcon::Grab).dnd_set_drag_payload(PageDrag(page));
-                                    // 每行右侧「设置 ›」直接跳到这个功能的设置页，开关仍在最右。
                                     let jump_w=58.0;
-                                    ui.allocate_ui(egui::vec2((ui.available_width()-jump_w-ui.spacing().item_spacing.x).max(160.0),40.0),|ui|{
-                                        ui.add_enabled_ui(can_change,|ui|{setting_row(ui,PAGE_NAMES[page],descriptions[page],&mut visible);});
-                                    });
+                                    let text_w=ui.available_width()-jump_w-SETTINGS_SWITCH_W-PAGE_VISIBILITY_ACTION_WIDTH-3.0*ui.spacing().item_spacing.x;
+                                    setting_row_text(ui,PAGE_NAMES[page],descriptions[page],text_w);
+                                    ui.add_enabled_ui(can_disable,|ui|switch(ui,&mut visible));
+                                    change_hidden=page_visibility_action(ui,visible,hidden,can_disable);
                                     if ui.add_sized([jump_w,26.0],egui::Button::new(egui::RichText::new("设置 ›").size(12.0)).frame(false)).on_hover_text(format!("打开「{}」设置",PAGE_NAMES[page])).clicked(){jump=Some(crate::app::PAGE_SETTINGS_TABS[page]);}
                                 })).inner.response;
                                 if let Some(payload)=row.dnd_hover_payload::<PageDrag>() {
@@ -2081,7 +2107,12 @@ impl App {
                                     }
                                 }
                                 if let Some(payload)=row.dnd_release_payload::<PageDrag>() {movement=Some((payload.0,index));}
-                                if visible!=self.settings.visible_pages[page] {self.set_page_visible(page,visible);}
+                                if change_hidden {
+                                    self.set_page_settings_hidden(page,!hidden);
+                                } else if visible!=self.settings.visible_pages[page] {
+                                    self.set_page_visible(page,visible);
+                                    ctx.request_repaint();
+                                }
                             }
                             if let Some(tab)=jump {self.settings_tab=tab;}
                             if let Some((page,to))=movement {

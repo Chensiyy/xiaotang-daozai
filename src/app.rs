@@ -1838,6 +1838,7 @@ impl App {
         if !visible && self.settings.visible_pages.iter().filter(|enabled|**enabled).count()==1
             && self.settings.visible_pages[page] { return; }
         self.settings.visible_pages[page]=visible;
+        if visible {self.settings.hidden_settings_pages[page]=false;}
         #[cfg(feature="sdk-js")]
         if !visible {
             match page {
@@ -1871,6 +1872,11 @@ impl App {
         if !self.module_on(self.page) {
             if let Some(first)=self.settings.page_order.iter().copied().find(|page|self.settings.visible_pages[*page]) { self.go(first,1.0); }
         }
+    }
+
+    pub(crate) fn set_page_settings_hidden(&mut self,page:usize,hidden:bool) {
+        if hidden && self.module_on(page) {self.set_page_visible(page,false);}
+        self.settings.hidden_settings_pages[page]=hidden && !self.module_on(page);
     }
 
     fn status_page_count(&self) -> usize {
