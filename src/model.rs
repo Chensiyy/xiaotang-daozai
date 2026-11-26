@@ -226,6 +226,26 @@ impl ResidentDate {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum OrderedPage<'a> {
+    Builtin(usize),
+    Plugin(&'a str),
+}
+
+pub(crate) fn ordered_pages<'a>(
+    builtin: &'a [usize],
+    plugins: &'a [(String, usize)],
+    discovered: impl Iterator<Item = &'a str> + 'a,
+) -> impl Iterator<Item = OrderedPage<'a>> + 'a {
+    (0..=builtin.len()).flat_map(move |slot| {
+        plugins.iter().filter_map(move |(id, position)| (*position == slot).then_some(OrderedPage::Plugin(id)))
+            .chain(builtin.get(slot).copied().map(OrderedPage::Builtin))
+    }).chain(
+        discovered.filter(move |id| !plugins.iter().any(|(saved, _)| saved == id))
+            .map(OrderedPage::Plugin),
+    )
+}
+
 #[derive(Clone, Debug)]
 pub struct Settings {
     pub display_id: String,
@@ -249,6 +269,8 @@ pub struct Settings {
     pub visible_pages: [bool; 11],
     pub hidden_settings_pages: [bool; 11],
     pub page_order: [usize; 11],
+    // 以插件 ID 保存位置。数字表示该插件前面的内置页面数量。
+    pub(crate) plugin_page_order: Vec<(String, usize)>,
     pub show_page_shortcuts: bool,
     pub hide_page_arrows: bool,
     pub show_clock: bool,
@@ -339,7 +361,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { display_id: String::new(), skin: Skin::Classic, island_shape: IslandShape::Notch, glass_blur: true, island_size: 100, island_offset: 0, oled_shift: false, dock: Dock::Top, settings_theme: Default::default(), pet: true, minimal: false, browser_minimal: false, avoid_browsers: true, avoid_apps: Vec::new(), visible_pages: [true,true,true,true,true,true,true,true,true,false,true], hidden_settings_pages: [false; 11], page_order: [0,1,2,3,4,5,6,7,8,9,10], show_page_shortcuts: true, hide_page_arrows: false, show_clock: true, resident_date: ResidentDate::Off, show_battery: true, show_weather: true, show_performance: true, performance_bar: Default::default(), performance_metrics: 7, performance_view: Default::default(), clock_12h: false, clock_period: 0, clock_seconds: false, resident_order: Vec::new(), system_hud: true, bluetooth_notifications: true, show_bluetooth:true, bluetooth_pinned:Vec::new(), bluetooth_resident_style:0, bluetooth_resident_custom:false, bluetooth_battery_notifications:true, read_notifications:false, wechat_notifications:false, wecom_notifications:false, feishu_notifications:false, dingtalk_notifications:false, wechat_tray_open:false, qq_only:false, notification_preview:false, notifications: true, system_notify: true, sound: false, lyrics_enabled:true, island_lyrics:false, lyric_delay_ms:-350, hide_fullscreen: true, exclude_from_capture: false, avoid_top_bar: true, top_bar_on_top: false, focus_minutes: 25, rest_minutes: 5, water_minutes: 45, serving_ml: 250, water_start: 9, water_end: 22, sit_remind: true, sit_minutes: 60, lunch_rest: true, lunch_start: 720, lunch_end: 810, mail_enabled: true, mail_sync_operations:false, mail_code_only_notifications: false, mail_code: true, mail_code_popup: false, mail_code_hide_seconds:60, mail_interval: 120, mail_ics: 15, ignored_mail_events: Vec::new(), calendar_prompt: true, calendar_auto_sync: true, clipboard_history: true, weather_city: String::new(), weather_position: None, weather_saved: Vec::new(), render_compat: false, render_compat_reason: String::new() }
+        Self { display_id: String::new(), skin: Skin::Classic, island_shape: IslandShape::Notch, glass_blur: true, island_size: 100, island_offset: 0, oled_shift: false, dock: Dock::Top, settings_theme: Default::default(), pet: true, minimal: false, browser_minimal: false, avoid_browsers: true, avoid_apps: Vec::new(), visible_pages: [true,true,true,true,true,true,true,true,true,false,true], hidden_settings_pages: [false; 11], page_order: [0,1,2,3,4,5,6,7,8,9,10], plugin_page_order: Vec::new(), show_page_shortcuts: true, hide_page_arrows: false, show_clock: true, resident_date: ResidentDate::Off, show_battery: true, show_weather: true, show_performance: true, performance_bar: Default::default(), performance_metrics: 7, performance_view: Default::default(), clock_12h: false, clock_period: 0, clock_seconds: false, resident_order: Vec::new(), system_hud: true, bluetooth_notifications: true, show_bluetooth:true, bluetooth_pinned:Vec::new(), bluetooth_resident_style:0, bluetooth_resident_custom:false, bluetooth_battery_notifications:true, read_notifications:false, wechat_notifications:false, wecom_notifications:false, feishu_notifications:false, dingtalk_notifications:false, wechat_tray_open:false, qq_only:false, notification_preview:false, notifications: true, system_notify: true, sound: false, lyrics_enabled:true, island_lyrics:false, lyric_delay_ms:-350, hide_fullscreen: true, exclude_from_capture: false, avoid_top_bar: true, top_bar_on_top: false, focus_minutes: 25, rest_minutes: 5, water_minutes: 45, serving_ml: 250, water_start: 9, water_end: 22, sit_remind: true, sit_minutes: 60, lunch_rest: true, lunch_start: 720, lunch_end: 810, mail_enabled: true, mail_sync_operations:false, mail_code_only_notifications: false, mail_code: true, mail_code_popup: false, mail_code_hide_seconds:60, mail_interval: 120, mail_ics: 15, ignored_mail_events: Vec::new(), calendar_prompt: true, calendar_auto_sync: true, clipboard_history: true, weather_city: String::new(), weather_position: None, weather_saved: Vec::new(), render_compat: false, render_compat_reason: String::new() }
     }
 }
 
@@ -409,6 +431,12 @@ impl Settings {
                             s.page_order[..order.len()].copy_from_slice(&order);
                         }
                     }
+                }
+                "plugin_page_order" => {
+                    let mut order: Vec<(String, usize)> = serde_json::from_str(&v).unwrap_or_default();
+                    let mut seen = std::collections::HashSet::new();
+                    order.retain(|(id, slot)| !id.is_empty() && *slot <= s.page_order.len() && seen.insert(id.clone()));
+                    s.plugin_page_order = order;
                 }
                 "clock_period" => s.clock_period = v.parse::<u8>().ok().filter(|v|*v<=2).unwrap_or(0),
                 "clock_12h" => s.clock_12h = v == "1",
@@ -521,6 +549,7 @@ impl Settings {
                 ("visible_pages".into(), self.visible_pages.iter().map(|enabled|if *enabled {'1'}else{'0'}).collect()),
                 ("hidden_settings_pages".into(), self.hidden_settings_pages.iter().map(|hidden|if *hidden {'1'}else{'0'}).collect()),
                 ("page_order".into(),self.page_order.iter().map(usize::to_string).collect::<Vec<_>>().join(",")),
+                ("plugin_page_order".into(),serde_json::to_string(&self.plugin_page_order).unwrap_or_default()),
                 ("show_page_shortcuts".into(), (self.show_page_shortcuts as u8).to_string()),
                 ("hide_page_arrows".into(), (self.hide_page_arrows as u8).to_string()),
                 ("show_performance".into(),u8::from(self.show_performance).to_string()),

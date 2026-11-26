@@ -1028,13 +1028,19 @@ impl App {
         let (bw, bh) = if settings.minimal { (BAR_W_MIN, BAR_H_MIN) } else { (BAR_W, BAR_H) };
         let focus_seconds=settings.focus_minutes as f32*60.0;
         let initial_lyrics=settings.lyrics_enabled;
-        let initial_page=settings.page_order.iter().copied().find(|page|settings.visible_pages[*page]).unwrap_or(0);
+        #[cfg(feature="sdk-js")]
+        let plugins = crate::sdk_spike::local::LocalPlugins::open(model::config_dir().join("local-plugins"));
+        #[cfg(feature="sdk-js")]
+        let status_pages: Vec<_> = plugins.status_pages().map(|(id, name)| (id.to_owned(), name.to_owned())).collect();
+        #[cfg(not(feature="sdk-js"))]
+        let status_pages = [];
+        let initial_page = Self::visible_navigation_pages(&settings, &status_pages).next().unwrap_or(MUSIC_PAGE);
         let weather_source=crate::weather_source_ui::State::load();
         let mut weather=crate::weather::State::load(&settings.weather_city,settings.weather_position.as_ref());
         if weather_source.displayed==crate::weather_source_ui::Provider::Qweather {weather.snapshot=weather_source.runtime.snapshot();}
         Self {
             #[cfg(feature="sdk-js")]
-            plugins: crate::sdk_spike::local::LocalPlugins::open(model::config_dir().join("local-plugins")),
+            plugins,
             #[cfg(feature="sdk-js")]
             plugin_form_focused: false,
             #[cfg(feature="sdk-js")]
@@ -1079,7 +1085,7 @@ impl App {
             page: initial_page,
             page_from: initial_page,
             #[cfg(feature="sdk-js")]
-            status_pages: Vec::new(),
+            status_pages,
             #[cfg(feature="sdk-js")]
             plugin_canvas_frame: None,
             page_from_offset: 0.0,
@@ -1875,7 +1881,8 @@ impl App {
             self.clear_module_reminders(page);
         }
         if !self.module_on(self.page) {
-            if let Some(first)=self.settings.page_order.iter().copied().find(|page|self.settings.visible_pages[*page]) { self.go(first,1.0); }
+            let first = self.navigation_pages().next();
+            if let Some(first) = first { self.go(first, 1.0); }
         }
     }
 
@@ -1892,9 +1899,24 @@ impl App {
     }
 
     fn navigation_pages(&self) -> impl Iterator<Item=usize> + '_ {
-        self.settings.page_order.iter().copied()
-            .filter(|page|self.settings.visible_pages[*page])
-            .chain(PAGE_NAMES.len()..PAGE_NAMES.len()+self.status_page_count())
+        #[cfg(feature="sdk-js")]
+        let status_pages = self.status_pages.as_slice();
+        #[cfg(not(feature="sdk-js"))]
+        let status_pages = &[];
+        Self::visible_navigation_pages(&self.settings, status_pages)
+    }
+
+    fn visible_navigation_pages<'a>(
+        settings: &'a model::Settings,
+        status_pages: &'a [(String, String)],
+    ) -> impl Iterator<Item=usize> + 'a {
+        use model::OrderedPage;
+        model::ordered_pages(&settings.page_order, &settings.plugin_page_order, status_pages.iter().map(|(id, _)| id.as_str()))
+            .filter_map(move |page| match page {
+                OrderedPage::Builtin(page) => settings.visible_pages[page].then_some(page),
+                OrderedPage::Plugin(id) => status_pages.iter().position(|(source, _)| source == id)
+                    .map(|index| PAGE_NAMES.len() + index),
+            })
     }
 
     fn navigation_page_name(&self, page: usize) -> &str {

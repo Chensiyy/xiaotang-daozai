@@ -254,7 +254,7 @@ fn status_page_management_opens_and_switches_independently() -> Result<()> {
     let ctx = egui::Context::default();
     crate::theme::load_fonts(&ctx);
     let draw = |ui: &mut egui::Ui, host: &mut LocalPlugins| {
-        let _ = host.status_page_settings(ui);
+        let _ = host.status_page_settings(ui, ID);
     };
     let toggle_page = |host: &mut LocalPlugins| {
         for _ in 0..2 {
@@ -340,12 +340,12 @@ fn status_page_management_opens_and_switches_independently() -> Result<()> {
     assert!(has_text(&standalone, &format!("启用{NAME}")));
     let mut opened = None;
     click(&ctx, "打开", |ui| {
-        opened = host.status_page_settings(ui).or(opened.take());
+        opened = host.status_page_settings(ui, ID).or(opened.take());
     });
     assert_eq!(opened, Some(SettingsNavigation::OpenStatus(ID.into())));
     let mut settings = None;
-    click(&ctx, "设置", |ui| {
-        settings = host.status_page_settings(ui).or(settings.take());
+    click(&ctx, "设置 ›", |ui| {
+        settings = host.status_page_settings(ui, ID).or(settings.take());
     });
     assert_eq!(settings, Some(SettingsNavigation::Plugin(ID.into())));
     frame(&ctx, vec![], |ui| host.standalone_settings(ui, ID));
@@ -377,8 +377,8 @@ fn status_page_management_opens_and_switches_independently() -> Result<()> {
     assert!(host.status_page_settings_hidden(ID));
     assert_eq!(host.standalone_settings_pages().next(), Some((ID, NAME)));
     let mut hidden_route = None;
-    click(&ctx, "设置", |ui| {
-        hidden_route = host.status_page_settings(ui).or(hidden_route.take());
+    click(&ctx, "设置 ›", |ui| {
+        hidden_route = host.status_page_settings(ui, ID).or(hidden_route.take());
     });
     assert_eq!(hidden_route, Some(SettingsNavigation::Plugin(ID.into())));
 
