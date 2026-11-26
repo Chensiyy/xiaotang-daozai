@@ -315,6 +315,14 @@ unsafe fn log_maximized_exclusion(hwnd: HWND, window: RECT, monitor: RECT) {
     crate::resources::append_log(&crate::model::config_dir().join("diagnostics"), "fullscreen.log", &line);
 }
 
+unsafe fn is_shell_surface(hwnd:HWND)->bool {
+    if hwnd==GetShellWindow(){return true;}
+    let mut class=[0u16;64];
+    let len=GetClassNameW(hwnd,&mut class).max(0) as usize;
+    ["Progman","WorkerW","Shell_TrayWnd"].iter()
+        .any(|name|class[..len].iter().copied().eq(name.encode_utf16()))
+}
+
 pub fn fullscreen() -> Option<crate::display_layout::Bounds> {
     use std::sync::Mutex;
     // 上一次判定为全屏的窗口：前台切到它的附属窗口时沿用（见 `keeps_fullscreen`）。
@@ -329,11 +337,7 @@ pub fn fullscreen() -> Option<crate::display_layout::Bounds> {
                 *last = None;
                 return None;
             }
-            // 桌面与资源管理器桌面窗口不能当成全屏游戏。
-            let mut cls = [0u16; 64];
-            let n = GetClassNameW(hwnd, &mut cls);
-            let cls = String::from_utf16_lossy(&cls[..n.max(0) as usize]);
-            if matches!(cls.as_str(), "Progman" | "WorkerW" | "Shell_TrayWnd") {
+            if is_shell_surface(hwnd) {
                 *last = None;
                 return None;
             }
@@ -512,7 +516,7 @@ unsafe fn unique_main_window(pid:u32)->Option<HWND> {
     unsafe extern "system" fn visit(hwnd:HWND,param:LPARAM)->BOOL {
         let search=&mut *(param.0 as *mut Search);
         let mut pid=0;GetWindowThreadProcessId(hwnd,Some(&mut pid));
-        if pid==search.pid && foreground_info(hwnd).app_window && visible_avoidance_rect(hwnd).is_some() {
+        if pid==search.pid && !is_shell_surface(hwnd) && foreground_info(hwnd).app_window && visible_avoidance_rect(hwnd).is_some() {
             if search.main.is_some(){search.main=None;return BOOL(0);}
             search.main=Some(hwnd);
         }
@@ -541,7 +545,10 @@ unsafe fn process_covers_island(pid:u32,island:RECT,dock:crate::model::Dock)->bo
 }
 
 unsafe fn avoidance_for_window(foreground:HWND,island:RECT,pid:u32,settings:&crate::model::Settings,last:&std::cell::Cell<Option<(HWND,u32)>>,image_path:impl FnOnce()->Option<String>)->Option<bool> {
-    if !settings.browser_minimal || IsIconic(GetAncestor(foreground,GA_ROOTOWNER)).as_bool(){return Some(false);}
+    if !settings.browser_minimal{return Some(false);}
+    // 桌面和文件夹窗口可以同属 explorer.exe，切到桌面时结束避让。
+    if is_shell_surface(foreground){last.set(None);return Some(false);}
+    if IsIconic(GetAncestor(foreground,GA_ROOTOWNER)).as_bool(){return Some(false);}
     let rect=visible_avoidance_rect(foreground);
     let overlaps=|rect|browser_overlaps_island(rect,island,settings.dock);
     let owner=GetWindow(foreground,GW_OWNER).ok();
@@ -564,6 +571,7 @@ unsafe fn avoidance_for_window(foreground:HWND,island:RECT,pid:u32,settings:&cra
     // 这条关系也适用于由其他进程创建的浮窗。
     let mut parent=owner;
     while let Some(hwnd)=parent {
+        if is_shell_surface(hwnd){break;}
         if IsIconic(hwnd).as_bool(){return Some(false);}
         if visible_avoidance_rect(hwnd).is_some_and(overlaps) {
             let mut owner_pid=0;GetWindowThreadProcessId(hwnd,Some(&mut owner_pid));
@@ -1131,7 +1139,7 @@ pub(crate) fn avoidance_windows()->std::result::Result<Vec<crate::avoidance::Can
         let _=windows::Win32::Graphics::Dwm::DwmGetWindowAttribute(hwnd,windows::Win32::Graphics::Dwm::DWMWA_CLOAKED,(&mut cloaked as *mut u32).cast(),4);
         if cloaked!=0{return BOOL(1);}
         let mut title=[0u16;1024];let len=GetWindowTextW(hwnd,&mut title);
-        if len==0{return BOOL(1);}
+        if len==0 || is_shell_surface(hwnd){return BOOL(1);}
         let mut pid=0;GetWindowThreadProcessId(hwnd,Some(&mut pid));
         if pid==GetCurrentProcessId(){return BOOL(1);}
         let Some(path)=process_image_path(pid) else{return BOOL(1)};
@@ -1168,6 +1176,46 @@ fn executable_description(path:&str)->Option<String> {
 #[cfg(test)]
 mod avoidance_tests {
     use super::*;
+
+    #[test]
+    fn explorer_avoidance_ignores_the_desktop_even_with_an_open_folder() {
+        use windows::Win32::Foundation::{LPARAM,LRESULT,WPARAM};
+        unsafe extern "system" fn proc(h:HWND,m:u32,w:WPARAM,l:LPARAM)->LRESULT {DefWindowProcW(h,m,w,l)}
+        unsafe {
+            let desktop_class=windows::core::w!("WorkerW");
+            let instance=windows::Win32::System::LibraryLoader::GetModuleHandleW(None).unwrap().into();
+            let wc=WNDCLASSW{lpfnWndProc:Some(proc),hInstance:instance,lpszClassName:desktop_class,..Default::default()};
+            assert_ne!(RegisterClassW(&wc),0);
+            let create=|class,ex| CreateWindowExW(WS_EX_NOACTIVATE|ex,class,windows::core::w!(""),
+                WS_POPUP|WS_VISIBLE,-10000,-10000,1920,1080,None,None,instance,None).unwrap();
+            let desktop=create(desktop_class,WS_EX_TOOLWINDOW);
+            let explorer=create(windows::core::w!("STATIC"),WS_EX_APPWINDOW);
+            let island=RECT{left:-10000,top:-10000,right:-9040,bottom:-9900};
+            let path=r"C:\Windows\explorer.exe";
+            let mut settings=crate::model::Settings::default();
+            settings.browser_minimal=true;
+            settings.avoid_apps.push((path.into(),"文件资源管理器".into()));
+            let last=std::cell::Cell::new(None);
+            let poll=|hwnd| avoidance_for_window(hwnd,island,GetCurrentProcessId(),&settings,&last,||Some(path.into()));
+
+            let covering=poll(explorer);
+            let desktop_result=poll(desktop);
+            let after_desktop=last.get();
+            let back_to_explorer=poll(explorer);
+            SetWindowPos(explorer,HWND_BOTTOM,-8000,-10000,1920,1080,SWP_NOACTIVATE).unwrap();
+            let moved=poll(explorer);
+            DestroyWindow(explorer).unwrap();
+            DestroyWindow(desktop).unwrap();
+            UnregisterClassW(desktop_class,instance).unwrap();
+
+            assert_eq!(covering,Some(true),"文件夹窗口遮住岛仔时应避让");
+            assert_eq!(desktop_result,Some(false),"切到桌面时不应触发或沿用资源管理器避让");
+            assert_eq!(after_desktop,None,"桌面要清除上一次资源管理器窗口");
+            assert_eq!(back_to_explorer,Some(true),"切回实际遮挡的文件夹窗口时应恢复避让");
+            assert_eq!(moved,Some(false),"文件夹窗口移开后不应避让");
+        }
+    }
+
     #[test]
     fn registered_3ds_max_uses_visible_same_process_windows_for_avoidance() {
         unsafe {
