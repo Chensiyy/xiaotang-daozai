@@ -11306,6 +11306,65 @@ fn wide_resident_island_stays_inside_the_window_region_while_morphing() {
     assert!(widest>PW+20.0);
 }
 
+#[test]
+fn long_island_hover_keeps_open_at_the_original_edge() {
+    use crate::{app::PERFORMANCE_PAGE, model::Dock, performance::{BarStyle, Metric}};
+    let _guard=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    for dock in [Dock::Top,Dock::Bottom,Dock::Left,Dock::Right] {
+        let mut h=H::new();
+        h.app.settings.dock=dock;
+        h.app.set_page_visible(PERFORMANCE_PAGE,true);
+        h.app.settings.performance_bar=BarStyle::Custom;
+        h.app.settings.performance_metrics=Metric::ALL.iter().fold(0,|bits,m|bits|m.bit());
+        let frame=|h:&mut H,cursor| {
+            if dock.is_side() { side_frame(h,cursor).hit }
+            else { h.cursor=cursor; h.frame(vec![]); h.hit }
+        };
+        let mut closed=Rect::NOTHING;
+        for _ in 0..60 { closed=frame(&mut h,None); }
+        let edge=if dock.is_side() {
+            closed.center_bottom()-3.0*Vec2::Y
+        } else {
+            closed.right_center()-3.0*Vec2::X
+        };
+        assert!(closed.contains(edge),"{dock:?} 应从收起岛体的边缘触发");
+
+        let mut opened=false;
+        for _ in 0..90 {
+            let hit=frame(&mut h,Some(edge));
+            assert!(!opened || h.app.open,"{dock:?} 光标停在原处时，展开后应保持");
+            opened|=h.app.open;
+            if h.app.progress()>0.99 {
+                assert!(!hit.contains(edge),"{dock:?} 岛外应继续接收桌面点击");
+            }
+        }
+        assert!(opened && h.app.progress()>0.99,"{dock:?} 应完整展开");
+
+        let center=closed.center();
+        assert!(frame(&mut h,Some(center)).contains(center) && h.app.open,
+            "{dock:?} 从边缘移入面板时应保持展开");
+        for _ in 0..20 { frame(&mut h,Some(edge)); }
+        assert!(h.app.open,"{dock:?} 返回原悬停位置也应保持展开");
+        for _ in 0..60 { frame(&mut h,Some(Pos2::new(2.0,2.0))); }
+        assert!(!h.app.open && h.app.progress()<0.05,"{dock:?} 离开面板和原触发区域后应收起");
+
+        for _ in 0..45 { frame(&mut h,Some(edge)); }
+        assert!(h.app.open,"{dock:?} 再次悬停应展开");
+        if dock == Dock::Top {
+            h.app.settings.browser_minimal=true;
+            h.browser_at_top=Some(true);
+        } else {
+            h.app.foreground_changed(&h.ctx);
+        }
+        for _ in 0..60 { frame(&mut h,Some(edge)); }
+        assert!(!h.app.open,"{dock:?} 切换前台后，光标原地停留不能重新打开岛体");
+        if dock == Dock::Top {
+            for _ in 0..45 { frame(&mut h,Some(Pos2::new(center.x,2.0))); }
+            assert!(h.app.open,"切换到浏览器后，从原触发区直接移入极简细条也能重新展开");
+        }
+    }
+}
+
 #[cfg(windows)]
 #[test]
 fn performance_program_list_scrolls_under_the_wheel_without_turning_pages() {
