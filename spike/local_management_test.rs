@@ -1203,6 +1203,38 @@ fn guide_opens_from_the_market_copies_a_prompt_and_stacks_the_template_form() {
     let form = frame_in(&ctx, WINDOW, vec![], |ui| draw(&mut host, ui));
     assert!(has_text(&form, "选择位置并创建…"));
     assert!(has_text(&form, "做一个岛仔插件"));
+    let id_format = "用英文句点分隔，每段以小写英文字母开头，只能用小写字母、数字和连字符，最多 64 个字符。";
+    let uppercase_hint = "请将插件 ID 中的大写字母改成小写。";
+    assert!(has_text(&form, id_format));
+    assert!(!has_text(&form, uppercase_hint));
+
+    click_in(&ctx, WINDOW, "例如 xiaoming.payday", |ui| draw(&mut host, ui));
+    let uppercase = frame_in(
+        &ctx,
+        WINDOW,
+        vec![egui::Event::Text("Walalala.TraePoints".into())],
+        |ui| draw(&mut host, ui),
+    );
+    assert!(has_text(&uppercase, uppercase_hint));
+    let corrected = frame_in(
+        &ctx,
+        WINDOW,
+        vec![
+            egui::Event::Key {
+                key: egui::Key::A,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::COMMAND,
+            },
+            egui::Event::Text("walalala.trae-points".into()),
+        ],
+        |ui| draw(&mut host, ui),
+    );
+    assert!(has_text(&corrected, "walalala.trae-points"));
+    assert!(has_text(&corrected, id_format));
+    assert!(!has_text(&corrected, uppercase_hint));
+
     let escape = || {
         vec![egui::Event::Key {
             key: egui::Key::Escape,
