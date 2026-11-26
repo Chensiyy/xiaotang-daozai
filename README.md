@@ -200,6 +200,6 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\package.ps1
 
 ## 感谢支持
 
-![感谢支持岛仔的朋友们](docs/images/readme/supporters.webp)
+![感谢支持岛仔的朋友们](https://raw.githubusercontent.com/Renly1994/xiaotang-daozai/refs/heads/supporters-data/supporters/v1/wall.webp)
 
 喜欢岛仔的话，欢迎点一个 **Star**，也可以在 **设置 → 关于 → 支持作者** 请岛仔喝杯咖啡。
