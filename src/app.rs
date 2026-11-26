@@ -4064,33 +4064,35 @@ impl App {
     fn nav(&mut self, c: &Card) {
         let all_pages:Vec<_>=self.navigation_pages().collect();
         if all_pages.len()<2 { return; }
-        // 停靠方式决定箭头的锚点，切页改变面板高度时仍可原地点击。
-        let anchor_y=68.0;
-        let arrow_y=match self.dock() {
-            model::Dock::Top=>anchor_y,
-            model::Dock::Bottom=>c.to_local(c.painter.clip_rect().center_bottom()).y-(PH-anchor_y),
-            model::Dock::Left|model::Dock::Right=>anchor_y+(self.page_height.pos-PH)/2.0,
-        };
-        for (x, direction, id) in [(21.0,-1.0,"nav-l"),(398.0,1.0,"nav-r")] {
-            let arrow_card=if self.side() {c.edge_control(x-13.0,arrow_y-13.0,26.0,26.0)} else {Some(c.clone())};
-            let Some(arrow_card)=arrow_card else {continue};
-            let button=arrow_card.hit(x-13.0,arrow_y-13.0,26.0,26.0,id);
-            let (hover,press)=arrow_card.hover_t(&button);
-            #[cfg(all(windows, feature = "sdk-material"))]
-            if !self.glassy() || self.glass_controls_ready() {
-                let role=if direction>0.0 {crate::material::ControlRole::NavR} else {crate::material::ControlRole::NavL};
-                let radius=if self.glassy() {12.0} else {9.0*(1.0-0.08*press)};
-                arrow_card.material_circle_with_role(&button,x,arrow_y,radius,role);
-            }
-            if self.glassy() {
-                paint::chevron_glass(&arrow_card,x,arrow_y,direction,hover,self.glass_control_scale(&button,press),self.glass_controls_ready());
-            } else {
-                paint::chevron(&arrow_card,x,arrow_y,direction,hover,press);
-            }
-            if button.clicked() {self.navigate_page(direction>0.0);}
-        }
         let shortcuts = self.page_shortcuts_enabled();
-        // 页数较多时，底栏随当前页移动，左右箭头和滚轮仍可切到每一页。
+        if !shortcuts || !self.settings.hide_page_arrows {
+            // 停靠方式决定箭头的锚点，切页改变面板高度时仍可原地点击。
+            let anchor_y=68.0;
+            let arrow_y=match self.dock() {
+                model::Dock::Top=>anchor_y,
+                model::Dock::Bottom=>c.to_local(c.painter.clip_rect().center_bottom()).y-(PH-anchor_y),
+                model::Dock::Left|model::Dock::Right=>anchor_y+(self.page_height.pos-PH)/2.0,
+            };
+            for (x, direction, id) in [(21.0,-1.0,"nav-l"),(398.0,1.0,"nav-r")] {
+                let arrow_card=if self.side() {c.edge_control(x-13.0,arrow_y-13.0,26.0,26.0)} else {Some(c.clone())};
+                let Some(arrow_card)=arrow_card else {continue};
+                let button=arrow_card.hit(x-13.0,arrow_y-13.0,26.0,26.0,id);
+                let (hover,press)=arrow_card.hover_t(&button);
+                #[cfg(all(windows, feature = "sdk-material"))]
+                if !self.glassy() || self.glass_controls_ready() {
+                    let role=if direction>0.0 {crate::material::ControlRole::NavR} else {crate::material::ControlRole::NavL};
+                    let radius=if self.glassy() {12.0} else {9.0*(1.0-0.08*press)};
+                    arrow_card.material_circle_with_role(&button,x,arrow_y,radius,role);
+                }
+                if self.glassy() {
+                    paint::chevron_glass(&arrow_card,x,arrow_y,direction,hover,self.glass_control_scale(&button,press),self.glass_controls_ready());
+                } else {
+                    paint::chevron(&arrow_card,x,arrow_y,direction,hover,press);
+                }
+                if button.clicked() {self.navigate_page(direction>0.0);}
+            }
+        }
+        // 页数较多时，底栏随当前页移动，滚轮仍可切到每一页。
         let max_slots=if shortcuts {PAGE_NAMES.len()}else{40};
         let current=all_pages.iter().position(|&page|page==self.page).unwrap_or_default();
         let start=current.saturating_sub(max_slots/2).min(all_pages.len().saturating_sub(max_slots));

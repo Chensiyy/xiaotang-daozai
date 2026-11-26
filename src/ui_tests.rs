@@ -6520,6 +6520,12 @@ fn bottom_page_shortcuts_share_a_row_with_dots_on_every_dock() {
     let control=|h:&H,kind:&str,page:usize| {
         h.ctx.read_response(egui::Id::new(("card",true,(kind,page)))).map(|r|r.interact_rect)
     };
+    let check_arrows=|h:&H,visible| {
+        for id in ["nav-l","nav-r"] {
+            assert_eq!(h.ctx.read_response(egui::Id::new(("card",true,id))).is_some(),visible,
+                "{:?} 停靠时 {id} 的翻页热区显示错误",h.app.settings.dock);
+        }
+    };
     let highlight=|h:&H, area:Rect| h.shapes.iter().find_map(|shape| match &shape.shape {
         egui::Shape::Rect(rect) if rect.fill.a()>0 && area.contains_rect(rect.rect)
             && rect.rect.center().distance(area.center())<0.1 => Some(rect.fill),
@@ -6548,6 +6554,7 @@ fn bottom_page_shortcuts_share_a_row_with_dots_on_every_dock() {
         h.app.show_page(TODO_PAGE);
         settle(&mut h);
         assert_eq!(h.app.expanded_height(),PH+24.0);
+        check_arrows(&h,true);
 
         let shortcuts=pages.map(|page|control(&h,"page-shortcut",page).expect("应显示已启用页面的快捷图标"));
         let dots=pages.map(|page|control(&h,"dot",page).expect("应显示已启用页面的页码点"));
@@ -6573,13 +6580,33 @@ fn bottom_page_shortcuts_share_a_row_with_dots_on_every_dock() {
         click(&mut h,dot.center());
         assert_eq!(h.app.page(),FOCUS_PAGE);
 
+        let settings_path=crate::model::config_dir().join("settings.txt");
+        h.app.settings.save();
+        let settings=std::fs::read_to_string(&settings_path).unwrap();
+        std::fs::write(&settings_path,format!("{settings}\nhide_page_arrows=1\n")).unwrap();
+        h.app.settings=crate::model::Settings::load();
+        settle(&mut h);
+        check_arrows(&h,false);
+        assert!(control(&h,"page-shortcut",FOCUS_PAGE).is_some());
+        let pos=control(&h,"dot",FOCUS_PAGE).unwrap().center();
+        frame_control_draw(&mut h,Some(pos),vec![egui::Event::PointerMoved(pos),egui::Event::MouseWheel {
+            unit:egui::MouseWheelUnit::Point,delta:Vec2::new(0.0,-40.0),modifiers:Default::default(),
+        }]);
+        assert_eq!(h.app.page(),TODO_PAGE,"隐藏箭头后仍应能用滚轮翻页");
+        h.app.show_page(FOCUS_PAGE);
+
         h.app.settings.show_page_shortcuts=false;
         settle(&mut h);
         assert_eq!(h.app.expanded_height(),PH);
         assert!(control(&h,"page-shortcut",FOCUS_PAGE).is_none());
         assert!(control(&h,"dot",FOCUS_PAGE).is_some());
+        check_arrows(&h,true);
 
         h.app.settings.show_page_shortcuts=true;
+        h.app.plugins.enable(SHORTCUT_FIXTURE_ID,false).unwrap();
+        settle(&mut h);
+        check_arrows(&h,true);
+        h.app.plugins.enable(SHORTCUT_FIXTURE_ID,true).unwrap();
         h.app.settings.visible_pages=std::array::from_fn(|page|page==FOCUS_PAGE);
         settle(&mut h);
         assert_eq!(h.app.expanded_height(),PH);
@@ -7693,34 +7720,57 @@ fn page_management_hiding_controls_sidebar_and_persists(){
 fn page_management_page_shortcuts_use_plugin_controls() {
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
     let mut h=H::new();
-    install_page_shortcuts_fixture(&mut h);
-    h.app.plugins.enable(SHORTCUT_FIXTURE_ID,true).unwrap();
     h.app.settings.settings_theme=crate::settings_theme::SettingsTheme::Dark;
     h.app.settings_tab=crate::extras::SETTINGS_TAB_PAGES;
     h.app.settings.show_page_shortcuts=true;
     h.app.open_settings();
     h.ctx.set_embed_viewports(false);
     for _ in 0..12 {draw_page_management(&mut h,vec![]);}
-    let title=h.shapes.iter().find_map(|shape|match &shape.shape {
-        egui::Shape::Text(text) if text.galley.text()=="快捷切换图标"=>Some(text.visual_bounding_rect()),
+    let find_title=|h:&H,label:&str| h.shapes.iter().find_map(|shape|match &shape.shape {
+        egui::Shape::Text(text) if text.galley.text()==label=>Some(text.visual_bounding_rect()),
         _=>None,
-    }).expect("页面管理应显示已启用插件的图标设置");
-    assert!(h.shapes.iter().any(|shape|matches!(&shape.shape,egui::Shape::Text(text)
-        if text.galley.text()=="插件" && text.visual_bounding_rect().left()>=title.right()
-            && (text.visual_bounding_rect().center().y-title.center().y).abs()<8.0)),
-        "快捷切换图标标题旁应有插件小标");
-    let pos=h.shapes.iter().find_map(|shape|match &shape.shape {
-        egui::Shape::Rect(rect) if rect.fill==egui::Color32::from_rgb(140,127,208)
+    });
+    let arrow_label="隐藏左右翻页箭头";
+    assert!(find_title(&h,arrow_label).is_none(),"未安装插件时应隐藏箭头开关");
+    install_page_shortcuts_fixture(&mut h);
+    h.app.plugins.enable(SHORTCUT_FIXTURE_ID,true).unwrap();
+    for _ in 0..12 {draw_page_management(&mut h,vec![]);}
+    let shortcut_title=find_title(&h,"快捷切换图标").expect("页面管理应显示已启用插件的图标设置");
+    let arrows_title=find_title(&h,arrow_label).expect("页面管理应显示已启用插件的箭头设置");
+    for title in [shortcut_title,arrows_title] {
+        assert!(h.shapes.iter().any(|shape|matches!(&shape.shape,egui::Shape::Text(text)
+            if text.galley.text()=="插件" && text.visual_bounding_rect().left()>=title.right()
+                && (text.visual_bounding_rect().center().y-title.center().y).abs()<8.0)),
+            "快捷切换设置标题旁应有插件小标");
+    }
+    let switch_center=|h:&H,title:Rect,fill| h.shapes.iter().find_map(|shape|match &shape.shape {
+        egui::Shape::Rect(rect) if rect.fill==fill && (rect.rect.width()-38.0).abs()<0.1
             && (rect.rect.center().y-title.center().y).abs()<24.0 => Some(rect.rect.center()),
         _=>None,
-    }).expect("快捷切换图标开启时应用紫色开关");
-    for pressed in [true,false] {
-        draw_page_management(&mut h,vec![egui::Event::PointerMoved(pos),egui::Event::PointerButton{
-            pos,button:egui::PointerButton::Primary,pressed,modifiers:Default::default(),
-        }]);
-    }
+    });
+    let click_switch=|h:&mut H,pos| {
+        for pressed in [true,false] {
+            draw_page_management(h,vec![egui::Event::PointerMoved(pos),egui::Event::PointerButton{
+                pos,button:egui::PointerButton::Primary,pressed,modifiers:Default::default(),
+            }]);
+        }
+    };
+    let purple=egui::Color32::from_rgb(140,127,208);
+    let pos=switch_center(&h,arrows_title,egui::Color32::from_gray(86)).expect("隐藏箭头开关应默认为灰色");
+    click_switch(&mut h,pos);
+    for _ in 0..12 {draw_page_management(&mut h,vec![]);}
+    assert!(switch_center(&h,arrows_title,purple).is_some(),"隐藏箭头开关开启后应变紫色");
+    assert!(h.app.settings.show_page_shortcuts,"隐藏箭头不应改变快捷图标显示");
+    let settings=std::fs::read_to_string(crate::model::config_dir().join("settings.txt")).unwrap();
+    assert!(settings.lines().any(|line|line=="hide_page_arrows=1"),"切换开关后应保存隐藏箭头偏好");
+
+    let pos=switch_center(&h,shortcut_title,purple).expect("快捷切换图标开启时应用紫色开关");
+    click_switch(&mut h,pos);
     assert!(!h.app.settings.show_page_shortcuts);
     assert!(h.app.plugins.active_page_shortcut_colors().is_some(),"隐藏图标时插件仍启用");
+    h.app.plugins.enable(SHORTCUT_FIXTURE_ID,false).unwrap();
+    draw_page_management(&mut h,vec![]);
+    assert!(find_title(&h,arrow_label).is_none(),"停用插件后应隐藏箭头开关");
 }
 
 #[test]
