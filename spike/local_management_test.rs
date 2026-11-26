@@ -333,7 +333,7 @@ fn status_page_management_opens_and_switches_independently() -> Result<()> {
     });
     assert_eq!(opened, Some(SettingsNavigation::OpenStatus(ID.into())));
     let mut settings = None;
-    click(&ctx, "设置", |ui| {
+    click(&ctx, "设置 ›", |ui| {
         settings = host.status_page_settings(ui, ID).or(settings.take());
     });
     assert_eq!(settings, Some(SettingsNavigation::Plugin(ID.into())));

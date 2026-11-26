@@ -1227,7 +1227,7 @@ fn switch(ui:&mut egui::Ui,value:&mut bool)->bool {
 }
 /// 设置页版式：标签列宽、开关尺寸、控件与卡片右边缘之间的固定留白。
 pub(crate) const SETTINGS_LABEL_W: f32 = 80.0;
-const SETTINGS_SWITCH_W: f32 = 34.0;
+pub(crate) const SETTINGS_SWITCH_W: f32 = 34.0;
 const SETTINGS_ROW_GAP: f32 = 16.0;
 
 /// 开关行：左侧标题 + 说明（宽度固定、自动换行），右侧开关，长说明也不会把开关挤出卡片。
@@ -1855,7 +1855,7 @@ impl App {
             let plugin_pages: Vec<_> = self.plugins.standalone_settings_pages()
                 .map(|(id, name)| (id.to_owned(), name.to_owned())).collect();
             #[cfg(not(feature="sdk-js"))]
-            let plugin_pages: &[(&str, &str)] = &[];
+            let plugin_pages: &[(String, String)] = &[];
             #[cfg(feature="sdk-js")]
             if self.settings_tab == SETTINGS_TAB_PLUGIN_DETAIL
                 && !plugin_pages.iter().any(|(id, _)| self.settings_plugin.as_ref() == Some(id))
@@ -1869,37 +1869,60 @@ impl App {
                 let row_h=(per-6.0).clamp(20.0,32.0);
                 let row_gap=(per-3.0-row_h).clamp(0.0,3.0);
                 let (main, bottom) = SETTINGS_GROUPS.split_at(SETTINGS_GROUPS.len()-SETTINGS_BOTTOM_ROWS);
+                let (general, features) = main.split_at(4);
+                let builtin_order = self.settings.page_order;
+                let plugin_order = self.settings.plugin_page_order.clone();
+                let order = crate::model::ordered_pages(&builtin_order, &plugin_order, plugin_pages.iter().map(|(id, _)| id.as_str()));
                 let footer_height = bottom.len() as f32*(row_h+row_gap+ui.spacing().item_spacing.y)+17.0;
                 let main_height = (ui.available_height()-footer_height).max(0.0);
                 egui::ScrollArea::vertical().id_salt("settings-sidebar-scroll").max_height(main_height)
                     .auto_shrink([false,false]).show(ui, |ui| {
-                        for &(name, start, end, section) in main {
-                            if !section.is_empty() {
-                                ui.add_space(if start == 0 { 2.0 } else { 8.0 });
-                                let color = settings_color(ui.ctx(), Color32::from_gray(150), Color32::from_gray(105));
-                                ui.label(egui::RichText::new(section).size(11.0).color(color));
-                                ui.add_space(3.0);
-                            }
-                            #[cfg(feature="sdk-js")]
-                            if section == "功能" {
-                                for (id, name) in &plugin_pages {
-                                    let selected = self.settings_tab == SETTINGS_TAB_PLUGIN_DETAIL
-                                        && self.settings_plugin.as_ref() == Some(id);
-                                    let icon = egui::include_image!("../assets/settings-icons/system/pages.svg");
-                                    let response = ui.push_id(("plugin-settings-sidebar", id), |ui| {
-                                        settings_sidebar_row(
-                                            ui, name, icon, row_h, selected, false,
-                                            self.plugins.navigation_icon(id),
-                                        ).on_hover_text(name)
-                                    }).inner;
-                                    if selected && focus_requested && !ui.clip_rect().contains_rect(response.rect) {
-                                        response.scroll_to_me(Some(egui::Align::Center));
+                        let heading = |ui: &mut egui::Ui, label: &str, space| {
+                            ui.add_space(space);
+                            let color = settings_color(ui.ctx(), Color32::from_gray(150), Color32::from_gray(105));
+                            ui.label(egui::RichText::new(label).size(11.0).color(color));
+                            ui.add_space(3.0);
+                        };
+                        heading(ui, general[0].3, 2.0);
+                        for &(name, start, end, _) in general {
+                            self.settings_sidebar_builtin(ui, (name, start, end), row_h, row_gap);
+                        }
+                        heading(ui, features[0].3, 8.0);
+                        let mut shown = std::collections::HashSet::new();
+                        for page in order {
+                            match page {
+                                crate::model::OrderedPage::Builtin(page) => {
+                                    // 消息提醒没有岛上页面，在邮箱入口前显示。
+                                    let tab = crate::app::PAGE_SETTINGS_TABS[page];
+                                    for &(name, start, end, _) in features.iter().filter(|&&(_, start, end, _)| {
+                                        (start..=end).contains(&tab) || (start == 6 && page == crate::app::MAIL_PAGE)
+                                    }) {
+                                        if shown.insert(start) {
+                                            self.settings_sidebar_builtin(ui, (name, start, end), row_h, row_gap);
+                                        }
                                     }
-                                    if response.clicked() && !selected { self.open_plugin_settings(id); }
-                                    ui.add_space(row_gap);
+                                }
+                                crate::model::OrderedPage::Plugin(_plugin_id) => {
+                                    #[cfg(feature="sdk-js")]
+                                    {
+                                        let Some((id, name)) = plugin_pages.iter().find(|(id, _)| id == _plugin_id) else { continue; };
+                                        let selected = self.settings_tab == SETTINGS_TAB_PLUGIN_DETAIL
+                                            && self.settings_plugin.as_ref() == Some(id);
+                                        let icon = egui::include_image!("../assets/settings-icons/system/pages.svg");
+                                        let response = ui.push_id(("plugin-settings-sidebar", id), |ui| {
+                                            settings_sidebar_row(
+                                                ui, name, icon, row_h, selected, false,
+                                                self.plugins.navigation_icon(id),
+                                            ).on_hover_text(name)
+                                        }).inner;
+                                        if selected && focus_requested && !ui.clip_rect().contains_rect(response.rect) {
+                                            response.scroll_to_me(Some(egui::Align::Center));
+                                        }
+                                        if response.clicked() && !selected { self.open_plugin_settings(id); }
+                                        ui.add_space(row_gap);
+                                    }
                                 }
                             }
-                            self.settings_sidebar_builtin(ui, (name, start, end), row_h, row_gap);
                         }
                     });
                 ui.add_space(4.0);
@@ -2139,6 +2162,7 @@ impl App {
                                         OrderedPage::Plugin(id) => self.settings.plugin_page_order.push((id.to_owned(), slot)),
                                     }
                                 }
+                                ctx.request_repaint();
                                 ctx.request_repaint_of(egui::ViewportId::ROOT);
                             }
                             if self.settings.visible_pages.iter().filter(|enabled|**enabled).count()==1 {

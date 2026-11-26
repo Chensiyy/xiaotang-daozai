@@ -2,7 +2,7 @@
 use super::market_state::MarketStatus;
 use super::*;
 use crate::{
-    extras::{settings_apply_style, settings_card, settings_control_row, settings_hint, settings_label},
+    extras::{settings_apply_style, settings_card, settings_control_row, settings_hint, settings_label, SETTINGS_SWITCH_W},
     paint::{self, Card, H},
     settings_theme::color,
     theme::{self, W},
@@ -401,7 +401,12 @@ const PLUGIN_SWITCH_WIDTH: f32 = 38.0;
 
 /// 插件开关统一用紫色表示开启、灰色表示关闭。
 fn plugin_switch(ui: &mut egui::Ui, id: &str, on: bool, label: &str) -> bool {
-    let (_, rect) = ui.allocate_space(egui::vec2(PLUGIN_SWITCH_WIDTH, 22.0));
+    plugin_switch_sized(ui, id, on, label, egui::vec2(PLUGIN_SWITCH_WIDTH, 22.0))
+}
+
+fn plugin_switch_sized(ui: &mut egui::Ui, id: &str, on: bool, label: &str, size: egui::Vec2) -> bool {
+    let (_, rect) = ui.allocate_space(size);
+    let radius = size.y / 2.0;
     let response = ui.interact(
         rect,
         egui::Id::new(("settings-plugin-switch", id)),
@@ -418,18 +423,18 @@ fn plugin_switch(ui: &mut egui::Ui, id: &str, on: bool, label: &str) -> bool {
         Color32::from_rgb(203, 207, 214),
     );
     ui.painter()
-        .rect_filled(rect, 11.0, paint::mix(off, plugin_accent(ui), t));
+        .rect_filled(rect, radius, paint::mix(off, plugin_accent(ui), t));
     if response.has_focus() {
         ui.painter().rect_stroke(
             rect.expand(2.0),
-            13.0,
+            radius + 2.0,
             egui::Stroke::new(1.0, plugin_accent(ui)),
             egui::StrokeKind::Outside,
         );
     }
-    let x = egui::lerp((rect.left() + 11.0)..=(rect.right() - 11.0), t);
+    let x = egui::lerp((rect.left() + radius)..=(rect.right() - radius), t);
     ui.painter()
-        .circle_filled(egui::pos2(x, rect.center().y), 8.0, Color32::WHITE);
+        .circle_filled(egui::pos2(x, rect.center().y), radius - 3.0, Color32::WHITE);
     response.on_hover_text(label).clicked()
 }
 
@@ -2033,23 +2038,37 @@ impl LocalPlugins {
         };
         ui.vertical(|ui| {
             let (switched, jumped, settings) = ui.horizontal(|ui| {
+                let open_width = 42.0;
+                let settings_width = 58.0;
+                let text_width = ui.available_width() - open_width - SETTINGS_SWITCH_W - settings_width
+                    - 3.0 * ui.spacing().item_spacing.x;
+                let action = |ui: &mut egui::Ui, label: &str, width: f32, shown: bool| {
+                    if !shown {
+                        ui.allocate_space(egui::vec2(width, 26.0));
+                        return false;
+                    }
+                    ui.add_sized([width, 26.0], egui::Button::new(egui::RichText::new(label).size(12.0)).frame(false)).clicked()
+                };
                 ui.vertical(|ui| {
-                    ui.set_max_width((ui.available_width() - 144.0).max(70.0));
+                    ui.set_width(text_width.max(0.0));
+                    ui.spacing_mut().item_spacing.y = 2.0;
                     ui.horizontal(|ui| {
                         ui.scope(|ui| {
-                            ui.set_max_width((ui.available_width() - 44.0).max(20.0));
-                            ui.add(egui::Label::new(name.as_str()).truncate()).on_hover_text(name.as_str());
+                            ui.set_max_width((ui.available_width() - 44.0).max(0.0));
+                            let title = egui::RichText::new(name.as_str()).size(13.0)
+                                .color(color(ui.ctx(), Color32::WHITE, Color32::from_rgb(30, 34, 41)));
+                            ui.add(egui::Label::new(title).truncate()).on_hover_text(name.as_str());
                         });
                         plugin_tag(ui);
                     });
-                    settings_hint(ui, description);
+                    let hint = egui::RichText::new(description).size(11.5)
+                        .color(color(ui.ctx(), Color32::from_gray(185), Color32::from_gray(82)));
+                    ui.add(egui::Label::new(hint).truncate()).on_hover_text(description);
                 });
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let switched = plugin_switch(ui, id, page_on, &name);
-                    let settings = configurable && ui.button("设置").clicked();
-                    let jumped = page_on && ui.button("打开").clicked();
-                    (switched, jumped, settings)
-                }).inner
+                let jumped = action(ui, "打开", open_width, page_on);
+                let switched = plugin_switch_sized(ui, id, page_on, &name, egui::vec2(SETTINGS_SWITCH_W, 20.0));
+                let settings = action(ui, "设置 ›", settings_width, configurable);
+                (switched, jumped, settings)
             }).inner;
             let error_id = ui.make_persistent_id(("status-page-preference-error", id));
             if switched {
