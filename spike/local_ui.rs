@@ -740,19 +740,34 @@ fn material_error(ui: &mut egui::Ui) {
 }
 
 impl LocalPlugins {
-    pub(crate) fn page_shortcut_settings(&self, ui: &mut egui::Ui, show: &mut bool) -> bool {
+    pub(crate) fn page_shortcut_settings(&self, ui: &mut egui::Ui, show: &mut bool, hide_arrows: &mut bool) -> bool {
         if self.active_page_shortcut_colors().is_none() {
             return false;
         }
-        if plugin_setting_switch_row(
+        let display_changed = plugin_setting_switch_row(
             ui,
             "page-shortcuts-display",
             "快捷切换图标",
             "在岛仔展开后的底部与页码点同排显示",
             *show,
             true,
-        ) {
+        );
+        if display_changed {
             *show = !*show;
+        }
+        ui.separator();
+        let arrows_changed = plugin_setting_switch_row(
+            ui,
+            "page-shortcuts-hide-arrows",
+            "隐藏左右翻页箭头",
+            "显示快捷切换图标时生效",
+            *hide_arrows,
+            true,
+        );
+        if arrows_changed {
+            *hide_arrows = !*hide_arrows;
+        }
+        if display_changed || arrows_changed {
             ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
         }
         true
