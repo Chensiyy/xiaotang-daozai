@@ -2,7 +2,10 @@
 use super::market_state::MarketStatus;
 use super::*;
 use crate::{
-    extras::{settings_apply_style, settings_card, settings_control_row, settings_hint, settings_label},
+    extras::{
+        page_visibility_action, settings_apply_style, settings_card, settings_control_row,
+        settings_hint, settings_label,
+    },
     paint::{self, Card, H},
     settings_theme::color,
     theme::{self, W},
@@ -2035,14 +2038,16 @@ impl LocalPlugins {
                 }
                 let manifest = &self.records[id].package.as_ref().unwrap().manifest;
                 let status_only = manifest.owner == "status";
-                let configurable = standalone_settings_page(manifest) || (!status_only
+                let standalone = standalone_settings_page(manifest);
+                let configurable = standalone || (!status_only
                     && (manifest.has_settings() || manifest.has_surface(Surface::IslandPinned)));
                 let description = if status_only {
                     "关闭后暂停这个插件的数据读取"
                 } else {
                     "控制这个功能页在岛上显示"
                 };
-                let row = ui.push_id(("status-page-preference", id), |ui| {
+                let hidden = self.status_page_settings_hidden(id);
+                let (switched, visibility_changed, jumped, settings) = ui.push_id(("status-page-preference", id), |ui| {
                     ui.horizontal(|ui| {
                         ui.vertical(|ui| {
                             ui.set_max_width((ui.available_width() - 144.0).max(70.0));
@@ -2055,30 +2060,42 @@ impl LocalPlugins {
                             });
                             settings_hint(ui, description);
                         });
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let switched = plugin_switch(ui, id, page_on, name);
-                            let settings = configurable && ui.button("设置").clicked();
-                            let jumped = page_on && ui.button("打开").clicked();
-                            (switched, jumped, settings)
+                        ui.vertical(|ui| {
+                            let (switched, jumped, settings) = ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    let switched = plugin_switch(ui, id, page_on, name);
+                                    let settings = configurable && ui.button("设置").clicked();
+                                    let jumped = page_on && ui.button("打开").clicked();
+                                    (switched, jumped, settings)
+                                },
+                            ).inner;
+                            let visibility_changed = standalone && ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| page_visibility_action(ui, page_on, hidden, true),
+                            ).inner;
+                            (switched, visibility_changed, jumped, settings)
                         })
                         .inner
                     })
                     .inner
-                });
-                if row.inner.0 {
-                    change = Some((id.to_owned(), !page_on));
+                }).inner;
+                if switched {
+                    change = Some((id.to_owned(), !page_on, false));
+                } else if visibility_changed {
+                    change = Some((id.to_owned(), false, !hidden));
                 }
-                if row.inner.1 {
+                if jumped {
                     navigation = Some(SettingsNavigation::OpenStatus(id.to_owned()));
                 }
-                if row.inner.2 {
+                if settings {
                     navigation = Some(SettingsNavigation::Plugin(id.to_owned()));
                 }
             }
         });
         let error_id = ui.make_persistent_id("status-page-preference-error");
-        if let Some((id, on)) = change {
-            let error = self.set_status_page_enabled(&id, on)
+        if let Some((id, on, hidden)) = change {
+            let error = self.set_status_page_display(&id, on, hidden)
                 .err()
                 .map(|e| e.to_string())
                 .unwrap_or_default();

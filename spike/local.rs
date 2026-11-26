@@ -243,6 +243,8 @@ struct Record {
     market_revoked: bool,
     #[serde(default, skip_serializing_if = "is_false")]
     status_page_disabled: bool,
+    #[serde(default, skip_serializing_if = "is_false")]
+    status_page_settings_hidden: bool,
     #[serde(default, skip_serializing_if = "NoticeHistory::is_empty")]
     notice_history: NoticeHistory,
 }
@@ -1409,6 +1411,7 @@ impl LocalPlugins {
             #[cfg(windows)]
             market_revoked: false,
             status_page_disabled: false,
+            status_page_settings_hidden: false,
             notice_history: NoticeHistory::default(),
         };
         if let Some(old) = self.records.get(&id) {
@@ -1460,17 +1463,32 @@ impl LocalPlugins {
     }
 
     pub(crate) fn set_status_page_enabled(&mut self, id: &str, on: bool) -> Result<()> {
+        self.set_status_page_display(id, on, false)
+    }
+
+    pub(crate) fn set_status_page_display(&mut self, id: &str, on: bool, hide_settings: bool) -> Result<()> {
         let mut record = self.installed(id)?;
         if !record.package.as_ref().unwrap().manifest.is_status_page() {
             return Err(fail("此插件没有独立状态页"));
         }
         let disabled = !on;
-        if record.status_page_disabled != disabled {
+        let settings_hidden = disabled && hide_settings;
+        let runtime_changed = record.status_page_disabled != disabled;
+        if runtime_changed || record.status_page_settings_hidden != settings_hidden {
             record.status_page_disabled = disabled;
+            record.status_page_settings_hidden = settings_hidden;
             self.put(id, record)?;
-            self.forget_view(id);
+            if runtime_changed {
+                self.forget_view(id);
+            }
         }
         Ok(())
+    }
+
+    pub(crate) fn status_page_settings_hidden(&self, id: &str) -> bool {
+        self.records.get(id).is_some_and(|record| {
+            record.status_page_disabled && record.status_page_settings_hidden
+        })
     }
 
     #[cfg(windows)]
@@ -1579,6 +1597,7 @@ impl LocalPlugins {
             r.material_granted = false;
             r.source_grant = None;
             r.status_page_disabled = false;
+            r.status_page_settings_hidden = false;
             self.put(id, r)?
         } else {
             self.forget_appearance(id)?;

@@ -180,6 +180,15 @@ fn plugin_settings_pages_gear_routes_by_id_and_sidebar_fits() {
     assert!(visible(&output, standalone[1].1, true));
     assert!(visible(&output, "金价测试专用参数", false));
 
+    h.app.plugins.set_status_page_display(standalone[1].0, false, true).unwrap();
+    h.app.set_page_settings_hidden(crate::app::MUSIC_PAGE, true);
+    let hidden = render_settings(&mut h, size);
+    assert!(!visible(&hidden, standalone[1].1, true));
+    assert!(visible(&hidden, name, true), "隐藏音乐后，其他插件入口仍应显示");
+    assert!(visible(&hidden, "金价测试专用参数", false), "从插件管理仍可直达插件设置");
+    h.app.plugins.set_status_page_enabled(standalone[1].0, true).unwrap();
+    assert!(visible(&render_settings(&mut h, size), standalone[1].1, true));
+
     h.app.show_status_page(id);
     assert!(h.app.page >= crate::app::PAGE_NAMES.len());
     h.app.open_plugin_settings(id);

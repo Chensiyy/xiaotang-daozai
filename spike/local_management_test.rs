@@ -256,6 +256,17 @@ fn status_page_management_opens_and_switches_independently() -> Result<()> {
     let draw = |ui: &mut egui::Ui, host: &mut LocalPlugins| {
         let _ = host.status_page_settings(ui);
     };
+    let toggle_page = |host: &mut LocalPlugins| {
+        for _ in 0..2 {
+            frame(&ctx, vec![], |ui| draw(ui, host));
+        }
+        let switch = ctx
+            .read_response(egui::Id::new(("settings-plugin-switch", ID)))
+            .expect("页面管理中的插件开关")
+            .rect
+            .center();
+        click_at(&ctx, switch, |ui| draw(ui, host));
+    };
     let installed = |ui: &mut egui::Ui, host: &mut LocalPlugins| {
         host.manage(
             ui,
@@ -347,10 +358,29 @@ fn status_page_management_opens_and_switches_independently() -> Result<()> {
     click_at(&ctx, switch, |ui| host.standalone_settings(ui, ID));
     assert!(host.records[ID].enabled);
     assert!(host.status_pages().next().is_none());
+    assert!(!host.status_page_settings_hidden(ID), "普通关闭应保留左栏入口");
     assert_eq!(host.drafts[ID]["title"], "未保存的设置");
     assert!(!has_text(&frame(&ctx, vec![], |ui| draw(ui, &mut host)), "打开"));
     assert_eq!(host.standalone_settings_pages().next(), Some((ID, NAME)));
     assert!(has_text(&frame(&ctx, vec![], |ui| draw(ui, &mut host)), NAME));
+
+    click(&ctx, "隐藏入口", |ui| draw(ui, &mut host));
+    assert!(host.status_pages().next().is_none());
+    assert!(host.status_page_settings_hidden(ID));
+    click(&ctx, "显示入口", |ui| draw(ui, &mut host));
+    assert!(host.status_pages().next().is_none());
+    assert!(!host.status_page_settings_hidden(ID));
+    toggle_page(&mut host);
+    assert_eq!(host.status_pages().next(), Some((ID, NAME)));
+    click(&ctx, "关闭并隐藏", |ui| draw(ui, &mut host));
+    assert!(host.status_pages().next().is_none());
+    assert!(host.status_page_settings_hidden(ID));
+    assert_eq!(host.standalone_settings_pages().next(), Some((ID, NAME)));
+    let mut hidden_route = None;
+    click(&ctx, "设置", |ui| {
+        hidden_route = host.status_page_settings(ui).or(hidden_route.take());
+    });
+    assert_eq!(hidden_route, Some(SettingsNavigation::Plugin(ID.into())));
 
     toggle_installed(&mut host);
     assert!(!host.records[ID].enabled);
@@ -364,6 +394,10 @@ fn status_page_management_opens_and_switches_independently() -> Result<()> {
     assert!(host.standalone_settings_pages().next().is_none());
     host.enable(ID, true)?;
     assert_eq!(host.status_page_preferences().next(), Some((ID, NAME, true, false)));
+    assert!(host.status_page_settings_hidden(ID), "左栏隐藏偏好应持久化");
+    toggle_page(&mut host);
+    assert_eq!(host.status_pages().next(), Some((ID, NAME)));
+    assert!(!host.status_page_settings_hidden(ID), "开启页面时应恢复左栏入口");
     let mut record = host.records[ID].clone();
     record.package.as_mut().unwrap().manifest.name = "独立功能模块".repeat(13);
     host.put(ID, record)?;
