@@ -2018,77 +2018,53 @@ impl LocalPlugins {
         self.source_dialog(ui);
     }
 
-    pub(crate) fn status_page_settings(&mut self, ui: &mut egui::Ui) -> Option<SettingsNavigation> {
-        let mut preferences = self.status_page_preferences()
-            .filter(|(_, _, enabled, _)| *enabled)
-            .peekable();
-        preferences.peek()?;
-
-        ui.add_space(12.0);
-        group_header(ui, "插件页面", "");
-        let mut change = None;
-        let mut navigation = None;
-        plugin_list(ui, |ui| {
-            for (index, (id, name, _, page_on)) in preferences.enumerate() {
-                if index > 0 {
-                    row_separator(ui);
-                }
-                let manifest = &self.records[id].package.as_ref().unwrap().manifest;
-                let status_only = manifest.owner == "status";
-                let configurable = standalone_settings_page(manifest) || (!status_only
-                    && (manifest.has_settings() || manifest.has_surface(Surface::IslandPinned)));
-                let description = if status_only {
-                    "关闭后暂停这个插件的数据读取"
-                } else {
-                    "控制这个功能页在岛上显示"
-                };
-                let row = ui.push_id(("status-page-preference", id), |ui| {
+    pub(crate) fn status_page_settings(&mut self, ui: &mut egui::Ui, id: &str) -> Option<SettingsNavigation> {
+        let (_, name, _, page_on) = self.status_page_preferences()
+            .find(|(plugin, _, enabled, _)| *plugin == id && *enabled)?;
+        let name = name.to_owned();
+        let manifest = &self.records[id].package.as_ref().unwrap().manifest;
+        let status_only = manifest.owner == "status";
+        let configurable = standalone_settings_page(manifest) || (!status_only
+            && (manifest.has_settings() || manifest.has_surface(Surface::IslandPinned)));
+        let description = if status_only {
+            "关闭后暂停这个插件的数据读取"
+        } else {
+            "控制这个功能页在岛上显示"
+        };
+        ui.vertical(|ui| {
+            let (switched, jumped, settings) = ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    ui.set_max_width((ui.available_width() - 144.0).max(70.0));
                     ui.horizontal(|ui| {
-                        ui.vertical(|ui| {
-                            ui.set_max_width((ui.available_width() - 144.0).max(70.0));
-                            ui.horizontal(|ui| {
-                                ui.scope(|ui| {
-                                    ui.set_max_width((ui.available_width() - 44.0).max(20.0));
-                                    ui.add(egui::Label::new(name).truncate()).on_hover_text(name);
-                                });
-                                plugin_tag(ui);
-                            });
-                            settings_hint(ui, description);
+                        ui.scope(|ui| {
+                            ui.set_max_width((ui.available_width() - 44.0).max(20.0));
+                            ui.add(egui::Label::new(name.as_str()).truncate()).on_hover_text(name.as_str());
                         });
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let switched = plugin_switch(ui, id, page_on, name);
-                            let settings = configurable && ui.button("设置").clicked();
-                            let jumped = page_on && ui.button("打开").clicked();
-                            (switched, jumped, settings)
-                        })
-                        .inner
-                    })
-                    .inner
+                        plugin_tag(ui);
+                    });
+                    settings_hint(ui, description);
                 });
-                if row.inner.0 {
-                    change = Some((id.to_owned(), !page_on));
-                }
-                if row.inner.1 {
-                    navigation = Some(SettingsNavigation::OpenStatus(id.to_owned()));
-                }
-                if row.inner.2 {
-                    navigation = Some(SettingsNavigation::Plugin(id.to_owned()));
-                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let switched = plugin_switch(ui, id, page_on, &name);
+                    let settings = configurable && ui.button("设置").clicked();
+                    let jumped = page_on && ui.button("打开").clicked();
+                    (switched, jumped, settings)
+                }).inner
+            }).inner;
+            let error_id = ui.make_persistent_id(("status-page-preference-error", id));
+            if switched {
+                let error = self.set_status_page_enabled(id, !page_on)
+                    .err().map(|e| e.to_string()).unwrap_or_default();
+                ui.data_mut(|data| data.insert_temp(error_id, error));
+                ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
             }
-        });
-        let error_id = ui.make_persistent_id("status-page-preference-error");
-        if let Some((id, on)) = change {
-            let error = self.set_status_page_enabled(&id, on)
-                .err()
-                .map(|e| e.to_string())
-                .unwrap_or_default();
-            ui.data_mut(|data| data.insert_temp(error_id, error));
-            ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
-        }
-        if let Some(error) = ui.data(|data| data.get_temp::<String>(error_id)).filter(|s| !s.is_empty()) {
-            settings_hint(ui, &error);
-        }
-        navigation
+            if let Some(error) = ui.data(|data| data.get_temp::<String>(error_id)).filter(|s| !s.is_empty()) {
+                settings_hint(ui, &error);
+            }
+            if settings { Some(SettingsNavigation::Plugin(id.to_owned())) }
+            else if jumped { Some(SettingsNavigation::OpenStatus(id.to_owned())) }
+            else { None }
+        }).inner
     }
 
     /// 插件设置显示在所属设置页，标题旁带「插件」小标。从「已安装」点路径过来时，

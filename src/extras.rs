@@ -2049,53 +2049,103 @@ impl App {
                                 ui.separator();
                             }
                             let descriptions=["播放控制与同步歌词","番茄钟与休息计时","喝水与久坐提醒","临时收纳文件位置","任务清单与到期提醒","邮件摘要与验证码","Agent 剩余额度和账号切换","月历、邮件邀请与工作日程","当地天气与七日预报","处理器、显卡、内存、网络与磁盘","蓝牙设备连接状态与多来源电量"];
-                            ui.label(egui::RichText::new("拖动左侧手柄调整顺序；关闭的功能不在后台运行，不同步也不提醒，已有数据保留。").size(11.5).color(settings_color(ctx,Color32::from_gray(180),Color32::from_gray(75))));
+                            ui.label(egui::RichText::new("拖动左侧手柄调整岛上顺序。关闭内置功能后会停止后台同步和提醒，已有数据保留。").size(11.5).color(settings_color(ctx,Color32::from_gray(180),Color32::from_gray(75))));
+                            use crate::model::OrderedPage;
                             #[derive(Clone)]
-                            struct PageDrag(usize);
+                            struct PageDrag(egui::Id);
+                            #[cfg(feature = "sdk-js")]
+                            let plugins: Vec<_> = self.plugins.status_page_preferences()
+                                .filter(|(_, _, enabled, _)| *enabled)
+                                .map(|(id, _, _, _)| id.to_owned()).collect();
+                            #[cfg(not(feature = "sdk-js"))]
+                            let plugins: Vec<String> = Vec::new();
+                            let builtin = self.settings.page_order;
+                            let saved_plugins = self.settings.plugin_page_order.clone();
+                            let mut order: Vec<_> = crate::model::ordered_pages(&builtin, &saved_plugins, plugins.iter().map(String::as_str)).collect();
+                            let rows: Vec<_> = order.iter().copied().enumerate().filter(|(_, page)| match page {
+                                OrderedPage::Builtin(_) => true,
+                                OrderedPage::Plugin(id) => plugins.iter().any(|installed| installed == id),
+                            }).collect();
+                            let drag_index = |payload: &PageDrag| rows.iter().find_map(|(index, page)| {
+                                (egui::Id::new(page) == payload.0).then_some(*index)
+                            });
                             let mut movement=None;
                             let mut jump=None;
                             let row_w=ui.available_width();
-                            for (index,page) in self.settings.page_order.into_iter().enumerate() {
-                                if index>0 {ui.separator();}
-                                let mut visible=self.settings.visible_pages[page];
-                                let can_change=!visible || self.settings.visible_pages.iter().filter(|enabled|**enabled).count()>1;
+                            for (row_index, &(index, page)) in rows.iter().enumerate() {
+                                if row_index > 0 {ui.separator();}
                                 let row=ui.push_id(("page-order",page),|ui|ui.horizontal(|ui|{
                                     ui.set_max_width(row_w);
                                     let (rect,handle)=ui.allocate_exact_size(egui::vec2(20.0,40.0),egui::Sense::drag());
                                     for x in [-3.0,3.0] {for y in [-6.0,0.0,6.0] {
                                         ui.painter().circle_filled(rect.center()+egui::vec2(x,y),1.4,settings_color(ctx,Color32::from_gray(155),Color32::from_gray(100)));
                                     }}
-                                    handle.on_hover_cursor(egui::CursorIcon::Grab).dnd_set_drag_payload(PageDrag(page));
-                                    // 每行右侧「设置 ›」直接跳到这个功能的设置页，开关仍在最右。
-                                    let jump_w=58.0;
-                                    ui.allocate_ui(egui::vec2((ui.available_width()-jump_w-ui.spacing().item_spacing.x).max(160.0),40.0),|ui|{
-                                        ui.add_enabled_ui(can_change,|ui|{setting_row(ui,PAGE_NAMES[page],descriptions[page],&mut visible);});
-                                    });
-                                    if ui.add_sized([jump_w,26.0],egui::Button::new(egui::RichText::new("设置 ›").size(12.0)).frame(false)).on_hover_text(format!("打开「{}」设置",PAGE_NAMES[page])).clicked(){jump=Some(crate::app::PAGE_SETTINGS_TABS[page]);}
+                                    handle.on_hover_cursor(egui::CursorIcon::Grab).dnd_set_drag_payload(PageDrag(egui::Id::new(page)));
+                                    match page {
+                                        OrderedPage::Builtin(page) => {
+                                            let mut visible=self.settings.visible_pages[page];
+                                            let can_change=!visible || self.settings.visible_pages.iter().filter(|enabled|**enabled).count()>1;
+                                            let jump_w=58.0;
+                                            ui.allocate_ui(egui::vec2((ui.available_width()-jump_w-ui.spacing().item_spacing.x).max(160.0),40.0),|ui|{
+                                                ui.add_enabled_ui(can_change,|ui|{setting_row(ui,PAGE_NAMES[page],descriptions[page],&mut visible);});
+                                            });
+                                            if ui.add_sized([jump_w,26.0],egui::Button::new(egui::RichText::new("设置 ›").size(12.0)).frame(false)).on_hover_text(format!("打开「{}」设置",PAGE_NAMES[page])).clicked(){jump=Some(crate::app::PAGE_SETTINGS_TABS[page]);}
+                                            if visible!=self.settings.visible_pages[page] {self.set_page_visible(page,visible);}
+                                        }
+                                        OrderedPage::Plugin(_id) => {
+                                            #[cfg(feature="sdk-js")]
+                                            if let Some(route) = self.plugins.status_page_settings(ui, _id) {
+                                                self.apply_settings_navigation(route);
+                                            }
+                                        }
+                                    }
                                 })).inner.response;
-                                if let Some(payload)=row.dnd_hover_payload::<PageDrag>() {
-                                    if payload.0!=page {
-                                        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
-                                        let y=if self.settings.page_order.iter().position(|p|*p==payload.0).unwrap()<index {row.rect.bottom()}else{row.rect.top()};
-                                        ui.painter().line_segment([egui::pos2(row.rect.left(),y),egui::pos2(row.rect.right(),y)],egui::Stroke::new(2.0,Color32::from_rgb(70,150,255)));
+                                if let Some(from) = row.dnd_hover_payload::<PageDrag>()
+                                    .and_then(|payload| drag_index(&payload)).filter(|from| *from != index)
+                                {
+                                    ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                                    let y = if from < index { row.rect.bottom() } else { row.rect.top() };
+                                    ui.painter().line_segment([egui::pos2(row.rect.left(),y),egui::pos2(row.rect.right(),y)],egui::Stroke::new(2.0,Color32::from_rgb(70,150,255)));
+                                }
+                                if let Some(from) = row.dnd_release_payload::<PageDrag>().and_then(|payload| drag_index(&payload)) {
+                                    movement = Some((from, index));
+                                }
+                            }
+                            if egui::DragAndDrop::has_payload_of_type::<PageDrag>(ctx) {
+                                let clip = ui.clip_rect();
+                                if let Some(pointer) = ctx.pointer_hover_pos().filter(|pos| clip.contains(*pos)) {
+                                    let edge = 26.0;
+                                    let up = (clip.top() + edge - pointer.y).max(0.0);
+                                    let down = (pointer.y - clip.bottom() + edge).max(0.0);
+                                    let delta = (up - down) * 14.0 * ctx.input(|i| i.stable_dt.min(1.0 / 30.0));
+                                    if delta != 0.0 {
+                                        ui.scroll_with_delta_animation(egui::vec2(0.0, delta), egui::style::ScrollAnimation::none());
+                                        ctx.request_repaint();
                                     }
                                 }
-                                if let Some(payload)=row.dnd_release_payload::<PageDrag>() {movement=Some((payload.0,index));}
-                                if visible!=self.settings.visible_pages[page] {self.set_page_visible(page,visible);}
                             }
                             if let Some(tab)=jump {self.settings_tab=tab;}
-                            if let Some((page,to))=movement {
-                                let from=self.settings.page_order.iter().position(|p|*p==page).unwrap();
-                                if from<to {self.settings.page_order[from..=to].rotate_left(1);}
-                                else {self.settings.page_order[to..=from].rotate_right(1);}
+                            if let Some((from, to)) = movement.filter(|(from, to)| from != to) {
+                                if from < to { order[from..=to].rotate_left(1); }
+                                else { order[to..=from].rotate_right(1); }
+                                self.settings.plugin_page_order.clear();
+                                let mut slot = 0;
+                                for page in order {
+                                    match page {
+                                        OrderedPage::Builtin(page) => {
+                                            self.settings.page_order[slot] = page;
+                                            slot += 1;
+                                        }
+                                        OrderedPage::Plugin(id) => self.settings.plugin_page_order.push((id.to_owned(), slot)),
+                                    }
+                                }
+                                ctx.request_repaint_of(egui::ViewportId::ROOT);
                             }
                             if self.settings.visible_pages.iter().filter(|enabled|**enabled).count()==1 {
                                 ui.add_space(5.0);
                                 ui.label(egui::RichText::new("至少保留一个页面。").size(11.0).color(settings_color(ctx,Color32::from_gray(180),Color32::from_gray(75))));
                             }
                         });
-                        #[cfg(feature="sdk-js")]
-                        if let Some(route)=self.plugins.status_page_settings(ui) {self.apply_settings_navigation(route);}
                     }
                     0=>{
                         settings_label(ui,"设置页外观");
