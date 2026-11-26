@@ -1,7 +1,9 @@
 //! 已识别的 2.4G USB 接收器。拔插查询独立于蓝牙枚举。
 use super::compat::{builtin_receivers, Package, Store};
+use super::usb_battery;
 use super::{Device, DeviceKind};
 use std::{
+    collections::BTreeMap,
     ffi::c_void,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -11,8 +13,11 @@ use std::{
     time::{Duration, Instant},
 };
 use windows::{
-    core::{w, GUID},
-    Win32::Devices::DeviceAndDriverInstallation::*,
+    core::{w, GUID, PCWSTR},
+    Win32::Devices::{
+        DeviceAndDriverInstallation::*,
+        Properties::{DEVPKEY_Device_LastArrivalDate, DEVPROPTYPE, DEVPROP_TYPE_FILETIME},
+    },
 };
 
 const GUID_DEVINTERFACE_USB_DEVICE: GUID = GUID::from_u128(0xa5dcbf10_6530_11d2_901f_00c04fb951ed);
@@ -70,6 +75,58 @@ fn present_usb_instances() -> Option<Vec<String>> {
         }
     }
     None
+}
+
+fn last_arrival(id: &str) -> Option<u64> {
+    let instance: Vec<_> = id.strip_prefix("usb:")?.encode_utf16().chain([0]).collect();
+    let mut node = 0;
+    if unsafe {
+        CM_Locate_DevNodeW(
+            &mut node,
+            PCWSTR(instance.as_ptr()),
+            CM_LOCATE_DEVNODE_NORMAL,
+        )
+    } != CR_SUCCESS
+    {
+        return None;
+    }
+    let mut kind = DEVPROPTYPE::default();
+    let mut value = 0u64;
+    let value_size = std::mem::size_of::<u64>() as u32;
+    let mut size = value_size;
+    let result = unsafe {
+        CM_Get_DevNode_PropertyW(
+            node,
+            &DEVPKEY_Device_LastArrivalDate,
+            &mut kind,
+            Some((&mut value as *mut u64).cast()),
+            &mut size,
+            0,
+        )
+    };
+    (result == CR_SUCCESS && kind == DEVPROP_TYPE_FILETIME && size == value_size && value != 0)
+        .then_some(value)
+}
+
+fn changed_arrivals<'a>(
+    ids: impl Iterator<Item = &'a str>,
+    known: &mut BTreeMap<String, u64>,
+    read: impl Fn(&str) -> Option<u64>,
+) -> Vec<String> {
+    let previous = std::mem::take(known);
+    let mut changed = Vec::new();
+    for id in ids {
+        let before = previous.get(id).copied();
+        // 属性暂时不可读时保留上次的到达时间，等下一次成功查询再比较。
+        let Some(current) = read(id).or(before) else {
+            continue;
+        };
+        if before.is_some_and(|value| value != current) {
+            changed.push(id.to_owned());
+        }
+        known.insert(id.to_owned(), current);
+    }
+    changed
 }
 
 struct Notification {
@@ -154,6 +211,7 @@ pub(super) fn run(
         changes,
         scan_interval,
         present_usb_instances,
+        last_arrival,
     );
 }
 
@@ -165,12 +223,15 @@ fn run_scans(
     changes: mpsc::Receiver<()>,
     scan_interval: Duration,
     scan: impl Fn() -> Option<Vec<String>>,
+    read_arrival: impl Fn(&str) -> Option<u64>,
 ) {
     let mut active = store.package();
     let mut next_scan = Instant::now();
     let mut instances = None;
-    let mut latest = None;
+    let mut latest: Option<Vec<Device>> = None;
     let mut published = None;
+    let mut battery = usb_battery::Poller::new();
+    let mut arrivals = BTreeMap::new();
     while !stop.load(Ordering::Relaxed) {
         let selected = store.package();
         let changed = match (&selected, &active) {
@@ -179,14 +240,28 @@ fn run_scans(
         };
         if Instant::now() >= next_scan || changed {
             active = selected;
-            if let Some(found) = scan() {
+            let found = scan();
+            let scanned = found.is_some();
+            if let Some(found) = found {
                 instances = Some(found);
             }
             // 启停和更新按最新识别表重算，刚好枚举失败时也能移除已停用的扩展项。
             latest = instances
                 .as_ref()
                 .map(|ids| receiver_snapshot(active.as_deref(), ids));
+            if let Some(devices) = &latest {
+                battery.sync(devices, active.as_deref(), Instant::now());
+                if scanned {
+                    // 两次扫描之间重插时，实例 ID 可能相同，Windows 的到达时间会变化。
+                    for id in changed_arrivals(battery.target_ids(), &mut arrivals, &read_arrival) {
+                        battery.invalidate(&id);
+                    }
+                }
+            }
             next_scan = Instant::now() + scan_interval;
+        }
+        if let Some(devices) = &mut latest {
+            battery.poll(devices, Instant::now());
         }
         if latest != published {
             if let Some(devices) = &latest {
@@ -211,6 +286,34 @@ mod tests {
     use super::*;
     use crate::bt::compat::builtin_data;
     use serde_json::json;
+
+    #[test]
+    fn receiver_arrival_change_detects_replug_without_missing_snapshot() {
+        let first = r"usb:USB\VID_3554&PID_F58A\A";
+        let second = r"usb:USB\VID_3554&PID_F58A\B";
+        let ids = [first, second];
+        let mut known = BTreeMap::new();
+
+        assert!(changed_arrivals(ids.into_iter(), &mut known, |_| Some(10)).is_empty());
+        assert!(
+            changed_arrivals(ids.into_iter(), &mut known, |id| (id == second)
+                .then_some(10))
+            .is_empty()
+        );
+        assert_eq!(known[first], 10);
+        assert_eq!(
+            changed_arrivals(ids.into_iter(), &mut known, |id| Some(if id == first {
+                11
+            } else {
+                10
+            })),
+            [first]
+        );
+        assert_eq!(known[first], 11);
+
+        assert!(changed_arrivals([second].into_iter(), &mut known, |_| Some(10)).is_empty());
+        assert!(!known.contains_key(first));
+    }
 
     #[test]
     fn receiver_snapshot_native_catalog_covers_all_23_without_plugin() {
@@ -270,6 +373,7 @@ mod tests {
                             .to_vec()
                         })
                     },
+                    |_| None,
                 );
             });
 

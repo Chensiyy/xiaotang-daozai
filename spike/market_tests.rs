@@ -412,9 +412,15 @@ fn publish_wireless(root: &Path, version: &str, data_version: &str) -> Result<()
     if version != "1.0.0" {
         receivers.push(json!({"vid": "373B", "pid": "10C9", "name": "VXE 蜻蜓 R1 无线接收器"}));
     }
+    let api_version = if version == "1.1.0" {
+        receivers.push(json!({"vid": "3554", "pid": "F58A", "name": "VXE R1 系列无线接收器", "battery_protocol": "compx"}));
+        2
+    } else {
+        1
+    };
     let data = json!({
         "id": WIRELESS_PLUGIN_ID,
-        "api_version": 1,
+        "api_version": api_version,
         "version": data_version,
         "receivers": receivers
     });
@@ -496,6 +502,8 @@ fn market_installs_wireless_compatibility_as_a_resource_package() -> Result<()> 
     let record = &reopened.records[id];
     assert!(record.enabled);
     assert_eq!(record.package.as_ref().unwrap().manifest.version, "1.1.0");
+    let saved: serde_json::Value = serde_json::from_str(&record.package.as_ref().unwrap().source)?;
+    assert_eq!(saved["receivers"][2]["battery_protocol"], "compx");
     let wireless = reopened.wireless_store();
     assert_eq!(wireless.package().unwrap().version(), "1.1.0");
     reopened.uninstall(id, false)?;

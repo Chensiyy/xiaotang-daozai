@@ -457,7 +457,9 @@ function refresh({settings}) {
 
 本地测试集市接受合规的 QuickJS 插件、外观资源包、快捷切换插件、无线设备兼容包以及 GPU 材质。申请本地数据源的 JS 插件仍需用户安装后单独授权。索引及 ZIP 应来自用户信任的本机目录。SHA-256 核对包是否与索引一致。
 
-官方无线设备兼容包通过插件集市分发，在「已安装」管理。ZIP 包含 `plugin.json`、`wireless-receivers.json` 和 `cover.png`，只为本体补充核实过的 2.4G USB 接收器型号。
+官方无线设备兼容包通过插件集市分发，在「已安装」管理。ZIP 包含 `plugin.json`、`wireless-receivers.json` 和 `cover.png`。接收器表补充已核实的 2.4G USB 接收器型号。
+
+接收器表的 `api_version: 1` 接受 `vid`、`pid` 和 `name`。`api_version: 2` 的每条记录还可声明 `battery_protocol`，当前可提交 `compx` 和 `logitech-hidpp-2`，由岛仔使用内置的电量读取实现。支持版本 2 的宿主遇到尚未内置的协议时仍识别接收器，电量显示为未知。旧格式仍可安装。插件清单的 `api` 和 `dataVersion` 均为 `1`。
 
 ### 正式分发
 

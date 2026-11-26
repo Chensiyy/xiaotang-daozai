@@ -9,6 +9,15 @@ fn fixture()->Vec<Device> {
 fn receiver_fixture()->Device {
     Device{id:"usb:test".into(),name:"罗技 Bolt 接收器".into(),kind:DeviceKind::Receiver24G,..Default::default()}
 }
+
+fn powered_receiver_fixture()->Device {
+    Device{
+        name:"VXE R1 系列无线接收器".into(),
+        battery:Some(72),
+        reading:Some(BatteryReading::new(72,BatterySource::UsbReceiver,std::time::Instant::now(),Some(true))),
+        ..receiver_fixture()
+    }
+}
 fn texts(h:&H)->Vec<String> {h.shapes.iter().filter_map(|s|if let egui::Shape::Text(t)=&s.shape{Some(t.galley.text().to_string())}else{None}).collect()}
 fn open_page(h:&mut H) {h.app.show_page(BLUETOOTH_PAGE);h.hover(H::local(200.0,100.0),1.0);}
 fn set_level(d:&mut Device,level:u8) {d.battery=Some(level);d.reading.as_mut().unwrap().percent=level;}
@@ -144,7 +153,7 @@ fn wireless_receiver_shows_presence_and_stays_out_of_resident_controls() {
     h.frame(vec![]);
     assert_eq!(h.app.wireless_focus.as_deref(),Some("usb:test"));
     let labels=texts(&h);
-    for label in ["罗技 Bolt 接收器","已连接","2.4G","2.4G 接收器 · 这类接收器不提供电量"] {
+    for label in ["罗技 Bolt 接收器","已连接","2.4G","2.4G 接收器 · 电量未知"] {
         assert!(labels.iter().any(|s|s==label),"缺少 {label}");
     }
     assert!(!labels.iter().any(|s|matches!(s.as_str(),"常驻显示"|"充电状态未知"|"正在读取电量")));
@@ -162,6 +171,26 @@ fn wireless_receiver_shows_presence_and_stays_out_of_resident_controls() {
     h.frame(vec![]);
     assert!(h.app.wireless_focus.is_none());
     assert!(!texts(&h).iter().any(|s|s=="2.4G"));
+}
+
+#[test]
+fn wireless_receiver_shows_valid_battery_and_falls_back_to_unknown() {
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=H::new();
+    h.receivers=vec![powered_receiver_fixture()];
+    open_page(&mut h);
+    assert!(texts(&h).iter().any(|s|s=="72%"));
+    h.app.wireless_focus=Some("usb:test".into());
+    h.frame(vec![]);
+    let labels=texts(&h);
+    for label in ["72%","充电中","2.4G 接收器"] {
+        assert!(labels.iter().any(|s|s==label),"缺少 {label}");
+    }
+    h.receivers[0]=receiver_fixture();
+    h.frame(vec![]);
+    let labels=texts(&h);
+    assert!(labels.iter().any(|s|s=="2.4G 接收器 · 电量未知"));
+    assert!(!labels.iter().any(|s|s=="0%"||s=="72%"));
 }
 
 #[test]
@@ -287,7 +316,8 @@ fn wireless_native_preview(){
     let Some(dest)=std::env::var_os("DAOZAI_BLUETOOTH_PREVIEW_DIR") else{return;};
     let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());let dest=std::path::PathBuf::from(dest);std::fs::create_dir_all(&dest).unwrap();
     for (name,skin) in [("native-dark.png",crate::model::Skin::Classic),("native-cream.png",crate::model::Skin::Cream),("native-resident.png",crate::model::Skin::Classic),("native-detail.png",crate::model::Skin::Classic),("native-detail-unknown.png",crate::model::Skin::Classic),
-            ("native-receiver-overview.png",crate::model::Skin::Classic),("native-receiver-detail.png",crate::model::Skin::Classic)]{
+            ("native-receiver-overview.png",crate::model::Skin::Classic),("native-receiver-detail.png",crate::model::Skin::Classic),
+            ("native-receiver-battery.png",crate::model::Skin::Classic)]{
         let mut h=H::new();h.app.settings.skin=skin;h.app.settings.bluetooth_notifications=false;h.bt=fixture();h.bt[2].reading.as_mut().unwrap().charging=Some(true);
         h.bt[0].kind=DeviceKind::EarbudsStemTips;h.bt[0].name="AirPods Pro".into();
         let resident=name=="native-resident.png";
@@ -295,8 +325,10 @@ fn wireless_native_preview(){
         if !resident {h.app.show_page(BLUETOOTH_PAGE);}
         if name.starts_with("native-detail") {h.app.wireless_focus=Some(h.bt[2].id.clone());}
         if name=="native-detail-unknown.png" {h.bt[2].reading.as_mut().unwrap().charging=None;}
-        if name.starts_with("native-receiver") {h.receivers.push(receiver_fixture());}
-        if name=="native-receiver-detail.png" {h.app.wireless_focus=Some(h.receivers[0].id.clone());}
+        if name.starts_with("native-receiver") {
+            h.receivers.push(if name=="native-receiver-battery.png" {powered_receiver_fixture()} else {receiver_fixture()});
+        }
+        if matches!(name,"native-receiver-detail.png"|"native-receiver-battery.png") {h.app.wireless_focus=Some(h.receivers[0].id.clone());}
         let height=if resident{50}else{210};
         let mut raster=crate::preview_raster::Raster::new(640,height);
         for frame in 0..65 {

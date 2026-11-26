@@ -16,9 +16,9 @@ impl DeviceKind {
 }
 
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]
-pub enum BatterySource {Windows,Gatt}
+pub enum BatterySource {Windows,Gatt,UsbReceiver}
 impl BatterySource {
-    pub fn label(self)->&'static str {match self {Self::Windows=>"Windows 设备电量",Self::Gatt=>"蓝牙电池服务"}}
+    pub fn label(self)->&'static str {match self {Self::Windows=>"Windows 设备电量",Self::Gatt=>"蓝牙电池服务",Self::UsbReceiver=>"2.4G 接收器"}}
 }
 
 #[derive(Clone,Debug,PartialEq,Eq)]
