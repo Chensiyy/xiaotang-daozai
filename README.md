@@ -21,6 +21,16 @@ Windows 桌面信息岛，抬眼就能看消息、歌词、日程、天气、系
 
 你可以选刘海或胶囊，放在顶部、左侧或右侧，只保留自己需要的功能。岛仔使用 Rust 和 egui 构建，不依赖 Electron。
 
+## 星标增长曲线
+
+<a href="https://www.star-history.com/?repos=Renly1994%2Fxiaotang-daozai&amp;type=date">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=Renly1994/xiaotang-daozai&amp;type=date&amp;theme=dark" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=Renly1994/xiaotang-daozai&amp;type=date" />
+    <img alt="岛仔 GitHub 星标增长曲线" src="https://api.star-history.com/chart?repos=Renly1994/xiaotang-daozai&amp;type=date" />
+  </picture>
+</a>
+
 ## 微信里有新消息，看一眼岛边
 
 ![微信和 QQ 未读：收起时显示图标，展开后点击切换对应窗口](docs/images/readme/notifications.webp)
@@ -208,13 +218,3 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\package.ps1
 ![感谢支持岛仔的朋友们](https://raw.githubusercontent.com/Renly1994/xiaotang-daozai/refs/heads/supporters-data/supporters/v1/wall.webp)
 
 喜欢岛仔的话，欢迎点一个 **Star**，也可以在 **设置 → 关于 → 支持作者** 请岛仔喝杯咖啡。
-
-## 星标增长曲线
-
-<a href="https://www.star-history.com/?repos=Renly1994%2Fxiaotang-daozai&amp;type=date">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=Renly1994/xiaotang-daozai&amp;type=date&amp;theme=dark" />
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=Renly1994/xiaotang-daozai&amp;type=date" />
-    <img alt="岛仔 GitHub 星标增长曲线" src="https://api.star-history.com/chart?repos=Renly1994/xiaotang-daozai&amp;type=date" />
-  </picture>
-</a>
