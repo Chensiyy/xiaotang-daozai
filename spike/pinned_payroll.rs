@@ -6,15 +6,16 @@ use crate::{
     theme::{self, W},
 };
 use chrono::{DateTime, Utc};
-use eframe::egui::Color32;
+use eframe::egui::{self, Color32};
 use std::time::Duration;
 
 const FLIP_SECONDS: f64 = 0.2;
 const FLIP_FRAME: Duration = Duration::from_millis(33);
-const CELL: f32 = 8.0;
-const TOP_ICON: f32 = 19.0;
-const DOT: f32 = 3.5;
+const TOP_SIZE: f32 = 12.0;
+const ICON_ROOM: f32 = 25.0;
+const END_MARGIN: f32 = 4.0;
 const GREEN: Color32 = Color32::from_rgb(61, 220, 132);
+const COIN_INK: Color32 = Color32::from_rgb(17, 33, 24);
 
 #[derive(Clone)]
 struct Digits {
@@ -24,12 +25,13 @@ struct Digits {
     last_pass: u64,
 }
 
-pub(super) fn width(counter: &Counter, now: DateTime<Utc>) -> f32 {
-    let reading = |second| format!("{:.2}", counter.sample(second).0.clamp(0.0, 10_000_000.0));
-    let length = reading(now.timestamp())
-        .len()
-        .max(reading(now.timestamp() + 1).len());
-    TOP_ICON + CELL * (length as f32 - 1.0) + DOT + 2.0
+pub(super) fn width(ui: &egui::Ui, counter: &Counter, now: DateTime<Utc>) -> f32 {
+    let c = Card::new(ui, egui::Pos2::ZERO, ui.clip_rect());
+    let measure = |second| {
+        let value = counter.sample(second).0.clamp(0.0, 10_000_000.0);
+        c.text_w(&format!("{value:.2}"), TOP_SIZE, W::Bold)
+    };
+    ICON_ROOM + measure(now.timestamp()).max(measure(now.timestamp() + 1)) + END_MARGIN
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -45,9 +47,13 @@ pub(super) fn draw(
 ) -> (Option<Duration>, bool) {
     let (value, second) = counter.sample(now.timestamp());
     let amount = format!("{value:.2}");
-    let height = if vertical { 40.0 } else { 22.0 };
-    let area = c.rect(x - width / 2.0, y - height / 2.0, width, height);
-    if !area.intersect(c.painter.clip_rect()).is_positive() {
+    let height = if vertical { 42.0 } else { 22.0 };
+    let left = x - width / 2.0;
+    if !c
+        .rect(left, y - height / 2.0, width, height)
+        .intersect(c.painter.clip_rect())
+        .is_positive()
+    {
         return (None, false);
     }
     let ctx = c.ui.ctx();
@@ -63,7 +69,7 @@ pub(super) fn draw(
                 last_pass: pass,
             });
             if pass > digits.last_pass.saturating_add(1) {
-                // 展开时常驻位不可见，重新出现时直接从当前金额开始。
+                // 重新出现时从当前金额开始。
                 digits.current.clone_from(&amount);
                 digits.previous.clone_from(&amount);
             } else if digits.current != amount {
@@ -82,139 +88,117 @@ pub(super) fn draw(
     } else {
         (None, 1.0)
     };
-    let c = c.clipped(x - width / 2.0, y - height / 2.0, width, height);
-    let map = |color| {
-        theme
-            .palette
-            .map_or(color, |palette| skin_paint::map_color(color, &palette))
-    };
-    let background = map(theme::CARD);
-    let ink = map(theme::WHITE);
-    let dot = map(theme::GRAY);
-    let coin = |center_x, center_y, radius, size| {
-        c.circle(center_x, center_y, radius, GREEN);
-        c.centered_text(
-            center_x,
-            center_y,
-            "¥",
-            size,
-            W::Bold,
-            Color32::from_rgb(13, 36, 23),
-            H::Center,
-        );
-    };
-    let row = |text: &str,
-               offset: usize,
-               center: f32,
-               baseline: f32,
-               size: f32,
-               step: f32,
-               last_green: bool| {
-        let row_width = text
-            .bytes()
-            .map(|digit| if digit == b'.' { DOT } else { step })
-            .sum::<f32>();
-        let mut left = center - row_width / 2.0;
-        for (index, digit) in text.bytes().enumerate() {
-            let w = if digit == b'.' { DOT } else { step };
-            let cx = left + w / 2.0;
-            let color = if digit == b'.' {
-                dot
-            } else if last_green && index + 1 == text.len() {
-                GREEN
-            } else {
-                ink
+
+    let c = c.clipped(left, y - height / 2.0, width, height);
+    let ink = theme.palette.map_or(theme::WHITE, |palette| {
+        skin_paint::map_color(theme::WHITE, &palette)
+    });
+    let row = |text: &str, offset: usize, anchor: f32, baseline: f32, size: f32, align: H| {
+        let Some(before) = &previous else {
+            c.text(anchor, baseline, text, size, W::Bold, ink, align);
+            return;
+        };
+        let galley = c.galley(text, size, W::Bold, ink);
+        let run_width = galley.size().x / c.s;
+        let left = anchor
+            - match align {
+                H::Left => 0.0,
+                H::Center => run_width / 2.0,
+                H::Right => run_width,
             };
-            let label = |card: &Card<'_>, value: u8, delta: f32| {
+        for (index, glyph) in galley.rows.iter().flat_map(|row| &row.glyphs).enumerate() {
+            let digit = glyph.chr;
+            let x = left + glyph.pos.x / c.s;
+            let from_right = amount.len() - offset - index;
+            let old = before
+                .len()
+                .checked_sub(from_right)
+                .map(|pos| char::from(before.as_bytes()[pos]))
+                .filter(char::is_ascii_digit);
+            let draw_digit = |card: &Card<'_>, digit: char, baseline: f32| {
                 let mut buffer = [0; 4];
-                card.centered_text(
-                    cx,
-                    baseline + delta,
-                    char::from(value).encode_utf8(&mut buffer),
+                card.text(
+                    x,
+                    baseline,
+                    digit.encode_utf8(&mut buffer),
                     size,
                     W::Bold,
-                    color,
-                    H::Center,
+                    ink,
+                    H::Left,
                 );
             };
-            if digit.is_ascii_digit() {
-                let h = size + if vertical { 1.0 } else { 4.0 };
-                c.fill(left + 0.5, baseline - h / 2.0, w - 1.0, h, 2.0, background);
-                let old_digit = previous
-                    .as_ref()
-                    .and_then(|before| {
-                        let from_right = amount.len() - offset - index;
-                        before
-                            .len()
-                            .checked_sub(from_right)
-                            .map(|pos| before.as_bytes()[pos])
-                    })
-                    .filter(u8::is_ascii_digit);
-                if previous.is_some() && old_digit != Some(digit) {
-                    let cell = c.clipped(left, baseline - h / 2.0, w, h);
-                    if let Some(old) = old_digit {
-                        label(&cell, old, -h * progress);
-                    }
-                    label(&cell, digit, h * (1.0 - progress));
-                } else {
-                    label(&c, digit, 0.0);
+            if digit.is_ascii_digit() && old != Some(digit) {
+                let ascent = glyph.font_ascent / c.s;
+                let h = glyph.font_height / c.s;
+                let cell = c.clipped(x, baseline - ascent, glyph.advance_width / c.s, h);
+                if let Some(old) = old {
+                    draw_digit(&cell, old, baseline - h * progress);
                 }
-                c.painter.line_segment(
-                    [c.pos(left + 0.5, baseline), c.pos(left + w - 0.5, baseline)],
-                    (0.65 * c.s, theme.background.gamma_multiply(0.45)),
-                );
+                draw_digit(&cell, digit, baseline + h * (1.0 - progress));
             } else {
-                label(&c, digit, 1.0);
+                draw_digit(&c, digit, baseline);
             }
-            left += w;
         }
     };
+
     if vertical {
-        let (whole, _) = amount.split_once('.').unwrap_or((&amount, ""));
-        let cut = whole.len().saturating_sub(4);
-        let whole_step = ((width - 2.0) / 4.0).clamp(1.0, 9.0);
-        if cut == 0 {
-            coin(x, y - 14.0, 5.0, 7.5);
+        let coin = || {
+            c.circle(x, y - 13.0, 5.0, GREEN);
+            c.text(x, y - 10.0, "¥", 7.5, W::Bold, COIN_INK, H::Center);
+        };
+        if let Some(size) = [14.0, 13.0, 12.0, 11.0]
+            .into_iter()
+            .find(|size| c.text_w(&amount, *size, W::Bold) <= width - 2.0)
+        {
+            coin();
+            row(&amount, 0, x, y + 10.0, size, H::Center);
         } else {
-            row(&whole[..cut], 0, x, y - 14.0, 12.0, whole_step, false);
+            let whole_len = amount.len() - 3;
+            let cut = whole_len.saturating_sub(4);
+            if cut == 0 {
+                coin();
+            } else {
+                row(&amount[..cut], 0, x, y - 9.0, 12.0, H::Center);
+            }
+            row(&amount[cut..whole_len], cut, x, y + 4.0, 14.0, H::Center);
+            row(
+                &amount[whole_len..],
+                whole_len,
+                x,
+                y + 17.0,
+                11.0,
+                H::Center,
+            );
         }
-        row(&whole[cut..], cut, x, y, 14.0, whole_step, false);
-        row(
-            &amount[whole.len()..],
-            whole.len(),
-            x,
-            y + 14.0,
-            11.0,
-            7.0,
-            true,
-        );
     } else {
-        let amount_width = CELL * (amount.len() as f32 - 1.0) + DOT;
-        let left = x - (TOP_ICON + amount_width) / 2.0;
-        coin(left + 7.0, y, 7.0, 10.5);
+        c.circle(left + 10.0, y, 7.5, GREEN);
+        c.text(
+            left + 10.0,
+            y + 4.0,
+            "¥",
+            10.5,
+            W::Bold,
+            COIN_INK,
+            H::Center,
+        );
         row(
             &amount,
             0,
-            left + TOP_ICON + amount_width / 2.0,
-            y,
-            12.0,
-            CELL,
-            true,
+            left + width - END_MARGIN,
+            y + 5.0,
+            TOP_SIZE,
+            H::Right,
         );
     }
 
     let animating = previous.is_some();
-    let repaint = c
-        .live
-        .then(|| {
-            if animating {
-                Some(FLIP_FRAME)
-            } else {
-                second.map(|next| {
-                    Duration::from_millis((next * 1000 - now.timestamp_millis()).max(1) as u64)
-                })
-            }
-        })
-        .flatten();
+    let repaint = if !c.live {
+        None
+    } else if animating {
+        Some(FLIP_FRAME)
+    } else {
+        second
+            .map(|next| Duration::from_millis((next * 1000 - now.timestamp_millis()).max(1) as u64))
+    };
     (repaint, animating)
 }

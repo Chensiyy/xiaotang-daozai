@@ -225,7 +225,7 @@ impl PinnedDisplay {
     pub(crate) fn measure_width(&mut self, ui: &eframe::egui::Ui) {
         let now = chrono::Utc::now();
         if let Some(counter) = self.payroll_counter(now) {
-            self.slide_width = Some(payroll::width(counter, now));
+            self.slide_width = Some(payroll::width(ui, counter, now));
         } else if let Some(slide) = &self.slide {
             if slide.fit_width {
                 self.slide_width = Some(plugin_canvas_ui::pinned_content_width(ui, &slide.canvas, slide.width));
@@ -295,7 +295,7 @@ impl PinnedDisplay {
         };
         if width <= 0.0 { return (false, None, false); }
         let payroll = self.payroll_counter(now);
-        let height = if vertical && payroll.is_some() { 38.0 } else { 22.0 };
+        let height = if vertical && payroll.is_some() { 42.0 } else { 22.0 };
         let click = card.hit(x - width / 2.0, y - height / 2.0, width, height,
             ("plugin-pinned", self.plugin.as_str())).clicked();
         if let Some(counter) = payroll {
