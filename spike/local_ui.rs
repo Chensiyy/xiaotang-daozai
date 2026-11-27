@@ -593,7 +593,7 @@ fn developer_link(ui: &mut egui::Ui) -> bool {
 }
 
 /// 设置归属在界面上的名字，顺序与设置侧栏一致。
-const OWNERS: [(&str, &str); 7] = [
+const OWNERS: [(&str, &str); 8] = [
     ("appearance", "外观"),
     ("pages", "页面管理"),
     ("status", "独立功能"),
@@ -601,6 +601,7 @@ const OWNERS: [(&str, &str); 7] = [
     ("tasks", "待办与置物"),
     ("quota", "AI 额度"),
     ("wireless", "无线设备"),
+    ("mail", "邮箱"),
 ];
 
 fn owner_label(owner: &str) -> Option<&'static str> {
@@ -614,6 +615,7 @@ fn owner_settings_tab(owner: &str) -> usize {
     match owner {
         "calendar" => crate::app::PAGE_SETTINGS_TABS[crate::app::CALENDAR_PAGE],
         "quota" => crate::app::PAGE_SETTINGS_TABS[crate::app::QUOTA_PAGE],
+        "mail" => crate::app::PAGE_SETTINGS_TABS[crate::app::MAIL_PAGE],
         "pages" | "status" => crate::extras::SETTINGS_TAB_PAGES,
         "wireless" => crate::extras::SETTINGS_TAB_WIRELESS,
         "appearance" => crate::extras::SETTINGS_TAB_APPEARANCE,
@@ -1221,7 +1223,7 @@ impl LocalPlugins {
             "calendar" => calendar_on,
             "quota" => quota_on,
             "status" => !r.status_page_disabled,
-            "pages" | "wireless" | "appearance" => true,
+            "pages" | "wireless" | "appearance" | "mail" => true,
             _ => tasks_on,
         };
         let has_settings = manifest.has_settings() || manifest.has_surface(Surface::IslandPinned);

@@ -10632,6 +10632,57 @@ fn managed_mail_fixture()->H{
     h.app.mail.manage.data.insert((account.email,Folder::Inbox),Snapshot{validity:7,entries:vec![(1,false),(2,true),(3,true)],items:vec![]});
     h.app.show_page(5);h.hover(H::local(220.0,80.0),1.0);h
 }
+
+#[cfg(feature = "sdk-js")]
+#[test]
+fn mail_view_groups_accounts_and_scopes_bulk_operations() {
+    use crate::mail_manage::{Action,Folder};
+    let _g=ENV_LOCK.lock().unwrap_or_else(|e|e.into_inner());
+    let mut h=managed_mail_fixture();
+    let source=crate::model::config_dir().join("mail-view-test-package");
+    std::fs::create_dir_all(&source).unwrap();
+    let path=source.join("plugin.json");
+    std::fs::write(&path,serde_json::json!({
+        "id":"test.mail-view", "name":"邮箱视图测试", "author":"测试", "version":"1.0.0",
+        "api":1, "runtime":"assets", "entry":"mail-view.json", "cover":"cover.png",
+        "owner":"mail", "capabilities":["mail.view"], "dataVersion":1, "permissions":{}, "settings":[]
+    }).to_string()).unwrap();
+    std::fs::write(source.join("mail-view.json"),r#"{"version":1,"showUnread":true}"#).unwrap();
+    std::fs::write(source.join("cover.png"),include_bytes!("../spike/examples/payday/cover.png")).unwrap();
+    h.app.plugins.install(&path).unwrap();
+    h.app.plugins.enable("test.mail-view",true).unwrap();
+    let mut second=h.app.mail.accounts[0].clone();
+    second.email="other@example.com".into();
+    let mut row=h.app.mail.recent[0].clone();
+    row.account=second.email.clone(); row.subject="第二账号同 UID".into();
+    h.app.mail.recent.insert(0,row);
+    let key=second.email.clone();
+    let snapshot=h.app.mail.manage.data[&("manage@example.com".into(),Folder::Inbox)].clone();
+    h.app.mail.manage.data.insert((key.clone(),Folder::Inbox),snapshot);
+    h.app.mail.manage.identities.insert(key,second.clone());
+    h.app.mail.accounts.push(second);
+    let text=|h:&H, expected:&str| h.shapes.iter().any(|s|matches!(&s.shape,egui::Shape::Text(t)if t.galley.text()==expected));
+    h.hover(H::local(290.0,80.0),0.3);
+    assert!(text(&h,"第二账号同 UID"));
+    h.cmds.clear();
+    h.click(H::local(348.0,130.0));
+    h.hover(H::local(288.0,80.0),0.1);
+    assert_eq!(h.app.mail.manage.view_account.as_ref().map(|(_,email)| email.as_str()),Some("manage@example.com"));
+    assert!(!text(&h,"第二账号同 UID"));
+    assert!(text(&h,"测试邮件 1"));
+    h.cmds.clear();
+    h.click(H::local(350.0,43.0));
+    let batch=h.cmds.iter().filter_map(|cmd|match cmd {
+        crate::app::Cmd::MailManage(r) if r.action==Action::ReadAll=>Some(r.account.email.as_str()),
+        _=>None
+    }).collect::<Vec<_>>();
+    assert_eq!(batch,["manage@example.com"]);
+    h.app.plugins.enable("test.mail-view",false).unwrap();
+    h.hover(H::local(289.0,80.0),0.1);
+    assert!(h.app.mail.manage.view_account.is_none());
+    assert!(text(&h,"第二账号同 UID"));
+}
+
 #[test]
 fn managed_mail_unread_filter_open_and_mark_read(){
     use crate::mail_manage::{Action,Folder,Completed};

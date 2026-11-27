@@ -2715,6 +2715,8 @@ impl App {
                                                     if !self.mail.note.is_empty(){ui.add_space(3.0);ui.add(egui::Label::new(egui::RichText::new(&self.mail.note).size(12.0).color(settings_color(ctx,Color32::from_gray(180),Color32::from_gray(75)))).wrap());}
                         });
                         });
+                        #[cfg(feature="sdk-js")]
+                        self.plugins.settings(ui,"mail",on);
                         // 添加邮箱：一次性的长表单放进弹窗，页面上只保留账号列表。
                         let form_id=egui::Id::new("settings-mail-add");
                         if add_mail {self.mail.form.open=true;}
