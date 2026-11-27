@@ -19,6 +19,8 @@ use crate::theme::{self, size, W};
 use eframe::egui::{self, Color32, Pos2, Rect, Vec2};
 use std::collections::HashMap;
 use std::path::PathBuf;
+#[cfg(feature="sdk-js")]
+use std::time::Duration;
 
 // ---------- 几何（逻辑点；原版 125% 截图 ÷ 1.25） ----------
 pub const PW: f32 = 419.0; // 展开面板宽
@@ -772,6 +774,26 @@ const CENTER_SWEEP: f64 = 0.55;
 /// 已居中的提示色（绿）：岛体描边、外发光和扫光统一用它，颜色本身就是「对准了」。
 const CENTER_TINT: (f32, f32, f32) = (88.0, 222.0, 140.0);
 
+#[cfg(feature="sdk-js")]
+#[derive(Default)]
+pub(crate) struct PinnedFrame {
+    repaint_after: Option<Duration>,
+    animating: bool,
+}
+
+#[cfg(feature="sdk-js")]
+impl PinnedFrame {
+    pub(crate) fn include(&mut self, repaint_after: Option<Duration>, animating: bool) {
+        let repaint_after = if animating {
+            repaint_after.map(|delay| delay.max(Duration::from_nanos(33_333_334)))
+        } else {
+            repaint_after
+        };
+        self.repaint_after = self.repaint_after.into_iter().chain(repaint_after).min();
+        self.animating |= animating;
+    }
+}
+
 pub struct App {
     #[cfg(feature="sdk-js")]
     pub(crate) plugins: crate::sdk_spike::local::LocalPlugins,
@@ -779,6 +801,10 @@ pub struct App {
     plugin_form_focused: bool,
     #[cfg(feature="sdk-js")]
     pub(crate) pinned_displays: Vec<crate::sdk_spike::local::PinnedDisplay>,
+    #[cfg(feature="sdk-js")]
+    pub(crate) pinned_frame: PinnedFrame,
+    #[cfg(feature="sdk-js")]
+    pinned_was_animating: bool,
     #[cfg(feature="sdk-js")]
     pinned_horizontal_width: f32,
     pub opts: Options,
@@ -1045,6 +1071,10 @@ impl App {
             plugin_form_focused: false,
             #[cfg(feature="sdk-js")]
             pinned_displays: Vec::new(),
+            #[cfg(feature="sdk-js")]
+            pinned_frame: PinnedFrame::default(),
+            #[cfg(feature="sdk-js")]
+            pinned_was_animating: false,
             #[cfg(feature="sdk-js")]
             pinned_horizontal_width: WIN_W,
             opts,
@@ -2386,7 +2416,7 @@ impl App {
             let suppress = self.effective_minimal() || self.notice.is_some() || self.hud_alpha > 0.003
                 || plugin_notice_detail || self.island_lyrics_active() || env.fullscreen_hidden || env.screen_locked;
             let (mut displays, repaint) = self.plugins.pinned_displays(self.open || suppress);
-            if let Some(delay) = repaint { ctx.request_repaint_after(delay); }
+            self.pinned_frame = PinnedFrame { repaint_after: repaint, animating: false };
             for display in &mut displays { display.measure_width(ui); }
             let previous_pinned_width = self.pinned_horizontal_width;
             self.pinned_horizontal_width = WIN_W;
@@ -2927,10 +2957,19 @@ impl App {
         );
         #[cfg(not(feature="sdk-js"))]
         let (canvas_animating, canvas_scroll, canvas_repaint) = (false,None,None);
-        let animating=transitioning || ambient || canvas_animating || pet_visible && self.pet.state!=PetState::Sleeping;
+        #[cfg(feature="sdk-js")]
+        let (pinned_repaint, pinned_animating, pinned_animation_ended) = {
+            let active = self.pinned_frame.animating;
+            let ended = std::mem::replace(&mut self.pinned_was_animating, active) && !active;
+            (self.pinned_frame.repaint_after, active, ended)
+        };
+        #[cfg(not(feature="sdk-js"))]
+        let (pinned_repaint, pinned_animating, pinned_animation_ended) = (None,false,false);
+        let animating=transitioning || ambient || canvas_animating || pinned_animating || pet_visible && self.pet.state!=PetState::Sleeping;
         // 交互形变保持 60 帧，媒体 30 帧；小表情 20 帧，睡眠 10 帧，静态界面每秒核对提醒。
         let repaint_after=std::time::Duration::from_secs_f64(if transitioning{1.0/60.0}else if ambient{1.0/30.0}else if pet_visible{if self.pet.state==PetState::Sleeping{0.1}else{0.05}}else{1.0})
-            .min(canvas_repaint.unwrap_or(std::time::Duration::MAX));
+            .min(canvas_repaint.unwrap_or(std::time::Duration::MAX))
+            .min(pinned_repaint.unwrap_or(std::time::Duration::MAX));
         cmds.append(&mut self.pending);
         let next_hit=if side {self.side_hit_rect(win,self.progress(),self.page_height.pos).translate(offset)} else {orient(self.hit_rect(cx,top,self.progress()))};
         #[cfg(feature="sdk-js")]
@@ -2980,7 +3019,8 @@ impl App {
             animating,
             page_transition,
             water_view_transition,
-            interactive_transition:interactive_transition || canvas_animating,
+            // 常驻动画按环境帧交付，结束时交付一次完整的最终画面。
+            interactive_transition:interactive_transition || canvas_animating || pinned_animation_ended,
             repaint_after,
             cmds,
         }
@@ -3890,7 +3930,10 @@ impl App {
                 let mut clicked = None;
                 for (slot, display) in layout.pinned_slots().zip(&self.pinned_displays) {
                     if let Some(x) = layout.x[slot] {
-                        if display.draw(&c, local_cx + x, 15.0, layout.widths[slot], false, theme) {
+                        let (click, repaint_after, animating) =
+                            display.draw(&c, local_cx + x, 15.0, layout.widths[slot], false, theme);
+                        self.pinned_frame.include(repaint_after, animating);
+                        if click {
                             clicked = Some(display.plugin.clone());
                         }
                     }
