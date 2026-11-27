@@ -336,10 +336,9 @@ fn merge_enhanced(
         };
         for observed in records.values() {
             let mut device = receiver.clone();
-            if records.len() > 1 {
-                device.id.push('#');
-                device.id.push_str(&observed.key);
-            }
+            // 同一接收器的其他设备暂时离线时，仍按设备自己的标识跟踪电量。
+            device.id.push('#');
+            device.id.push_str(&observed.key);
             device.name.clone_from(&observed.name);
             device.battery = observed.level;
             device.reading = observed
@@ -505,7 +504,7 @@ mod tests {
             reading.sampled_at = Some(time);
             reading
         };
-        let snapshot = halo_worker::Snapshot {
+        let mut snapshot = halo_worker::Snapshot {
             generation: 2,
             observed: now,
             devices: vec![
@@ -523,6 +522,16 @@ mod tests {
         assert_eq!(merged[1].battery, None);
         assert_eq!(merged[1].charging_only, Some((true, now)));
         assert_eq!(merged[2], second);
+
+        snapshot.devices[1].online = Some(false);
+        let only_first =
+            merge_enhanced(std::slice::from_ref(&first), &snapshot, started, now).unwrap();
+        assert_eq!(only_first, merged[..1]);
+
+        snapshot.devices[0].sampled_at = Some(started - Duration::from_millis(1));
+        snapshot.devices[1].online = Some(true);
+        let only_second = merge_enhanced(&[first], &snapshot, started, now).unwrap();
+        assert_eq!(only_second, merged[1..2]);
     }
 
     #[test]

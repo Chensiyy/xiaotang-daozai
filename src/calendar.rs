@@ -880,7 +880,7 @@ fn discover_calendars(client: &mut DavClient<'_>) -> Result<(Vec<String>,ReadRep
         Err(error) => {
             let initial = error.request_url.as_deref() == Some(base.as_str());
             let root_auth = root && matches!(error.kind, "auth_digest_rejected" | "auth_unsupported" | "auth_invalid");
-            if initial && (root_auth || add_slash && matches!(error.status, Some(404 | 405))) {
+            if initial && (root_auth || add_slash && matches!(error.status, Some(400 | 401 | 403 | 404 | 405))) {
                 Some(error)
             } else {
                 return Err(error);

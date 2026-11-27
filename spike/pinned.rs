@@ -309,8 +309,8 @@ impl PinnedDisplay {
             let card = if vertical { card.scaled(x, y, (width / canvas_width).min(1.0)) } else { card.clone() };
             let area = card.rect(x - canvas_width / 2.0, y - 11.0, canvas_width, 22.0);
             let (repaint, animating) =
-                plugin_canvas_ui::draw_pinned(&card, &format!("{}:pinned", self.plugin), &slide.canvas, area, theme, self.elapsed, |name| {
-                    self.images.get(name)?.texture(card.ui.ctx(), name)
+                plugin_canvas_ui::draw_pinned(&card, &format!("{}:pinned", self.plugin), &slide.canvas, area, theme, self.elapsed, |name, pixels, fit| {
+                    self.images.get(name)?.texture(card.ui.ctx(), name, pixels, fit)
                 });
             return (click, repaint, animating);
         }

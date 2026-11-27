@@ -185,12 +185,16 @@ fn basic_calendar_keeps_directory_fallback_and_reports_resource_permissions() {
     const EMPTY: &str = r#"<multistatus xmlns="DAV:"/>"#;
     const DISCOVERY: &str = r#"<d:multistatus xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"><d:response><d:href>/dav/</d:href><d:resourcetype><c:calendar/></d:resourcetype></d:response></d:multistatus>"#;
     const DENIED: &str = r#"<d:multistatus xmlns:d="DAV:"><d:response><d:href>/dav/hidden.ics</d:href><d:status>HTTP/1.1 401 Unauthorized</d:status></d:response></d:multistatus>"#;
-    for denied in [false, true] {
+    for (initial_status, denied) in [(207, false), (207, true), (400, false), (401, false), (403, false)] {
         let (result, count) = with_server(
             move |request| {
                 assert_eq!(request.authorization, super::basic_auth(USER, PASSWORD));
                 match (request.method.as_str(), request.target.as_str()) {
-                    ("PROPFIND", "/dav") => Reply(207, String::new(), EMPTY),
+                    ("PROPFIND", "/dav") => Reply(
+                        initial_status,
+                        if initial_status == 401 { "WWW-Authenticate: Basic realm=\"entry\"\r\n".into() } else { String::new() },
+                        EMPTY,
+                    ),
                     ("PROPFIND", "/dav/") => Reply(207, String::new(), DISCOVERY),
                     ("REPORT", "/dav/") => {
                         Reply(207, String::new(), if denied { DENIED } else { EMPTY })
