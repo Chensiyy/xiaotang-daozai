@@ -192,7 +192,13 @@ pub(crate) fn draw(
     theme: CanvasTheme,
     image: impl FnMut(&str) -> Option<(egui::TextureId, Vec2)>,
 ) -> bool {
-    draw_canvas(c, id, canvas, area, theme, None, image)
+    let result = draw_canvas(c, id, canvas, area, theme, None, image);
+    if let Some(delay) = result.repaint_after {
+        let dt = c.ui.input(|input| input.predicted_dt).max(0.0);
+        c.ui.ctx()
+            .request_repaint_after(delay + Duration::from_secs_f32(dt));
+    }
+    result.timed_out
 }
 
 /// 常驻内容沿用画布原字号，点击由常驻位处理。
@@ -204,8 +210,9 @@ pub(crate) fn draw_pinned(
     theme: CanvasTheme,
     elapsed: Duration,
     image: impl FnMut(&str) -> Option<(egui::TextureId, Vec2)>,
-) -> bool {
-    draw_canvas(c, id, canvas, area, theme, Some(elapsed), image)
+) -> (Option<Duration>, bool) {
+    let result = draw_canvas(c, id, canvas, area, theme, Some(elapsed), image);
+    (result.repaint_after, result.animating)
 }
 
 fn draw_canvas(
@@ -216,20 +223,14 @@ fn draw_canvas(
     theme: CanvasTheme,
     pinned_elapsed: Option<Duration>,
     image: impl FnMut(&str) -> Option<(egui::TextureId, Vec2)>,
-) -> bool {
+) -> LiveResult {
     let options = LiveOptions {
         now: chrono::Utc::now(),
         revision: 0,
         allow_action: false,
         interactive: false,
     };
-    let result = motion::draw_live_frame(c, id, canvas, area, theme, options, None, pinned_elapsed, image);
-    if let Some(delay) = result.repaint_after {
-        let dt = c.ui.input(|input| input.predicted_dt).max(0.0);
-        c.ui.ctx()
-            .request_repaint_after(delay + Duration::from_secs_f32(dt));
-    }
-    result.timed_out
+    motion::draw_live_frame(c, id, canvas, area, theme, options, None, pinned_elapsed, image)
 }
 
 pub(crate) fn has_pinned_text_flow(nodes: &[Node]) -> bool {
