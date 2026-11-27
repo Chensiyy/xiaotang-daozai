@@ -662,7 +662,7 @@ class HidDevice:
         return {"input": self._caps.input, "output": self._caps.output,
                 "feature": self._caps.feature}
 
-    def write(self, data):
+    def write(self, data, *, deadline=None):
         self._require_open()
         data = bytes(data)
         if not data:
@@ -671,6 +671,8 @@ class HidDevice:
         _length(len(data))
         padded = data.ljust(self._caps.output, b"\0")
         def operation():
+            if deadline is not None and time.monotonic() >= deadline:
+                return 0
             return self.runtime.defer_request(self.api.create_write(self._owner, padded),
                                                lambda completion, request: completion.transferred)
         try:

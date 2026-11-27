@@ -95,6 +95,7 @@ from providers import beitong, eightbitdo_ultimate2, flydigi, gamesir, raikiri
 from providers.base import DeviceStatus, Provider
 
 from feedback_receivers import DareuEk87ProProvider, MachenikeL8MaxProvider, VgnDragonfly3ProProvider
+from mchose_a7 import PID as MC_PID, MchoseA7Provider, control_collections, product_name
 from mchose_feedback import MchoseG3V2Provider, MchoseV9Pro2Provider
 from mouse_receivers import RapooVt9AirProvider, VgnF1MobaProvider
 from regional_receivers import EweadnX87Provider, MchoseG3AProvider, Wave75Provider
@@ -111,6 +112,11 @@ class MchoseReceiverProvider(mchose.MchoseProvider):
             return self._poll_turbo_plus(turbo)
         if hid.enumerate(mchose.NEW_VID, mchose.HEADSET_DONGLE_PID):
             return []
+        shared = hid.enumerate(mchose.NEW_VID, MC_PID)
+        if shared:
+            controls = control_collections(shared)
+            if len(controls) != 1 or product_name(controls[0]) != "mchose k7 v2 ultra+":
+                return []
         if any(MchoseG3AProvider.matches_product(row)
                for row in hid.enumerate(mchose.G7_VID, mchose.G7_PID)):
             return []
@@ -187,6 +193,7 @@ PROVIDERS = (
     AudezeProvider,
     WLmouseProvider,
     MchoseReceiverProvider,
+    MchoseA7Provider,
     HyperXAlpha2Provider,
     HyperXCloud3Provider,
     HyperXCloudCoreProvider,

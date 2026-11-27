@@ -149,16 +149,16 @@ class PollingRuntime:
             self._condition.notify_all()
         self.pump()
 
-    def request_poll(self, force=False):
+    def request_poll(self, force=False, *, provider=None):
         with self._condition:
             if self._closed:
                 return False
             for owner in self._provider_order:
                 slot = self._slots[owner]
-                if slot.name not in self._disabled:
+                if slot.name not in self._disabled and (provider is None or slot.provider is provider):
                     if force:
                         slot.failures, slot.retry_at, slot.circuit = 0, 0.0, False
-                    self._queue_locked(owner, "poll")
+                    self._queue_locked(owner, "poll", priority=provider is not None)
             self._condition.notify_all()
         self.pump()
         return True

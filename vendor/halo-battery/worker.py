@@ -196,6 +196,7 @@ class ScopedProvider:
         self.target = getattr(factory, "target", None)
         self.instances = {}
         self.pending = False
+        self.wake = None
 
     def poll(self):
         current = self.gate.inventory[0]
@@ -214,6 +215,8 @@ class ScopedProvider:
                 continue
             if root not in self.instances:
                 provider = self.factory(receiver) if self.target is not None else self.factory()
+                if self.wake is not None:
+                    provider.wake = self.wake
                 self.instances[root] = scope, provider
             _, provider = self.instances[root]
             with self.gate.scope(scope):
@@ -225,7 +228,10 @@ class ScopedProvider:
             for status in eligible[:limit]:
                 key = hashlib.sha256(f"{self.name}\0{root}\0{status.key}".encode("utf-8")).hexdigest()
                 # JBL 的 upstream online 状态只在本次消费到新电量报告时为真。
-                if self.target is not None:
+                if self.wake is not None:
+                    # 活动触发的结果可能到下一次宿主轮询才被消费，沿用实际收到时刻。
+                    at = status.ui_params.get(AUXILIARY_FIELDS[2])
+                elif self.target is not None:
                     at = status.ui_params.get(AUXILIARY_FIELDS[2], time.monotonic())
                 else:
                     at = time.monotonic() if self.name == "jbl" and status.online else report_at
@@ -270,6 +276,9 @@ class Engine:
             provider_scope=transport.provider_scope, transport_idle=transport.transport_idle,
             cancel_owner=transport.cancel_owner,
         )
+        for job in self.jobs:
+            if getattr(job.factory, "poll_on_activity", False):
+                job.wake = lambda job=job: self.polling.request_poll(provider=job)
         self.polling.configure(HELD_PROVIDER_REASONS)
 
     def poll(self, receivers):

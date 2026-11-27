@@ -13,6 +13,17 @@ from halo.native_io import WindowsApi
 USB_INSTANCE = re.compile(r"USB\\VID_([0-9A-F]{4})&PID_([0-9A-F]{4})\\[^\\\x00]+", re.IGNORECASE)
 HID_PATH = re.compile(r"\\\\\?\\(hid)\#([^#\\]+)\#([^#\\]+)\#\{[0-9a-f-]{36}\}", re.IGNORECASE)
 INTERFACE = re.compile(r"&mi_([0-9a-f]{2})(?:&|#)", re.IGNORECASE)
+HIDP_STATUS_SUCCESS = 0x00110000
+
+
+def _mc_report_verified(dll, preparsed):
+    # 仅在描述符的预解析数据中初始化输入与输出报告，不与设备交换报告。
+    for report_type in (0, 1):
+        report = ctypes.create_string_buffer(64)
+        if (dll.HidP_InitializeReportForID(report_type, 0x4D, preparsed, report, len(report))
+                != HIDP_STATUS_SUCCESS or report[0] != b"\x4d"):
+            return False
+    return True
 
 
 class _Attributes(ctypes.Structure):
@@ -32,6 +43,10 @@ class WindowsHid:
         attributes = self._metadata.dll.HidD_GetAttributes
         attributes.argtypes = [wintypes.HANDLE, ctypes.POINTER(_Attributes)]
         attributes.restype = ctypes.c_ubyte
+        initialize = self._metadata.dll.HidP_InitializeReportForID
+        initialize.argtypes = [ctypes.c_int, ctypes.c_ubyte, ctypes.c_void_p,
+                               ctypes.POINTER(ctypes.c_char), wintypes.ULONG]
+        initialize.restype = ctypes.c_int32
         self._cfg = ctypes.WinDLL("cfgmgr32")
         methods = {
             "CM_Locate_DevNodeW": [ctypes.POINTER(wintypes.ULONG), wintypes.LPCWSTR, wintypes.ULONG],
@@ -90,30 +105,40 @@ class WindowsHid:
                 return None
             try:
                 caps = _HIDP_CAPS()
-                if dll.HidP_GetCaps(preparsed, ctypes.byref(caps)) != 0x00110000:
+                if dll.HidP_GetCaps(preparsed, ctypes.byref(caps)) != HIDP_STATUS_SUCCESS:
                     return None
+                strings = {}
+                for key, field in (
+                    ("serial_number", "SerialNumber"),
+                    ("manufacturer_string", "Manufacturer"),
+                    ("product_string", "Product"),
+                ):
+                    try:
+                        strings[key] = self._metadata.string(handle, field)
+                    except OSError:
+                        strings[key] = None
+                match = INTERFACE.search(path)
+                interface = int(match[1], 16) if match else -1
+                # 共享 3837:1018 的不同型号不能借用 Ultra+ 的报告证明。
+                mc_report_verified = (
+                    (attributes.vendor, attributes.product) == (0x3837, 0x1018)
+                    and strings["product_string"] == "MCHOSE A7 V3 Ultra+"
+                    and (interface, caps.UsagePage, caps.Usage) == (2, 0xFF01, 0x0001)
+                    and (caps.InputReportByteLength, caps.OutputReportByteLength) == (64, 64)
+                    and _mc_report_verified(dll, preparsed)
+                )
             finally:
                 dll.HidD_FreePreparsedData(preparsed)
-            strings = {}
-            for key, field in (
-                ("serial_number", "SerialNumber"),
-                ("manufacturer_string", "Manufacturer"),
-                ("product_string", "Product"),
-            ):
-                try:
-                    strings[key] = self._metadata.string(handle, field)
-                except OSError:
-                    strings[key] = None
-            interface = INTERFACE.search(path)
             return {
                 "path": path.encode("utf-8"),
                 "vendor_id": receiver.vid,
                 "product_id": receiver.pid,
                 "release_number": attributes.release,
-                "interface_number": int(interface[1], 16) if interface else -1,
+                "interface_number": interface,
                 "usage_page": caps.UsagePage,
                 "usage": caps.Usage,
                 "bus_type": 1,
+                "mc_report_verified": mc_report_verified,
                 **strings,
             }
         finally:
