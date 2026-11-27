@@ -15,6 +15,12 @@ use std::{
 static SURFACE_FAILURES: [AtomicUsize; 5] = [const { AtomicUsize::new(0) }; 5];
 static SKIPPED_FRAME_SUBMISSIONS: AtomicUsize = AtomicUsize::new(0);
 
+#[cfg(all(windows, feature = "surface-test"))]
+mod surface_recovery_test;
+#[cfg(all(windows, feature = "surface-test"))]
+#[doc(hidden)]
+pub use surface_recovery_test::verify_dx12_surface_recovery;
+
 /// 取出采样期间的取帧失败计数（超时、过期、丢失、内存不足、其他）和跳帧提交次数。
 pub fn take_surface_failures() -> ([usize; 5], usize) {
     (
@@ -203,6 +209,8 @@ pub struct Painter {
 
     instance: wgpu::Instance,
     render_state: Option<RenderState>,
+    #[cfg(all(windows, feature = "surface-test"))]
+    surface_error_for_test: Option<wgpu::SurfaceError>,
     #[cfg(all(windows, feature = "direct-composition"))]
     direct_composition_error: Option<crate::WgpuError>,
 
@@ -249,6 +257,8 @@ impl Painter {
 
             instance,
             render_state: None,
+            #[cfg(all(windows, feature = "surface-test"))]
+            surface_error_for_test: None,
             #[cfg(all(windows, feature = "direct-composition"))]
             direct_composition_error: None,
 
@@ -685,6 +695,12 @@ impl Painter {
             profiling::scope!("get_current_texture");
             // This is what vsync-waiting happens on my Mac.
             let start = web_time::Instant::now();
+            #[cfg(all(windows, feature = "surface-test"))]
+            let output_frame = match self.surface_error_for_test.take() {
+                Some(error) => Err(error),
+                None => surface_state.surface.get_current_texture(),
+            };
+            #[cfg(not(all(windows, feature = "surface-test")))]
             let output_frame = surface_state.surface.get_current_texture();
             vsync_sec += start.elapsed().as_secs_f32();
             output_frame

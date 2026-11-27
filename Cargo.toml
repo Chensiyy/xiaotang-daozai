@@ -141,6 +141,9 @@ imap-proto = "0.10.2"
 native-tls = "0.2"
 keyring = { version = "3", features = ["windows-native"] }
 
+[target.'cfg(windows)'.dev-dependencies]
+egui-wgpu = { version = "0.31", default-features = false, features = ["surface-test"] }
+
 [profile.release]
 opt-level = 3
 lto = true

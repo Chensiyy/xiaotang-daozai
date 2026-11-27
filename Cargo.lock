@@ -526,6 +526,7 @@ dependencies = [
  "clipboard-win",
  "digest_auth",
  "eframe",
+ "egui-wgpu",
  "egui_extras",
  "flate2",
  "iana-time-zone",
