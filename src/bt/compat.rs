@@ -13,6 +13,16 @@ const BUILTIN: &[u8] = include_bytes!("../../assets/builtin-usb-receivers.json")
 pub(super) enum BatteryProtocol {
     CompX,
     LogitechHidpp20,
+    EndgameXm2we,
+    HyperXCloudIiCore,
+    HyperXCloudIiiS,
+    HyperXCloudAlpha2,
+    SteelSeriesNova7,
+    SteelSeriesNovaElite,
+    MouseFeature83,
+    Vaxee4k,
+    MchoseM7Ultra,
+    MchoseA5ProMax,
 }
 
 #[derive(Deserialize)]
@@ -114,6 +124,16 @@ impl ReceiverTable {
             let battery_protocol = match receiver.battery_protocol.as_deref() {
                 Some("compx") => Some(BatteryProtocol::CompX),
                 Some("logitech-hidpp-2") => Some(BatteryProtocol::LogitechHidpp20),
+                Some("endgame-xm2we") => Some(BatteryProtocol::EndgameXm2we),
+                Some("hyperx-cloud-ii-core") => Some(BatteryProtocol::HyperXCloudIiCore),
+                Some("hyperx-cloud-iii-s") => Some(BatteryProtocol::HyperXCloudIiiS),
+                Some("hyperx-cloud-alpha-2") => Some(BatteryProtocol::HyperXCloudAlpha2),
+                Some("steelseries-nova-7") => Some(BatteryProtocol::SteelSeriesNova7),
+                Some("steelseries-nova-elite") => Some(BatteryProtocol::SteelSeriesNovaElite),
+                Some("mouse-feature-83") => Some(BatteryProtocol::MouseFeature83),
+                Some("vaxee-4k") => Some(BatteryProtocol::Vaxee4k),
+                Some("mchose-m7-ultra") => Some(BatteryProtocol::MchoseM7Ultra),
+                Some("mchose-a5-pro-max") => Some(BatteryProtocol::MchoseA5ProMax),
                 Some(id)
                     if id.is_empty()
                         || id.len() > 32
@@ -281,6 +301,32 @@ mod tests {
         );
         assert_eq!(package.battery_protocol("VID_046D&PID_C542"), None);
         assert_eq!(package.battery_protocol("VID_3554&PID_F58A&MI_00"), None);
+
+        for (name, protocol) in [
+            ("endgame-xm2we", BatteryProtocol::EndgameXm2we),
+            ("hyperx-cloud-ii-core", BatteryProtocol::HyperXCloudIiCore),
+            ("hyperx-cloud-iii-s", BatteryProtocol::HyperXCloudIiiS),
+            ("hyperx-cloud-alpha-2", BatteryProtocol::HyperXCloudAlpha2),
+            ("steelseries-nova-7", BatteryProtocol::SteelSeriesNova7),
+            (
+                "steelseries-nova-elite",
+                BatteryProtocol::SteelSeriesNovaElite,
+            ),
+            ("mouse-feature-83", BatteryProtocol::MouseFeature83),
+            ("vaxee-4k", BatteryProtocol::Vaxee4k),
+            ("mchose-m7-ultra", BatteryProtocol::MchoseM7Ultra),
+            ("mchose-a5-pro-max", BatteryProtocol::MchoseA5ProMax),
+        ] {
+            let mut receiver = data.clone();
+            receiver["receivers"][0]["battery_protocol"] = json!(name);
+            assert_eq!(
+                parse(&receiver)
+                    .unwrap()
+                    .battery_protocol("VID_3554&PID_F58A"),
+                Some(protocol),
+                "{name}"
+            );
+        }
 
         let mut invalid = data.clone();
         invalid["api_version"] = json!(1);

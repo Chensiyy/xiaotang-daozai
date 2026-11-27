@@ -6,6 +6,12 @@
 //!
 //! 完整许可声明见 THIRD_PARTY_NOTICES.txt。
 
+mod feature_mice;
+mod hyperx;
+mod mchose;
+mod steelseries;
+mod xm2we;
+
 use super::compat::BatteryProtocol;
 use super::usb_hid::{self, Handle};
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -21,27 +27,51 @@ const HIDPP_REQUEST_TIMEOUT: Duration = Duration::from_millis(140);
 static HIDPP_SOFTWARE_ID_SEQUENCE: AtomicU8 = AtomicU8::new(0);
 
 pub(super) fn read(instance: &str, protocol: BatteryProtocol) -> Option<(u8, Option<bool>)> {
-    let (page, usage, report_len) = match protocol {
-        BatteryProtocol::CompX => (0xff02, 0x0002, COMPX_REPORT_LEN),
-        BatteryProtocol::LogitechHidpp20 => (0xff00, 0x0002, HIDPP_REPORT_LEN),
-    };
-    let mut candidates = usb_hid::collections(instance)
+    match protocol {
+        BatteryProtocol::CompX => {
+            read_vendor_collection(instance, 0xff02, COMPX_REPORT_LEN, read_compx)
+        }
+        BatteryProtocol::LogitechHidpp20 => {
+            read_vendor_collection(instance, 0xff00, HIDPP_REPORT_LEN, read_hidpp)
+        }
+        BatteryProtocol::EndgameXm2we => xm2we::read(instance),
+        BatteryProtocol::HyperXCloudIiCore => hyperx::read_cloud_ii_core(instance),
+        BatteryProtocol::HyperXCloudIiiS => hyperx::read_cloud_iii_s(instance),
+        BatteryProtocol::HyperXCloudAlpha2 => hyperx::read_cloud_alpha_2(instance),
+        BatteryProtocol::SteelSeriesNova7 => steelseries::read_nova_7(instance),
+        BatteryProtocol::SteelSeriesNovaElite => steelseries::read_nova_elite(instance),
+        BatteryProtocol::MouseFeature83 => feature_mice::read_report_83(instance),
+        BatteryProtocol::Vaxee4k => feature_mice::read_vaxee(instance),
+        BatteryProtocol::MchoseM7Ultra => mchose::read_m7_ultra(instance),
+        BatteryProtocol::MchoseA5ProMax => mchose::read_a5_pro_max(instance),
+    }
+}
+
+fn read_vendor_collection(
+    instance: &str,
+    page: u16,
+    report_len: usize,
+    read: fn(&mut Handle) -> Option<(u8, Option<bool>)>,
+) -> Option<(u8, Option<bool>)> {
+    let candidates: Vec<_> = usb_hid::collections(instance)
         .into_iter()
         .filter(|collection| {
             collection.usage_page == page
-                && collection.usage == usage
+                && collection.usage == 0x0002
                 && collection.input_len >= report_len
                 && collection.output_len >= report_len
-        });
+        })
+        .collect();
+    // ATK A9 SE 会同时报告 17 和 20 字节的集合，只有前者接受同一 CompX 请求。
+    let prefer_exact = page == 0xff02 && candidates.iter().any(|c| c.output_len == report_len);
+    let mut candidates = candidates
+        .iter()
+        .filter(|c| !prefer_exact || c.output_len == report_len);
     let collection = candidates.next()?;
     if candidates.next().is_some() {
         return None;
     }
-    let mut handle = collection.open()?;
-    match protocol {
-        BatteryProtocol::CompX => read_compx(&mut handle),
-        BatteryProtocol::LogitechHidpp20 => read_hidpp(&mut handle),
-    }
+    read(&mut collection.open()?)
 }
 
 fn compx_checksum(bytes: &[u8]) -> u8 {
@@ -195,6 +225,10 @@ mod tests {
         let dragonfly = [
             0x08, 0x04, 0, 0, 0, 2, 0x19, 0, 0x0e, 0x46, 0, 0, 0, 0, 0, 0, 0xda,
         ];
+        // ATK A9 SE 原装接收器，HaloBattery #347。
+        let atk = [
+            0x08, 0x04, 0, 0, 0, 2, 0x23, 0, 0x0e, 0x23, 0, 0, 0, 0, 0, 0, 0xf3,
+        ];
         assert_eq!(
             compx_request(),
             [0x08, 0x04, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x49]
@@ -202,6 +236,7 @@ mod tests {
         assert_eq!(parse_compx(&receiver), Some((20, Some(false))));
         assert_eq!(parse_compx(&charging), Some((25, Some(true))));
         assert_eq!(parse_compx(&dragonfly), Some((25, Some(false))));
+        assert_eq!(parse_compx(&atk), Some((35, Some(false))));
         assert_eq!(parse_compx(&receiver[..16]), None);
         let mut invalid = receiver;
         invalid[16] ^= 0x01;
