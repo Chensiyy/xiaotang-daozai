@@ -466,7 +466,7 @@ function refresh({settings}) {
 
 索尼 INZONE H9 使用接收器的 COM 接口。大疆 Mic Mini 2 需要接收器的 USB 接口 6 已绑定 WinUSB。采集组件按 Windows USB 物理实例绑定两个接口，和 HID 使用同一套岛仔通信格式。
 
-采集组件从 [vendor/halo-battery/build.ps1](../../vendor/halo-battery/build.ps1) 构建，产物为 Windows x64 的 `daozai-halo.exe`。组件单独作为 `wireless-battery-vX.Y.Z` 预发行的资产发布到岛仔官方仓库，岛仔按发布记录的文件大小和 SHA-256 校验。桌面测试版从程序旁的 `wireless-battery-test.json` 加载本地验收源，其中包含组件绝对路径 `artifact` 及 `package.size` 和 `package.hash`。
+采集组件从 [vendor/halo-battery/build.ps1](../../vendor/halo-battery/build.ps1) 构建，产物为 Windows x64 的 `daozai-halo.exe`。在 Gitee 插件镜像仓库创建 `wireless-battery-vX.Y.Z` 发行版并上传同名附件，验证匿名下载的文件一致后更新 `master` 上的 `wireless-battery/component.json`，写入 `version`、`size`（字节数）和 `sha256`。岛仔按这份清单校验组件后安装。桌面测试版可从程序旁的 `wireless-battery-test.json` 加载本地验收源，其中包含组件绝对路径 `artifact` 及 `package.size` 和 `package.hash`。
 
 ### 正式分发
 

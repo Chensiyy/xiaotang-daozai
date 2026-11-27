@@ -10,11 +10,10 @@ use std::{
         Arc, Mutex,
     },
 };
+use url::Url;
 
-const RELEASE_PREFIX: &str = "wireless-battery-v";
-const RELEASE_API: &str =
-    "https://api.github.com/repos/Renly1994/xiaotang-daozai/releases?per_page=100";
-const DOWNLOAD_ROOT: &str = "https://github.com/Renly1994/xiaotang-daozai/releases/download";
+const REPOSITORY_PATH: &str = "/xiaotangtoken/xiaotang-daozai-plugins";
+const MANIFEST_LIMIT: u64 = 1024;
 const MAX_SIZE: u64 = 96 * 1024 * 1024;
 const RECEIPT: &str = "component.json";
 const CHOICE: &str = "enabled";
@@ -195,35 +194,148 @@ impl Receipt {
     }
 }
 
-fn asset(value: &serde_json::Value) -> Option<([u32; 3], Package)> {
-    let tag = value["tag_name"].as_str()?;
-    let mut components = tag.strip_prefix(RELEASE_PREFIX)?.split('.');
-    let mut version = [0; 3];
-    for number in &mut version {
-        let part = components.next()?;
-        if !part.bytes().all(|digit| digit.is_ascii_digit()) {
-            return None;
+fn manifest_url() -> Url {
+    Url::parse(&format!(
+        "https://gitee.com{REPOSITORY_PATH}/raw/master/wireless-battery/component.json"
+    ))
+    .expect("固定的电量组件清单地址")
+}
+
+fn read_manifest(reader: impl Read) -> Result<Package, &'static str> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Manifest {
+        version: String,
+        size: u64,
+        sha256: String,
+    }
+
+    const INVALID: &str = "电量组件发布信息无效";
+    let mut bytes = Vec::new();
+    reader
+        .take(MANIFEST_LIMIT + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "无法读取电量组件发布信息")?;
+    if bytes.len() as u64 > MANIFEST_LIMIT {
+        return Err(INVALID);
+    }
+    let manifest: Manifest = serde_json::from_slice(&bytes).map_err(|_| INVALID)?;
+    let mut parts = manifest.version.split('.');
+    for _ in 0..3 {
+        let part = parts.next().ok_or(INVALID)?;
+        if !part
+            .parse::<u32>()
+            .is_ok_and(|value| value.to_string() == part)
+        {
+            return Err(INVALID);
         }
-        *number = part.parse().ok()?;
     }
-    if components.next().is_some() || value["draft"].as_bool()? || !value["prerelease"].as_bool()? {
-        return None;
-    }
-    let expected = format!("{DOWNLOAD_ROOT}/{tag}/daozai-halo.exe");
-    let entry = value["assets"]
-        .as_array()?
-        .iter()
-        .find(|entry| entry["name"] == "daozai-halo.exe")?;
-    if entry["state"].as_str()? != "uploaded" || entry["browser_download_url"].as_str()? != expected
-    {
-        return None;
+    if parts.next().is_some() {
+        return Err(INVALID);
     }
     Receipt {
-        size: entry["size"].as_u64()?,
-        hash: entry["digest"].as_str()?.strip_prefix("sha256:")?.into(),
+        size: manifest.size,
+        hash: manifest.sha256,
     }
-    .package(expected)
-    .map(|package| (version, package))
+    .package(format!(
+        "https://gitee.com{REPOSITORY_PATH}/releases/download/wireless-battery-v{}/daozai-halo.exe",
+        manifest.version
+    ))
+    .ok_or(INVALID)
+}
+
+#[derive(Clone, Copy)]
+enum Resource {
+    Manifest,
+    Asset,
+}
+
+fn https_on(url: &Url, host: &str) -> bool {
+    url.scheme() == "https"
+        && url.host_str() == Some(host)
+        && url.port().is_none()
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.fragment().is_none()
+}
+
+fn numbered_file(path: &str, prefix: &str, suffix: &str) -> bool {
+    path.strip_prefix(prefix)
+        .and_then(|tail| tail.strip_suffix(suffix))
+        .is_some_and(|id| !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit()))
+}
+
+fn gitee_attachment(url: &Url) -> bool {
+    https_on(url, "gitee.com")
+        && url
+            .path()
+            .strip_prefix(REPOSITORY_PATH)
+            .is_some_and(|path| numbered_file(path, "/attach_files/", "/download/daozai-halo.exe"))
+}
+
+fn redirect_target(resource: Resource, first: &Url, from: &Url, location: &str) -> Option<Url> {
+    let target = from.join(location).ok()?;
+    let trusted = match resource {
+        Resource::Manifest => {
+            from == first
+                && https_on(&target, "raw.giteeusercontent.com")
+                && target.path() == first.path()
+                && target
+                    .query_pairs()
+                    .any(|(key, value)| key == "signature" && !value.is_empty())
+        }
+        Resource::Asset if from == first => gitee_attachment(&target),
+        Resource::Asset => {
+            gitee_attachment(from)
+                && https_on(&target, "foruda.gitee.com")
+                && numbered_file(target.path(), "/attach_file/", "/daozai-halo.exe")
+        }
+    };
+    trusted.then_some(target)
+}
+
+fn request_component(
+    agent: &ureq::Agent,
+    first: &Url,
+    resource: Resource,
+    cancel: &AtomicBool,
+) -> Result<ureq::Response, String> {
+    const REDIRECT_ERROR: &str = "电量组件下载地址发生非预期跳转";
+    let manifest = matches!(resource, Resource::Manifest);
+    let network_error = if manifest {
+        "无法获取电量组件，请检查网络后重试"
+    } else {
+        "无法下载电量组件，请重试"
+    };
+    let mut url = first.clone();
+    // 发布附件最多经过仓库附件页和文件服务器两跳。
+    for _ in 0..3 {
+        if cancel.load(Ordering::Relaxed) {
+            return Err("已取消下载".into());
+        }
+        let mut request = agent
+            .get(url.as_str())
+            .set("User-Agent", concat!("Daozai/", env!("CARGO_PKG_VERSION")))
+            .set("Accept", "*/*");
+        if manifest {
+            request = request.set("Cache-Control", "no-cache");
+        }
+        let response = request.call().map_err(|error| match error {
+            ureq::Error::Status(404, _) if manifest => "官方电量组件暂未发布",
+            _ => network_error,
+        })?;
+        match response.status() {
+            200 => return Ok(response),
+            301 | 302 | 303 | 307 | 308 => {
+                url = response
+                    .header("Location")
+                    .and_then(|location| redirect_target(resource, first, &url, location))
+                    .ok_or(REDIRECT_ERROR)?;
+            }
+            _ => return Err(network_error.into()),
+        }
+    }
+    Err(REDIRECT_ERROR.into())
 }
 
 fn binary_path(directory: &Path, package: &Package) -> PathBuf {
@@ -255,27 +367,9 @@ fn download(directory: &Path, cancel: &AtomicBool) -> Result<Prepared, String> {
             return prepare(directory, package, cancel, file);
         }
     }
-    let agent = updates::http_agent()?;
-    let response = agent
-        .get(RELEASE_API)
-        .set("Accept", "application/vnd.github+json")
-        .set("User-Agent", concat!("Daozai/", env!("CARGO_PKG_VERSION")))
-        .call()
-        .map_err(|error| match error {
-            ureq::Error::Status(404, _) => "官方电量组件暂未发布",
-            _ => "无法获取电量组件，请检查网络后重试",
-        })?;
-    if response.get_url() != RELEASE_API {
-        return Err("电量组件发布地址无效".into());
-    }
-    let releases: Vec<serde_json::Value> =
-        serde_json::from_reader(response.into_reader().take(8 * 1024 * 1024))
-            .map_err(|_| "电量组件发布信息无效")?;
-    let (_, package) = releases
-        .iter()
-        .filter_map(asset)
-        .max_by_key(|(version, _)| *version)
-        .ok_or("官方电量组件暂未发布或缺少校验信息")?;
+    let agent = updates::http_agent_builder()?.redirects(0).build();
+    let response = request_component(&agent, &manifest_url(), Resource::Manifest, cancel)?;
+    let package = read_manifest(response.into_reader())?;
     if cancel.load(Ordering::Relaxed) {
         return Err("已取消下载".into());
     }
@@ -287,23 +381,8 @@ fn download(directory: &Path, cancel: &AtomicBool) -> Result<Prepared, String> {
             });
         }
     }
-    let response = agent
-        .get(&package.url)
-        .call()
-        .map_err(|_| "无法下载电量组件，请重试")?;
-    let final_url = url::Url::parse(response.get_url()).map_err(|_| "电量组件下载地址无效")?;
-    if final_url.scheme() != "https"
-        || !matches!(
-            final_url.host_str(),
-            Some(
-                "github.com"
-                    | "release-assets.githubusercontent.com"
-                    | "objects.githubusercontent.com"
-            )
-        )
-    {
-        return Err("电量组件下载地址无效".into());
-    }
+    let asset_url = Url::parse(&package.url).map_err(|_| "电量组件下载地址无效")?;
+    let response = request_component(&agent, &asset_url, Resource::Asset, cancel)?;
     prepare(directory, package, cancel, response.into_reader())
 }
 
@@ -409,32 +488,158 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn optional_battery_accepts_only_the_official_release_asset() {
-        let mut value = json!({
-            "tag_name": "wireless-battery-v1.18.0", "draft": false, "prerelease": true,
-            "assets": [{
-                "name": "daozai-halo.exe", "state": "uploaded", "size": 30,
-                "digest": format!("sha256:{}", "A".repeat(64)),
-                "browser_download_url": format!("{DOWNLOAD_ROOT}/wireless-battery-v1.18.0/daozai-halo.exe")
-            }]
+    fn optional_battery_validates_bounded_gitee_manifest() {
+        let value = json!({
+            "version": "1.19.1", "size": 30, "sha256": "A".repeat(64)
         });
-        let (version, package) = asset(&value).unwrap();
-        assert_eq!(version, [1, 18, 0]);
+        let parse = |value: &serde_json::Value| read_manifest(value.to_string().as_bytes());
+        let package = parse(&value).unwrap();
+        assert_eq!(package.size, 30);
         assert_eq!(package.hash, "a".repeat(64));
+        assert_eq!(
+            package.url,
+            "https://gitee.com/xiaotangtoken/xiaotang-daozai-plugins/releases/download/wireless-battery-v1.19.1/daozai-halo.exe"
+        );
         for (field, invalid) in [
-            ("digest", json!("sha256:short")),
+            ("version", json!("v1.19.1")),
+            ("version", json!("1.19")),
+            ("version", json!("1.19.1.0")),
+            ("version", json!("1.19.01")),
+            ("version", json!("1.19.1/other")),
+            ("version", json!("1.19.4294967296")),
+            ("sha256", json!("sha256:short")),
+            ("sha256", json!("z".repeat(64))),
+            ("size", json!(0)),
             ("size", json!(MAX_SIZE + 1)),
-            (
-                "browser_download_url",
-                json!("https://example.com/daozai-halo.exe"),
-            ),
+            ("url", json!("https://example.com/daozai-halo.exe")),
         ] {
             let mut changed = value.clone();
-            changed["assets"][0][field] = invalid;
-            assert!(asset(&changed).is_none());
+            changed[field] = invalid;
+            assert!(parse(&changed).is_err(), "错误字段 {field}");
         }
-        value["draft"] = json!(true);
-        assert!(asset(&value).is_none());
+        assert!(read_manifest(&b""[..]).is_err());
+        assert!(read_manifest(&b"<html>Not Found</html>"[..]).is_err());
+        let mut oversized = value.to_string().into_bytes();
+        oversized.resize(MANIFEST_LIMIT as usize + 1, b' ');
+        assert!(read_manifest(&oversized[..]).is_err());
+    }
+
+    #[test]
+    fn optional_battery_only_accepts_expected_gitee_redirect_paths() {
+        let feed = manifest_url();
+        let signed = format!(
+            "https://raw.giteeusercontent.com{}?signature=test",
+            feed.path()
+        );
+        let raw = |from, target: &str| redirect_target(Resource::Manifest, &feed, from, target);
+        let signed_url = raw(&feed, &signed).unwrap();
+        assert_eq!(signed_url.as_str(), signed);
+        assert!(raw(&signed_url, &signed).is_none());
+        for unexpected in [
+            signed.replace("https://", "http://"),
+            signed.replace(".com/", ".com:444/"),
+            signed.replace(".com/", ".com.example/"),
+            signed.replace("://", "://user@"),
+            signed.replace("/master/", "/other/"),
+            signed.replace("signature=test", "signature="),
+            format!("{signed}#fragment"),
+        ] {
+            assert!(raw(&feed, &unexpected).is_none(), "{unexpected}");
+        }
+
+        let release = Url::parse(&format!("https://gitee.com{REPOSITORY_PATH}/releases/download/wireless-battery-v1.19.1/daozai-halo.exe")).unwrap();
+        let attach_path = format!("{REPOSITORY_PATH}/attach_files/123/download/daozai-halo.exe");
+        let object = "https://foruda.gitee.com/attach_file/456/daozai-halo.exe?attname=daozai-halo.exe&token=test&ts=1";
+        let next = |from, target: &str| redirect_target(Resource::Asset, &release, from, target);
+        let attach = next(&release, &attach_path).unwrap();
+        let final_url = next(&attach, object).unwrap();
+        assert_eq!(final_url.as_str(), object);
+        assert!(next(&release, object).is_none());
+        assert!(next(&final_url, &attach_path).is_none());
+        for unexpected in [
+            attach_path.replace(REPOSITORY_PATH, "/another/repo"),
+            attach_path.replace("/123/", "/abc/"),
+            attach_path.replace("/123/", "/"),
+            attach_path.replace("daozai-halo.exe", "other.exe"),
+            format!("https://untrusted.example{attach_path}"),
+        ] {
+            assert!(next(&release, &unexpected).is_none(), "{unexpected}");
+        }
+        for unexpected in [
+            object.replace("/456/", "/456/extra/"),
+            object.replace("foruda.gitee.com", "gitee.com"),
+            object.replace(".com/", ".com:444/"),
+            object.replace("daozai-halo.exe?", "another.exe?"),
+        ] {
+            assert!(next(&attach, &unexpected).is_none(), "{unexpected}");
+        }
+    }
+
+    #[test]
+    fn optional_battery_requests_each_hop_without_account_credentials() {
+        let release = Url::parse(&format!("https://gitee.com{REPOSITORY_PATH}/releases/download/wireless-battery-v1.19.1/daozai-halo.exe")).unwrap();
+        let attachment = format!("{REPOSITORY_PATH}/attach_files/123/download/daozai-halo.exe");
+        let object = "https://foruda.gitee.com/attach_file/456/daozai-halo.exe?token=fixture";
+        let steps = [
+            (release.to_string(), Some(attachment.clone())),
+            (
+                format!("https://gitee.com{attachment}"),
+                Some(object.into()),
+            ),
+            (object.into(), None),
+        ];
+        let calls = Arc::new(AtomicU64::new(0));
+        let seen = calls.clone();
+        let agent = ureq::AgentBuilder::new()
+            .redirects(0)
+            .middleware(move |request: ureq::Request, _: ureq::MiddlewareNext| {
+                let (expected, location) = &steps[seen.fetch_add(1, Ordering::Relaxed) as usize];
+                assert_eq!(request.url(), expected);
+                assert!(request.header("Authorization").is_none());
+                assert!(request.header("Cookie").is_none());
+                match location {
+                    Some(location) => {
+                        format!("HTTP/1.1 302 Found\r\nLocation: {location}\r\n\r\n").parse()
+                    }
+                    None => ureq::Response::new(200, "OK", "fixture"),
+                }
+            })
+            .build();
+        let cancel = AtomicBool::new(false);
+        let response = request_component(&agent, &release, Resource::Asset, &cancel).unwrap();
+        assert_eq!(response.into_string().unwrap(), "fixture");
+        assert_eq!(calls.load(Ordering::Relaxed), 3);
+    }
+
+    #[test]
+    fn optional_battery_reports_missing_or_invalid_gitee_responses() {
+        let feed = manifest_url();
+        for (status, headers, hint) in [
+            (404, "", "暂未发布"),
+            (500, "", "无法获取"),
+            (204, "", "无法获取"),
+            (302, "", "跳转"),
+            (
+                302,
+                "Location: https://untrusted.example/private\r\n",
+                "跳转",
+            ),
+        ] {
+            let expected = feed.to_string();
+            let agent = ureq::AgentBuilder::new()
+                .redirects(0)
+                .middleware(move |request: ureq::Request, _: ureq::MiddlewareNext| {
+                    assert_eq!(request.url(), expected.as_str());
+                    assert_eq!(request.header("Cache-Control"), Some("no-cache"));
+                    format!("HTTP/1.1 {status} Fixture\r\n{headers}\r\n").parse()
+                })
+                .build();
+            let error =
+                request_component(&agent, &feed, Resource::Manifest, &AtomicBool::new(false))
+                    .unwrap_err();
+            assert!(error.contains(hint), "{error}");
+            assert!(!error.contains("untrusted.example"));
+        }
     }
 
     #[test]
@@ -477,16 +682,30 @@ mod tests {
     #[test]
     #[ignore = "需要在测试二进制旁配置本地验收组件"]
     fn optional_battery_preview_installs_and_runs_only_after_opt_in() {
+        assert!(option_env!("DAOZAI_TEST_BUILD").is_some());
+        assert!(preview_asset().unwrap().is_some());
+        verify_installation(std::time::Duration::from_secs(25));
+    }
+
+    #[test]
+    #[ignore = "需要连接已公开发布电量组件的 Gitee 仓库"]
+    fn optional_battery_gitee_installs_and_runs_only_after_opt_in() {
+        assert!(
+            option_env!("DAOZAI_TEST_BUILD").is_none(),
+            "请使用正式构建参数"
+        );
+        verify_installation(std::time::Duration::from_secs(90));
+    }
+
+    fn verify_installation(download_timeout: std::time::Duration) {
         use super::super::halo_worker::{Receiver, Worker};
         use std::{
             sync::mpsc,
             time::{Duration, Instant},
         };
 
-        assert!(option_env!("DAOZAI_TEST_BUILD").is_some());
-        assert!(preview_asset().unwrap().is_some());
         let directory = std::env::temp_dir().join(format!(
-            "daozai-preview-battery-{}-{}",
+            "daozai-battery-install-{}-{}",
             std::process::id(),
             NEXT_TEMP.fetch_add(1, Ordering::Relaxed),
         ));
@@ -498,10 +717,11 @@ mod tests {
                 let _ = finished.send(());
             })
             .unwrap();
-        ready.recv_timeout(Duration::from_secs(25)).unwrap();
+        ready.recv_timeout(download_timeout).unwrap();
         let path = component
             .executable()
             .unwrap_or_else(|| panic!("{:?}", component.status().error));
+        assert_eq!(cached(&directory, &AtomicBool::new(false)).unwrap(), path);
         let worker = Worker::spawn(path.clone()).unwrap();
         worker.set_targets(
             1,
@@ -522,7 +742,7 @@ mod tests {
         assert_eq!(snapshot.generation, 1);
         assert!(snapshot.devices.is_empty());
         component.set_enabled(false, || {}).unwrap();
-        drop(worker);
+        worker.shutdown().unwrap().join().unwrap();
         assert!(component.executable().is_none());
         assert!(!Component::load(directory.clone()).status().enabled);
         // 测试退出后 Windows 任务对象负责释放子进程的文件句柄。
