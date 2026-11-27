@@ -237,5 +237,22 @@ class WorkerTests(unittest.TestCase):
             self.assertEqual(opened, [])
 
 
+    def test_g3_a_does_not_fall_through_to_the_shared_g7_reader(self):
+        hid = ModuleType("hid")
+        with patch.dict(sys.modules, {"hid": hid}):
+            from provider_registry import MchoseReceiverProvider
+            from providers import mchose
+
+        row = {"vendor_id": 0xA8A5, "product_id": 0x2255, "product_string": "MCHOSE G3 A"}
+        hid.enumerate = lambda vid, pid: [row] if (vid, pid) == (0xA8A5, 0x2255) else []
+        with patch.object(mchose, "hid", hid), patch.object(mchose.MchoseProvider, "poll") as legacy:
+            provider = MchoseReceiverProvider()
+            self.assertEqual(provider.poll(), [])
+            legacy.assert_not_called()
+            row["product_string"] = "MCHOSE G7"
+            provider.poll()
+            legacy.assert_called_once_with()
+
+
 if __name__ == "__main__":
     unittest.main()

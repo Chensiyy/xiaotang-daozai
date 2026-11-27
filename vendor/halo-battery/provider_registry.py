@@ -94,6 +94,11 @@ from providers.jbl_quantum350 import JblQuantum350Provider
 from providers import beitong, eightbitdo_ultimate2, flydigi, gamesir, raikiri
 from providers.base import DeviceStatus, Provider
 
+from feedback_receivers import DareuEk87ProProvider, MachenikeL8MaxProvider, VgnDragonfly3ProProvider
+from mchose_feedback import MchoseG3V2Provider, MchoseV9Pro2Provider
+from mouse_receivers import RapooVt9AirProvider, VgnF1MobaProvider
+from regional_receivers import EweadnX87Provider, MchoseG3AProvider, Wave75Provider
+
 
 class MchoseReceiverProvider(mchose.MchoseProvider):
     """V9 Turbo+ 只使用实测应答的物理 USB 接收器端点。"""
@@ -105,6 +110,9 @@ class MchoseReceiverProvider(mchose.MchoseProvider):
         if turbo:
             return self._poll_turbo_plus(turbo)
         if hid.enumerate(mchose.NEW_VID, mchose.HEADSET_DONGLE_PID):
+            return []
+        if any(MchoseG3AProvider.matches_product(row)
+               for row in hid.enumerate(mchose.G7_VID, mchose.G7_PID)):
             return []
         return super().poll()
 
@@ -264,4 +272,14 @@ PROVIDERS = (
     AkkoS9Provider,
     LogitechG325Provider,
     JblQuantum350Provider,
+    RapooVt9AirProvider,
+    VgnF1MobaProvider,
+    Wave75Provider,
+    MchoseG3AProvider,
+    EweadnX87Provider,
+    MchoseG3V2Provider,
+    MchoseV9Pro2Provider,
+    MachenikeL8MaxProvider,
+    VgnDragonfly3ProProvider,
+    DareuEk87ProProvider,
 )
