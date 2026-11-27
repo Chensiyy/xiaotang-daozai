@@ -44,6 +44,8 @@ assets/qq-client.png 来自 QQ Windows 客户端 9.9.21 内置的 resource/favic
 
 无线设备电量协议
 CompX、HyperX、SteelSeries、XM2we、LAMZU、WLmouse、VAXEE 和迈从电量读取参考下列项目的协议说明与样本。
+可选电量组件使用 HaloBattery v1.18.0（3c2a07260ee0946879dbf4851939506ee20ef72f）的采集代码。
+组件的上游归属与运行时许可随独立组件分发，可运行 daozai-halo.exe --licenses 查看。
 https://github.com/HeyOkay/HaloBattery
 https://github.com/andrewrabert/python-pulsar-mouse-tool
 https://github.com/LennardKittner/HyperHeadset

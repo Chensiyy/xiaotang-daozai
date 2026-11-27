@@ -1,10 +1,10 @@
 //! 已识别的 2.4G USB 接收器。拔插查询独立于蓝牙枚举。
 use super::compat::{builtin_receivers, Package, Store};
-use super::usb_battery;
-use super::{Device, DeviceKind};
+use super::{halo_worker, usb_battery, BatteryReading, BatterySource, Device, DeviceKind};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     ffi::c_void,
+    path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc::{self, SyncSender, TrySendError},
@@ -215,6 +215,155 @@ pub(super) fn run(
     );
 }
 
+#[derive(Default)]
+struct Enhancement {
+    executable: Option<PathBuf>,
+    worker: Option<halo_worker::Worker>,
+    retiring: Option<(std::thread::JoinHandle<()>, Vec<halo_worker::Receiver>)>,
+    targets: Vec<halo_worker::Receiver>,
+    generation: u64,
+    started: Option<Instant>,
+    retry_after: Option<Instant>,
+}
+
+impl Enhancement {
+    fn sync(
+        &mut self,
+        executable: Option<PathBuf>,
+        targets: Vec<halo_worker::Receiver>,
+        reconnected: bool,
+        reassigned_to_native: bool,
+        now: Instant,
+    ) {
+        let replaced = self.executable != executable;
+        if replaced || targets.is_empty() || reassigned_to_native {
+            if let Some(thread) = self.worker.take().and_then(halo_worker::Worker::shutdown) {
+                self.retiring = Some((thread, self.targets.clone()));
+            }
+            self.retry_after = None;
+        }
+        self.executable = executable;
+        if replaced || reconnected || self.targets != targets {
+            self.targets = targets;
+            self.generation = self.generation.wrapping_add(1);
+            self.started = Some(now);
+            if let Some(worker) = &self.worker {
+                worker.set_targets(self.generation, self.targets.clone());
+            }
+        }
+    }
+
+    fn blocks_native(&self, id: &str) -> bool {
+        self.retiring.as_ref().is_some_and(|(thread, targets)| {
+            !thread.is_finished()
+                && id.strip_prefix("usb:").is_some_and(|instance| {
+                    targets.iter().any(|target| target.usb_instance == instance)
+                })
+        })
+    }
+
+    fn snapshot(&mut self, now: Instant) -> Option<Arc<halo_worker::Snapshot>> {
+        if let Some((thread, _)) = &self.retiring {
+            if !thread.is_finished() {
+                return None;
+            }
+            self.retiring = None;
+        }
+        if self.targets.is_empty() {
+            return None;
+        }
+        if self.worker.is_none() && self.retry_after.is_none_or(|at| now >= at) {
+            let path = self.executable.as_ref()?.clone();
+            self.worker = halo_worker::Worker::spawn(path).ok();
+            self.retry_after = Some(now + Duration::from_secs(15));
+            if let Some(worker) = &self.worker {
+                worker.set_targets(self.generation, self.targets.clone());
+            }
+        }
+        self.worker
+            .as_ref()?
+            .snapshot(now)
+            .filter(|snapshot| snapshot.generation == self.generation)
+    }
+}
+
+fn worker_receiver(id: &str) -> Option<halo_worker::Receiver> {
+    let usb_instance = id.strip_prefix("usb:")?;
+    let (hardware, _) = usb_instance.strip_prefix("USB\\")?.split_once('\\')?;
+    let (vid, pid) = hardware.strip_prefix("VID_")?.split_once("&PID_")?;
+    Some(halo_worker::Receiver {
+        usb_instance: usb_instance.into(),
+        vid: u16::from_str_radix(vid, 16).ok()?,
+        pid: u16::from_str_radix(pid, 16).ok()?,
+    })
+}
+
+fn merge_enhanced(
+    devices: &[Device],
+    snapshot: &halo_worker::Snapshot,
+    started: Instant,
+    now: Instant,
+) -> Option<Vec<Device>> {
+    let mut grouped: BTreeMap<&str, BTreeMap<&str, &halo_worker::Reading>> = BTreeMap::new();
+    for observed in &snapshot.devices {
+        let Some(instance) = observed.usb_instance.as_deref() else {
+            continue;
+        };
+        if observed.online == Some(false)
+            || !observed.sampled_at.is_some_and(|at| {
+                at >= started && now.saturating_duration_since(at) <= super::FRESH_FOR
+            })
+        {
+            continue;
+        }
+        grouped
+            .entry(instance)
+            .or_default()
+            .insert(&observed.key, observed);
+    }
+    if grouped.is_empty() {
+        return None;
+    }
+    let mut merged = Vec::with_capacity(devices.len());
+    for receiver in devices {
+        let records = receiver
+            .id
+            .strip_prefix("usb:")
+            .and_then(|id| grouped.get(id));
+        let Some(records) = records.filter(|_| receiver.reading.is_none()) else {
+            merged.push(receiver.clone());
+            continue;
+        };
+        for observed in records.values() {
+            let mut device = receiver.clone();
+            if records.len() > 1 {
+                device.id.push('#');
+                device.id.push_str(&observed.key);
+            }
+            device.name.clone_from(&observed.name);
+            device.battery = observed.level;
+            device.reading = observed
+                .level
+                .zip(observed.sampled_at)
+                .map(|(percent, sampled)| {
+                    let mut reading = BatteryReading::new(
+                        percent,
+                        BatterySource::UsbReceiver,
+                        sampled,
+                        observed.charging,
+                    );
+                    reading.approximate = observed.approximate;
+                    reading
+                });
+            if device.reading.is_none() {
+                device.charging_only = observed.charging.zip(observed.sampled_at);
+            }
+            merged.push(device);
+        }
+    }
+    Some(merged)
+}
+
 fn run_scans(
     tx: SyncSender<Vec<Device>>,
     stop: Arc<AtomicBool>,
@@ -231,14 +380,19 @@ fn run_scans(
     let mut latest: Option<Vec<Device>> = None;
     let mut published = None;
     let mut battery = usb_battery::Poller::new();
+    let mut enhancement = Enhancement::default();
     let mut arrivals = BTreeMap::new();
     while !stop.load(Ordering::Relaxed) {
         let selected = store.package();
+        let enhanced_executable = selected
+            .as_ref()
+            .and_then(|_| store.component()?.executable());
+        let now = Instant::now();
         let changed = match (&selected, &active) {
             (Some(selected), Some(active)) => !Arc::ptr_eq(selected, active),
             _ => selected.is_some() != active.is_some(),
         };
-        if Instant::now() >= next_scan || changed {
+        if now >= next_scan || changed || enhancement.executable != enhanced_executable {
             active = selected;
             let found = scan();
             let scanned = found.is_some();
@@ -250,24 +404,63 @@ fn run_scans(
                 .as_ref()
                 .map(|ids| receiver_snapshot(active.as_deref(), ids));
             if let Some(devices) = &latest {
-                battery.sync(devices, active.as_deref(), Instant::now());
-                if scanned {
+                battery.sync(devices, active.as_deref(), now);
+                let changed_ids = if scanned {
                     // 两次扫描之间重插时，实例 ID 可能相同，Windows 的到达时间会变化。
-                    for id in changed_arrivals(battery.target_ids(), &mut arrivals, &read_arrival) {
-                        battery.invalidate(&id);
+                    if enhanced_executable.is_some() {
+                        changed_arrivals(
+                            devices.iter().map(|device| device.id.as_str()),
+                            &mut arrivals,
+                            &read_arrival,
+                        )
+                    } else {
+                        changed_arrivals(battery.target_ids(), &mut arrivals, &read_arrival)
                     }
+                } else {
+                    Vec::new()
+                };
+                for id in &changed_ids {
+                    battery.invalidate(id);
                 }
+                let (targets, reassigned) = if enhanced_executable.is_some() {
+                    let native: BTreeSet<_> = battery
+                        .target_ids()
+                        .filter_map(|id| id.strip_prefix("usb:"))
+                        .collect();
+                    let devices = devices
+                        .iter()
+                        .filter(|device| !usb_battery::is_reading(&device.id))
+                        .filter_map(|device| worker_receiver(&device.id))
+                        .filter(|target| !native.contains(target.usb_instance.as_str()))
+                        .collect();
+                    let reassigned = enhancement
+                        .targets
+                        .iter()
+                        .any(|target| native.contains(target.usb_instance.as_str()));
+                    (devices, reassigned)
+                } else {
+                    (Vec::new(), false)
+                };
+                enhancement.sync(
+                    enhanced_executable,
+                    targets,
+                    !changed_ids.is_empty(),
+                    reassigned,
+                    now,
+                );
             }
-            next_scan = Instant::now() + scan_interval;
+            next_scan = now + scan_interval;
         }
         if let Some(devices) = &mut latest {
-            battery.poll(devices, Instant::now());
-        }
-        if latest != published {
-            if let Some(devices) = &latest {
+            battery.poll(devices, now, |id| enhancement.blocks_native(id));
+            let enhanced = enhancement
+                .snapshot(now)
+                .and_then(|snapshot| merge_enhanced(devices, &snapshot, enhancement.started?, now));
+            let devices = enhanced.as_ref().unwrap_or(devices);
+            if published.as_ref() != Some(devices) {
                 match tx.try_send(devices.clone()) {
                     Ok(()) => {
-                        published.clone_from(&latest);
+                        published = Some(devices.clone());
                         wake();
                     }
                     Err(TrySendError::Full(_)) => {}
@@ -286,6 +479,51 @@ mod tests {
     use super::*;
     use crate::bt::compat::builtin_data;
     use serde_json::json;
+
+    #[test]
+    fn receiver_enhancement_joins_only_current_physical_receivers() {
+        const FIRST: &str = r"USB\VID_0B05&PID_1ACE\FIRST";
+        const SECOND: &str = r"USB\VID_0B05&PID_1ACE\SECOND";
+        let first = Device {
+            id: format!("usb:{FIRST}"),
+            name: "ROG OMNI 接收器".into(),
+            kind: DeviceKind::Receiver24G,
+            ..Default::default()
+        };
+        let mut second = first.clone();
+        second.id = format!("usb:{SECOND}");
+        let now = Instant::now();
+        let started = now - Duration::from_secs(5);
+        let make_reading = |instance: &str, key: &str, level: Option<u8>, time: Instant| {
+            let mut reading: halo_worker::Reading = serde_json::from_value(json!({
+                "key": key, "name": key, "kind": "mouse",
+                "level": level, "charging": true, "online": true,
+                "vid": 0x0B05, "pid": 0x1ACE, "usb_instance": instance,
+                "fresh": true, "age_ms": 0
+            }))
+            .unwrap();
+            reading.sampled_at = Some(time);
+            reading
+        };
+        let snapshot = halo_worker::Snapshot {
+            generation: 2,
+            observed: now,
+            devices: vec![
+                make_reading(FIRST, "A", Some(0), now),
+                make_reading(FIRST, "B", None, now),
+                make_reading(SECOND, "C", Some(100), started - Duration::from_millis(1)),
+            ],
+        };
+        assert_eq!(worker_receiver(&first.id).unwrap().usb_instance, FIRST);
+        let merged =
+            merge_enhanced(&[first.clone(), second.clone()], &snapshot, started, now).unwrap();
+        assert_eq!(merged.len(), 3);
+        assert_eq!(merged[0].id, format!("{}#A", first.id));
+        assert_eq!(merged[0].battery, Some(0));
+        assert_eq!(merged[1].battery, None);
+        assert_eq!(merged[1].charging_only, Some((true, now)));
+        assert_eq!(merged[2], second);
+    }
 
     #[test]
     fn receiver_arrival_change_detects_replug_without_missing_snapshot() {

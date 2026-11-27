@@ -20,6 +20,13 @@ type Read = fn(&str, BatteryProtocol) -> Option<(u8, Option<bool>)>;
 // 页面启停也不能让同一个物理实例同时收发两组请求。
 static ACTIVE_READS: Mutex<BTreeSet<String>> = Mutex::new(BTreeSet::new());
 
+pub(super) fn is_reading(id: &str) -> bool {
+    ACTIVE_READS
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .contains(id)
+}
+
 struct ReadSlot(String);
 
 impl ReadSlot {
@@ -125,7 +132,12 @@ impl Poller {
         }
     }
 
-    pub(super) fn poll(&mut self, devices: &mut [Device], now: Instant) {
+    pub(super) fn poll(
+        &mut self,
+        devices: &mut [Device],
+        now: Instant,
+        blocked: impl Fn(&str) -> bool,
+    ) {
         for device in devices {
             if let Some(target) = self.targets.get_mut(&device.id) {
                 target.collect(now);
@@ -135,7 +147,7 @@ impl Poller {
                     .filter(|reading| now.saturating_duration_since(reading.observed) <= FRESH_FOR)
                     .cloned();
                 device.battery = device.reading.as_ref().map(|reading| reading.percent);
-                if target.task.is_none() && now >= target.next_read {
+                if target.task.is_none() && now >= target.next_read && !blocked(&device.id) {
                     let Some(slot) = ReadSlot::acquire(&device.id) else {
                         continue;
                     };
@@ -204,14 +216,14 @@ mod tests {
             Some(false),
         )))
         .unwrap();
-        battery.poll(&mut devices, now);
+        battery.poll(&mut devices, now, |_| false);
         assert_eq!(devices[0].battery, Some(0));
         let (late_tx, late_rx) = mpsc::channel();
         battery.targets.get_mut(&id).unwrap().task = Some(late_rx);
         battery.sync(&[], Some(&package), now);
         battery.sync(&devices, Some(&package), now);
         assert!(late_tx.send(None).is_err());
-        battery.poll(&mut devices, now);
+        battery.poll(&mut devices, now, |_| false);
         assert_eq!(devices[0].battery, None);
         battery.sync(&devices, None, now);
         assert!(battery.targets.is_empty());

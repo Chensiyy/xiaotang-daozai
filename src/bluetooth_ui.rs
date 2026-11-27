@@ -35,6 +35,9 @@ fn charge_state(device:&Device,fx:Option<&WirelessFx>)->Option<bool> {
     let now=Instant::now();
     if device.stale_at(now) {return None;}
     device.reading.as_ref().and_then(|r|r.charging).or_else(|| {
+        let (charging, observed)=device.charging_only?;
+        (now.saturating_duration_since(observed)<=crate::bt::FRESH_FOR).then_some(charging)
+    }).or_else(|| {
         let report=fx?.last_charge?;
         (now.saturating_duration_since(report.at)<=crate::bt::FRESH_FOR).then_some(report.charging)
     })
@@ -168,8 +171,9 @@ fn ring(c:&Card,cx:f32,cy:f32,spec:&RingSpec,device:&Device,fx:Option<&WirelessF
 /// 百分比（充电时前面带闪电）。centered 时整组以 x 居中，否则从 x 左对齐。返回总宽。
 fn reading(c:&Card,x:f32,cy:f32,size:f32,device:&Device,fx:Option<&WirelessFx>,t:f64,live:bool,enter:f32,centered:bool,linked:bool)->f32 {
     if linked&&device.battery.is_none() {
-        let size=size*0.87;let tw=c.text_w(LINKED,size,W::Semibold);
-        c.centered_text(if centered {x-tw/2.0} else {x},cy,LINKED,size,W::Semibold,theme::LINK_SOFT,H::Left);
+        let label=if charging(device,fx) {"充电中"} else {LINKED};
+        let size=size*0.87;let tw=c.text_w(label,size,W::Semibold);
+        c.centered_text(if centered {x-tw/2.0} else {x},cy,label,size,W::Semibold,theme::LINK_SOFT,H::Left);
         return tw;
     }
     let col=color(device,fx);
@@ -181,7 +185,8 @@ fn reading(c:&Card,x:f32,cy:f32,size:f32,device:&Device,fx:Option<&WirelessFx>,t
                 let k=anim::clamp01(((t-at)/0.8) as f32);shown=from as f32+(level as f32-from as f32)*anim::ease_out_cubic(k);
             }
             let progress=if device.kind==DeviceKind::Receiver24G {1.0} else {anim::ease_out_cubic(enter)};
-            format!("{}%",(shown*progress).round() as u8)
+            let marker=if device.reading.as_ref().is_some_and(|reading| reading.approximate) {"≈"} else {""};
+            format!("{marker}{}%",(shown*progress).round() as u8)
         }
     };
     let weight=if device.battery.is_some()&&!stale(device) {W::Bold} else {W::Semibold};

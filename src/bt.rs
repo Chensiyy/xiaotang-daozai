@@ -9,6 +9,10 @@ mod windows;
 #[cfg(windows)]
 mod receivers;
 #[cfg(windows)]
+pub(crate) mod halo_component;
+#[cfg(windows)]
+mod halo_worker;
+#[cfg(windows)]
 mod usb_battery;
 #[cfg(windows)]
 mod usb_battery_protocols;

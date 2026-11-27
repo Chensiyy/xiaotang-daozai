@@ -782,7 +782,12 @@ impl LocalPlugins {
     }
 
     #[cfg(windows)]
-    pub(crate) fn wireless_settings(&mut self, ui: &mut egui::Ui) {
+    pub(crate) fn wireless_settings(
+        &mut self,
+        ui: &mut egui::Ui,
+        enhancement: &crate::bt::halo_component::Component,
+        wireless_on: bool,
+    ) {
         let Some(record) = self
             .records
             .get(WIRELESS_PLUGIN_ID)
@@ -797,12 +802,33 @@ impl LocalPlugins {
         let version = format!("{} v{}", package.manifest.name, package.manifest.version);
         let error_id = ui.id().with("wireless-compat-enable-error");
         let mut toggle = false;
+        let mut enhancement_toggle = false;
+        let mut enhancement_update = false;
+        let component = enhancement.status();
+        let can_start = enabled && wireless_on;
 
         crate::extras::settings_label(ui, "设备兼容");
         settings_card(ui, |ui| {
             toggle = plugin_setting_switch_row(
                 ui, WIRELESS_PLUGIN_ID, "启用兼容包", &version, enabled, true,
             );
+            ui.add_enabled_ui(can_start || component.enabled, |ui| {
+                enhancement_toggle = plugin_setting_switch_row(
+                    ui, "wireless-battery-component", "电量增强",
+                    if component.busy { "正在准备 HaloBattery 采集组件…" }
+                    else if component.installed { "HaloBattery 采集组件已就绪" }
+                    else { "首次开启时单独下载 HaloBattery 采集组件" },
+                    component.enabled, true,
+                );
+            });
+            if let Some(error) = &component.error {
+                settings_hint(ui, error);
+            }
+            if can_start && component.enabled && !component.busy {
+                enhancement_update = ui.small_button(
+                    if component.installed { "检查组件更新" } else { "重试下载" }
+                ).clicked();
+            }
             egui::CollapsingHeader::new(egui::RichText::new("兼容接收器").size(12.5))
                 .id_salt("wireless-compat-receivers")
                 .show(ui, |ui| {
@@ -842,6 +868,18 @@ impl LocalPlugins {
                 ui.ctx().request_repaint_of(egui::ViewportId::ROOT);
             }
             ui.data_mut(|data| data.insert_temp(error_id, error));
+            ui.ctx().request_repaint();
+        }
+        if enhancement_toggle || enhancement_update {
+            let ctx = ui.ctx().clone();
+            let wake = move || ctx.request_repaint();
+            if enhancement_toggle {
+                if let Err(error) = enhancement.set_enabled(!component.enabled, wake) {
+                    ui.data_mut(|data| data.insert_temp(error_id, Some(error)));
+                }
+            } else {
+                enhancement.check_update(wake);
+            }
             ui.ctx().request_repaint();
         }
     }

@@ -196,9 +196,23 @@ fn valid_text(text: &str, max: usize) -> bool {
 
 /// 供 USB 枚举线程读取当前启用的插件数据。安装状态由集市保存。
 #[derive(Clone, Default)]
-pub struct Store(Arc<Mutex<Option<Arc<Package>>>>);
+pub struct Store(
+    Arc<Mutex<Option<Arc<Package>>>>,
+    #[cfg(windows)] Option<super::halo_component::Component>,
+);
 
 impl Store {
+    #[cfg(windows)]
+    pub(crate) fn with_component(mut self, component: super::halo_component::Component) -> Self {
+        self.1 = Some(component);
+        self
+    }
+
+    #[cfg(windows)]
+    pub(super) fn component(&self) -> Option<&super::halo_component::Component> {
+        self.1.as_ref()
+    }
+
     #[cfg(any(test, all(windows, feature = "sdk-js")))]
     pub(crate) fn set(&self, package: Option<Package>) {
         *self.0.lock().unwrap_or_else(|error| error.into_inner()) = package.map(Arc::new);

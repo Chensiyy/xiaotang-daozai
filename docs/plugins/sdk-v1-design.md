@@ -461,6 +461,10 @@ function refresh({settings}) {
 
 接收器表的 `api_version: 1` 接受 `vid`、`pid` 和 `name`。`api_version: 2` 的每条记录还可声明 `battery_protocol`，取值为[本体已注册的电量读取器](../../src/bt/compat.rs)。支持版本 2 的宿主遇到尚未内置的协议时仍识别接收器，电量显示为未知。旧格式仍可安装。插件清单的 `api` 和 `dataVersion` 均为 `1`。
 
+「设备兼容 → 电量增强」可单独安装 HaloBattery 采集组件。开启后由岛仔校验并启动，关闭后停止采集。兼容包继续独立分发接收器识别表。
+
+采集组件从 [vendor/halo-battery/build.ps1](../../vendor/halo-battery/build.ps1) 构建，产物为 Windows x64 的 `daozai-halo.exe`。组件单独作为 `wireless-battery-vX.Y.Z` 预发行的资产发布到岛仔官方仓库，岛仔按发布记录的文件大小和 SHA-256 校验。桌面测试版从程序旁的 `wireless-battery-test.json` 加载本地验收源，其中包含组件绝对路径 `artifact` 及 `package.size` 和 `package.hash`。
+
 ### 正式分发
 
 作者向独立插件仓库提交 PR，提供源码、清单、封面、版本、变更、测试方法、许可和镜像分发授权。维护者审核并合并后打包。发布先把不可覆盖的 ZIP 上传到 Gitee，确认匿名下载的文件一致，再更新同目录的 `catalog.json`。[插件投稿仓](https://github.com/Renly1994/xiaotang-daozai-plugins)
