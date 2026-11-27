@@ -795,6 +795,8 @@ impl PinnedFrame {
 }
 
 pub struct App {
+    #[cfg(windows)]
+    pub(crate) wireless_enhancement: crate::bt::halo_component::Component,
     #[cfg(feature="sdk-js")]
     pub(crate) plugins: crate::sdk_spike::local::LocalPlugins,
     #[cfg(feature="sdk-js")]
@@ -1065,6 +1067,8 @@ impl App {
         let mut weather=crate::weather::State::load(&settings.weather_city,settings.weather_position.as_ref());
         if weather_source.displayed==crate::weather_source_ui::Provider::Qweather {weather.snapshot=weather_source.runtime.snapshot();}
         Self {
+            #[cfg(windows)]
+            wireless_enhancement: crate::bt::halo_component::Component::load(model::config_dir().join("wireless-battery")),
             #[cfg(feature="sdk-js")]
             plugins,
             #[cfg(feature="sdk-js")]
@@ -1221,10 +1225,11 @@ impl App {
     #[cfg(windows)]
     pub fn wireless_compat_store(&self) -> crate::bt::compat::Store {
         #[cfg(feature = "sdk-js")]
-        return self.plugins.wireless_store();
+        let store = self.plugins.wireless_store();
 
         #[cfg(not(feature = "sdk-js"))]
-        crate::bt::compat::Store::default()
+        let store = crate::bt::compat::Store::default();
+        store.with_component(self.wireless_enhancement.clone())
     }
 
     #[cfg(all(windows, feature = "sdk-js", feature = "sdk-material"))]

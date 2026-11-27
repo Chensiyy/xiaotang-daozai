@@ -16,7 +16,7 @@ const INSTALL_PREPARE_TIMEOUT: Duration = Duration::from_secs(60);
 #[derive(Clone, Debug)]
 struct Release { version: String, notes: String, page: String, package: Option<Package> }
 #[derive(Clone, Debug)]
-struct Package { url: String, size: u64, hash: String }
+pub(crate) struct Package { pub(crate) url: String, pub(crate) size: u64, pub(crate) hash: String }
 enum Event { Checked(Result<Option<Release>, String>), Progress(f32), Ready(PathBuf), Installed, Failed(String) }
 
 #[derive(Default)]
@@ -360,7 +360,7 @@ fn update_agent(proxy: Option<&str>, timeout: Duration) -> Result<ureq::Agent, S
     Ok(builder.build())
 }
 
-fn http_agent() -> Result<ureq::Agent, String> {
+pub(crate) fn http_agent() -> Result<ureq::Agent, String> {
     let proxy = ["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy", "HTTP_PROXY", "http_proxy"]
         .iter().find_map(|key| std::env::var(key).ok().filter(|value| !value.trim().is_empty()))
         .or_else(crate::quota::system_proxy);
@@ -429,7 +429,7 @@ fn download(release: &Release, tx: &mpsc::Sender<Event>, cancel: &AtomicBool) ->
     result
 }
 
-fn transfer(input: &mut impl Read, output: &mut impl Write, package: &Package, cancel: &AtomicBool, mut progress: impl FnMut(f32)) -> Result<(), String> {
+pub(crate) fn transfer(input: &mut impl Read, output: &mut impl Write, package: &Package, cancel: &AtomicBool, mut progress: impl FnMut(f32)) -> Result<(), String> {
     let mut hash = ring::digest::Context::new(&ring::digest::SHA256);
     let mut buffer = [0u8; 65536]; let mut total = 0u64;
     loop {
