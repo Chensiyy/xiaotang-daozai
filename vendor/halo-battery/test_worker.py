@@ -1,10 +1,13 @@
 """可选采集进程的实例归属和读数语义测试。"""
+import io
 import json
+import sys
 import time
 import unittest
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
+from unittest.mock import patch
 
-from worker import Engine, Gateway, Receiver, ScopedDevice, ScopedProvider, read_request
+from worker import Engine, Gateway, Receiver, ScopedDevice, ScopedProvider, read_request, write_reply
 from providers.base import DeviceStatus
 
 
@@ -133,6 +136,105 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(closed, [dji])
         self.assertFalse(any(value["usb_instance"] == dji.instance for value in
                              engine.project(rows, set())))
+
+    def test_turbo_plus_limits_hid_to_the_verified_physical_interface(self):
+        radio = Receiver(0x3837, 0x600A, r"USB\VID_3837&PID_600A\RADIO")
+        second = Receiver(0x3837, 0x600A, r"USB\VID_3837&PID_600A\SECOND")
+        sibling = Receiver(0x3837, 0x6008, r"USB\VID_3837&PID_6008\SIBLING")
+        x9 = Receiver(0x3837, 0x6045, r"USB\VID_3837&PID_6045\X9")
+        devices = {
+            "radio-correct": (radio, 0, 0xFF90, 1),
+            "radio-wrong-mi": (radio, 1, 0xFF90, 1),
+            "radio-wrong-page": (radio, 0, 0xFF82, 1),
+            "radio-wrong-usage": (radio, 0, 0xFF90, 2),
+            "second-correct": (second, 0, 0xFF90, 1),
+            "sibling": (sibling, 0, 0xFF90, 1),
+            "x9": (x9, 0, 0xFF90, 1),
+        }
+        opened, sent = [], []
+        replies = {"radio-correct": bytes.fromhex("55 65 64 02").ljust(64, b"\0"),
+                   "second-correct": bytes.fromhex("55 65 25 03").ljust(64, b"\0"),
+                   "x9": bytes.fromhex("55 65 28 03").ljust(64, b"\0")}
+
+        class Native:
+            def open_path(self, path):
+                self.path = path.decode()
+                opened.append(self.path)
+
+            def get_report_lengths(self):
+                return {"input": 64, "output": 64, "feature": 0}
+
+            def write(self, data):
+                sent.append((self.path, bytes(data)))
+                return len(data)
+
+            def read(self, size, timeout):
+                return replies.pop(self.path, b"")
+
+            def close(self):
+                pass
+
+        class Windows:
+            def parent_for(self, path):
+                return devices[path][0].identity
+
+            def paths_by_receiver(self, receivers):
+                return {receiver.identity: tuple(path for path, info in devices.items()
+                                                if receiver == info[0]) for receiver in receivers}
+
+            def metadata(self, path, receiver):
+                _, interface, page, usage = devices[path]
+                return {"path": path.encode(), "vendor_id": receiver.vid, "product_id": receiver.pid,
+                        "interface_number": interface, "usage_page": page, "usage": usage}
+
+        class Transport(FakeTransport):
+            def device(self):
+                return Native()
+
+        gate = Gateway(Transport(), Windows())
+        hid = ModuleType("hid")
+        gate.install(hid)
+        with patch.dict(sys.modules, {"hid": hid}):
+            from provider_registry import MchoseReceiverProvider, PROVIDERS
+            from providers import mchose
+
+        self.assertIn(MchoseReceiverProvider, PROVIDERS)
+        self.assertNotIn(mchose.MchoseProvider, PROVIDERS)
+        provider = ScopedProvider(MchoseReceiverProvider, gate)
+        engine = Engine.__new__(Engine)
+        engine.gate, engine.observed = gate, {}
+        request = {"version": 1, "id": 42, "command": "poll", "receivers": [
+            {"vid": root.vid, "pid": root.pid, "usb_instance": root.instance}
+            for root in (radio, second, sibling, x9)]}
+        request_id, targets = read_request(json.dumps(request))
+
+        with patch.object(mchose, "hid", hid), patch.object(mchose.hidlist, "enumerate", gate.enumerate):
+            gate.update(targets)
+            statuses = provider.poll()
+            reply = io.BytesIO()
+            write_reply(reply, {"version": 1, "id": request_id, "devices":
+                                engine.project(statuses, {status.key for status in statuses})})
+            rows = json.loads(reply.getvalue())["devices"]
+            self.assertEqual([(row["usb_instance"], row["level"], row["charging"]) for row in rows],
+                             [(radio.instance, 100, None), (second.instance, 37, None), (x9.instance, 40, True)])
+            self.assertTrue(all(row["fresh"] for row in rows))
+            self.assertNotEqual(rows[0]["key"], rows[1]["key"])
+            self.assertEqual(opened, ["radio-correct", "second-correct", "x9"])
+            self.assertEqual(sent, [(path, b"\x55\x65\x01".ljust(64, b"\0")) for path in opened])
+
+            # 拔出一只同型号接收器，旧回复不得进入另一只接收器的快照。
+            gate.update([second])
+            self.assertEqual([row["usb_instance"] for row in engine.project(statuses, set())], [second.instance])
+
+            # 已确认用途的集合出现歧义或消失时，不能选择近似集合。
+            opened.clear()
+            devices["second-duplicate"] = devices["second-correct"]
+            gate.update([second])
+            self.assertEqual(provider.poll(), [])
+            del devices["second-correct"], devices["second-duplicate"]
+            gate.update([second])
+            self.assertEqual(provider.poll(), [])
+            self.assertEqual(opened, [])
 
 
 if __name__ == "__main__":

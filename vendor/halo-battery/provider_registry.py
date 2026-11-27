@@ -1,10 +1,12 @@
 """上游 v1.18.0 的 HID 提供器注册顺序，协议由上游源码实现。"""
 
+import time
+
 from providers.razer import RazerProvider
 from providers.blackshark_v3x import BlackSharkV3XProvider
 from providers.audeze import AudezeProvider
 from providers.wlmouse import WLmouseProvider
-from providers.mchose import MchoseProvider
+from providers import mchose
 from providers.hyperx_alpha2 import HyperXAlpha2Provider
 from providers.hyperx_cloud3 import HyperXCloud3Provider
 from providers.hyperx_cloud_core import HyperXCloudCoreProvider
@@ -93,6 +95,58 @@ from providers import beitong, eightbitdo_ultimate2, flydigi, gamesir, raikiri
 from providers.base import DeviceStatus, Provider
 
 
+class MchoseReceiverProvider(mchose.MchoseProvider):
+    """V9 Turbo+ 只使用实测应答的物理 USB 接收器端点。"""
+
+    def poll(self):
+        # 枚举和打开均由组件限制在本次请求指定的同一 USB 物理实例内。
+        hid = mchose.hid
+        turbo = hid.enumerate(mchose.NEW_VID, mchose.HEADSET_BODY_PID)
+        if turbo:
+            return self._poll_turbo_plus(turbo)
+        if hid.enumerate(mchose.NEW_VID, mchose.HEADSET_DONGLE_PID):
+            return []
+        return super().poll()
+
+    def _poll_turbo_plus(self, rows):
+        candidates = [row["path"] for row in rows
+                      if (row.get("interface_number"), row.get("usage_page"), row.get("usage"))
+                      == (0, 0xFF90, 0x0001)]
+        if len(candidates) != 1:
+            return []
+        # #193 无线探针只有此集合应答 55 65 01，回包为 55 65 64 02。
+        # https://github.com/user-attachments/files/33004819/probe-output-20261003-225111.txt
+        query = bytes([mchose.AUDIO_REPORT]) + mchose.STATUS_REQUEST
+        size = len(query)
+        device = mchose.hid.device()
+        try:
+            device.open_path(candidates[0])
+            caps = device.get_report_lengths()
+            if (caps["input"], caps["output"]) != (size, size) or device.write(query) != size:
+                return []
+            deadline = time.monotonic() + mchose.HEADSET_READ_MS / 1000
+            for _ in range(16):
+                remaining = int((deadline - time.monotonic()) * 1000)
+                if remaining < 1:
+                    break
+                response = device.read(size, remaining)
+                if not response:
+                    break
+                if len(response) != size:
+                    continue
+                status = mchose.parse_status_55(response)
+                if status is not None and status[0] is not None:
+                    # 实机放电和底座充电返回相同状态，充电信息保持未知。
+                    key = mchose.device_key(mchose.NEW_VID, mchose.HEADSET_BODY_PID)
+                    return [DeviceStatus(key, "MCHOSE V9 Turbo+", status[0], source=self.name,
+                                         kind="headset", charging_known=False)]
+        except (OSError, ValueError):
+            pass
+        finally:
+            device.close()
+        return []
+
+
 class SonyInzoneHidProvider(SonyInzoneProvider):
     """沿用 H5 的 HID 路线。H9 串口由按物理接收器绑定的提供器读取。"""
 
@@ -124,7 +178,7 @@ PROVIDERS = (
     BlackSharkV3XProvider,
     AudezeProvider,
     WLmouseProvider,
-    MchoseProvider,
+    MchoseReceiverProvider,
     HyperXAlpha2Provider,
     HyperXCloud3Provider,
     HyperXCloudCoreProvider,
