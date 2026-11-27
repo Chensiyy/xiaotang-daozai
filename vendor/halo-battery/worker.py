@@ -123,8 +123,9 @@ class ScopedDevice:
 
 
 class Gateway:
-    def __init__(self, transport, windows):
+    def __init__(self, transport, windows, direct_targets=()):
         self.transport, self.windows = transport, windows
+        self.direct_targets = frozenset(direct_targets)
         self.inventory = {}, {}
         self.local = threading.local()
         self.generation = 0
@@ -134,8 +135,8 @@ class Gateway:
         previous = self.inventory[0]
         receivers_by_id, paths = {}, {}
         for root in receivers:
-            paths_for_root = current.get(root.identity)
-            if not paths_for_root:
+            paths_for_root = current.get(root.identity, ())
+            if not paths_for_root and (root.vid, root.pid) not in self.direct_targets:
                 continue
             scope = previous.get(root.identity)
             if scope is None or scope.paths != paths_for_root:
@@ -192,6 +193,7 @@ class ScopedProvider:
     def __init__(self, factory, gate):
         self.factory, self.gate = factory, gate
         self.name = factory.name
+        self.target = getattr(factory, "target", None)
         self.instances = {}
         self.pending = False
 
@@ -204,8 +206,15 @@ class ScopedProvider:
                 self.close_provider(provider)
         results = []
         for root, scope in current.items():
+            receiver = scope.root
+            if self.target is not None:
+                if (receiver.vid, receiver.pid) != self.target:
+                    continue
+            elif not scope.paths:
+                continue
             if root not in self.instances:
-                self.instances[root] = scope, self.factory()
+                provider = self.factory(receiver) if self.target is not None else self.factory()
+                self.instances[root] = scope, provider
             _, provider = self.instances[root]
             with self.gate.scope(scope):
                 statuses = provider.poll()
@@ -216,7 +225,10 @@ class ScopedProvider:
             for status in eligible[:limit]:
                 key = hashlib.sha256(f"{self.name}\0{root}\0{status.key}".encode("utf-8")).hexdigest()
                 # JBL 的 upstream online 状态只在本次消费到新电量报告时为真。
-                at = (time.monotonic() if self.name == "jbl" and status.online else report_at)
+                if self.target is not None:
+                    at = status.ui_params.get(AUXILIARY_FIELDS[2], time.monotonic())
+                else:
+                    at = time.monotonic() if self.name == "jbl" and status.online else report_at
                 observed = (at if status.online and not status.polling_paused and not status.polling_stale
                             else None)
                 results.append(replace(status, key=key, ui_params={
@@ -229,8 +241,12 @@ class ScopedProvider:
     def diagnostics(self):
         return []
 
-    @staticmethod
-    def close_provider(provider):
+    def close_provider(self, provider):
+        if self.target is not None:
+            close = getattr(provider, "close", None)
+            if close is not None:
+                close()
+            return
         for reader in getattr(provider, "_readers", {}).values():
             reader.stop()
         activity = getattr(provider, "activity", None)
@@ -359,12 +375,15 @@ def main():
         hid = sys.modules["hid"] = ModuleType("hid")
         from providers import hidlist
         from provider_registry import PROVIDERS
+        from sony_serial import SonySerialProvider
+        from dji_winusb import DjiWinUsbProvider
 
         transport = TransportRuntime()
-        gate = Gateway(transport, WindowsHid(hidlist.interface_paths))
+        direct = (SonySerialProvider, DjiWinUsbProvider)
+        gate = Gateway(transport, WindowsHid(hidlist.interface_paths), (p.target for p in direct))
         gate.install(hid)
         hidlist.interface_paths = gate.paths
-        engine = Engine(gate, PROVIDERS)
+        engine = Engine(gate, (*PROVIDERS, *direct))
         run_stdio(engine, sys.stdin.buffer, sys.stdout.buffer)
         return 0
     except (OSError, ValueError) as exc:

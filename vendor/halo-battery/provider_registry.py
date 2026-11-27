@@ -93,6 +93,14 @@ from providers import beitong, eightbitdo_ultimate2, flydigi, gamesir, raikiri
 from providers.base import DeviceStatus, Provider
 
 
+class SonyInzoneHidProvider(SonyInzoneProvider):
+    """沿用 H5 的 HID 路线。H9 串口由按物理接收器绑定的提供器读取。"""
+
+    def poll(self):
+        self._diag = []
+        return self._poll_hid()
+
+
 class GamepadReceivers(Provider):
     """按已限定的接收器复用厂商 HID 查询。"""
 
@@ -173,7 +181,7 @@ PROVIDERS = (
     AjazzProvider,
     BlackSharkMtkProvider,
     IRocksProvider,
-    SonyInzoneProvider,
+    SonyInzoneHidProvider,
     SonyH9IIProvider,
     AtkNearlinkProvider,
     FinalmouseProvider,

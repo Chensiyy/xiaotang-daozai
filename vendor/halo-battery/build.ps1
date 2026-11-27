@@ -31,7 +31,7 @@ $worker = Join-Path $PSScriptRoot 'worker.py'
 & $python -I -m PyInstaller --noconfirm --clean --onefile --console --noupx --name daozai-halo `
     --paths $upstream --distpath $dist --workpath (Join-Path $OutputDirectory 'temp') `
     --specpath (Join-Path $OutputDirectory 'spec') --add-data "$licenses;licenses" `
-    --exclude-module tkinter --exclude-module serial $worker
+    --exclude-module tkinter --exclude-module serial --exclude-module usb --exclude-module libusb_package $worker
 if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
 Get-Item -LiteralPath (Join-Path $dist 'daozai-halo.exe')

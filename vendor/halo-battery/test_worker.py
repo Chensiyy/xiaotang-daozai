@@ -1,9 +1,10 @@
 """可选采集进程的实例归属和读数语义测试。"""
 import json
+import time
 import unittest
 from types import SimpleNamespace
 
-from worker import Engine, Gateway, Receiver, ScopedDevice, read_request
+from worker import Engine, Gateway, Receiver, ScopedDevice, ScopedProvider, read_request
 from providers.base import DeviceStatus
 
 
@@ -55,8 +56,6 @@ class WorkerTests(unittest.TestCase):
                 handle.read()
 
     def test_keeps_charge_only_coarse_and_actual_age(self):
-        import time
-
         gate = Gateway(FakeTransport(), FakeWindows())
         gate.update([FIRST, SECOND])
         engine = Engine.__new__(Engine)
@@ -86,6 +85,54 @@ class WorkerTests(unittest.TestCase):
         gate.update([SECOND])
         gate.update([FIRST, SECOND])
         self.assertEqual([device["key"] for device in engine.project([charge, coarse], set())], ["coarse"])
+
+    def test_non_hid_receivers_are_scoped_even_without_hid_interfaces(self):
+        sony = Receiver(0x054C, 0x0E53, r"USB\VID_054C&PID_0E53\SONY")
+        dji = Receiver(0x2CA3, 0x4011, r"USB\VID_2CA3&PID_4011\DJI")
+        dji_second = Receiver(0x2CA3, 0x4011, r"USB\VID_2CA3&PID_4011\DJI-SECOND")
+        closed = []
+        sampled_at = time.monotonic() - 15
+
+        class Sony:
+            name = "sony"
+            target = (0x054C, 0x0E53)
+
+            def __init__(self, receiver):
+                self.receiver = receiver
+
+            def poll(self):
+                return [DeviceStatus("sony", self.receiver.instance, 35)]
+
+        class Dji(Sony):
+            name = "dji"
+            target = (0x2CA3, 0x4011)
+
+            def poll(self):
+                return [DeviceStatus("mic", self.receiver.instance, 80,
+                                     ui_params={"daozai_observed": sampled_at})]
+
+            def close(self):
+                closed.append(self.receiver)
+
+        gate = Gateway(FakeTransport(), FakeWindows(), (Sony.target, Dji.target))
+        gate.update([FIRST, sony, dji, dji_second])
+        engine = Engine.__new__(Engine)
+        engine.gate, engine.observed = gate, {}
+        sony_provider = ScopedProvider(Sony, gate)
+        dji_provider = ScopedProvider(Dji, gate)
+        rows = sony_provider.poll() + dji_provider.poll()
+        projected = engine.project(rows, {row.key for row in rows})
+        self.assertEqual([device["usb_instance"] for device in projected],
+                         [sony.instance, dji.instance, dji_second.instance])
+        self.assertEqual([device["level"] for device in projected], [35, 80, 80])
+        self.assertNotEqual(projected[1]["key"], projected[2]["key"])
+        self.assertGreaterEqual(projected[1]["age_ms"], 15_000)
+
+        gate.update([FIRST, sony, dji_second])
+        self.assertEqual(len(dji_provider.poll()), 1)
+        self.assertEqual(closed, [dji])
+        self.assertFalse(any(value["usb_instance"] == dji.instance for value in
+                             engine.project(rows, set())))
 
 
 if __name__ == "__main__":
